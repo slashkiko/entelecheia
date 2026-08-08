@@ -112,7 +112,8 @@ describe("store", () => {
   });
 
   describe("lease", () => {
-    const until = new Date(NOW.getTime() + 5 * 60 * 1000);
+    // 期限切れの判定は実時計で行うので、固定時刻の NOW ではなく現在時刻から取る。
+    const until = new Date(Date.now() + 5 * 60 * 1000);
 
     it("誰も持っていなければ取れる", () => {
       expect(store.acquireLease("sample-goal", "worker-a", until)).toBe(true);
@@ -132,7 +133,7 @@ describe("store", () => {
     it("期限が切れた lease は奪える", () => {
       // 行ロックではなく期限付きの所有権にすることで、
       // プロセスがクラッシュしても自動で解放される。
-      store.acquireLease("sample-goal", "worker-a", new Date(NOW.getTime() - 1000));
+      store.acquireLease("sample-goal", "worker-a", new Date(Date.now() - 1000));
       expect(store.acquireLease("sample-goal", "worker-b", until)).toBe(true);
     });
 

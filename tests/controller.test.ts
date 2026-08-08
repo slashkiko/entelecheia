@@ -163,7 +163,7 @@ describe("tick", () => {
   describe("lease", () => {
     it("取れなければ何もせずに return する", async () => {
       // 1 Goal につき reconcile は同時に1つ（design.md §4.5）。
-      store.acquireLease("sample-goal", "worker-b", new Date(NOW.getTime() + 60_000));
+      store.acquireLease("sample-goal", "worker-b", new Date(Date.now() + 60_000));
       const result = await tick(GOAL, deps());
 
       expect(result.ran).toBe(false);
@@ -237,8 +237,9 @@ describe("tick", () => {
 
     it("前ティックの Fact を引き継ぐ", async () => {
       // 古い観測で ASSESS すると、直したはずの Gap が残り続ける。
-      await tick(GOAL, deps());
-      await tick(GOAL, deps());
+      // criteria が通ると1ティック目で COMPLETED になるので、Gap を残して2回回す。
+      await tick(GOAL, deps({ exitCode: 1 }));
+      await tick(GOAL, deps({ exitCode: 1 }));
 
       const branch = (store.latestSnapshot("sample-goal")?.facts ?? []).filter(
         (f) => f.key === "local.branch",
@@ -276,11 +277,15 @@ describe("tick", () => {
   });
 
   describe("ACT の実行", () => {
-    it("action が ACT のときだけ Actor を起動する", async () => {
-      await tick(GOAL, deps());
-      expect(events).not.toContain("actor.run");
+    it("criteria が通っていれば Actor を起動しない", async () => {
+      const result = await tick(GOAL, deps());
 
-      events = [];
+      expect(result.decision?.action.type).toBe("COMPLETE");
+      expect(events).not.toContain("actor.run");
+      expect(result.run).toBeNull();
+    });
+
+    it("Gap があれば Actor を起動する", async () => {
       const result = await tick(GOAL, deps({ exitCode: 1 }));
 
       expect(result.decision?.action.type).toBe("ACT");

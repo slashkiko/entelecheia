@@ -1,8 +1,15 @@
-import type { Decision } from "../domain/action.js";
-import type { Fact, Unresolved } from "../domain/fact.js";
+import { DatabaseSync } from "node:sqlite";
+import { actionSchema, type Decision } from "../domain/action.js";
+import { type Fact, type Unresolved, unresolvedSchema } from "../domain/fact.js";
 import type { Goal } from "../domain/goal.js";
-import type { GoalStatus } from "../domain/goal-state.js";
-import type { Run, RunIntent, RunOutcome } from "../domain/run.js";
+import { type GoalStatus, goalStatusSchema } from "../domain/goal-state.js";
+import {
+  actorKindSchema,
+  type Run,
+  type RunIntent,
+  type RunOutcome,
+  runStatusSchema,
+} from "../domain/run.js";
 
 /**
  * design.md §4.5 のテーブルを SQLite に持つ。
@@ -46,7 +53,19 @@ export interface Store {
   /** Goal を登録する。既にあれば宣言部だけ更新し、実行時状態は触らない */
   upsertGoal(goal: Goal): void;
   getState(goalId: string): GoalState | null;
-  setStatus(goalId: string, status: GoalStatus, resumeAfter: string | null): void;
+  /**
+   * 状態を書く。時刻は store が作らず、呼び出し側の時計から受け取る。
+   * store が `new Date()` を使うと、注入した時計で動くティックと時間軸がずれる。
+   *
+   * `activatedAt` を渡すと、ACTIVE に入る時点でだけ activated_at を埋める。
+   * 経過時間の上限（design.md §7）の起点になる。
+   */
+  setStatus(
+    goalId: string,
+    status: GoalStatus,
+    resumeAfter: string | null,
+    activatedAt?: string,
+  ): void;
   setObserveTarget(goalId: string, prNumber: number | null, issueNumber: number | null): void;
 
   /**
@@ -91,6 +110,428 @@ export interface Store {
  * - `:memory:` を渡せばファイルを作らない。テストはこれを使う
  * - unresolved を落とさない。facts と同じスナップショットに属する行として残す
  */
-export function openStore(_path: string): Store {
-  throw new Error("not implemented");
+export function openStore(path: string): Store {
+  const db = new DatabaseSync(path);
+
+  // WAL にすれば「複数リーダー + 単一ライター」が同時に動く（design.md §4.7）。
+  // :memory: では journal_mode が memory のまま変わらないが、エラーにはならない。
+  db.exec(`
+    PRAGMA journal_mode = WAL;
+    PRAGMA synchronous  = NORMAL;
+    PRAGMA busy_timeout = 5000;
+    PRAGMA foreign_keys = ON;
+  `);
+  db.exec(SCHEMA);
+
+  const inTransaction = (write: () => void): void => {
+    db.exec("BEGIN");
+    try {
+      write();
+      db.exec("COMMIT");
+    } catch (error) {
+      db.exec("ROLLBACK");
+      throw error;
+    }
+  };
+
+  return {
+    upsertGoal(goal) {
+      // 宣言部だけを更新する。ここで status を書くと、YAML を直すたびに進捗が消える。
+      db.prepare(
+        `INSERT INTO goals (id, name, desired_state, status)
+         VALUES (?, ?, ?, 'DRAFT')
+         ON CONFLICT(id) DO UPDATE SET name = excluded.name, desired_state = excluded.desired_state`,
+      ).run(goal.goal.id, goal.goal.name, goal.goal.desired_state);
+    },
+
+    getState(goalId) {
+      const row = db.prepare("SELECT * FROM goals WHERE id = ?").get(goalId) as GoalRow | undefined;
+      if (row === undefined) {
+        return null;
+      }
+      return {
+        id: row.id,
+        status: goalStatusSchema.parse(row.status),
+        leaseOwner: row.lease_owner,
+        leaseUntil: row.lease_until,
+        resumeAfter: row.resume_after,
+        activatedAt: row.activated_at,
+        reconciles: row.reconciles,
+        prNumber: row.pr_number,
+        issueNumber: row.issue_number,
+      };
+    },
+
+    setStatus(goalId, status, resumeAfter, activatedAt) {
+      // ACTIVE に入った時刻を残す。経過時間の上限（§7）の起点になる。
+      // activatedAt を渡さなければ触らない。store が勝手に時刻を作らない。
+      db.prepare(
+        `UPDATE goals
+            SET status = ?,
+                resume_after = ?,
+                activated_at = CASE
+                  WHEN ? = 'ACTIVE' AND activated_at IS NULL THEN COALESCE(?, activated_at)
+                  ELSE activated_at
+                END
+          WHERE id = ?`,
+      ).run(status, resumeAfter, status, activatedAt ?? null, goalId);
+    },
+
+    setObserveTarget(goalId, prNumber, issueNumber) {
+      db.prepare("UPDATE goals SET pr_number = ?, issue_number = ? WHERE id = ?").run(
+        prNumber,
+        issueNumber,
+        goalId,
+      );
+    },
+
+    acquireLease(goalId, owner, until) {
+      // 期限付きの所有権にすることで、プロセスがクラッシュしても自動で解放される。
+      // 更新行数が 0 なら他のワーカーが処理中（design.md §4.5）。
+      const result = db
+        .prepare(
+          `UPDATE goals
+              SET lease_owner = ?, lease_until = ?
+            WHERE id = ?
+              AND (lease_owner IS NULL OR lease_owner = ? OR lease_until IS NULL OR lease_until < ?)`,
+        )
+        .run(owner, until.toISOString(), goalId, owner, new Date().toISOString());
+      return result.changes > 0;
+    },
+
+    releaseLease(goalId, owner) {
+      // 他人の lease は解放しない。奪えるのは期限切れのときだけ。
+      db.prepare(
+        "UPDATE goals SET lease_owner = NULL, lease_until = NULL WHERE id = ? AND lease_owner = ?",
+      ).run(goalId, owner);
+    },
+
+    saveSnapshot(goalId, snapshot) {
+      inTransaction(() => {
+        const inserted = db
+          .prepare("INSERT INTO snapshots (goal_id, observed_at) VALUES (?, ?)")
+          .run(goalId, snapshot.observedAt);
+        const snapshotId = Number(inserted.lastInsertRowid);
+
+        const insertFact = db.prepare(
+          `INSERT INTO facts
+             (snapshot_id, seq, key, value, observed_at, confidence, evidence_source, evidence_detail)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        );
+        snapshot.facts.forEach((fact, seq) => {
+          insertFact.run(
+            snapshotId,
+            seq,
+            fact.key,
+            JSON.stringify(fact.value ?? null),
+            fact.observedAt,
+            fact.confidence,
+            fact.evidence?.source ?? null,
+            fact.evidence?.detail ?? null,
+          );
+        });
+
+        // 結論が出なかった対象も残す。落とすと §3.1 の問題が DB 層で再発する。
+        const insertUnresolved = db.prepare(
+          "INSERT INTO unresolved (snapshot_id, seq, key, reason, detail) VALUES (?, ?, ?, ?, ?)",
+        );
+        snapshot.unresolved.forEach((entry, seq) => {
+          insertUnresolved.run(snapshotId, seq, entry.key, entry.reason, entry.detail);
+        });
+
+        db.prepare("UPDATE goals SET reconciles = reconciles + 1 WHERE id = ?").run(goalId);
+      });
+    },
+
+    latestSnapshot(goalId) {
+      const row = db
+        .prepare("SELECT id, observed_at FROM snapshots WHERE goal_id = ? ORDER BY id DESC LIMIT 1")
+        .get(goalId) as { id: number; observed_at: string } | undefined;
+      if (row === undefined) {
+        return null;
+      }
+
+      const factRows = db
+        .prepare("SELECT * FROM facts WHERE snapshot_id = ? ORDER BY seq")
+        .all(row.id) as unknown as FactRow[];
+      const unresolvedRows = db
+        .prepare("SELECT * FROM unresolved WHERE snapshot_id = ? ORDER BY seq")
+        .all(row.id) as unknown as UnresolvedRow[];
+
+      return {
+        observedAt: row.observed_at,
+        facts: factRows.map(toFact),
+        unresolved: unresolvedRows.map((u) => ({
+          key: u.key,
+          reason: unresolvedSchema.shape.reason.parse(u.reason),
+          detail: u.detail,
+        })),
+      };
+    },
+
+    saveDecision(goalId, observedDigest, decision) {
+      // L5 の改善レイヤーに食わせる履歴。必ず残す（design.md §4.5）。
+      db.prepare(
+        `INSERT INTO decisions
+           (goal_id, reconcile_seq, observed_digest, action, rationale, decided_by, decided_at)
+         VALUES (?, (SELECT reconciles FROM goals WHERE id = ?), ?, ?, ?, ?, ?)`,
+      ).run(
+        goalId,
+        goalId,
+        observedDigest,
+        JSON.stringify(decision.action),
+        decision.rationale,
+        decision.decidedBy,
+        decision.decidedAt,
+      );
+    },
+
+    listDecisions(goalId) {
+      const rows = db
+        .prepare("SELECT * FROM decisions WHERE goal_id = ? ORDER BY id")
+        .all(goalId) as unknown as DecisionRow[];
+      return rows.map((row) => ({
+        decidedAt: row.decided_at,
+        action: actionSchema.parse(JSON.parse(row.action)),
+        rationale: row.rationale,
+        decidedBy: row.decided_by === "llm" ? "llm" : "guard",
+      }));
+    },
+
+    startRun(goalId, intent) {
+      const inserted = db
+        .prepare(
+          `INSERT INTO runs
+             (goal_id, intent, actor, worktree, attempt, status, started_at, artifacts)
+           VALUES (?, ?, ?, ?, ?, 'starting', ?, '[]')`,
+        )
+        .run(
+          goalId,
+          intent.intent,
+          intent.actor,
+          intent.worktree,
+          intent.attempt,
+          intent.startedAt,
+        );
+      return String(inserted.lastInsertRowid);
+    },
+
+    finishRun(runId, outcome) {
+      db.prepare(
+        `UPDATE runs
+            SET status = ?, finished_at = ?, exit_code = ?, log_ref = ?, tokens = ?,
+                artifacts = ?, detail = ?
+          WHERE id = ?`,
+      ).run(
+        outcome.status,
+        outcome.finishedAt,
+        outcome.exitCode,
+        outcome.logRef,
+        outcome.tokens,
+        JSON.stringify(outcome.artifacts),
+        outcome.detail,
+        Number(runId),
+      );
+    },
+
+    reclaimOrphanRuns(goalId, detail, finishedAt) {
+      // starting のまま残っているのは、前のプロセスが確定を書けずに死んだということ。
+      // 消さずに interrupted で確定させる（design.md §3.6）。
+      const result = db
+        .prepare(
+          `UPDATE runs
+              SET status = 'interrupted', finished_at = ?, detail = ?
+            WHERE goal_id = ? AND status = 'starting'`,
+        )
+        .run(finishedAt, detail, goalId);
+      return Number(result.changes);
+    },
+
+    listRuns(goalId) {
+      const rows = db
+        .prepare("SELECT * FROM runs WHERE goal_id = ? ORDER BY id")
+        .all(goalId) as unknown as RunRow[];
+      return rows.map((row) => ({
+        id: String(row.id),
+        intent: row.intent,
+        actor: actorKindSchema.parse(row.actor),
+        worktree: row.worktree,
+        attempt: row.attempt,
+        startedAt: row.started_at,
+        status: runStatusSchema.parse(row.status),
+        finishedAt: row.finished_at,
+        exitCode: row.exit_code,
+        logRef: row.log_ref,
+        tokens: row.tokens,
+        artifacts: JSON.parse(row.artifacts) as string[],
+        detail: row.detail,
+      }));
+    },
+
+    close() {
+      db.close();
+    },
+  };
 }
+
+/**
+ * Fact の再構成。
+ *
+ * INFERRED で evidence が無い場合はキーごと落とす。null を入れると
+ * 「evidence がある」と読めてしまい、§3.1 の VERIFIED / INFERRED の分離が濁る。
+ */
+function toFact(row: FactRow): Fact {
+  const base = {
+    key: row.key,
+    value: JSON.parse(row.value) as unknown,
+    observedAt: row.observed_at,
+  };
+
+  if (row.confidence === "VERIFIED") {
+    return {
+      ...base,
+      confidence: "VERIFIED",
+      evidence: { source: row.evidence_source ?? "", detail: row.evidence_detail ?? "" },
+    };
+  }
+
+  if (row.evidence_source === null) {
+    return { ...base, confidence: "INFERRED" };
+  }
+  return {
+    ...base,
+    confidence: "INFERRED",
+    evidence: { source: row.evidence_source, detail: row.evidence_detail ?? "" },
+  };
+}
+
+interface GoalRow {
+  id: string;
+  status: string;
+  lease_owner: string | null;
+  lease_until: string | null;
+  resume_after: string | null;
+  activated_at: string | null;
+  reconciles: number;
+  pr_number: number | null;
+  issue_number: number | null;
+}
+
+interface FactRow {
+  key: string;
+  value: string;
+  observed_at: string;
+  confidence: string;
+  evidence_source: string | null;
+  evidence_detail: string | null;
+}
+
+interface UnresolvedRow {
+  key: string;
+  reason: string;
+  detail: string;
+}
+
+interface DecisionRow {
+  action: string;
+  rationale: string;
+  decided_by: string;
+  decided_at: string;
+}
+
+interface RunRow {
+  id: number;
+  intent: string;
+  actor: string;
+  worktree: string;
+  attempt: number;
+  status: string;
+  started_at: string;
+  finished_at: string | null;
+  exit_code: number | null;
+  log_ref: string | null;
+  tokens: number | null;
+  artifacts: string;
+  detail: string | null;
+}
+
+/**
+ * design.md §4.5 のテーブル。
+ *
+ * Criteria / Plan / Task / Verification / Event はまだ作らない。
+ * criteria は Goal YAML が正で、残りは Plan の永続化と webhook を入れる Goal で足す。
+ * 使う前に作ると、空のテーブルがスキーマの意図を曖昧にする。
+ */
+const SCHEMA = `
+CREATE TABLE IF NOT EXISTS goals (
+  id            TEXT PRIMARY KEY,
+  name          TEXT NOT NULL,
+  desired_state TEXT NOT NULL,
+  status        TEXT NOT NULL,
+  lease_owner   TEXT,
+  lease_until   TEXT,
+  resume_after  TEXT,
+  activated_at  TEXT,
+  reconciles    INTEGER NOT NULL DEFAULT 0,
+  pr_number     INTEGER,
+  issue_number  INTEGER
+);
+
+CREATE TABLE IF NOT EXISTS snapshots (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  goal_id     TEXT NOT NULL REFERENCES goals(id),
+  observed_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS facts (
+  snapshot_id     INTEGER NOT NULL REFERENCES snapshots(id),
+  seq             INTEGER NOT NULL,
+  key             TEXT NOT NULL,
+  value           TEXT NOT NULL,
+  observed_at     TEXT NOT NULL,
+  confidence      TEXT NOT NULL,
+  evidence_source TEXT,
+  evidence_detail TEXT,
+  PRIMARY KEY (snapshot_id, seq)
+);
+
+CREATE TABLE IF NOT EXISTS unresolved (
+  snapshot_id INTEGER NOT NULL REFERENCES snapshots(id),
+  seq         INTEGER NOT NULL,
+  key         TEXT NOT NULL,
+  reason      TEXT NOT NULL,
+  detail      TEXT NOT NULL,
+  PRIMARY KEY (snapshot_id, seq)
+);
+
+CREATE TABLE IF NOT EXISTS decisions (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  goal_id         TEXT NOT NULL REFERENCES goals(id),
+  reconcile_seq   INTEGER NOT NULL,
+  observed_digest TEXT NOT NULL,
+  action          TEXT NOT NULL,
+  rationale       TEXT NOT NULL,
+  decided_by      TEXT NOT NULL,
+  decided_at      TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS runs (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  goal_id     TEXT NOT NULL REFERENCES goals(id),
+  intent      TEXT NOT NULL,
+  actor       TEXT NOT NULL,
+  worktree    TEXT NOT NULL,
+  attempt     INTEGER NOT NULL,
+  status      TEXT NOT NULL,
+  started_at  TEXT NOT NULL,
+  finished_at TEXT,
+  exit_code   INTEGER,
+  log_ref     TEXT,
+  tokens      INTEGER,
+  artifacts   TEXT NOT NULL,
+  detail      TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_snapshots_goal ON snapshots(goal_id, id);
+CREATE INDEX IF NOT EXISTS idx_runs_goal_status ON runs(goal_id, status);
+`;

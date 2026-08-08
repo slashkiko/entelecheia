@@ -44,6 +44,25 @@ export function isTerminal(status: GoalStatus): boolean {
  * - ACT / VERIFY / REPLAN → ACTIVE
  * - ACTIVE でない状態からでも、上の対応で ACTIVE に戻れる（design.md §4.4 の ⇅）
  */
-export function nextStatus(_current: GoalStatus, _action: Action): GoalStatus {
-  throw new Error("not implemented");
+export function nextStatus(current: GoalStatus, action: Action): GoalStatus {
+  if (isTerminal(current)) {
+    return current;
+  }
+
+  switch (action.type) {
+    case "COMPLETE":
+      return "COMPLETED";
+
+    case "WAIT":
+      // 待つ相手が人間か外部かで、次のティックが何を見に行くかが変わる。
+      return action.reason === "review_pending" ? "WAITING_HUMAN" : "WAITING_EXTERNAL";
+
+    case "ESCALATE":
+      // 人間を呼ぶ点は同じだが、上限に達したかどうかで再開の条件が違う。
+      return action.reason === "budget_exhausted" ? "BLOCKED" : "WAITING_HUMAN";
+
+    // ACT / VERIFY / REPLAN。待機や BLOCKED からでも動き出せる（design.md §4.4 の ⇅）
+    default:
+      return "ACTIVE";
+  }
 }
