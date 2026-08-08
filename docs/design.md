@@ -240,6 +240,13 @@ Phase 0 では Port の camelCase フィールド名との対応表がどこに�
 個別のレビューを観測する Port はまだ切っていない。表は取得したい対象、
 レジストリは実際に取得できる対象を表すので、実装するときはレジストリ側を正とする。
 
+**`github.pr.review_decision` を人間の承認の観測源にはできない。** GitHub は自分が作った
+PR に Approve を押させないので、controller が Goal の所有者と同じアカウントで PR を作る限り
+`reviewDecision` は `APPROVED` にならない。これを `type: human` の判定に使うと reconcile は
+`WAIT(review_pending)` から抜けられず、§9 の「レビュー承認をポーリングで検知して COMPLETED へ
+遷移する」が通らない。Phase 2-1 の Goal で実際に踏んだ。`ApprovalPort` の実装は
+review_decision 以外の signal を使う（§10）。
+
 ### 4.4 状態機械
 
 ```
@@ -505,6 +512,26 @@ Phase 1 が完了すると、Acceptance Criteria の検証は人間がコマン�
 `verify()` が回す。reconcile ループはまだ無いので、人間に残るのは
 ASSESS / DECIDE / ACT と、全段階の起動になる。
 
+### Phase 2 は Goal 3本に割る
+
+Phase 2 の範囲は ASSESS / DECIDE / ACT と永続化と CLI で、1つの Goal には大きすぎる。
+Phase で数えるのは controller が回す段階だが、Goal で数えるのは1回の
+「宣言 → 実装 → 検証」で閉じる単位なので、粒度が合わない。
+
+| 順 | Goal | 範囲 | 状態 |
+|---|---|---|---|
+| 1 | `.goals/assess-and-decide.yaml` | Fact から Gap を出し、次の行動を決める。Port 注入の純ロジック | 完了 |
+| 2 | ACT | Claude Code の headless 実行、worktree 隔離 | 未着手 |
+| 3 | 永続化 | SQLite、write-ahead、lease、状態機械、CLI | 未着手 |
+
+この順にしたのは、Phase 2 で検証したいのが「reconcile ループが収束するか」だから。
+収束を判定するには、まず同じ入力から同じ Decision が出る必要がある。1本目はそこまでを担う。
+ACT と永続化は収束の判定そのものには要らない。
+
+1本目を終えて分かったのは、reconcile を「決める」までで純粋に保てることだった。
+ACT の実行と write-ahead は reconcile の外側に置ける。reconcile が Port の注入だけで動くので、
+収束のテストが実際の Claude Code も DB も使わずに書ける。
+
 ### Phase 3 の自己ホストには制約が要る
 
 自分自身を書き換えさせる以上、暴走すれば被害は自分に返ってくる。
@@ -542,10 +569,19 @@ Goal の記述と承認を除いて、以下を人手の介入なしで1回通�
    `command` の1形式から `command` / `fact` / `human` の3形式に広げ、
    `adapters` / `goal.status` / `goal.source` を削ったこと。
    `context.references` は `title` / `path` のみを許し、URL は受け付けない
-2. **上限値の初期チューニング** — `max_actor_runs` などの値は仮置き
-3. **使用量上限の検出方法** — Agent SDK が返すエラーの形状を実測する必要がある
-4. **Notion / Slack を足す時期** — 実環境ができてから
-5. **Goal YAML のスキーマ変更をどう移行するか** — 現状は `version: 1` を literal で固定してあり、
+2. **上限値の初期チューニング** — `max_actor_runs` などの値は仮置き。
+   あわせて `budget` に「同じギャップが N 回連続で解消されなければ ESCALATE」（§7）の N が無く、
+   `ESCALATE(loop_detected)` を guard から出せない。ループ検知には前ティックの Gap も要るので、
+   永続化の Goal で一緒に決める
+3. **使用量上限の検出方法** — Agent SDK が返すエラーの形状を実測する必要がある。
+   現状の `LlmPort.chooseAction` は `Promise<unknown>` を返すだけなので、DECIDE からは
+   使用量上限と一時障害を区別できず、どちらも `ESCALATE(invalid_decision)` になる。
+   §4.4 の `WAITING_EXTERNAL(usage_limit)` へ到達する経路が実装に無い
+4. **人間の承認をどの signal で検知するか** — §4.3 のとおり `github.pr.review_decision` は
+   使えない。候補は PR コメントの定型文（自分の PR にも書ける）と CLI（`ent approve`）。
+   `ApprovalPort` を実装する Goal で決める
+5. **Notion / Slack を足す時期** — 実環境ができてから
+6. **Goal YAML のスキーマ変更をどう移行するか** — 現状は `version: 1` を literal で固定してあり、
    スキーマが変わったら既存 YAML を手で書き直すしかない。Goal が数本のうちは問題ないが、
    マイグレーション方針は Phase 2 までに決める。あわせて `require_human_approval` の
    閉じた enum に、§7 の自己ホスト用（`src/controller/**` と `.goals/**` への変更）を

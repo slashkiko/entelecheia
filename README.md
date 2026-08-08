@@ -13,36 +13,45 @@
 
 ## 設計の要点
 
-「実装」列は Phase 1 時点の状態を示す。「済」は OBSERVE / VERIFY の範囲で
-その原則が守られていることを意味する。永続化と、controller がそれを読んで
-状態遷移に使う部分は Phase 2 に入る。
+「実装」列は Phase 2 の1本目（`.goals/assess-and-decide.yaml`）を完了した時点の状態を示す。
+「済」は reconcile が1ティックで回す OBSERVE / VERIFY / ASSESS / DECIDE の範囲で
+その原則が守られていることを意味する。ACT の実行と永続化は Phase 2 の残り2本に入る。
 
 | 原則 | 内容 | 実装 |
 |---|---|---|
 | VERIFIED のみで完了判定 | Fact に信頼度を持たせ、LLM の推論（INFERRED）は Plan の材料にはするが完了判定には使わない | 済 |
 | 確かめられなかったことを黙って落とさない | 「対象が無い」と「対象を確かめられなかった」を区別し、後者は `unobserved` / `unverified` に理由付きで残す | 済 |
 | 検証に還元できない Goal は受け付けない | Acceptance Criteria を検証手段（コマンド / Fact 参照 / 人間の承認）に落とせない Goal は ACTIVE にしない | 済 |
-| 宣言と収束の分離 | 人間が書くのは Desired State と Acceptance Criteria。タスク分解も Actor 選択も controller が決める | Phase 2 |
-| 待機はプロセスではなく状態 | reconcile はどのティックも有限時間で return する。常駐して sleep しない | Phase 2 |
-| write-ahead | 副作用の前に意図を DB へ書く。任意の瞬間に kill されても次ティックで回収できる | Phase 2 |
+| 待機はプロセスではなく状態 | reconcile はどのティックも有限時間で return する。常駐して sleep しない | 済 |
+| 宣言と収束の分離 | 人間が書くのは Desired State と Acceptance Criteria。タスク分解も Actor 選択も controller が決める | Phase 2（ACT） |
+| write-ahead | 副作用の前に意図を DB へ書く。任意の瞬間に kill されても次ティックで回収できる | Phase 2（永続化） |
+
+完了判定と暴走の停止条件は LLM に決めさせない。`COMPLETE` と `ESCALATE(budget_exhausted)` は
+純ロジック（guard）が決め、Gap の埋め方だけを LLM に委ねる。この境界は `src/decide/` にある。
 
 Goal の状態（ACTIVE / COMPLETED など）は、controller を実装したあと SQLite が持つ。
 `.goals/*.yaml` は宣言部だけを持ち、実行時状態は書かない。
 
 ## 現在地とロードマップ
 
-**Phase 1。** Phase 0（`.goals/observe-returns-facts.yaml`）は完了し、Goal YAML のスキーマが
-`src/domain/goal.ts` に確定した。いま進めているのは `.goals/automate-observe-and-verify.yaml` で、
-`unobserved` の記録と VERIFY のコードは書き終えている。
+**Phase 2。** Phase 0（`.goals/observe-returns-facts.yaml`）と
+Phase 1（`.goals/automate-observe-and-verify.yaml`）は完了し、Goal YAML のスキーマが
+`src/domain/goal.ts` に、観測キーのレジストリが `src/domain/fact-keys.ts` に確定した。
 
-Phase 1 でも起動は人間がやる。Goal YAML を丸ごと Claude Code に渡して実装させ、
+Phase 2 は ASSESS / DECIDE / ACT と永続化と CLI を含み、1つの Goal には大きすぎるので
+3つに割ってある。1本目の `.goals/assess-and-decide.yaml` は完了し、reconcile の1ティックが
+OBSERVE → VERIFY → ASSESS → DECIDE を回して Decision を返すところまで動く。
+残るのは ACT（Claude Code の headless 実行と worktree 隔離）と、
+永続化（SQLite、write-ahead、lease、状態機械）の2本になる。
+
+起動はまだ人間がやる。Goal YAML を丸ごと Claude Code に渡して実装させ、
 検証コマンドを回し、落ちたら結果を戻す。
 この往復が ACT → VERIFY → OBSERVE の手動版になる。
 
-この Goal は6本の Acceptance Criteria のうち、コマンドで検証する4本が通った。
-残る2本は CI の結果（`type: fact`）とレビュー承認（`type: human`）なので、
-テストを通しただけでは COMPLETED にならない。
-**コマンド以外の検証手段を持つこと**が Phase 1 の要点にあたる。
+1本目の Goal も、6本の Acceptance Criteria のうちコマンドで検証する4本を通しただけでは
+COMPLETED にならなかった。残る2本は CI の結果（`type: fact`）と、
+guard と LLM の境界が妥当かの確認（`type: human`）で、
+**設計の中核ほど検証コマンドに落ちない**というのが Phase 1 から続く要点にあたる。
 
 下の表は、controller が回す範囲を累積で示す。各行はそのフェーズを**完了した時点**の
 累積範囲で、数えているのは controller が回す段階であってコードの有無ではない。
@@ -77,7 +86,7 @@ mise run check    # サプライチェーンと workflow のチェック（basel
 Acceptance Criteria を先に書く進め方なので、Goal に着手した直後は `test` が落ちる。
 それは進め方に由来する想定内の状態であって、環境の不備ではない。
 
-`ent` コマンドはまだビルドできない。CLI の実装は Phase 2 で入る。
+`ent` コマンドはまだビルドできない。CLI の実装は Phase 2 の残りで入る。
 
 ## ディレクトリ
 
@@ -88,8 +97,13 @@ src/domain/fact.ts        Fact の型（VERIFIED / INFERRED の分離）と Unre
 src/domain/fact-keys.ts   観測キーのレジストリ。Goal YAML の fact 検証はここを参照する
 src/domain/goal.ts        Goal YAML の Zod スキーマ
 src/domain/goal-loader.ts Goal YAML の読み込みと、slug と goal.id の突き合わせ
+src/domain/gap.ts         ASSESS が出す Gap と Assessment の型
+src/domain/action.ts      DECIDE が選ぶ Action と Decision の型
 src/observe/              Observe と、依存する Port の定義
 src/verify/               Verify と、依存する Port の定義
+src/assess/               Assess。Acceptance Criteria と Fact を突き合わせて Gap を出す
+src/decide/               Decide と LlmPort の定義。guard と LLM の境界はここにある
+src/reconcile/            OBSERVE → VERIFY → ASSESS → DECIDE を1ティックにまとめる
 tests/                    Acceptance Criteria の実体
 ```
 
