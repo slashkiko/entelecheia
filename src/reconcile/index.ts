@@ -1,11 +1,11 @@
-import type { AssessDeps } from "../assess/index.js";
-import type { BudgetUsage, DecideDeps } from "../decide/index.js";
+import { type AssessDeps, assess } from "../assess/index.js";
+import { type BudgetUsage, type DecideDeps, decide } from "../decide/index.js";
 import type { Decision } from "../domain/action.js";
 import type { Fact, Unresolved } from "../domain/fact.js";
 import type { Assessment } from "../domain/gap.js";
 import type { Goal } from "../domain/goal.js";
-import type { ObserveDeps, ObserveTarget } from "../observe/index.js";
-import type { VerifyDeps } from "../verify/index.js";
+import { type ObserveDeps, type ObserveTarget, observe } from "../observe/index.js";
+import { type VerifyDeps, verify } from "../verify/index.js";
 
 export interface ReconcileDeps extends ObserveDeps, AssessDeps, DecideDeps, VerifyDeps {}
 
@@ -41,8 +41,43 @@ export interface ReconcileResult {
  *   古い観測で ASSESS すると、直したはずの Gap が残り続ける
  */
 export async function reconcile(
-  _target: ReconcileTarget,
-  _deps: ReconcileDeps,
+  target: ReconcileTarget,
+  deps: ReconcileDeps,
 ): Promise<ReconcileResult> {
-  throw new Error("not implemented");
+  const criteria = target.goal.acceptance_criteria;
+
+  // OBSERVE。Port が落ちても observe() が unobserved に積むので、ここで throw はしない。
+  const observed = await observe(target.observe, deps);
+  // 前ティックの Fact を土台にし、今ティックの観測で上書きする。
+  // 古い観測で ASSESS すると、直したはずの Gap が残り続ける。
+  const observedFacts = mergeFacts(target.carriedFacts, observed.facts);
+
+  // VERIFY。type: fact の criteria は観測結果を参照するので OBSERVE の後に回す。
+  const verified = await verify({ setup: target.goal.setup, criteria, facts: observedFacts }, deps);
+  const facts = mergeFacts(observedFacts, verified.facts);
+
+  // 「観測できなかった」と「検証できなかった」は DECIDE から見れば同じ「結論が出ていない対象」。
+  // 区別は Unresolved.key と reason が持っているので、ここでは並べるだけでよい。
+  const unresolved: Unresolved[] = [...observed.unobserved, ...verified.unverified];
+
+  const assessment = assess({ criteria, facts, unresolved }, deps);
+  const decision = await decide(
+    { criteria, assessment, unresolved, budget: target.goal.budget, usage: target.usage },
+    deps,
+  );
+
+  // 待ちは Decision として返し、次のティックに任せる。ここで sleep しない（design.md §3.6）。
+  return { facts, unresolved, assessment, decision };
+}
+
+/** 同じキーは後から来た方を採る。キーごとに1件だけ残す */
+function mergeFacts(base: readonly Fact[], incoming: readonly Fact[]): Fact[] {
+  const merged = new Map<string, Fact>();
+  for (const fact of base) {
+    merged.set(fact.key, fact);
+  }
+  for (const fact of incoming) {
+    merged.set(fact.key, fact);
+  }
+  return [...merged.values()];
 }

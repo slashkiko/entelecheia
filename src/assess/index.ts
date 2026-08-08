@@ -1,5 +1,6 @@
-import type { Fact, Unresolved } from "../domain/fact.js";
-import type { Assessment } from "../domain/gap.js";
+import { type Fact, type Unresolved, verifiedOnly } from "../domain/fact.js";
+import { criterionFactKey } from "../domain/fact-keys.js";
+import type { Assessment, Gap } from "../domain/gap.js";
 import type { AcceptanceCriterion } from "../domain/goal.js";
 
 /**
@@ -31,6 +32,56 @@ export interface AssessDeps {
  * - unresolved に残っている criteria は unknown。落ちたことにしない
  * - gaps が空であることと satisfied は一致する
  */
-export function assess(_target: AssessTarget, _deps: AssessDeps): Assessment {
-  throw new Error("not implemented");
+export function assess(target: AssessTarget, deps: AssessDeps): Assessment {
+  // 1 回だけ読む。同じ評価に含まれる Gap の時刻を揃える。
+  const assessedAt = deps.now().toISOString();
+
+  // 完了判定に使ってよいのは VERIFIED だけ（design.md §3.1）。
+  // ここで絞っておけば、以降の分岐で confidence を気にしなくて済む。
+  const verified = verifiedOnly(target.facts);
+  const gaps: Gap[] = [];
+
+  for (const criterion of target.criteria) {
+    const key = criterionFactKey(criterion.id);
+    const fact = verified.find((f) => f.key === key);
+
+    if (fact === undefined) {
+      // 「まだ確かめていない」を「落ちた」と同じにすると、
+      // DECIDE が VERIFY ではなく ACT を選んでしまう。
+      gaps.push({ criterionId: criterion.id, kind: "unknown", detail: unknownDetail(key, target) });
+      continue;
+    }
+
+    if (fact.value === true) {
+      continue;
+    }
+
+    gaps.push({
+      criterionId: criterion.id,
+      kind: "unmet",
+      detail: `${criterion.description} が満たされていない（${fact.evidence.source}: ${fact.evidence.detail}）`,
+    });
+  }
+
+  // gaps が空であることと satisfied は同値。§3.1 の完了判定という意味を残すため別に持つ。
+  return { assessedAt, gaps, satisfied: gaps.length === 0 };
+}
+
+/**
+ * なぜ unknown と判定したかを書く。人間と LLM の両方が読むので、
+ * 「Fact が無い」「確かめられなかった」「INFERRED しか無い」を区別して残す。
+ */
+function unknownDetail(key: string, target: AssessTarget): string {
+  const unresolved = target.unresolved.find((u) => u.key === key);
+  if (unresolved !== undefined) {
+    return `${key} の結論が出ていない（${unresolved.reason}: ${unresolved.detail}）`;
+  }
+
+  // verified に無くて facts にあるなら INFERRED しか無いということ。
+  // 落ちたのではなく、完了判定に使えないだけ（design.md §3.1）。
+  if (target.facts.some((f) => f.key === key)) {
+    return `${key} は INFERRED な Fact しか無い。完了判定には使えないので未検証として扱う`;
+  }
+
+  return `${key} を検証した Fact がまだ無い`;
 }
