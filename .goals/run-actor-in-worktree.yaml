@@ -1,0 +1,129 @@
+version: 1
+
+goal:
+  id: run-actor-in-worktree
+  name: 決めた行動を worktree 上の Actor 実行に変えられる
+  desired_state: |
+    DECIDE が返した ACT を、隔離された worktree 上での Claude Code の headless 実行に変える。
+    永続化と CLI は本 Goal に含めない。
+
+    ACT — src/act/index.ts
+      Decision を受け取り、action が ACT のときだけ Actor を起動する。
+      それ以外（COMPLETE / VERIFY / WAIT / ESCALATE / REPLAN）は副作用を出さず、
+      実行しなかった理由を返す。ACT 以外を無言で握り潰さない。
+
+      write-ahead を守る。副作用の前に Run(starting) を書き、結果が出てから
+      completed / failed / interrupted で確定する（design.md §3.6）。
+      worktree の作成も副作用なので、Run を書けなかったら worktree も作らない。
+      永続化そのものは別 Goal なので、RunRecorderPort の実装は呼び出し側が渡す。
+
+      worktree 隔離を必須にする。controller 本体を動かしているコードと
+      Agent が編集するコードを物理的に分ける（design.md §7）。
+      worktree を作れなかったら Actor を起動しない。
+      名前は goal.id から決め、ティックをまたいで同じ作業ツリーを使う。
+
+      policies.require_human_approval をそのまま Actor に渡す。
+      merge や force push を Agent に実行させない。
+
+      中断可能性を担保する。中断されたら Actor に伝播し、Run を interrupted で
+      確定してから return する。interrupted は failed とは別の状態にする。
+      前者は意図して止めたもので、次ティックで続きから進めてよい。
+
+      どの経路でも throw しない。Actor の失敗も Port の失敗も Run に残して返す。
+
+    Run — src/domain/run.ts
+      Actor を1回起動した記録。design.md §4.5 の Run テーブルに対応する。
+      Task と Plan は Plan の永続化が要るので本 Goal では作らない。
+
+      トークン使用量は Claude Max（OAuth）経由でも必ず記録する（design.md §7）。
+      生ログはファイルに置き、Run にはその参照だけを持つ（design.md §4.6）。
+
+repository:
+  provider: github
+  owner: slashkiko
+  name: entelecheia
+  default_branch: main
+
+setup:
+  - pnpm install --frozen-lockfile
+
+acceptance_criteria:
+  - id: ac-1
+    description: act の全テストが通る（着手時点では落ちているのが正しい）
+    verification: { type: command, run: mise run test }
+
+  - id: ac-2
+    description: 型チェックが通る（Run の状態と ActResult の union が崩れていない）
+    verification: { type: command, run: mise run typecheck }
+
+  - id: ac-3
+    description: lint と format が通る
+    verification: { type: command, run: mise run lint }
+
+  - id: ac-4
+    description: サプライチェーンと workflow のチェックが通る（baseline 由来）
+    verification: { type: command, run: mise run check }
+
+  - id: ac-5
+    description: 変更を載せた PR の CI が成功している
+    verification: { type: fact, key: github.ci.conclusion, equals: success }
+
+  - id: ac-6
+    description: write-ahead と中断可能性の実装が design.md §3.6 を満たすか、人間が確認する
+    verification:
+      type: human
+      prompt: |
+        src/act/index.ts を読み、次の2点を確認してください。
+
+        1. 副作用の前に必ず Run(starting) が書かれているか。
+           worktree の作成も副作用にあたります。Run を書く前に worktree を作ると、
+           任意の瞬間に kill されたときに「誰も知らない worktree」が残ります。
+
+        2. 中断されたときに Run が interrupted で確定するか。
+           failed に畳むと、次ティックが「Actor が失敗した」と読んで
+           再試行上限を無駄に消費します。逆に starting のまま残すと、
+           意図して止めたのかクラッシュしたのかを区別できません。
+
+context:
+  background: |
+    Phase 2 の2本目。1本目（.goals/assess-and-decide.yaml）で reconcile の1ティックが
+    OBSERVE → VERIFY → ASSESS → DECIDE を回して Decision を返すところまで動いた。
+    本 Goal はその Decision を実際の Actor 実行に変える側を作る。
+
+    1本目で reconcile を「決める」までで純粋に保てることが分かった（design.md §8）。
+    ACT はその外側に置き、reconcile 自体は変更しない。ACT を reconcile の中に入れると、
+    収束のテストが実際の Claude Code を起動しないと書けなくなる。
+
+    残る1本は永続化（SQLite、write-ahead、lease、状態機械、CLI）。
+    本 Goal で切る RunRecorderPort が、そこで SQLite に接続される。
+
+  constraints:
+    - 実装コードから外部ネットワークにアクセスしない。Actor も worktree も Port 経由で注入する
+    - テストから実際の Claude Code を起動しない。git worktree も作らない
+    - tests/ 配下は仕様なので変更しない。通らないなら実装側を直す
+    - src/reconcile/ は変更しない。ACT は reconcile の外側に置く
+    - src/domain/goal.ts と src/domain/fact-keys.ts は確定済み。変更が必要なら実装前に合意を取る
+    - docs/design.md の「3. 中核の設計判断」を勝手に変えない
+    - 依存パッケージを増やさない。Claude Agent SDK の導入は Port の実装を書く Goal で行う
+    - act は throw しない。失敗は Run の status として返す
+
+  references:
+    - title: 設計ドキュメント
+      path: docs/design.md
+    - title: Phase 2 の1本目
+      path: .goals/assess-and-decide.yaml
+
+policies:
+  require_human_approval:
+    - merge
+    - force_push
+    - push_to_default_branch
+    - deploy
+    - secret_access
+    - external_send
+
+budget:
+  max_actor_runs: 15
+  max_reconciles: 30
+  max_wall_clock: 4h
+  max_consecutive_failures: 3
