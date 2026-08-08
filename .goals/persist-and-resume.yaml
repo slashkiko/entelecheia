@@ -1,0 +1,174 @@
+version: 1
+
+goal:
+  id: persist-and-resume
+  name: 状態を永続化し、殺しても次のティックで続きから進められる
+  desired_state: |
+    ここまでの reconcile と act は、呼び出し側が状態を組み立てて渡す前提で書いてある。
+    その呼び出し側を作り、状態を SQLite に持たせる。Phase 2 の3本目で最後。
+
+    Store — src/store/
+      design.md §4.5 のテーブルを SQLite に持つ。WAL を有効にし、
+      「複数リーダー + 単一ライター」で動かす。
+
+      結論が出なかった対象も永続化する。unresolved を落とすと、§3.1 が避けたかった
+      「Fact の不在に畳まれる」問題が DB 層で再発する。
+
+      観測対象の PR / Issue 番号は goals に持たせる。Goal YAML は宣言部だけを持つので
+      置き場が無く、これまで呼び出し側が持つとしか決まっていなかった。
+
+      lease は期限付きの所有権にする。行ロックにするとプロセスがクラッシュしたときに
+      解放されない。UPDATE の更新行数が 0 なら他のワーカーが処理中で、今回のティックは
+      スキップする。
+
+    状態機械 — src/domain/goal-state.ts
+      design.md §4.4 の遷移を型にする。Decision の action から次の状態を決める。
+
+        COMPLETE                        → COMPLETED
+        WAIT(review_pending)            → WAITING_HUMAN
+        WAIT(それ以外)                   → WAITING_EXTERNAL
+        ESCALATE(budget_exhausted)      → BLOCKED
+        ESCALATE(それ以外)               → WAITING_HUMAN
+        ACT / VERIFY / REPLAN           → ACTIVE のまま
+
+      終端（COMPLETED / FAILED / ABANDONED）からは遷移しない。
+      ESCALATE は reconcile が選ぶ行動、BLOCKED は Goal の状態で、レイヤーが違う。
+
+    tick — src/controller/
+      1ティックの外側。lease を取り、reconcile を回し、結果を書き、ACT を実行し、
+      状態を遷移させる。reconcile と act 自体は変更しない。
+
+      順序は crash-only 設計に従う（design.md §3.6）。
+
+        1. lease を取る。取れなければ何もせず return する
+        2. starting のまま残った Run を interrupted で回収する
+        3. reconcile を回し、Fact と unresolved と Decision を書く
+        4. action が ACT なら act を呼ぶ。write-ahead は act 側が持つ
+        5. 状態を遷移させ、lease を解放する
+
+      2 を 3 より先に置く。前のプロセスが死んだまま残った Run を、
+      新しい観測より先に確定させないと、同じ Run が二重に数えられる。
+
+      SIGTERM を受けたら走行中の Actor に伝播し、Run を interrupted で確定し、
+      lease を解放して終了する。Ctrl+C が効かない状態を作らない。
+
+    CLI — src/cli.ts
+      ent start <slug>     Goal を登録して ACTIVE にする
+      ent run <slug>       1ティック回して終了する（--once は既定）
+      ent show <slug>      宣言部と実行時状態をマージして1枚で出す
+
+      常駐しない。cron から叩く構成なら常駐プロセスがそもそも存在しない。
+
+repository:
+  provider: github
+  owner: slashkiko
+  name: entelecheia
+  default_branch: main
+
+setup:
+  - pnpm install --frozen-lockfile
+
+acceptance_criteria:
+  - id: ac-1
+    description: store / goal-state / controller / cli の全テストが通る（着手時点では落ちているのが正しい）
+    verification: { type: command, run: mise run test }
+
+  - id: ac-2
+    description: 型チェックが通る（GoalStatus の遷移と Store の戻り値が崩れていない）
+    verification: { type: command, run: mise run typecheck }
+
+  - id: ac-3
+    description: lint と format が通る
+    verification: { type: command, run: mise run lint }
+
+  - id: ac-4
+    description: サプライチェーンと workflow のチェックが通る（baseline 由来）
+    verification: { type: command, run: mise run check }
+
+  - id: ac-5
+    description: 変更を載せた PR の CI が成功している
+    verification: { type: fact, key: github.ci.conclusion, equals: success }
+
+  - id: ac-6
+    description: 依存を増やさない判断（node:sqlite / node:util）が妥当か、人間が確認する
+    verification:
+      type: human
+      prompt: |
+        design.md §6 は DB に better-sqlite3 + Drizzle、CLI に citty を挙げています。
+        本 Goal ではどちらも入れず、Node 24 標準の node:sqlite と node:util の
+        parseArgs で書きました。新規依存はゼロです。
+
+        判断の根拠は3つです。
+
+        1. node:sqlite は Node 22.5 以降の標準モジュールで、mise.toml が Node 24 を
+           固定しているため常に使える。better-sqlite3 はネイティブモジュールなので、
+           単一バイナリ配布（design.md §6 の TypeScript の欠点）をさらに難しくする
+        2. Drizzle の価値はマイグレーションだが、スキーマは version: 1 を literal で
+           固定してあり（§10-6）、まだマイグレーションが無い。使わない機能のために
+           drizzle-orm と drizzle-kit を入れることになる
+        3. CLI のサブコマンドは start / run / show の3つで、citty の型の恩恵より
+           依存1つの方が重い
+
+        逆に確認してほしいのは次の2点です。
+
+        - node:sqlite の API が将来変わったときの移行コスト。標準モジュールだが
+          まだ新しく、better-sqlite3 ほど枯れていない
+        - CLI が増えたとき parseArgs で書き切れるか。サブコマンドが10個を超えると
+          citty に寄せた方がよくなる可能性がある
+
+        妥当でなければ design.md §6 のとおりに戻します。
+
+context:
+  background: |
+    Phase 2 の3本目で最後。1本目で reconcile が Decision を返すところまで、
+    2本目で ACT が Actor を worktree 上で走らせるところまで動いた。
+    どちらも状態を呼び出し側から注入される前提で書いてあり、その呼び出し側が無い。
+
+    本 Goal はその呼び出し側を作る。これが入ると Phase 2 の
+    「controller が OBSERVE / ASSESS / DECIDE / ACT / VERIFY を回す」が揃い、
+    reconcile ループが収束するかを実際に測れるようになる。
+
+    1本目と2本目は「zod と yaml で足りる」を制約に置いてきたが、本 Goal は
+    DB と CLI を含むので、design.md §6 の技術選定に触れる。結論としては
+    Node 24 標準の node:sqlite と node:util で書き、新規依存を増やさない。
+    妥当性は ac-6 で確認してもらう。
+
+    Port の実装（octokit / Claude Agent SDK）は本 Goal に含めない。
+    ent run が実際の GitHub と Claude Code を叩くのは次の Goal になる。
+    本 Goal の範囲では、コマンド実行とローカル repo の観測を node:child_process で
+    実装し、GitHub と Actor の Port は注入されたものを使う。
+
+  constraints:
+    - 新規の依存パッケージを増やさない。DB は node:sqlite、CLI は node:util の parseArgs
+    - 実装コードから外部ネットワークにアクセスしない。GitHub と Actor は Port 経由で注入する
+    - テストから実際の Claude Code を起動しない。git worktree も作らない
+    - "テストの SQLite は :memory: を使い、リポジトリにファイルを残さない"
+    - tests/ 配下は仕様なので変更しない。通らないなら実装側を直す
+    - src/reconcile/ と src/act/ は変更しない。tick はその外側に置く
+    - src/domain/goal.ts と src/domain/fact-keys.ts は確定済み。変更が必要なら実装前に合意を取る
+    - docs/design.md の「3. 中核の設計判断」を勝手に変えない
+    - 結論が出なかった対象（unresolved）を DB 層で落とさない
+    - lease は行ロックではなく期限付きの所有権にする
+
+  references:
+    - title: 設計ドキュメント
+      path: docs/design.md
+    - title: Phase 2 の1本目
+      path: .goals/assess-and-decide.yaml
+    - title: Phase 2 の2本目
+      path: .goals/run-actor-in-worktree.yaml
+
+policies:
+  require_human_approval:
+    - merge
+    - force_push
+    - push_to_default_branch
+    - deploy
+    - secret_access
+    - external_send
+
+budget:
+  max_actor_runs: 15
+  max_reconciles: 30
+  max_wall_clock: 4h
+  max_consecutive_failures: 3
