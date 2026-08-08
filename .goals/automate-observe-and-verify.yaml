@@ -1,0 +1,119 @@
+version: 1
+
+goal:
+  id: automate-observe-and-verify
+  name: OBSERVE と VERIFY を controller が実行できる
+  desired_state: |
+    reconcile の OBSERVE と VERIFY が、人間の介在なしに実行できる状態になっている。
+    ASSESS / DECIDE / ACT は引き続き人間が担う（design.md §8 の Phase 1）。
+
+    OBSERVE — src/observe/index.ts
+      Port が throw したケースを ObserveResult.unobserved に積む。
+      「対象が存在しない（Port が null を返した）」は観測できた結果なので何も積まない。
+      「取得できなかった（Port が throw した）」は reason: port_failed で積む。
+      この2つが Fact の不在に畳まれると、GitHub の障害を「PR は無い」と読んだ
+      ASSESS が誤った DECIDE をする。
+      Issue 観測（getIssue）と CI 実行中（conclusion: null）も観測結果として正しく扱う。
+
+    VERIFY — src/verify/index.ts
+      Acceptance Criteria を検証し、結果を criteria.<id>.passed という VERIFIED な Fact にする。
+      criteria が通っても落ちても Fact を作る。どちらも「検証できた」結果であるため。
+      検証できなかった criteria（人間の承認待ち、参照先 Fact の不在）は Fact にせず
+      VerifyResult.unverified に reason: pending で積む。落ちた criteria とは別物として扱う。
+
+      verification の3形式をすべて扱う。
+        command — コマンドを実行し、終了コードで判定する
+        fact    — OBSERVE が返した VERIFIED な Fact の値と比較する。
+                  INFERRED な Fact しか無いキーは不合格ではなく pending
+        human   — ApprovalPort に承認を問い合わせる。未承認なら pending
+
+      setup を criteria の前に1度だけ実行する。setup が失敗したら criteria を1件も
+      実行しない。環境が整っていない状態で出した不合格は捏造した不合格になる。
+
+    Goal YAML のスキーマ（src/domain/goal.ts）と観測キーのレジストリ
+    （src/domain/fact-keys.ts）は本 Goal の着手前に確定済み。これらは変更しない。
+
+repository:
+  provider: github
+  owner: slashkiko
+  name: entelecheia
+  default_branch: main
+
+setup:
+  - pnpm install --frozen-lockfile
+
+acceptance_criteria:
+  - id: ac-1
+    description: observe と verify の全テストが通る（着手時点では落ちているのが正しい）
+    verification: { type: command, run: mise run test }
+
+  - id: ac-2
+    description: 型チェックが通る（Fact / Goal の discriminated union が崩れていない）
+    verification: { type: command, run: mise run typecheck }
+
+  - id: ac-3
+    description: lint と format が通る
+    verification: { type: command, run: mise run lint }
+
+  - id: ac-4
+    description: サプライチェーンと workflow のチェックが通る（baseline 由来）
+    verification: { type: command, run: mise run check }
+
+  - id: ac-5
+    description: 変更を載せた PR の CI が成功している
+    verification: { type: fact, key: github.ci.conclusion, equals: success }
+
+  - id: ac-6
+    description: Port が GitHub 1実装に癒着していないことを人間が確認する
+    verification:
+      type: human
+      prompt: |
+        src/observe/index.ts と src/verify/index.ts の Port 定義を読み、
+        GitHub 固有の概念（reviewDecision の文字列、workflow run の構造、
+        REST のパス形など）が Port のシグネチャに漏れていないか確認してください。
+        漏れていれば design.md §3.3「1実装に癒着していないかだけレビューする」に反します。
+
+context:
+  background: |
+    Phase 0 で Goal YAML を手動リコンサイルに1周かけ、フォーマットの穴が4つ出た。
+    (1) Fact のキー命名規則が YAML にもコードにも無い
+    (2) evidence.source にリポジトリ識別子を書けない
+    (3) 観測失敗を記録する場所が無い
+    (4) 検証コマンドを実行可能にする手順の責任範囲が決まっていない
+
+    (1) は src/domain/fact-keys.ts のレジストリ、(2) は repository、
+    (4) は setup で解いた。(3) だけが型の変更を伴うため本 Goal に残っている。
+
+    Phase 1 の検証対象は「検証の自動化が実用に耐えるか」（design.md §8）。
+    VERIFY が Goal YAML の criteria を読んで結果を Fact にできれば、
+    人間が担うのは ASSESS / DECIDE / ACT だけになる。
+
+  constraints:
+    - 実装コードから外部ネットワークにアクセスしない。GitHub API も git もコマンド実行も Port 経由で注入する
+    - この制約は実装コードにかかる。setup と verification のコマンドには及ばない（ac-4 の pinact は GitHub API を叩く）
+    - tests/ 配下は仕様なので変更しない。通らないなら実装側を直す
+    - Fact の VERIFIED / INFERRED の分離と、VERIFIED への evidence 必須は変えない
+    - src/domain/goal.ts と src/domain/fact-keys.ts は確定済み。変更が必要なら実装前に合意を取る
+    - docs/design.md の「3. 中核の設計判断」を勝手に変えない
+    - 依存パッケージを増やさない。zod と yaml で足りる
+
+  references:
+    - title: 設計ドキュメント
+      path: docs/design.md
+    - title: Phase 0 で完了した Goal
+      path: .goals/observe-returns-facts.yaml
+
+policies:
+  require_human_approval:
+    - merge
+    - force_push
+    - push_to_default_branch
+    - deploy
+    - secret_access
+    - external_send
+
+budget:
+  max_actor_runs: 15
+  max_reconciles: 30
+  max_wall_clock: 4h
+  max_consecutive_failures: 3

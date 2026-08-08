@@ -95,7 +95,25 @@ Kubernetes と違い、ソフトウェアプロジェクトの現在状態は構
 「Agent がそう思っているだけ」と「実際に確認できた」を型で分離するのが目的。
 
 観測できなかった対象について Fact を作らないのも同じ理由。
-「PR が存在しない」ことと「PR を取得できなかった」ことは別物なので、後者は黙って落とす。
+「PR が存在しない」ことと「PR を取得できなかった」ことは別物なので、後者を Fact にはしない。
+
+ただし**落とすのは Fact であって記録ではない**。この2つがどちらも「Fact の不在」に
+畳まれると、ASSESS は GitHub の障害を「PR は無い」と読む。Phase 0 を1周して、
+そこから誤った DECIDE が出ることが分かった。そこで `ObserveResult` / `VerifyResult` は
+`facts` の外側に `unobserved` / `unverified` を持ち、結論が出なかった対象を
+理由付きで積む（`src/domain/fact.ts` の `Unresolved`）。
+
+- `port_failed` — Port が throw した。外部が落ちている可能性がある
+- `pending` — 手続きとしてまだ結論が出ていない。人間の承認待ち、参照先 Fact の不在など
+
+Port が `null` を返した場合はここに積まない。「存在しないと観測できた」からで、
+積むのは「確かめられなかった」ときだけになる。VERIFY 側も同じ構造で、
+「criteria が落ちた」（`criteria.<id>.passed: false` という Fact）と
+「criteria を検証できなかった」（`unverified`）を混ぜない。
+
+`pending` は1回の観測・検証の結果であって、Goal の状態ではない。
+§4.4 の `WAITING_HUMAN` / `WAITING_EXTERNAL` は、DECIDE が `unverified` を読んで
+選ぶ遷移先にあたる。同じ「待ち」でもレイヤーが違うので語を分けてある。
 
 ### 3.2 Acceptance Criteria に還元できない Goal は ACTIVE にしない
 
@@ -168,6 +186,10 @@ lease を解放して終了する。Ctrl+C が効かない状態は作らない�
 本書では **Provider** をインターフェース、**Adapter** をその1実装の意味で使う。
 `CodeProvider` に対する GitHub Adapter、という関係になる。
 
+**Port** はこれらとは別の粒度で、reconcile の各段階が依存する関数の口を指す。
+`observe()` が受け取る `CodeProviderPort` のように、Provider の全体ではなく
+その段階が実際に呼ぶメソッドだけを並べる。テストで差し替える単位でもある。
+
 | Provider | 論理リソース | MVP の実装 |
 |---|---|---|
 | ProjectStateProvider | `Project` / `Task` | 実装しない（インターフェースのみ） |
@@ -207,6 +229,17 @@ local     current_branch, HEAD sha, worktree に未コミット変更がある�
 CI の失敗内容まで取るのが要点。「CI が落ちた」だけでは次の ACT に渡す材料がない。
 失敗ジョブ名とログがあれば、そのまま Claude Code に渡して修正させられる。
 
+観測キーの実体は `src/domain/fact-keys.ts` に列挙してある。上の表は論理リソース側の
+呼び名で、Fact のキーは `github.pr.review_decision` のようなドット区切りの snake_case になる。
+Phase 0 では Port の camelCase フィールド名との対応表がどこにも無く、実装者が
+テストを読まないと当てられなかった。Goal YAML の `verification: { type: fact }` は
+このレジストリを参照するので、実在しないキーは Zod が弾く。
+
+上の表とレジストリは現時点で1対1ではない。Review 行（`author` / `submitted_at`）に
+対応するキーは無く、レビューの状態は `github.pr.review_decision` に集約されている。
+個別のレビューを観測する Port はまだ切っていない。表は取得したい対象、
+レジストリは実際に取得できる対象を表すので、実装するときはレジストリ側を正とする。
+
 ### 4.4 状態機械
 
 ```
@@ -243,15 +276,24 @@ Claude Max には5時間ローリングの使用量上限と週次上限があ�
 Goal          id, name, desired_state, status, policies, budget,
               lease_owner, lease_until, resume_after
 Criteria      goal_id, description, verification_spec, status, approved
-StateSnapshot goal_id, observed_at, facts[]
+StateSnapshot goal_id, observed_at, facts[], unobserved[]
 Fact          key, value, confidence, source, evidence
+Unresolved    snapshot_id, key, reason, detail   観測できなかった対象
 Plan          goal_id, version, created_reason
 Task          plan_id, intent, actor_type, status, worktree, attempts, artifacts
 Run           task_id, actor, command, exit_code, log_ref, tokens, cost, status
-Verification  criteria_id, result, evidence, verified_at
+Verification  criteria_id, result, reason, evidence, verified_at
 Event         type, source, payload, processed_at
 Decision      goal_id, reconcile_seq, observed_digest, chosen_action, rationale
 ```
+
+**結論が出なかった対象も永続化する。** ここを落とすと §3.1 が避けたかった
+「Fact の不在に畳まれる」問題が DB 層で再発し、ASSESS が取りこぼしを読めなくなる。
+観測側は `Unresolved` の行として、検証側は `Verification.result` を
+`passed` / `failed` / `unresolved` の3値にして持つ（`unresolved` のときだけ `reason` が埋まる）。
+
+`Verification` 行と `criteria.<id>.passed` の Fact は同じ結果の二重表現になるが、
+前者が criteria 単位の索引、後者が ASSESS に渡る観測値という役割分担にする。
 
 **`Decision` を必ず残す。** L5 の改善レイヤーは後回しにするが、
 そこに食わせる履歴の形式だけは最初から確定させておく。
@@ -279,6 +321,11 @@ UPDATE goals
 人間が編集する宣言部と、機械が書き換える実行時状態を混ぜない。
 同じファイルに入れると reconcile のたびに diff が出て、人間の編集履歴が埋もれる。
 `ent show <slug>` が両者をマージした1枚を標準出力に吐くので、参照時は1ファイルに見える。
+
+`.goals/<slug>.yaml` のスキーマは `src/domain/goal.ts` にある。slug は `goal.id` と
+一致させる（突き合わせは `src/domain/goal-loader.ts`）。ファイル名は Phase 番号ではなく
+Goal の内容から付ける。Phase は本書側の計画であって Goal の属性ではない。
+こうしておけば、Phase の区切りを変えてもファイル名は腐らない。
 
 Agent の全出力を DB の行に入れない。数十MBの文字列を SQLite に押し込むと
 クエリが遅くなり、壊れたときの復旧もつらい。ログはファイル、DB は索引とメタデータに徹する。
@@ -316,7 +363,7 @@ PRAGMA foreign_keys = ON;
 - OBSERVE（GitHub Issue / PR / CI、ローカル repo）
 - ASSESS（ギャップ算出）、PLAN / REPLAN、DECIDE
 - ACT（Claude Code の headless 実行、git worktree 隔離）
-- VERIFY（検証コマンド、CI ステータス、人間承認）
+- VERIFY（`command` = 検証コマンド、`fact` = CI ステータスなど観測値との照合、`human` = 人間承認）
 - 状態機械、ポーリング、write-ahead 永続化、予算とループ上限、使用量上限での自動待機
 - 通知と承認は GitHub の PR コメント + CLI 標準出力で完結させる
 
@@ -423,7 +470,11 @@ Claude Max（OAuth）経由の実行は課金が発生しないので `usd` の�
 各フェーズは「前のフェーズを自分で使って作る」構造になっている。
 Goal YAML の実用性は、机上ではなく自分で使うことでしか検証できない。
 
-| Phase | コード化済み（累積） | 人間が担う | 検証されること |
+各行はそのフェーズを**完了した時点**の累積範囲を示す。数えているのは
+controller が回す段階であって、コードの有無ではない。Phase 0 で `observe()` は
+書かれるが、呼ぶのは人間なので Phase 0 行は「なし」になる。
+
+| Phase | controller が回す範囲（累積） | 人間が担う | 検証されること |
 |---|---|---|---|
 | 0 | なし | 全段階 | Goal YAML のフォーマットが書けるか、Acceptance Criteria が検証コマンドに落ちるか |
 | 1 | OBSERVE / VERIFY | ASSESS / DECIDE / ACT と、全段階の起動 | 検証の自動化が実用に耐えるか |
@@ -434,7 +485,7 @@ Goal YAML の実用性は、机上ではなく自分で使うことでしか検�
 
 controller の実装は1行も要らない。型・スタブ・テストは Phase 0 の出発点として用意済み。
 
-1. `.goals/phase1-observe.yaml` を手で書く
+1. `.goals/observe-returns-facts.yaml` を手で書く
 2. Acceptance Criteria を実際の Vitest として書く。この時点でテストは全部落ちる
 3. Claude Code を起動して YAML を丸ごと渡し、実装させる
 4. 検証コマンドを回す。落ちたら結果を Claude Code に戻す
@@ -443,6 +494,16 @@ controller の実装は1行も要らない。型・スタブ・テストは Phas
 3〜4 のループが、そのまま ACT → VERIFY → OBSERVE の手動版になる。
 
 CLI（`ent` コマンド）の実装は Phase 2 で入る。Phase 0 と Phase 1 では `mise run` を直接叩く。
+
+### Phase 1 のやり方
+
+Phase 0 と同じ手順を、Goal `.goals/automate-observe-and-verify.yaml` に対して回す。
+違いは、Phase 0 の成果である Goal YAML スキーマ（`src/domain/goal.ts`）を使って
+Goal を書いている点と、その Goal が OBSERVE の取りこぼし記録と VERIFY 自身を作る点にある。
+
+Phase 1 が完了すると、Acceptance Criteria の検証は人間がコマンドを打つ代わりに
+`verify()` が回す。reconcile ループはまだ無いので、人間に残るのは
+ASSESS / DECIDE / ACT と、全段階の起動になる。
 
 ### Phase 3 の自己ホストには制約が要る
 
@@ -464,7 +525,8 @@ Goal の記述と承認を除いて、以下を人手の介入なしで1回通�
 - [ ] **実装** — reconcile ループが Claude Code を worktree 上で起動し、実装が行われる
 - [ ] **検証** — 検証コマンドが通り、Fact が VERIFIED で記録される
 - [ ] **PR と通知** — PR が作られ、進捗が PR コメントに書かれる
-- [ ] **完了判定** — レビュー承認をポーリングで検知し、全 criteria が VERIFIED / passing になって COMPLETED へ遷移する
+- [ ] **完了判定** — レビュー承認をポーリングで検知し、全 criteria が VERIFIED / passing になって COMPLETED へ遷移する。`unverified` が空でないうちは COMPLETED にしない
+- [ ] **取りこぼしが見える** — Port を人工的に落とし、観測できなかった対象が `unobserved` に残ること、ASSESS がそれを「対象なし」と読まないことを確認する
 - [ ] **いつでも殺せる** — Actor 実行中に `SIGTERM` を送って即座に終了し、再度 `ent run --once` を叩くと中断した Task を回収して続きから進む
 - [ ] **上限で寝て起きる** — 使用量上限を人工的に起こし、`WAITING_EXTERNAL(usage_limit)` でプロセスが終了すること、次ティックで自動再開することを確認する
 - [ ] **暴走しない** — 予算・reconcile 回数・ループ検知のいずれかが働くケースを人工的に作り、ESCALATE することを確認する
@@ -473,12 +535,21 @@ Goal の記述と承認を除いて、以下を人手の介入なしで1回通�
 
 ## 10. 未決事項
 
-設計上の大きな未確定は残っていない。以下は Phase 0 を回しながら埋める。
+設計上の大きな未確定は残っていない。以下は Phase を回しながら埋める。
 
-1. **Goal YAML のスキーマ詳細** — Phase 0 で確実に変わる前提。だから Phase 0 をコード0行にしてある
+1. ~~**Goal YAML のスキーマ詳細**~~ — Phase 0 を1周して確定した。`src/domain/goal.ts` を参照。
+   Phase 0 版からの差分は、`repository` と `setup` を足し、`verification` を
+   `command` の1形式から `command` / `fact` / `human` の3形式に広げ、
+   `adapters` / `goal.status` / `goal.source` を削ったこと。
+   `context.references` は `title` / `path` のみを許し、URL は受け付けない
 2. **上限値の初期チューニング** — `max_actor_runs` などの値は仮置き
 3. **使用量上限の検出方法** — Agent SDK が返すエラーの形状を実測する必要がある
 4. **Notion / Slack を足す時期** — 実環境ができてから
+5. **Goal YAML のスキーマ変更をどう移行するか** — 現状は `version: 1` を literal で固定してあり、
+   スキーマが変わったら既存 YAML を手で書き直すしかない。Goal が数本のうちは問題ないが、
+   マイグレーション方針は Phase 2 までに決める。あわせて `require_human_approval` の
+   閉じた enum に、§7 の自己ホスト用（`src/controller/**` と `.goals/**` への変更）を
+   どう載せるかも決める。現状はパス条件を表現できない
 
 ---
 

@@ -1,11 +1,8 @@
 version: 1
 
 goal:
-  id: phase1-observe
+  id: observe-returns-facts
   name: observe が現在状態を Fact として返せる
-  status: active
-  source:
-    type: manual
   desired_state: |
     entelecheia の Observe が、対象リポジトリの現在状態を Fact の配列として返せる。
 
@@ -18,28 +15,31 @@ goal:
     src/observe/index.ts の observe() を、注入された Port から Fact を組み立てる
     純粋なロジックとして完成させることだけを求める。
 
-adapters:
-  code: { type: github }
-  review: { type: github }
-  communication: { type: stdout }
-  ci: { type: github_actions }
+repository:
+  provider: github
+  owner: slashkiko
+  name: entelecheia
+  default_branch: main
+
+setup:
+  - pnpm install --frozen-lockfile
 
 acceptance_criteria:
   - id: ac-1
     description: observe の全テストが通る
-    verification: { type: command, run: "mise run test" }
+    verification: { type: command, run: mise run test }
 
   - id: ac-2
     description: 型チェックが通る（Fact の discriminated union が崩れていない）
-    verification: { type: command, run: "mise run typecheck" }
+    verification: { type: command, run: mise run typecheck }
 
   - id: ac-3
     description: lint と format が通る
-    verification: { type: command, run: "mise run lint" }
+    verification: { type: command, run: mise run lint }
 
   - id: ac-4
     description: サプライチェーンと workflow のチェックが通る（baseline 由来）
-    verification: { type: command, run: "mise run check" }
+    verification: { type: command, run: mise run check }
 
 context:
   background: |
@@ -48,8 +48,11 @@ context:
     人間が Claude Code に この YAML を丸ごと渡し、検証コマンドを回し、
     落ちたら結果を戻す。この往復が ACT → VERIFY → OBSERVE の手動版になる。
 
+    この Goal は Phase 0 で完了済み。スキーマ確定後に新形式へ書き直してある。
+
   constraints:
-    - 外部ネットワークにアクセスしない。GitHub API も git も Port 経由で注入する
+    - 実装コードから外部ネットワークにアクセスしない。GitHub API も git も Port 経由で注入する
+    - この制約は実装コードにかかる。setup と verification のコマンドには及ばない（ac-4 の pinact は GitHub API を叩く）
     - tests/observe.test.ts は仕様なので変更しない。通らないなら実装側を直す
     - src/domain/fact.ts の Fact の型（VERIFIED に evidence 必須）は変えない
     - 依存パッケージを増やさない。zod だけで足りる
@@ -62,12 +65,13 @@ policies:
   require_human_approval:
     - merge
     - force_push
+    - push_to_default_branch
     - deploy
     - secret_access
+    - external_send
 
 budget:
   max_actor_runs: 10
   max_reconciles: 20
   max_wall_clock: 2h
   max_consecutive_failures: 3
-  # usd は任意。API キー経由の実行にのみ適用される

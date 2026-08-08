@@ -46,11 +46,44 @@ export type Fact = z.infer<typeof factSchema>;
 export type VerifiedFact = z.infer<typeof verifiedFactSchema>;
 export type InferredFact = z.infer<typeof inferredFactSchema>;
 
+/**
+ * 観測・検証を試みたが結論を出せなかった対象。
+ *
+ * Fact を作らないだけだと「対象が存在しない」と「対象を確かめられなかった」が
+ * どちらも Fact の不在に畳まれ、GitHub の障害が「PR は無い」と読めてしまう。
+ * 捏造せずに区別を残すため、Fact の外側に理由付きで積む。
+ *
+ * ASSESS が出す「desired と observed の差分」とは別物なので Gap とは呼ばない。
+ */
+export const unresolvedSchema = z.object({
+  /** 結論が出れば入るはずだった観測キー */
+  key: z.string().min(1),
+  /**
+   * port_failed — Port が throw した。外部が落ちている可能性がある
+   * pending     — 手続きとしてまだ結論が出ていない。人間の承認待ち、参照先 Fact の不在など
+   */
+  reason: z.enum(["port_failed", "pending"]),
+  /** どの呼び出しが、なぜ結論に至らなかったか */
+  detail: z.string(),
+});
+export type Unresolved = z.infer<typeof unresolvedSchema>;
+
 export const observeResultSchema = z.object({
   observedAt: z.string().datetime(),
   facts: z.array(factSchema),
+  /** 観測を試みて結論が出なかったもの。空配列は「取りこぼしなし」を意味する */
+  unobserved: z.array(unresolvedSchema),
 });
 export type ObserveResult = z.infer<typeof observeResultSchema>;
+
+export const verifyResultSchema = z.object({
+  verifiedAt: z.string().datetime(),
+  /** criteria.<id>.passed。true/false のどちらも「検証できた」結果なので VERIFIED */
+  facts: z.array(factSchema),
+  /** 検証を試みて結論が出なかった criteria。落ちた criteria とは別物 */
+  unverified: z.array(unresolvedSchema),
+});
+export type VerifyResult = z.infer<typeof verifyResultSchema>;
 
 /**
  * COMPLETED 判定に使ってよい Fact だけを残す。
