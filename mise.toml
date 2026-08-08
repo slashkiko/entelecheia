@@ -1,0 +1,24 @@
+min_version = "2026.7.17"
+
+[settings]
+minimum_release_age = "7d"
+lockfile = true
+locked = true
+locked_verify_provenance = true
+gpg_verify = true
+
+[tools]
+"aqua:suzuki-shunsuke/pinact" = "4.1.1"
+"aqua:zizmorcore/zizmor" = "1.29.0"
+"aqua:rhysd/actionlint" = "1.7.12"
+"aqua:koalaman/shellcheck" = "0.11.0"
+"aqua:betterleaks/betterleaks" = "1.7.3"
+
+[tasks.check]
+description = "Run all supply-chain and workflow checks"
+run = """
+pinact run -fix=false -verify-comment -min-age 7
+actionlint
+zizmor .
+betterleaks git .
+"""

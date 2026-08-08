@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  cat <<'EOF'
+Usage: mise run repository-initialize [--configure-github]
+
+Without --configure-github this prints the exact GitHub settings that would be
+applied. With the flag, it updates only the repository inferred from the local
+git remote or gh context.
+EOF
+}
+
+configure=false
+case "${1:-}" in
+  "") ;;
+  --configure-github) configure=true ;;
+  -h|--help) usage; exit 0 ;;
+  *) usage >&2; exit 2 ;;
+esac
+
+repo="$(gh repo view --json nameWithOwner --jq .nameWithOwner)"
+cat <<EOF
+Target: $repo
+
+Planned GitHub settings:
+  - Actions enabled; full commit-SHA pinning required
+  - Default GITHUB_TOKEN permission: read
+  - Workflows cannot create or approve pull requests
+  - Delete head branches after merge
+
+Note: GitHub does not support an action-pattern allow-list for private
+repositories. This template instead combines SHA pinning, Pinact, zizmor, and
+CODEOWNERS. Re-evaluate the allow-list if the repository becomes public.
+EOF
+
+if [[ "$configure" != true ]]; then
+  exit 0
+fi
+
+gh api --method PUT "repos/$repo/actions/permissions" \
+  -F enabled=true \
+  -F allowed_actions=all \
+  -F sha_pinning_required=true
+gh api --method PUT "repos/$repo/actions/permissions/workflow" \
+  -f default_workflow_permissions=read \
+  -F can_approve_pull_request=false
+gh api --method PATCH "repos/$repo" -F delete_branch_on_merge=true >/dev/null
+
+echo "Applied. Current Actions policy:"
+gh api "repos/$repo/actions/permissions"
+echo "Current default workflow permissions:"
+gh api "repos/$repo/actions/permissions/workflow"

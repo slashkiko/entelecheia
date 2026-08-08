@@ -1,0 +1,16 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:best-practices"],
+  "enabledManagers": ["github-actions", "mise", "homebrew"],
+  "minimumReleaseAge": "7 days",
+  "automerge": false,
+  "platformAutomerge": false,
+  "dependencyDashboard": true,
+  "separateMajorMinor": true,
+  "packageRules": [
+    {
+      "matchManagers": ["github-actions"],
+      "groupName": "GitHub Actions"
+    }
+  ]
+}

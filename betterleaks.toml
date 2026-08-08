@@ -1,0 +1,2 @@
+# Keep this file intentionally empty until a reviewed false positive requires
+# a narrowly-scoped allow rule. Do not inherit broad upstream allowlists.

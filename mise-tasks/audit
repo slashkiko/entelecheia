@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+mise run check
+
+readonly osps_url="https://baseline.openssf.org/"
+readonly expected_version="$(awk -F '"' '/^osps_baseline[[:space:]]*=/{print $2; exit}' baseline-version.toml)"
+current_version="$(curl --fail --location --proto '=https' --tlsv1.2 --silent --show-error "$osps_url" | sed -nE '/Current version:/s/.*(v[0-9]+\.[0-9]+\.[0-9]+).*/\1/p' | head -n 1)"
+
+if [[ -z "$expected_version" || -z "$current_version" ]]; then
+  echo "Could not determine the reviewed or current OSPS Baseline version." >&2
+  exit 1
+fi
+
+if [[ "$expected_version" != "$current_version" ]]; then
+  echo "OSPS Baseline update detected: reviewed=$expected_version current=$current_version" >&2
+  echo "Review the upstream controls and update docs/security-baseline.md before changing baseline-version.toml." >&2
+  exit 1
+fi
+
+printf 'OSPS Baseline is current: %s\n' "$current_version"
