@@ -44,19 +44,19 @@ acceptance_criteria:
 context:
   background: |
     Phase 0 の目的は、Goal YAML のフォーマットが実務で使えるかを検証すること。
-    controller はまだ存在しないので、OBSERVE / ASSESS / DECIDE は人間がやる。
+    controller はまだ存在しないので、OBSERVE / ASSESS / DECIDE / ACT / VERIFY はすべて人間がやる。
     人間が Claude Code に この YAML を丸ごと渡し、検証コマンドを回し、
     落ちたら結果を戻す。この往復が ACT → VERIFY → OBSERVE の手動版になる。
 
   constraints:
     - 外部ネットワークにアクセスしない。GitHub API も git も Port 経由で注入する
-    - tests/observe.test.ts は仕様なので変更しない。通らないなら実装side を直す
+    - tests/observe.test.ts は仕様なので変更しない。通らないなら実装側を直す
     - src/domain/fact.ts の Fact の型（VERIFIED に evidence 必須）は変えない
     - 依存パッケージを増やさない。zod だけで足りる
 
   references:
-    - title: 要件定義
-      note: Claude の Artifact（作成者のみ閲覧できるため、公開時にリンクを外した）
+    - title: 設計ドキュメント
+      path: docs/design.md
 
 policies:
   require_human_approval:

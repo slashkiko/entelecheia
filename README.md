@@ -8,7 +8,8 @@
 エンテレケイア（ἐντελέχεια）はアリストテレスの用語で、「可能態が現実態に至った状態」を指す。
 このツールが Goal に対して実現しようとする状態そのものを指す言葉にあたる。CLI 名は `ent`。
 
-要件定義: Claude の Artifact（作成者のみ閲覧できるため、公開時にリンクを外した）
+設計の全体像・判断の根拠・Phase 計画は [`docs/design.md`](docs/design.md) にある。
+このリポジトリで作業を始めるときは、まずそれを読む。
 
 ## 設計の要点
 
@@ -58,7 +59,7 @@ mise run check    # サプライチェーンと workflow のチェック（basel
 ```
 
 Phase 0 では `test` が落ちるため `verify` も失敗する。それが現在地であって、環境の不備ではない。
-`typecheck` / `lint` / `check` は単体で通る。
+`typecheck` / `lint` / `check` は単体で通る。同じ理由で、main の CI（`.github/workflows/verify.yml`）も赤い。
 
 `ent` コマンドはまだビルドできない。CLI の実装は Phase 2 で入る。
 
