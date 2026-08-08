@@ -243,8 +243,8 @@ Phase 0 では Port の camelCase フィールド名との対応表がどこに�
 **`github.pr.review_decision` を人間の承認の観測源にはできない。** GitHub は自分が作った
 PR に Approve を押させないので、controller が Goal の所有者と同じアカウントで PR を作る限り
 `reviewDecision` は `APPROVED` にならない。これを `type: human` の判定に使うと reconcile は
-`WAIT(review_pending)` から抜けられず、§9 の「レビュー承認をポーリングで検知して COMPLETED へ
-遷移する」が通らない。Phase 2-1 の Goal で実際に踏んだ。`ApprovalPort` の実装は
+`WAIT(review_pending)` から抜けられず、§9 の完了判定に到達できない。
+`.goals/assess-and-decide.yaml` の Goal で実際に踏んだ。`ApprovalPort` の実装は
 review_decision 以外の signal を使う（§10）。
 
 ### 4.4 状態機械
@@ -372,7 +372,8 @@ PRAGMA foreign_keys = ON;
 - ACT（Claude Code の headless 実行、git worktree 隔離）
 - VERIFY（`command` = 検証コマンド、`fact` = CI ステータスなど観測値との照合、`human` = 人間承認）
 - 状態機械、ポーリング、write-ahead 永続化、予算とループ上限、使用量上限での自動待機
-- 通知と承認は GitHub の PR コメント + CLI 標準出力で完結させる
+- 通知と承認は GitHub の PR コメント + CLI 標準出力で完結させる。
+  このどちらを承認の signal にするかは未決（§10）
 
 ### 入れない
 
@@ -530,7 +531,8 @@ ACT と永続化は収束の判定そのものには要らない。
 
 1本目を終えて分かったのは、reconcile を「決める」までで純粋に保てることだった。
 ACT の実行と write-ahead は reconcile の外側に置ける。reconcile が Port の注入だけで動くので、
-収束のテストが実際の Claude Code も DB も使わずに書ける。
+収束のテストが実際の Claude Code も DB も使わずに書ける。ここでの reconcile は
+`src/reconcile/` の決定コアを指す。lease の取得と write-ahead（§3.6）はその外側のシェルが持つ。
 
 ### Phase 3 の自己ホストには制約が要る
 
@@ -546,13 +548,13 @@ ACT の実行と write-ahead は reconcile の外側に置ける。reconcile が
 ## 9. MVP 完了条件
 
 Goal の記述と承認を除いて、以下を人手の介入なしで1回通せたら MVP 完了とする。
-自己ホストが通れば他リポジトリでも通るが、逆は言えない。
+自己ホストが通れば他の GitHub リポジトリでも通るが、逆は言えない。
 
 - [ ] **Goal の登録** — このツール自身への機能追加を `.goals/*.yaml` に書き、Zod 検証を通して `ent start` で ACTIVE になる
 - [ ] **実装** — reconcile ループが Claude Code を worktree 上で起動し、実装が行われる
 - [ ] **検証** — 検証コマンドが通り、Fact が VERIFIED で記録される
 - [ ] **PR と通知** — PR が作られ、進捗が PR コメントに書かれる
-- [ ] **完了判定** — レビュー承認をポーリングで検知し、全 criteria が VERIFIED / passing になって COMPLETED へ遷移する。`unverified` が空でないうちは COMPLETED にしない
+- [ ] **完了判定** — 人間の承認を検知し（signal は §10）、全 criteria の `Verification.result` が `passed` になって COMPLETED へ遷移する。`unverified` が空でないうちは COMPLETED にしない
 - [ ] **取りこぼしが見える** — Port を人工的に落とし、観測できなかった対象が `unobserved` に残ること、ASSESS がそれを「対象なし」と読まないことを確認する
 - [ ] **いつでも殺せる** — Actor 実行中に `SIGTERM` を送って即座に終了し、再度 `ent run --once` を叩くと中断した Task を回収して続きから進む
 - [ ] **上限で寝て起きる** — 使用量上限を人工的に起こし、`WAITING_EXTERNAL(usage_limit)` でプロセスが終了すること、次ティックで自動再開することを確認する
@@ -583,7 +585,7 @@ Goal の記述と承認を除いて、以下を人手の介入なしで1回通�
 5. **Notion / Slack を足す時期** — 実環境ができてから
 6. **Goal YAML のスキーマ変更をどう移行するか** — 現状は `version: 1` を literal で固定してあり、
    スキーマが変わったら既存 YAML を手で書き直すしかない。Goal が数本のうちは問題ないが、
-   マイグレーション方針は Phase 2 までに決める。あわせて `require_human_approval` の
+   マイグレーション方針は永続化の Goal までに決める。あわせて `require_human_approval` の
    閉じた enum に、§7 の自己ホスト用（`src/controller/**` と `.goals/**` への変更）を
    どう載せるかも決める。現状はパス条件を表現できない
 
