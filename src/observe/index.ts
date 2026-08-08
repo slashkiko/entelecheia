@@ -191,5 +191,7 @@ export async function observe(target: ObserveTarget, deps: ObserveDeps): Promise
     }
   }
 
-  return { observedAt, facts };
+  // TODO(Phase 1): Port が throw したケースを unobserved に積む。
+  // observed() が例外を握り潰しているため、いまは常に空になる。
+  return { observedAt, facts, unobserved: [] };
 }

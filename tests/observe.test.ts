@@ -140,4 +140,121 @@ describe("observe", () => {
     expect(() => observeResultSchema.parse(result)).not.toThrow();
     expect(result.observedAt).toBe(NOW.toISOString());
   });
+
+  it("Issue を観測して Fact にする", async () => {
+    // Phase 0 では issueNumber が全テストで null だったため、getIssue の経路は
+    // 実装しても未実装でも AC が緑になっていた。
+    const result = await observe(
+      { prNumber: null, issueNumber: 7 },
+      deps({
+        code: {
+          getIssue: async () => ({
+            number: 7,
+            state: "open",
+            labels: ["enhancement", "phase-1"],
+            linkedPr: 12,
+          }),
+        },
+      }),
+    );
+
+    expect(byKey(result.facts, "github.issue.state")?.value).toBe("open");
+    expect(byKey(result.facts, "github.issue.linked_pr")?.value).toBe(12);
+    expect(JSON.stringify(byKey(result.facts, "github.issue.labels")?.value)).toContain(
+      "enhancement",
+    );
+    expect(result.unobserved).toEqual([]);
+  });
+
+  it("CI 実行中は conclusion の Fact を作らない", async () => {
+    // 運用では最頻出の状態だが、Phase 0 のテストは completed かつ failure しか見ていなかった。
+    const result = await observe(
+      { prNumber: 12, issueNumber: null },
+      deps({
+        code: {
+          getPullRequest: async () => ({
+            number: 12,
+            state: "open",
+            mergeable: null,
+            headSha: "f".repeat(40),
+            reviewDecision: null,
+            requestedReviewers: [],
+          }),
+          getLatestCiRun: async () => ({
+            headSha: "f".repeat(40),
+            status: "in_progress",
+            conclusion: null,
+            failedJobs: [],
+          }),
+        },
+      }),
+    );
+
+    expect(byKey(result.facts, "github.ci.status")?.value).toBe("in_progress");
+    expect(byKey(result.facts, "github.ci.conclusion")).toBeUndefined();
+    // 「まだ結論が出ていない」は観測できた状態なので、未観測としては積まない
+    expect(result.unobserved).toEqual([]);
+  });
+
+  it("Port が throw しても observe 全体は落ちず、他方の観測は残る", async () => {
+    const result = await observe(
+      { prNumber: 12, issueNumber: null },
+      deps({
+        code: {
+          getPullRequest: async () => {
+            throw new Error("502 Bad Gateway");
+          },
+        },
+      }),
+    );
+
+    expect(byKey(result.facts, "local.branch")).toBeDefined();
+    expect(byKey(result.facts, "github.pr.state")).toBeUndefined();
+  });
+
+  it("取得に失敗した対象は unobserved に理由付きで残る", async () => {
+    // 「PR が存在しない」と「PR を取得できなかった」を Fact の不在に畳むと、
+    // GitHub の障害を「PR は無い」と読んだ ASSESS が誤った DECIDE をする。
+    const result = await observe(
+      { prNumber: 12, issueNumber: null },
+      deps({
+        code: {
+          getPullRequest: async () => {
+            throw new Error("502 Bad Gateway");
+          },
+        },
+      }),
+    );
+
+    const failed = result.unobserved.find((u) => u.key.startsWith("github.pr"));
+    expect(failed).toBeDefined();
+    expect(failed?.reason).toBe("port_failed");
+    expect(failed?.detail).toContain("502");
+  });
+
+  it("対象が存在しないだけなら unobserved に積まない", async () => {
+    // Port が null を返すのは「存在しないと観測できた」なので、取得失敗とは区別する。
+    const result = await observe({ prNumber: 99, issueNumber: null }, deps({}));
+
+    expect(byKey(result.facts, "github.pr.state")).toBeUndefined();
+    expect(result.unobserved).toEqual([]);
+  });
+
+  it("ローカル repo の観測に失敗しても unobserved に残る", async () => {
+    const result = await observe(
+      { prNumber: null, issueNumber: null },
+      deps({
+        local: {
+          snapshot: async () => {
+            throw new Error("not a git repository");
+          },
+        },
+      }),
+    );
+
+    expect(result.facts).toEqual([]);
+    const failed = result.unobserved.find((u) => u.key.startsWith("local"));
+    expect(failed?.reason).toBe("port_failed");
+    expect(failed?.detail).toContain("not a git repository");
+  });
 });
