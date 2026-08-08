@@ -1,3 +1,9 @@
 .mise/
 .env
 .DS_Store
+
+node_modules/
+dist/
+
+# controller が書く実行時状態。宣言部（.goals/*.yaml）だけを Git 管理する
+.goals/.state/

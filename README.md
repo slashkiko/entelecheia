@@ -1,48 +1,81 @@
-# repository-baseline
+# entelecheia
 
-A GitHub template repository for a small, review-first supply-chain security
-baseline. It is intentionally independent of dotfiles and contains no machine
-configuration or credentials.
+> Declare the end state; the controller converges to it.
 
-## Use
+プロジェクトの完了状態（Desired State）を宣言すると、現在状態を観測し、ギャップを埋めるまで
+Claude Code を起動し続ける controller。
 
-Create a repository from this template, then run:
+エンテレケイア（ἐντελέχεια）はアリストテレスの用語で、「可能態が現実態に至った状態」を指す。
+このツールが Goal に与えるものそのものにあたる。CLI 名は `ent`。
+
+要件定義: Claude の Artifact（作成者のみ閲覧できるため、公開時にリンクを外した）
+
+## 設計の要点
+
+| | |
+|---|---|
+| 宣言と収束の分離 | 人間が書くのは Desired State と Acceptance Criteria だけ。タスク分解も Actor 選択も controller が決める |
+| VERIFIED のみで完了判定 | Fact に信頼度を持たせ、LLM の推論（INFERRED）は Plan の材料にはするが完了判定には使わない |
+| 検証に還元できない Goal は受け付けない | Acceptance Criteria に落とせないものは ACTIVE にしない |
+| 待機はプロセスではなく状態 | reconcile はどのティックも有限時間で return する。常駐して sleep しない |
+| write-ahead | 副作用の前に意図を DB へ書く。任意の瞬間に kill されても次ティックで回収できる |
+
+## 現在地
+
+**Phase 0。** controller はまだ存在せず、OBSERVE / ASSESS / DECIDE は人間がやる。
+`.goals/phase1-observe.yaml` を Claude Code に丸ごと渡し、検証コマンドを回し、
+落ちたら結果を戻す。この往復が ACT → VERIFY → OBSERVE の手動版になる。
+
+この時点では `mise run test` は 6 件すべて落ちる。それが正しい状態。
+
+| Phase | 自動化される部分 | 人間がやる部分 |
+|---|---|---|
+| 0 | なし | Observe・Assess・Decide すべて |
+| 1 | Observe・Verify | Assess・Decide |
+| 2 | Decide・Act | 承認のみ |
+| 3 | 全部（自己ホスト） | Goal を書くだけ |
+
+## セットアップ
 
 ```sh
 mise install --locked
-mise run check
-mise run repository-initialize
+pnpm install --frozen-lockfile
 ```
 
-Enable Renovate as a GitHub App only for repositories that should receive
-dependency update pull requests. Do not enable automatic merge.
+## 検証
 
-## Controls
+```sh
+mise run verify   # typecheck → lint → test
+mise run check    # サプライチェーンと workflow のチェック（baseline 由来）
+```
 
-- mise locks the security-tool supply chain and waits seven days before using a
-  new release.
-- Pinact requires full commit-SHA pinning for GitHub Actions.
-- actionlint and zizmor check workflow syntax and security properties.
-- Betterleaks scans the full Git history.
-- The weekly audit detects an OSPS Baseline version change without writing to
-  GitHub or changing configuration.
+## ディレクトリ
 
-The weekly workflow uses the third-party `jdx/mise-action`; configure the
-repository Actions allow-list to permit `actions/*`, `github/dependency-review-action`,
-and `jdx/mise-action` by full commit SHA.
+```
+.goals/<slug>.yaml            人間が編集。Git 管理。宣言部のみ
+.goals/.state/                controller が書く実行時状態。gitignore
+src/domain/fact.ts            Fact の型（VERIFIED / INFERRED の分離）
+src/observe/                  Observe と、依存する Port の定義
+tests/                        Acceptance Criteria の実体
+```
 
-Run `mise run repository-initialize --configure-github` only after reviewing
-its dry-run output. For a private repository, GitHub cannot use a pattern-based
-Actions allow-list; the initializer requires full SHA pinning instead.
+## セキュリティベースライン
 
-For local use, enable mise's `paranoid = true` in your global mise
-configuration. mise intentionally ignores this setting when it appears in a
-project configuration file.
+このリポジトリは [`slashkiko/repository-baseline`](https://github.com/slashkiko/repository-baseline)
+から作成した。以下は baseline 由来の統制で、外す場合は理由を残すこと。
 
-## Updating the baseline
+- mise がセキュリティツールのサプライチェーンを固定し、新しいリリースは 7 日待ってから使う
+- Pinact が GitHub Actions の完全な commit SHA ピン留めを要求する
+- actionlint と zizmor が workflow の構文とセキュリティ特性を検査する
+- Betterleaks が Git 履歴全体をスキャンする
+- 週次監査が OSPS Baseline のバージョン変更を検出する
 
-Renovate creates update pull requests for tools and pinned Actions. Review one
-update category at a time and merge only after the required checks and
-CODEOWNERS review pass. When the weekly audit detects an OSPS version change,
-review the upstream change, update `baseline-version.toml` and
-`docs/security-baseline.md` in the same pull request.
+初期化は dry-run を確認してから実行する。
+
+```sh
+mise run repository-initialize
+mise run repository-initialize --configure-github
+```
+
+詳細は [`docs/security-baseline.md`](docs/security-baseline.md) と
+[`SECURITY.md`](SECURITY.md) を参照。

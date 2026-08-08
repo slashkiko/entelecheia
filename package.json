@@ -1,0 +1,20 @@
+{
+  "name": "entelecheia",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Declare the end state; the controller converges to it.",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "bin": {
+    "ent": "./dist/cli.js"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check .",
+    "lint:fix": "biome check --write .",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  }
+}

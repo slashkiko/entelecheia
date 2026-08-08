@@ -1,0 +1,73 @@
+version: 1
+
+goal:
+  id: phase1-observe
+  name: observe が現在状態を Fact として返せる
+  status: active
+  source:
+    type: manual
+  desired_state: |
+    entelecheia の Observe が、対象リポジトリの現在状態を Fact の配列として返せる。
+
+    Fact は VERIFIED と INFERRED を型で分離し、VERIFIED には必ず evidence が付く。
+    観測できなかった対象について Fact を捏造しない。
+    CI が失敗しているときは、失敗ジョブ名とログ URL まで Fact に含める
+    （「CI が落ちた」だけでは次の ACT に渡す材料がないため）。
+
+    この Goal では GitHub API と git の実装は要求しない。
+    src/observe/index.ts の observe() を、注入された Port から Fact を組み立てる
+    純粋なロジックとして完成させることだけを求める。
+
+adapters:
+  code: { type: github }
+  review: { type: github }
+  communication: { type: stdout }
+  ci: { type: github_actions }
+
+acceptance_criteria:
+  - id: ac-1
+    description: observe の全テストが通る
+    verification: { type: command, run: "mise run test" }
+
+  - id: ac-2
+    description: 型チェックが通る（Fact の discriminated union が崩れていない）
+    verification: { type: command, run: "mise run typecheck" }
+
+  - id: ac-3
+    description: lint と format が通る
+    verification: { type: command, run: "mise run lint" }
+
+  - id: ac-4
+    description: サプライチェーンと workflow のチェックが通る（baseline 由来）
+    verification: { type: command, run: "mise run check" }
+
+context:
+  background: |
+    Phase 0 の目的は、Goal YAML のフォーマットが実務で使えるかを検証すること。
+    controller はまだ存在しないので、OBSERVE / ASSESS / DECIDE は人間がやる。
+    人間が Claude Code に この YAML を丸ごと渡し、検証コマンドを回し、
+    落ちたら結果を戻す。この往復が ACT → VERIFY → OBSERVE の手動版になる。
+
+  constraints:
+    - 外部ネットワークにアクセスしない。GitHub API も git も Port 経由で注入する
+    - tests/observe.test.ts は仕様なので変更しない。通らないなら実装side を直す
+    - src/domain/fact.ts の Fact の型（VERIFIED に evidence 必須）は変えない
+    - 依存パッケージを増やさない。zod だけで足りる
+
+  references:
+    - title: 要件定義
+      note: Claude の Artifact（作成者のみ閲覧できるため、公開時にリンクを外した）
+
+policies:
+  require_human_approval:
+    - merge
+    - force_push
+    - deploy
+    - secret_access
+
+budget:
+  max_actor_runs: 10
+  max_reconciles: 20
+  max_wall_clock: 2h
+  max_consecutive_failures: 3
+  # usd は任意。API キー経由の実行にのみ適用される

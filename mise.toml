@@ -13,6 +13,8 @@ gpg_verify = true
 "aqua:rhysd/actionlint" = "1.7.12"
 "aqua:koalaman/shellcheck" = "0.11.0"
 "aqua:betterleaks/betterleaks" = "1.7.3"
+node = "24.18.1"
+pnpm = "10.20.0"
 
 [tasks.check]
 description = "Run all supply-chain and workflow checks"
@@ -22,3 +24,19 @@ actionlint
 zizmor .
 betterleaks git .
 """
+
+[tasks.typecheck]
+description = "Type-check the TypeScript sources"
+run = "pnpm exec tsc --noEmit"
+
+[tasks.lint]
+description = "Lint and format-check with Biome"
+run = "pnpm exec biome check ."
+
+[tasks.test]
+description = "Run the Acceptance Criteria (Vitest)"
+run = "pnpm exec vitest run"
+
+[tasks.verify]
+description = "Everything a Goal's Acceptance Criteria may depend on"
+depends = ["typecheck", "lint", "test"]

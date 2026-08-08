@@ -19,3 +19,5 @@ jobs:
         with:
           install: true
       - run: mise run check
+      - run: pnpm install --frozen-lockfile
+      - run: mise run verify
