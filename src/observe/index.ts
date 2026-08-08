@@ -1,4 +1,4 @@
-import type { Fact, ObserveResult, VerifiedFact } from "../domain/fact.js";
+import type { Fact, ObserveResult, Unresolved, VerifiedFact } from "../domain/fact.js";
 
 /**
  * Observe が依存する外部世界。実装ではなくインターフェースとして切っておく。
@@ -79,18 +79,28 @@ function verified(
 }
 
 /**
- * 観測の失敗を「観測できなかった」に畳む。
+ * Port の読み取り結果。「値が取れた」と「取れなかった」を型で分ける。
  *
- * 「対象が存在しない（null）」と「取得に失敗した（throw）」を Fact の有無としては同じに扱う。
- * どちらも Fact を作らないのが正しく、捏造しないための最後の砦になる。
- * 片方の Port が落ちても他方の観測は残したいので、observe() 全体を失敗させない。
+ * 「対象が存在しない（Port が null を返した）」と「取得に失敗した（throw した）」は
+ * どちらも Fact を作らない点では同じだが、前者は観測できた結果で後者は観測の失敗にあたる。
+ * 両方を `null` に畳むと、GitHub の障害を「PR は無い」と読んだ ASSESS が誤った DECIDE をする。
  */
-async function observed<T>(read: () => Promise<T>): Promise<T | null> {
+type Read<T> = { ok: true; value: T } | { ok: false; error: unknown };
+
+/**
+ * Port の例外を握り、observe() 全体を失敗させない。
+ * 片方の Port が落ちても他方の観測は残したいため。
+ */
+async function observed<T>(read: () => Promise<T>): Promise<Read<T>> {
   try {
-    return await read();
-  } catch {
-    return null;
+    return { ok: true, value: await read() };
+  } catch (error) {
+    return { ok: false, error };
   }
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 /**
@@ -98,7 +108,9 @@ async function observed<T>(read: () => Promise<T>): Promise<T | null> {
  *
  * 満たすべき性質:
  * - GitHub API と git から得た値は必ず VERIFIED、evidence 付き
- * - 観測できなかった対象について Fact を捏造しない（黙って落とす）
+ * - 観測できなかった対象について Fact を捏造しない
+ * - ただし取得に失敗した対象は unobserved に理由付きで残す。
+ *   「対象が無い」と「対象を確かめられなかった」を Fact の不在に畳まない
  * - CI が失敗しているときは、失敗ジョブ名とログ URL まで Fact に含める
  *   （「CI が落ちた」だけでは次の ACT に渡す材料がないため）
  */
@@ -107,24 +119,45 @@ export async function observe(target: ObserveTarget, deps: ObserveDeps): Promise
   // あとから「どのティックで見た値か」を突き合わせられるようにする。
   const observedAt = deps.now().toISOString();
   const facts: Fact[] = [];
+  const unobserved: Unresolved[] = [];
 
   const push = (key: string, value: unknown, source: string, detail: string): void => {
     facts.push(verified(key, value, observedAt, source, detail));
   };
 
-  const local = await observed(() => deps.local.snapshot());
-  if (local !== null) {
-    const source = "LocalRepoPort.snapshot()";
-    push("local.branch", local.branch, source, `branch=${local.branch}`);
-    push("local.head_sha", local.headSha, source, `head_sha=${local.headSha}`);
-    push("local.dirty", local.dirty, source, `dirty=${local.dirty}`);
+  /**
+   * 読み取りに失敗した観測を積む。
+   *
+   * key は個別の観測キーではなく、その読み取りが埋めるはずだったキーの接頭辞にする。
+   * 1 回の Port 呼び出しが複数のキーを埋めるので、どれが欠けたかは列挙できないため。
+   */
+  const failed = (keyPrefix: string, source: string, error: unknown): void => {
+    unobserved.push({
+      key: keyPrefix,
+      reason: "port_failed",
+      detail: `${source}: ${errorMessage(error)}`,
+    });
+  };
+
+  const localSource = "LocalRepoPort.snapshot()";
+  const localRead = await observed(() => deps.local.snapshot());
+  if (localRead.ok) {
+    const local = localRead.value;
+    push("local.branch", local.branch, localSource, `branch=${local.branch}`);
+    push("local.head_sha", local.headSha, localSource, `head_sha=${local.headSha}`);
+    push("local.dirty", local.dirty, localSource, `dirty=${local.dirty}`);
+  } else {
+    failed("local", localSource, localRead.error);
   }
 
   const prNumber = target.prNumber;
   if (prNumber !== null) {
     const prSource = `CodeProviderPort.getPullRequest(${prNumber})`;
-    const pr = await observed(() => deps.code.getPullRequest(prNumber));
-    if (pr !== null) {
+    const prRead = await observed(() => deps.code.getPullRequest(prNumber));
+    if (!prRead.ok) {
+      failed("github.pr", prSource, prRead.error);
+    } else if (prRead.value !== null) {
+      const pr = prRead.value;
       push("github.pr.number", pr.number, prSource, `number=${pr.number}`);
       push("github.pr.state", pr.state, prSource, `state=${pr.state}`);
       push("github.pr.head_sha", pr.headSha, prSource, `head_sha=${pr.headSha}`);
@@ -148,8 +181,11 @@ export async function observe(target: ObserveTarget, deps: ObserveDeps): Promise
 
       // CI は PR の head sha に紐づくので、PR を観測できたときだけ引ける。
       const ciSource = `CodeProviderPort.getLatestCiRun(${pr.headSha})`;
-      const ci = await observed(() => deps.code.getLatestCiRun(pr.headSha));
-      if (ci !== null) {
+      const ciRead = await observed(() => deps.code.getLatestCiRun(pr.headSha));
+      if (!ciRead.ok) {
+        failed("github.ci", ciSource, ciRead.error);
+      } else if (ciRead.value !== null) {
+        const ci = ciRead.value;
         push("github.ci.status", ci.status, ciSource, `status=${ci.status}`);
         // 実行中の run は conclusion が null。まだ結論が出ていないだけなので Fact にしない。
         if (ci.conclusion !== null) {
@@ -172,8 +208,11 @@ export async function observe(target: ObserveTarget, deps: ObserveDeps): Promise
   const issueNumber = target.issueNumber;
   if (issueNumber !== null) {
     const issueSource = `CodeProviderPort.getIssue(${issueNumber})`;
-    const issue = await observed(() => deps.code.getIssue(issueNumber));
-    if (issue !== null) {
+    const issueRead = await observed(() => deps.code.getIssue(issueNumber));
+    if (!issueRead.ok) {
+      failed("github.issue", issueSource, issueRead.error);
+    } else if (issueRead.value !== null) {
+      const issue = issueRead.value;
       push("github.issue.number", issue.number, issueSource, `number=${issue.number}`);
       push("github.issue.state", issue.state, issueSource, `state=${issue.state}`);
       push(
@@ -191,7 +230,5 @@ export async function observe(target: ObserveTarget, deps: ObserveDeps): Promise
     }
   }
 
-  // TODO(Phase 1): Port が throw したケースを unobserved に積む。
-  // observed() が例外を握り潰しているため、いまは常に空になる。
-  return { observedAt, facts, unobserved: [] };
+  return { observedAt, facts, unobserved };
 }
