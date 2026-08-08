@@ -104,6 +104,145 @@ export type ActResult = { acted: true; run: Run } | { acted: false; reason: stri
  *   Ctrl+C が効かない状態を作らない。interrupted は failed とは別の状態にする
  * - どの経路でも throw しない。Actor の失敗も Port の失敗も Run に残して返す
  */
-export async function act(_target: ActTarget, _deps: ActDeps): Promise<ActResult> {
-  throw new Error("not implemented");
+export async function act(target: ActTarget, deps: ActDeps): Promise<ActResult> {
+  const action = target.decision.action;
+  if (action.type !== "ACT") {
+    // 無言で握り潰すと、呼び出し側が「起動したが何も起きなかった」と読む。
+    return { acted: false, reason: `action が ${action.type} なので Actor を起動しない` };
+  }
+
+  // 起動前に中断されていたら、Run も worktree も作らない。
+  // 何も書いていない状態なので、回収すべきものが残らない。
+  if (deps.signal?.aborted === true) {
+    return { acted: false, reason: "Actor を起動する前に中断された" };
+  }
+
+  const worktreeName = worktreeNameFor(target.goal.goal.id);
+  const startedAt = deps.now().toISOString();
+  const intent: RunIntent = {
+    intent: action.intent,
+    actor: deps.actor.kind,
+    worktree: worktreeName,
+    attempt: target.attempt,
+    startedAt,
+  };
+
+  // 副作用の前に意図を書く（design.md §3.6）。worktree の作成も副作用なので、
+  // ここが書けなかったら何も作らずに引き返す。
+  let runId: string;
+  try {
+    runId = await deps.runs.start(intent);
+  } catch (error) {
+    return { acted: false, reason: `Run を書けなかったので起動しない: ${errorMessage(error)}` };
+  }
+
+  // ここから先は Run(starting) が残っているので、どの経路でも必ず finish で確定させる。
+  const outcome = await runActor(target.goal, action.intent, worktreeName, deps);
+  try {
+    await deps.runs.finish(runId, outcome);
+  } catch (error) {
+    // 確定を書けなくても Actor はもう走っている。Run は starting のまま残るので、
+    // 次ティックが orphan として回収する。ここで throw すると回収の機会まで失う。
+    return {
+      acted: true,
+      run: {
+        ...intent,
+        id: runId,
+        ...outcome,
+        detail: appendDetail(outcome.detail, `Run を確定できなかった: ${errorMessage(error)}`),
+      },
+    };
+  }
+
+  return { acted: true, run: { ...intent, id: runId, ...outcome } };
+}
+
+function appendDetail(detail: string | null, added: string): string {
+  return detail === null ? added : `${detail} / ${added}`;
+}
+
+/**
+ * worktree を用意して Actor を起動する。
+ *
+ * throw しない。失敗も中断も Run の確定値として返し、呼び出し側に finish させる。
+ */
+async function runActor(
+  goal: Goal,
+  intent: string,
+  worktreeName: string,
+  deps: ActDeps,
+): Promise<RunOutcome> {
+  const failed = (detail: string, exitCode: number | null): RunOutcome => ({
+    // 中断が原因なら failed にはしない。意図して止めたものを「Actor が失敗した」と
+    // 読むと、次ティックが再試行上限を無駄に消費する。
+    status: deps.signal?.aborted === true ? "interrupted" : "failed",
+    finishedAt: deps.now().toISOString(),
+    exitCode,
+    logRef: null,
+    tokens: null,
+    artifacts: [],
+    detail,
+  });
+
+  let worktree: Worktree;
+  try {
+    worktree = await deps.worktree.ensure(worktreeName, goal.repository.default_branch);
+  } catch (error) {
+    // 隔離できていない状態で Agent を走らせると、controller 本体を書き換えうる。
+    // 起動しなかったので exit_code は無い。
+    return failed(`worktree を用意できなかった: ${errorMessage(error)}`, null);
+  }
+
+  try {
+    const result = await deps.actor.run({
+      intent,
+      worktree,
+      // merge や force push を Agent に実行させない（design.md §7）。
+      deniedOperations: goal.policies.require_human_approval,
+      // signal を渡さない呼び出し側でも Actor 側の型を割らないよう、
+      // 中断されない signal を代わりに渡す。
+      signal: deps.signal ?? NEVER_ABORTED,
+    });
+
+    if (result.exitCode === 0) {
+      return {
+        status: "completed",
+        finishedAt: deps.now().toISOString(),
+        exitCode: result.exitCode,
+        logRef: result.logRef,
+        tokens: result.tokens,
+        artifacts: [...result.artifacts],
+        detail: null,
+      };
+    }
+
+    return {
+      status: deps.signal?.aborted === true ? "interrupted" : "failed",
+      finishedAt: deps.now().toISOString(),
+      exitCode: result.exitCode,
+      logRef: result.logRef,
+      tokens: result.tokens,
+      artifacts: [...result.artifacts],
+      detail: `Actor が exit_code=${result.exitCode} で終了した`,
+    };
+  } catch (error) {
+    return failed(`Actor の実行に失敗した: ${errorMessage(error)}`, null);
+  }
+}
+
+/**
+ * worktree の名前。goal.id から決まる。
+ *
+ * 試行ごとに変えない。ティックをまたいで同じ作業ツリーに差分を積み上げ、
+ * それがそのまま PR になるため。
+ */
+function worktreeNameFor(goalId: string): string {
+  return goalId;
+}
+
+/** signal を渡されなかった呼び出しに使う。中断されることはない */
+const NEVER_ABORTED: AbortSignal = new AbortController().signal;
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
