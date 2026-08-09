@@ -117,9 +117,13 @@ async function consume(
   const artifacts: string[] = [];
   let result: Outcome["result"] = null;
 
+  // 直前に見た rate limit の状態。assistant の error だけでは
+  // 使用量上限と一時的な 429 を区別できないので、こちらを根拠にする。
+  let lastStatus: string | null = null;
+
   for await (const message of options.query({ prompt, options: queryOptions })) {
     log.push(JSON.stringify(message));
-    throwIfUsageLimit(message);
+    lastStatus = throwIfUsageLimit(message, lastStatus);
 
     for (const path of editedPathsOf(message)) {
       artifacts.push(path);
@@ -140,27 +144,43 @@ async function consume(
 }
 
 /**
- * 使用量上限を判定する。design.md §10-3 の未決を埋めた実測結果。
+ * 使用量上限を判定し、直前に見た rate limit の状態を返す。
+ * design.md §10-3 の未決を埋めた実測結果。
  *
- * Agent SDK は2通りで知らせてくる。
- *   rate_limit_event の status が rejected。resetsAt を持つので再開時刻が分かる
- *   assistant メッセージの error が rate_limit。時刻は分からない
+ * 根拠は rate_limit_event の status。Claude Code の実装では、応答ヘッダの
+ * anthropic-ratelimit-unified-status から status を作り、上限に達していれば
+ * rejected になる。resetsAt は秒（コード側が Date.now()/1000 と引き算している）。
+ *
+ * assistant メッセージの error は単体では根拠にならない。同じ実装が、
+ * サブスクリプションの上限にも、一時的な容量制限（"Server is temporarily
+ * limiting requests (not your usage limit)"）にも同じ "rate_limit" を入れる。
+ * 一時的な 429 を usage_limit として扱うと、待たなくてよい場面で待ってしまう。
+ * そこで、直前に rejected を見ているときだけ上限と判断する。
  */
-function throwIfUsageLimit(message: unknown): void {
+function throwIfUsageLimit(message: unknown, lastStatus: string | null): string | null {
   const rateLimit = rateLimitSchema.safeParse(message);
-  if (rateLimit.success && rateLimit.data.rate_limit_info.status === "rejected") {
-    throw new PortError(
-      "usage_limit",
-      `使用量上限に達した（${rateLimit.data.rate_limit_info.rateLimitType ?? "unknown"}）`,
-      resumeAfterFrom(rateLimit.data.rate_limit_info.resetsAt),
-    );
+  if (rateLimit.success) {
+    const info = rateLimit.data.rate_limit_info;
+    if (info.status === "rejected") {
+      throw new PortError(
+        "usage_limit",
+        `使用量上限に達した（${info.rateLimitType ?? "unknown"}）`,
+        resumeAfterFrom(info.resetsAt),
+      );
+    }
+    return info.status;
   }
 
   const assistant = assistantSchema.safeParse(message);
   if (assistant.success && assistant.data.error === "rate_limit") {
-    // リセット時刻が分からないので捏造しない。指数バックオフに任せる。
-    throw new PortError("usage_limit", "使用量上限に達した（assistant error）");
+    if (lastStatus === "rejected") {
+      // リセット時刻はこの経路では分からない。指数バックオフに任せる。
+      throw new PortError("usage_limit", "使用量上限に達した（assistant error）");
+    }
+    throw new PortError("unavailable", "429 を受けた（一時的な容量制限の可能性）");
   }
+
+  return lastStatus;
 }
 
 /**

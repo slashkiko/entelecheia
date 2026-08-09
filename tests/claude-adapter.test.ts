@@ -170,14 +170,27 @@ describe("claudeActor", () => {
     });
   });
 
-  it("assistant の error からも上限を拾う", async () => {
-    // こちらはリセット時刻が分からないので resumeAfter は null。
+  it("rejected を見たあとの assistant error は上限として扱う", async () => {
+    // こちらの経路ではリセット時刻が分からないので resumeAfter は null。
+    const rejected = { type: "rate_limit_event", rate_limit_info: { status: "rejected" } };
     const limited = { type: "assistant", error: "rate_limit", message: { content: [] } };
-    const sink = recorded([limited]);
+    const sink = recorded([rejected, limited]);
 
     await expect(claudeActor(deps(sink)).run(INVOCATION)).rejects.toMatchObject({
       kind: "usage_limit",
       resumeAfter: null,
+    });
+  });
+
+  it("上限を見ていない assistant error は一時的な 429 として扱う", async () => {
+    // Claude Code は一時的な容量制限にも同じ "rate_limit" を入れる。
+    // 上限として扱うと、待たなくてよい場面で待つことになる。
+    const limited = { type: "assistant", error: "rate_limit", message: { content: [] } };
+    const sink = recorded([limited]);
+
+    await expect(claudeActor(deps(sink)).run(INVOCATION)).rejects.toMatchObject({
+      name: "PortError",
+      kind: "unavailable",
     });
   });
 
