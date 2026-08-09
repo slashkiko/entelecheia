@@ -161,6 +161,16 @@ export const goalSchema = z.strictObject({
   context: goalContextSchema,
   policies: z.strictObject({
     require_human_approval: z.array(approvalGateSchema),
+    /**
+     * Agent に書き換えさせないパス。glob で書く（design.md §7 の自己ホスト用）。
+     *
+     * `require_human_approval` の enum には載せない。あちらは「操作の種類」で、
+     * ここは「対象」にあたる。軸が違うものを1つの enum に混ぜると、
+     * controller 側の照合が分岐だらけになる。§10-8 の未決はこの形で埋めた。
+     *
+     * 既定は空。自己ホスト以外の Goal では保護するものが無い。
+     */
+    protected_paths: z.array(z.string().min(1)).default([]),
   }),
   budget: budgetSchema,
 });

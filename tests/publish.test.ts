@@ -37,7 +37,7 @@ const GOAL: Goal = {
     },
   ],
   context: { background: "背景", constraints: [], references: [] },
-  policies: { require_human_approval: ["merge"] },
+  policies: { require_human_approval: ["merge"], protected_paths: [] },
   budget: {
     max_actor_runs: 10,
     max_reconciles: 20,
@@ -304,5 +304,33 @@ describe("進捗を書く", () => {
 
     expect(s.comments).toEqual([]);
     expect(result.commented).toBe(false);
+  });
+});
+
+describe("保護パスに触れたとき", () => {
+  const blocked: Decision = {
+    decidedAt: NOW.toISOString(),
+    action: { type: "ESCALATE", reason: "protected_path_touched" },
+    rationale: "制御ループ自体に触れたので停止する",
+    decidedBy: "guard",
+  };
+
+  it("PR を作らない", async () => {
+    // 立てると、保護パスへの変更が通常の変更として流れてしまう。
+    const s = sink();
+    const result = await publish(target({ decision: blocked }), deps(s));
+
+    expect(s.created).toEqual([]);
+    expect(s.pushes).toEqual([]);
+    expect(result.skipped).toContain("保護パス");
+  });
+
+  it("既に PR があればコメントで知らせる", async () => {
+    // 人間を呼ぶ以上、何が起きたかは PR に残す。
+    const s = sink();
+    const result = await publish(target({ decision: blocked, prNumber: 11 }), deps(s));
+
+    expect(result.commented).toBe(true);
+    expect(s.comments[0]?.body).toContain("protected_path_touched");
   });
 });

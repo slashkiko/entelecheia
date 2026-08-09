@@ -215,6 +215,7 @@ export async function main(argv: readonly string[]): Promise<number> {
       // PR がまだ無い Goal では常に未承認になる。捏造した承認を作らない。
       approval: approval(goal, store.getState(goal.goal.id)?.prNumber ?? null),
       worktree: gitWorktree(repoRoot, join(stateDir, "worktrees")),
+      worktreeRoot: join(stateDir, "worktrees"),
       actor: claudeActor(claudeOptions(stateDir)),
       llm: claudeLlm({
         ...claudeOptions(stateDir),

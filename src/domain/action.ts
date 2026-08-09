@@ -27,6 +27,13 @@ export const escalateReasonSchema = z.enum([
   "loop_detected",
   /** LLM の出力が Zod を通らなかった */
   "invalid_decision",
+  /**
+   * Agent が保護パスを書き換えた、あるいは worktree の外に出た。
+   *
+   * design.md §7 の自己ホスト用の制約。予算でもループでも出力の不正でもなく、
+   * 「触ってはいけないものに触れた」なので、既存の3つとは別に立てる。
+   */
+  "protected_path_touched",
 ]);
 export type EscalateReason = z.infer<typeof escalateReasonSchema>;
 

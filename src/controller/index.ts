@@ -1,10 +1,12 @@
 import { createHash } from "node:crypto";
+import { join } from "node:path";
 import { type ActDeps, act, type RunRecorderPort } from "../act/index.js";
 import type { BudgetUsage } from "../decide/index.js";
 import type { Decision } from "../domain/action.js";
 import type { Fact } from "../domain/fact.js";
 import type { Goal } from "../domain/goal.js";
 import { type GoalStatus, isTerminal, nextStatus } from "../domain/goal-state.js";
+import { describeViolations, findViolations } from "../domain/protected-paths.js";
 import type { Run } from "../domain/run.js";
 import { toVerifications } from "../domain/verification.js";
 import { type PublishDeps, publish } from "../publish/index.js";
@@ -30,6 +32,14 @@ export interface ControllerDeps
   leaseSeconds: number;
   /** SIGTERM の伝播。走行中の Actor に伝えて kill する */
   signal?: AbortSignal | undefined;
+  /**
+   * worktree を置くディレクトリ。保護パスの検査で絶対パスを組み立てるのに使う。
+   *
+   * WorktreePort は名前からパスを決めるが、その規則を controller は知らない。
+   * 省略すると Run.worktree（名前）をそのまま基準にするので、Actor が
+   * 絶対パスを返す実装では「外に出た」と読んでしまう。実運用では必ず渡す。
+   */
+  worktreeRoot?: string | undefined;
 }
 
 export interface TickResult {
@@ -146,13 +156,23 @@ export async function tick(goal: Goal, deps: ControllerDeps): Promise<TickResult
 
     const run = await maybeAct(goal, result.decision, deps);
 
+    // Agent が触ってはいけないものに触れていないかを、ACT の外で検査する
+    // （design.md §7 / §10-6）。Agent 側の disallowedTools は Agent の設定で、
+    // SDK の外から同じ操作をされれば素通りする。
+    const guarded = guardedDecision(goal, result.decision, run, deps);
+    if (guarded !== result.decision) {
+      // 判断を差し替えたので、記録も差し替えた方で残す。
+      deps.store.saveDecision(goalId, digest, guarded);
+    }
+
     // PR を確保して進捗を書く。ここは throw しないので、通知の失敗で
     // ティック全体を落とさない（design.md §9 の「PR と通知」）。
+    // 保護パスに触れていたら PR は作らない。通常の変更として流れてしまう。
     const published = await publish(
       {
         goal,
         run,
-        decision: result.decision,
+        decision: guarded,
         verifications,
         prNumber: state.prNumber,
         digest,
@@ -166,8 +186,8 @@ export async function tick(goal: Goal, deps: ControllerDeps): Promise<TickResult
       deps.store.setObserveTarget(goalId, published.prNumber, state.issueNumber);
     }
 
-    const status = nextStatus(state.status, result.decision.action);
-    const action = result.decision.action;
+    const status = nextStatus(state.status, guarded.action);
+    const action = guarded.action;
     deps.store.setStatus(
       goalId,
       status,
@@ -175,11 +195,50 @@ export async function tick(goal: Goal, deps: ControllerDeps): Promise<TickResult
       deps.now().toISOString(),
     );
 
-    return { ran: true, skipped: null, reclaimed, decision: result.decision, run, status };
+    return { ran: true, skipped: null, reclaimed, decision: guarded, run, status };
   } finally {
     // 例外で抜けても解放する。残すと lease の期限までどのワーカーも動けない。
     deps.store.releaseLease(goalId, deps.owner);
   }
+}
+
+/**
+ * Actor が編集したファイルを検査し、違反があれば Decision を差し替える。
+ *
+ * 満たすべき性質:
+ * - ACT を実行していないティックでは何もしない。検査する対象が無い
+ * - 違反があれば ESCALATE(protected_path_touched) にする。判断したのは
+ *   LLM ではないので decidedBy は "guard"（design.md §7）
+ * - worktree の中身は触らない。差分を残しておかないと人間が判断できない
+ * - 元の rationale を残す。何をしようとしていたのかが読めなくなる
+ */
+function guardedDecision(
+  goal: Goal,
+  decision: Decision,
+  run: Run | null,
+  deps: ControllerDeps,
+): Decision {
+  if (run === null || run.artifacts.length === 0) {
+    return decision;
+  }
+
+  const violations = findViolations(
+    run.artifacts,
+    // act と同じ規則で worktree の場所を決める。ここがずれると、
+    // 隔離の中の編集を「外に出た」と読んでしまう。
+    deps.worktreeRoot === undefined ? run.worktree : join(deps.worktreeRoot, run.worktree),
+    goal.policies.protected_paths,
+  );
+  if (violations.length === 0) {
+    return decision;
+  }
+
+  return {
+    decidedAt: deps.now().toISOString(),
+    action: { type: "ESCALATE", reason: "protected_path_touched" },
+    rationale: `制御ループ自体に触れたので停止する: ${describeViolations(violations)}（元の判断: ${decision.rationale}）`,
+    decidedBy: "guard",
+  };
 }
 
 /**

@@ -141,6 +141,15 @@ async function ensurePullRequest(
   if (target.prNumber !== null) {
     return { prNumber: target.prNumber, created: false, skipped: null };
   }
+  // 制御ループ自体に触れた変更で PR を立てない（design.md §7）。立てると、
+  // 保護パスへの変更が通常の変更として流れてしまう。既に PR がある場合は
+  // 上で返しているので、コメントで知らせる経路は残る。
+  if (
+    target.decision.action.type === "ESCALATE" &&
+    target.decision.action.reason === "protected_path_touched"
+  ) {
+    return { prNumber: null, created: false, skipped: "保護パスに触れたので PR を作らない" };
+  }
   if (target.run === null || target.run.status !== "completed") {
     // Actor が走っていない、あるいは失敗したティックでは push するものが無い。
     return { prNumber: null, created: false, skipped: "完了した Run が無い" };
