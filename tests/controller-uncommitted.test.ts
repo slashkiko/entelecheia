@@ -77,15 +77,28 @@ interface Options {
    * 観測先は Goal 専用の worktree（1ティック目だけ controller 自身のリポジトリ）。
    */
   dirty?: boolean;
+  /**
+   * 観測したブランチ。既定は Goal 専用の worktree が checkout しているもの。
+   *
+   * `verifyRoot` が worktree に落ちなかったティックでは controller 自身の
+   * リポジトリを観測するので、ここが `entelecheia/<goal.id>` にならない。
+   * 「どこを観測した dirty か」はこの Fact で分かる。
+   */
+  branch?: string;
   /** 検証コマンドの終了コード。0 以外なら Gap が残って LLM の経路に入る */
   exitCode?: number;
   /** human の criterion を承認済みにするか */
   approved?: boolean;
+  /** LocalRepoPort が落ちる。local.* の Fact は作られず unobserved に積まれる */
+  localFails?: boolean;
   /** LLM が返す行動 */
   llm?: LlmPort;
+  /** 通知の回数を数える。PR コメントが書かれたかを見る */
+  sink?: { comments: number };
 }
 
 function deps(store: Store, options: Options = {}): ControllerDeps {
+  const sink = options.sink;
   return {
     store,
     owner: "worker-a",
@@ -97,11 +110,16 @@ function deps(store: Store, options: Options = {}): ControllerDeps {
       getIssue: async () => null,
     },
     local: {
-      snapshot: async () => ({
-        branch: `entelecheia/${GOAL_ID}`,
-        headSha: "a".repeat(40),
-        dirty: options.dirty ?? false,
-      }),
+      snapshot: async () => {
+        if (options.localFails === true) {
+          throw new Error("git が読めない");
+        }
+        return {
+          branch: options.branch ?? `entelecheia/${GOAL_ID}`,
+          headSha: "a".repeat(40),
+          dirty: options.dirty ?? false,
+        };
+      },
     },
     command: {
       run: async () => ({ exitCode: options.exitCode ?? 0, stdout: "", stderr: "" }),
@@ -127,7 +145,11 @@ function deps(store: Store, options: Options = {}): ControllerDeps {
     writer: {
       findPullRequest: async () => null,
       createPullRequest: async () => 1,
-      addComment: async () => {},
+      addComment: async () => {
+        if (sink !== undefined) {
+          sink.comments += 1;
+        }
+      },
     },
     // commit されていない差分は push されない。ここが実際の断線にあたる。
     branch: {
@@ -162,6 +184,33 @@ function seedCompletedRun(store: Store): void {
     tokens: 1000,
     artifacts: ["src/cli.ts"],
     detail: null,
+  });
+}
+
+/**
+ * worktree を作れずに失敗した Run を残す。
+ *
+ * `act` は `worktree.ensure` より先に Run(starting) を書く（write-ahead）。
+ * 「Run が1件でもあれば worktree を観測している」と読むと、この Run 1本で
+ * その前提が崩れる。README にある「`git branch --format` の引用符不足で
+ * worktree の作成が Phase 2 からずっと失敗していた」が実際にこの形だった。
+ */
+function seedFailedRun(store: Store): void {
+  const runId = store.startRun(GOAL_ID, {
+    intent: "criteria を満たす実装を書く",
+    actor: "claude-code",
+    worktree: GOAL_ID,
+    attempt: 1,
+    startedAt: "2026-08-09T08:00:00.000Z",
+  });
+  store.finishRun(runId, {
+    status: "failed",
+    finishedAt: "2026-08-09T08:00:10.000Z",
+    exitCode: null,
+    logRef: null,
+    tokens: null,
+    artifacts: [],
+    detail: "worktree を用意できなかった: fatal: invalid reference",
   });
 }
 
@@ -264,5 +313,65 @@ describe("未 commit の変更を残したまま終わらない", () => {
     expect(result.decision?.action).toMatchObject({ type: "ACT" });
     expect(result.run?.status).toBe("completed");
     expect(result.status).toBe("ACTIVE");
+  });
+
+  it("止めたティックは、観測が前のティックと同じでも PR にコメントを書く", async () => {
+    // 関門が鳴っても、それが人間に届かなければ鳴っていないのと同じになる。
+    //
+    // 進捗コメントは既定では「観測が前のティックと同じなら書かない」。ダイジェストは
+    // Fact だけから作るので Decision を含まず、止まっているあいだ観測は1文字も
+    // 変わらない。黙って飛ばすと、2ティック目以降は PR が静かなまま
+    // max_reconciles に当たって BLOCKED になる。
+    //
+    // 保護パスの関門はこの規則を既に持っている（design.md §10-6 の
+    // 「PR が既にあるなら、観測が前ティックと同じでもコメントを書く」）。
+    // 同じ性質を持つ関門なので、同じ扱いにする。
+    const goal = goalWith([COMMAND_CRITERION]);
+    activate(goal);
+    seedCompletedRun(store);
+    // PR が無いとコメントの置き場所が無い。controller が既に立てた状態にする。
+    store.setObserveTarget(GOAL_ID, 7, null);
+
+    const sink = { comments: 0 };
+    await tick(goal, deps(store, { dirty: true, sink }));
+    const first = sink.comments;
+    await tick(goal, deps(store, { dirty: true, sink }));
+
+    expect(first).toBe(1);
+    expect(sink.comments).toBe(2);
+  });
+
+  it("観測できなかったティックを、前のティックの local.dirty で止めない", async () => {
+    // reconcile は前ティックの Fact を土台にして今ティックの観測で上書きするので、
+    // LocalRepoPort が落ちたティックには前ティックの local.dirty が VERIFIED の
+    // まま残る（陳腐化して落ちるのは github.ci.* だけ）。それを今の観測として
+    // 読むと、「確かめられなかった」が「汚れている」に化ける（design.md §3.1）。
+    const goal = goalWith([COMMAND_CRITERION]);
+    activate(goal);
+    seedCompletedRun(store);
+
+    // 1ティック目: 汚れているが Gap が残っているので ACT。local.dirty=true が残る。
+    await tick(goal, deps(store, { dirty: true, exitCode: 1 }));
+    // 2ティック目: LocalRepoPort が落ちる。criteria は通る。
+    const result = await tick(goal, deps(store, { localFails: true }));
+
+    expect(result.decision?.action).toMatchObject({ type: "WAIT", reason: "observation_failed" });
+  });
+
+  it("worktree を観測していない dirty では止めない", async () => {
+    // `verifyRoot` は worktree があればそちら、無ければ controller 自身の
+    // リポジトリを見る（src/cli.ts）。「Run が1件でもあれば worktree を観測して
+    // いる」は代理にならない。act は worktree.ensure より先に Run(starting) を
+    // 書くので、worktree を作れずに失敗した Run が1本あるだけで破れる。
+    //
+    // どこを観測した値かは、同じ観測で作られる local.branch で分かる。
+    const goal = goalWith([COMMAND_CRITERION]);
+    activate(goal);
+    seedFailedRun(store);
+
+    const result = await tick(goal, deps(store, { dirty: true, branch: "main" }));
+
+    expect(result.decision?.action.type).toBe("COMPLETE");
+    expect(result.status).toBe("COMPLETED");
   });
 });
