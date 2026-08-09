@@ -101,7 +101,7 @@ Goal の状態としては `WAITING_HUMAN` になる。承認待ちではなく�
 | code | 意味 |
 | --- | --- |
 | 0 | 成功。ティックが最後まで回った（`ran: false` でも 0）。`doctor` では failed が1件も無い |
-| 1 | 実行時エラー、または実行できない状態。詳細は stderr（`doctor` では stdout の JSON） |
+| 1 | 実行時エラー、または実行できない状態。詳細は stderr。`doctor` では failed が1件以上で、詳細は stdout の JSON |
 | 2 | 引数が不正。stderr に有効値が並ぶ |
 
 1 と 2 を取り違えないこと。2 は「打ち直せば通る」の意味で、stderr に有効値が並ぶ。

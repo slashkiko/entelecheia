@@ -508,6 +508,14 @@ const ALWAYS_DENIED = [
   "Bash(git branch -d *)",
   "Bash(git branch --delete *)",
   "Bash(git worktree *)",
+  // hooks の差し替えを拒否する。`core.hooksPath` を1回設定するだけで、
+  // hooks のファイルを1つも触らずに、push のたびに走るスクリプト群を
+  // まるごと別のディレクトリへ移せる。controller 側は `repoDirtyState` の
+  // 相方（`outOfSightState`）で設定値の変化を検知するが、そちらは ACT の
+  // あとに鳴る。Agent 側でも塞いでおく。
+  "Bash(git config core.hooksPath *)",
+  "Bash(git config --local core.hooksPath *)",
+  "Bash(git config --global core.hooksPath *)",
 ] as const;
 
 const EDIT_TOOLS = new Set(["Edit", "Write", "NotebookEdit"]);
