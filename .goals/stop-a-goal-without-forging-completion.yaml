@@ -178,7 +178,7 @@ context:
     で ACTIVE のまま残っている。別 DB なので、この Goal では扱わない。
 
   constraints:
-    - DB のスキーマ（SCHEMA）は変えない。列を足さずに書けるかをまず考える
+    - 列を足すなら `migrate()` の追加専用の手順に乗せる（`runs.role` と同じ形）。既存の DB がそのまま開けること
     - 状態機械（src/domain/goal-state.ts）に新しい status を足さない。ABANDONED は既にある
     - controller のティックの経路（observe / decide / act / verify）に触れない。これは CLI だけの話になる
     - 出力は他のサブコマンドと揃える。`--json` の扱いと終了コードの規則を独自にしない
