@@ -437,7 +437,6 @@ PRAGMA foreign_keys = ON;
 - 複数 Actor の並列実行（インターフェースは複数対応、実装は逐次1本）
 - Codex CLI の実装（`kind` の型だけ用意）
 - L5 改善レイヤー（History は貯めるだけ、学習はしない）
-- 複数 Goal の同時実行
 
 Notion と Slack を外したことで、MVP の外部依存が GitHub 1つになり、
 認証も GitHub token と Claude Code の OAuth だけで済む。
