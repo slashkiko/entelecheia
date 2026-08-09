@@ -80,7 +80,6 @@ export function claudeActor(options: ClaudeOptions): ActorPort {
       const logRef = join(options.runsDir, invocation.runId, "log.jsonl");
       // consume が途中で throw しても、そこまでのログは残す。使用量上限に
       // 当たった実行の手がかりが「例外のメッセージだけ」になるのを避ける。
-      const log: string[] = [];
 
       const partial = (): ActorResult => ({
         exitCode: 1,
@@ -91,7 +90,7 @@ export function claudeActor(options: ClaudeOptions): ActorPort {
 
       let outcome: Outcome;
       try {
-        outcome = await consumeAndLog(options, logRef, log, ACTOR_PROMPT(invocation.intent), {
+        outcome = await consumeAndLog(options, logRef, ACTOR_PROMPT(invocation.intent), {
           // controller 本体のコードと Agent が編集するコードを物理的に分ける（§7）。
           cwd: invocation.worktree.path,
           abortController: aborter,
@@ -145,11 +144,10 @@ export function claudeLlm(options: ClaudeOptions): LlmPort {
       const calledAt = now().toISOString();
       // Actor の生ログと同じ場所に、同じ粒度で置く（design.md §4.6）。
       const logRef = join(options.runsDir, callIdOf(calledAt, sequence), "log.jsonl");
-      const log: string[] = [];
 
       let outcome: Outcome;
       try {
-        outcome = await consumeAndLog(options, logRef, log, `${prompt}\n\n${JSON_ONLY}`, {
+        outcome = await consumeAndLog(options, logRef, `${prompt}\n\n${JSON_ONLY}`, {
           // DECIDE は判断だけで、副作用は ACT が持つ。ファイルを触らせない。
           allowedTools: [],
           permissionMode: "default",
@@ -228,10 +226,15 @@ function callIdOf(calledAt: string, sequence: number): string {
 async function consumeAndLog(
   options: ClaudeOptions,
   logRef: string,
-  log: string[],
   prompt: string,
   queryOptions: Options,
 ): Promise<Outcome> {
+  // ログの器はここが持つ。以前は2つの呼び出し元がそれぞれ空の配列を作って
+  // 渡していたが、どちらも渡したあと一度も読まなかった。Outcome.log として
+  // 返してもいたが、その口を読む呼び出し元も無かった。書く側と読む側が
+  // 同じ関数の中に閉じるので、外に出す理由が無い。
+  const log: string[] = [];
+
   const write = async (): Promise<void> => {
     await (options.writeLog ?? writeLogToFile)(logRef, `${log.join("\n")}\n`);
   };
@@ -251,7 +254,6 @@ interface Outcome {
   /** subtype は失敗の説明にだけ使う。一時的か恒久的かの判別材料にはしない */
   result: { ok: boolean; subtype: string; text: string; tokens: number } | null;
   artifacts: string[];
-  log: string[];
 }
 
 /**
@@ -306,7 +308,7 @@ async function consume(
     }
   }
 
-  return { result, artifacts, log };
+  return { result, artifacts };
 }
 
 /**

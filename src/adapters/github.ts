@@ -56,17 +56,7 @@ function decode<S extends z.ZodType>(schema: S, raw: unknown, source: string): z
 }
 
 export function githubCodeProvider(options: GitHubOptions): CodeProviderPort {
-  const Client = Octokit.plugin(retry, throttling);
-  const octokit = new Client({
-    auth: options.token,
-    ...(options.fetch === undefined ? {} : { request: { fetch: options.fetch } }),
-    throttle: {
-      // レート制限に当たったら再試行せず、次のティックに任せる。
-      // ここで待つと reconcile が有限時間で return しなくなる（design.md §3.6）。
-      onRateLimit: () => false,
-      onSecondaryRateLimit: () => false,
-    },
-  });
+  const octokit = client(options, { retry: true });
 
   /** ETag と前回の値。同じキーで2回目を引くときに If-None-Match を送る */
   const cache = new Map<string, { etag: string; value: unknown }>();
@@ -455,8 +445,19 @@ function approves(body: string, criterionId: string): boolean {
  * どちらが正かを決められなくなるより、失敗して次のティックに任せる方がよい
  * （reconcile はどのティックも有限時間で return する。design.md §3.6）。
  */
-function client(options: GitHubOptions): Octokit {
-  const Client = Octokit.plugin(throttling);
+/**
+ * octokit を組み立てる。read と write で違うのは retry プラグインの有無だけ。
+ *
+ * 書き込み側に retry を入れないのは意図的で、500 で再試行すると1回目が実際には
+ * 成功していた場合に PR が2本立つ。どちらが正かを決められなくなるより、失敗して
+ * 次のティックに任せる方がよい（design.md §3.6）。
+ *
+ * throttle の2つのコールバックは両方で同じにする。レート制限に当たっても待たない。
+ * ここで待つと reconcile が有限時間で return しなくなる。以前は同じ設定が2箇所に
+ * あり、片方だけ直せばもう片方が黙って待つ形だった。
+ */
+function client(options: GitHubOptions, plugins: { retry: boolean } = { retry: false }): Octokit {
+  const Client = plugins.retry ? Octokit.plugin(retry, throttling) : Octokit.plugin(throttling);
   return new Client({
     auth: options.token,
     ...(options.fetch === undefined ? {} : { request: { fetch: options.fetch } }),

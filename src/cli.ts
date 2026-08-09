@@ -968,19 +968,37 @@ function writeTruncationHint(shown: number, total: number): void {
  * （design.md §3.1）。
  */
 function codeProvider(goal: Goal): CodeProviderPort {
+  return withGithub(goal, githubCodeProvider, () => {
+    const fail = offline();
+    return { getPullRequest: fail, getLatestCiRun: fail, getIssue: fail };
+  });
+}
+
+/**
+ * トークンがあれば実装を、無ければ代わりを返す。
+ *
+ * 同じ判定が3箇所にあった。トークンが無いときの `PortError` の文言と kind も
+ * 2箇所に書き写されていて、`ent doctor` の助言がそれと一致していることが
+ * 前提になっている。ずれると、doctor が「トークンを入れろ」と言っているのに
+ * Port は別の理由を名乗る、という状態になる。
+ */
+function withGithub<T>(
+  goal: Goal,
+  make: (options: { owner: string; repo: string; token: string }) => T,
+  offlineValue: () => T,
+): T {
   const token = githubToken();
   if (token === null) {
-    const fail = async (): Promise<never> => {
-      throw new PortError("unavailable", "GITHUB_TOKEN が設定されていない");
-    };
-    return { getPullRequest: fail, getLatestCiRun: fail, getIssue: fail };
+    return offlineValue();
   }
+  return make({ owner: goal.repository.owner, repo: goal.repository.name, token });
+}
 
-  return githubCodeProvider({
-    owner: goal.repository.owner,
-    repo: goal.repository.name,
-    token,
-  });
+/** トークンが無いときに呼ばれたら throw する口 */
+function offline(): () => Promise<never> {
+  return async (): Promise<never> => {
+    throw new PortError("unavailable", "GITHUB_TOKEN が設定されていない");
+  };
 }
 
 /**
@@ -990,18 +1008,9 @@ function codeProvider(goal: Goal): CodeProviderPort {
  * skipped の理由に変えるので、通知に失敗してもティックは最後まで回る。
  */
 function codeWriter(goal: Goal): CodeWriterPort {
-  const token = githubToken();
-  if (token === null) {
-    const fail = async (): Promise<never> => {
-      throw new PortError("unavailable", "GITHUB_TOKEN が設定されていない");
-    };
+  return withGithub(goal, githubCodeWriter, () => {
+    const fail = offline();
     return { findPullRequest: fail, createPullRequest: fail, addComment: fail };
-  }
-
-  return githubCodeWriter({
-    owner: goal.repository.owner,
-    repo: goal.repository.name,
-    token,
   });
 }
 
@@ -1012,17 +1021,10 @@ function codeWriter(goal: Goal): CodeWriterPort {
  * 「確かめられなかった」を「承認された」と読まないため（design.md §3.1）。
  */
 function approval(goal: Goal, prNumber: number | null): ApprovalPort {
-  const token = githubToken();
-  if (token === null || prNumber === null) {
+  if (prNumber === null) {
     return pendingApproval();
   }
-
-  return githubApproval({
-    owner: goal.repository.owner,
-    repo: goal.repository.name,
-    token,
-    prNumber,
-  });
+  return withGithub(goal, (options) => githubApproval({ ...options, prNumber }), pendingApproval);
 }
 
 /**
