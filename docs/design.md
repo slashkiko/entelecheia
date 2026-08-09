@@ -223,8 +223,18 @@ MVP では `claude-code` だけを実装し、3つの role をすべて持たせ
 Codex を足すときに Planner 側のコードを変えなくて済む形にしておけば十分。
 
 `ActorRole` の実体は `src/domain/run.ts` の `actorRoleSchema` にある。`Actor` の方は
-まだ切っていない（`ActorPort` が `kind` を持つだけ）が、role は次の3箇所を通る。
+まだ切っていない（`ActorPort` が `kind` を持つだけ）が、role は次の4箇所を通る。
 
+- **role が Agent の許可・拒否ツールを決める**（`src/adapters/claude.ts` の `ACTOR_TOOLS`）。
+  編集のツール（Edit / Write / NotebookEdit）を持つのは `implement` だけで、`review` と
+  `investigate` は読むためのツールと Bash だけを持つ。**指示ではなく権限で分ける。**
+  intent は LLM が生成するもので、「書いた」ことは確かめられても「従った」ことは
+  確かめられない（§3.2）。編集のツールは許可リストから外すだけでなく拒否リストにも
+  入れる。許可リストから外すだけでは、設定の読み込み順や既定値が変わったときに
+  素通りしうる。`policies.require_human_approval` から来る拒否は role によらず
+  そのまま落とす（レビュー役だからといって merge や force push を許さない）。
+  プロンプトも role ごとに分ける。権限だけ分けて文面が同じだと、レビュー役は編集を
+  試みて拒否され続け、ターンをそこに使い切る
 - **worktree の名前が (goal.id, role) から決まる**（`worktreeNameFor`）。役割が違えば
   作業ツリーもブランチも分かれる。同じ作業ツリーを共有すると、レビュー役の checkout や
   clean で実装側の途中の差分が消え、実装側が書き換えればレビュー役は「いつの時点の
@@ -268,6 +278,18 @@ Phase 0 では Port の camelCase フィールド名との対応表がどこに�
 レビュー一覧は `review_decision` の導出に使うだけで、個別のレビューを Fact として
 出す Port は無い。表は取得したい対象、
 レジストリは実際に取得できる対象を表すので、実装するときはレジストリ側を正とする。
+
+`review.verdict` と `review.reviewed_sha` はレジストリにあるが、上の表には無い。
+出どころが外部のサービスではなく、この controller が起動したレビュー役の Actor の
+実行そのものだからで、`github.pr.review_decision`（GitHub 上の人間または bot の
+レビュー）とは別物になる。`verdict` と対で `reviewed_sha` を置くのは、「通った」だけでは
+いつの時点のコードのレビューか分からず、実装が進んだあとの Fact をそのまま完了判定に
+使うことになるため。**作る側はまだ無い。** `role: review` の ACT を出す経路が無く、
+レビュー役をいつ起動するかは別の Goal に分けてある。キーだけ先に登録してあるのは、
+Goal YAML が `verification: { type: fact, key: review.verdict, equals: approved }` と
+書けるようにするためで、Fact が無い間は Gap が残り COMPLETE には届かない（§3.1）。
+guard に「レビューを通れ」という条件は足していない。完了判定の境界（§7）を
+動かさずに済む形を選んである。
 
 `github.pr.review_decision` は REST の `pulls/{n}` と `pulls/{n}/reviews` から導出する。
 GraphQL なら1回で取れるが、ETag による conditional request（§3.4）が効くのは REST の

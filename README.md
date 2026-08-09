@@ -216,6 +216,8 @@ src/controller/           1ティックの外側。lease → 回収 → reconcil
 src/adapters/local.ts     node:child_process で書ける Port（コマンド実行、git、worktree）
 src/adapters/github.ts    CodeProviderPort。@octokit/rest + ETag
 src/adapters/claude.ts    ActorPort と LlmPort。Claude Agent SDK
+                          role ごとの許可・拒否ツールとプロンプトもここ。編集の
+                          ツールを持つのは実装役だけ（design.md §4.2）
 src/cli.ts                ent コマンド。引数の解釈と agent-context もここ
 .claude/skills/ent/SKILL.md  エージェントが手順として読むもの。叩く順と、人の承認で止まる場所
 AGENTS.md                 上の SKILL.md を指すだけの入口。手順は二重に書かない
