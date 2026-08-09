@@ -19,6 +19,7 @@ const BUDGET: Budget = {
   max_reconciles: 20,
   max_wall_clock: "2h",
   max_consecutive_failures: 3,
+  max_unchanged_reconciles: 3,
 };
 
 const FRESH: BudgetUsage = {
@@ -26,6 +27,7 @@ const FRESH: BudgetUsage = {
   reconciles: 1,
   consecutiveFailures: 0,
   elapsedSeconds: 60,
+  trailingDigest: { digest: null, count: 0 },
 };
 
 function commandCriterion(id: string): AcceptanceCriterion {
@@ -68,6 +70,7 @@ function target(over: Partial<DecideTarget> = {}): DecideTarget {
     criteria: [commandCriterion("ac-1")],
     assessment: assessment([]),
     unresolved: [],
+    observedDigest: "digest-1",
     budget: BUDGET,
     usage: FRESH,
     ...over,

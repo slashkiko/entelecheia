@@ -15,6 +15,15 @@ export interface BudgetUsage {
   consecutiveFailures: number;
   /** Goal を ACTIVE にしてからの経過秒数 */
   elapsedSeconds: number;
+  /**
+   * 直近まで同じ観測が続いていた回数と、そのダイジェスト。今回のティックは含まない。
+   *
+   * 材料を `Decision.observed_digest` にしたのは §10-2 の未決を埋めるため。
+   * Gap を別に永続化しなくても、同じ観測かどうかは digest で分かる。
+   * 今回のダイジェストと突き合わせるので、「直近3回は同じだったが今回は変わった」
+   * を進捗として扱える。ここで今回分まで数えてしまうと、それができない。
+   */
+  trailingDigest: { digest: string | null; count: number };
 }
 
 /**
@@ -40,6 +49,8 @@ export interface DecideTarget {
   criteria: readonly AcceptanceCriterion[];
   assessment: Assessment;
   unresolved: readonly Unresolved[];
+  /** 今ティックの観測ダイジェスト。ループ検知が `usage.trailingDigest` と突き合わせる */
+  observedDigest: string;
   budget: Budget;
   usage: BudgetUsage;
 }
@@ -51,13 +62,15 @@ export const MAX_LLM_RETRIES = 2;
  * 次に取る行動を1つ選ぶ。
  *
  * 満たすべき性質:
- * - 次の3つは LLM を呼ばずに決める（decidedBy: "guard"）
+ * - 次の4つは LLM を呼ばずに決める（decidedBy: "guard"）
  *     予算・回数・時間の上限に到達      → ESCALATE(budget_exhausted)
  *     Gap が無く unresolved も無い      → COMPLETE
  *     Gap は無いが unresolved がある    → WAIT
+ *     観測が変わらないまま N 回続いた    → ESCALATE(loop_detected)
  *   COMPLETE を LLM に決めさせないのは、§3.1「完了判定は VERIFIED のみ」を
- *   推論で迂回させないため。予算超過も、暴走の停止条件を LLM に依存させない
- * - guard の判定順は上のとおり。予算超過は他のどの状態よりも優先する
+ *   推論で迂回させないため。予算超過とループ検知も、暴走の停止条件を LLM に依存させない
+ * - guard の判定順は上のとおり。予算超過は他のどの状態よりも優先する。
+ *   ループ検知は Gap が無い場合より後に置く。空回りしていても、満たしているなら完了でよい
  * - WAIT の reason は unresolved と criteria から決める
  *     port_failed が1件でもある                  → observation_failed
  *     pending だけで、対応する criterion が human → review_pending
@@ -87,7 +100,7 @@ export async function decide(target: DecideTarget, deps: DecideDeps): Promise<De
     );
   }
 
-  // 2. / 3. Gap が無い場合。完了判定は VERIFIED な Fact のみで行う（design.md §3.1）ため、
+  // 2. Gap が無い場合。完了判定は VERIFIED な Fact のみで行う（design.md §3.1）ため、
   //    COMPLETE と WAIT の選び分けは LLM に委ねない。
   //    satisfied ではなく gaps を見るのは、両者がずれた入力を渡されても
   //    「Gap が残っているのに完了」を作らないため。
@@ -103,6 +116,17 @@ export async function decide(target: DecideTarget, deps: DecideDeps): Promise<De
     return guard(
       { type: "WAIT", reason, resumeAfter: null },
       `Gap は無いが結論の出ていない対象が ${target.unresolved.length} 件ある（${reason}）: ${describeUnresolved(target.unresolved)}`,
+    );
+  }
+
+  // 3. 空回りの検知（design.md §7 / §10-2）。Gap が無い場合より後に置く。
+  //    空回りしていても、満たしているなら完了でよい。
+  //    停止条件なので LLM には決めさせない。判断するのは guard だけ。
+  const unchanged = unchangedReconciles(target);
+  if (unchanged >= target.budget.max_unchanged_reconciles) {
+    return guard(
+      { type: "ESCALATE", reason: "loop_detected" },
+      `観測が変わらないまま ${unchanged}/${target.budget.max_unchanged_reconciles} 回続いたので停止する`,
     );
   }
 
@@ -137,6 +161,17 @@ function exhaustedBudget(budget: Budget, usage: BudgetUsage): string | null {
   }
 
   return null;
+}
+
+/**
+ * 今回を含めて、観測が変わらないまま何回続いたか。
+ *
+ * 今ティックのダイジェストが直近の連続と違えば 1 に戻す。
+ * 「3回同じだったが今回は変わった」を空回りと読むと、進んだ直後に止めてしまう。
+ */
+function unchangedReconciles(target: DecideTarget): number {
+  const trailing = target.usage.trailingDigest;
+  return trailing.digest === target.observedDigest ? trailing.count + 1 : 1;
 }
 
 /** `30s` / `10m` / `6h` を秒に直す。goalSchema の durationSchema と同じ形式 */

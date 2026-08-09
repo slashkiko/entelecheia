@@ -35,6 +35,7 @@ const GOAL: Goal = {
     max_reconciles: 20,
     max_wall_clock: "2h",
     max_consecutive_failures: 3,
+    max_unchanged_reconciles: 3,
   },
 };
 
@@ -62,7 +63,13 @@ function target(over: Partial<ReconcileTarget> = {}): ReconcileTarget {
     goal: GOAL,
     observe: { prNumber: null, issueNumber: null },
     carriedFacts: [],
-    usage: { actorRuns: 0, reconciles: 1, consecutiveFailures: 0, elapsedSeconds: 60 },
+    usage: {
+      actorRuns: 0,
+      reconciles: 1,
+      consecutiveFailures: 0,
+      elapsedSeconds: 60,
+      trailingDigest: { digest: null, count: 0 },
+    },
     ...over,
   };
 }
@@ -190,7 +197,13 @@ describe("reconcile", () => {
   it("予算を使い切ったティックは ESCALATE で返る", async () => {
     const result = await reconcile(
       target({
-        usage: { actorRuns: 10, reconciles: 1, consecutiveFailures: 0, elapsedSeconds: 60 },
+        usage: {
+          actorRuns: 10,
+          reconciles: 1,
+          consecutiveFailures: 0,
+          elapsedSeconds: 60,
+          trailingDigest: { digest: null, count: 0 },
+        },
       }),
       deps(),
     );

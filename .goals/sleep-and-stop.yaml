@@ -1,0 +1,178 @@
+version: 1
+
+goal:
+  id: sleep-and-stop
+  name: 上限で寝て起き、空回りしたら止まり、いつでも殺せる
+  desired_state: |
+    Phase 3 の3本目。design.md §9 の残り3項目
+    「いつでも殺せる」「上限で寝て起きる」「暴走しない」を埋める。
+
+    どれも配線か判定のどちらかが欠けている。新しい概念は足さない。
+
+    resume_after を読む — src/controller/
+      §10-5。書き込む側は Phase 2 の3本目で入ったが、読む側が無い。
+      WAITING_EXTERNAL(usage_limit) で resume_after を書いても、
+      次のティックがそれを見ずに走ってしまう。
+
+      tick は resume_after を過ぎるまで何もせずに return する。
+      lease も取らない。取ると、寝ているだけの Goal が他のワーカーを塞ぐ。
+
+      過ぎていれば通常どおり回る。resume_after を消すのは状態遷移の側で、
+      次に WAIT 以外の Decision が出た時点で null に戻る。
+
+      「寝ている」と「他のワーカーが処理中」を TickResult で区別する。
+      どちらも ran: false になるので、理由を持たせないと運用時に読めない。
+
+    ループ検知 — src/decide/index.ts
+      §10-2。同じ Gap が N 回連続で解消されなければ ESCALATE(loop_detected)。
+      いまは guard から出す経路が無く、LLM 側の口も1本目で閉じたので、
+      この理由はどこからも出せない状態にある。
+
+      判定の材料は observed_digest にする。Phase 3 の1本目で2ティック続けて
+      完全に一致することを実測した。前ティックの Gap を別に持たなくてよい。
+
+      N は budget に持たせる。§7 は「同じギャップが N 回連続で解消されなければ
+      ESCALATE」と書いているのに、budget にその項目が無い。
+      src/domain/goal.ts の budgetSchema に max_unchanged_reconciles を
+      必須で足す。確定済みのファイルなので合意を取ったうえで変更し、
+      既存の Goal YAML 8本にも同じ項目を書き足す（§10-8 の現行方針どおり、
+      スキーマが変わったら既存 YAML を手で書き直す）。
+
+      判定順は budget_exhausted の次に置く。予算超過はどの状態よりも優先する。
+      COMPLETE より先には置かない。空回りしていても、満たしているなら完了でよい。
+
+    使用量上限 — 実測
+      §10-3 で判別方法は確定し、Port から WAIT(usage_limit) までの経路も入った。
+      ただし実際に上限に当たった状態を通したことがない。
+
+      人工的に起こして、次の3つを確認する。
+
+        WAITING_EXTERNAL(usage_limit) でプロセスが終了する
+        resume_after が DB に残る
+        その時刻を過ぎるまで次のティックが走らない
+
+    中断 — 実測
+      SIGTERM の伝播は Phase 2 で配線済み。実 Actor に対して確認していない。
+
+      走行中の Actor に SIGTERM を送り、次を確認する。
+
+        即座に終了する。Ctrl+C が効かない状態を作らない
+        Run が interrupted で確定する。failed と混ぜない
+        lease が解放される
+        次のティックが中断した Task を回収して続きから進む
+
+repository:
+  provider: github
+  owner: slashkiko
+  name: entelecheia
+  default_branch: main
+
+setup:
+  - pnpm install --frozen-lockfile
+
+acceptance_criteria:
+  - id: ac-1
+    description: controller / decide / store の全テストが通る（着手時点では落ちているのが正しい）
+    verification: { type: command, run: mise run test }
+
+  - id: ac-2
+    description: 型チェックが通る（budget のスキーマと TickResult が崩れていない）
+    verification: { type: command, run: mise run typecheck }
+
+  - id: ac-3
+    description: lint と format が通る
+    verification: { type: command, run: mise run lint }
+
+  - id: ac-4
+    description: サプライチェーンと workflow のチェックが通る（baseline 由来）
+    verification: { type: command, run: mise run check }
+
+  - id: ac-5
+    description: 変更を載せた PR の CI が成功している
+    verification: { type: fact, key: github.ci.conclusion, equals: success }
+
+  - id: ac-6
+    description: §9 の残り3項目を実地で確認し、budget のスキーマ変更が妥当か人間が判断する
+    verification:
+      type: human
+      prompt: |
+        テストが通るだけでは §9 の3項目は満たされません。実際に動かした結果を
+        報告するので、それを見て判断してください。
+
+          いつでも殺せる — 実 Actor 実行中に SIGTERM を送り、即座に終了して
+            Run が interrupted で確定し、次のティックが回収して続きから進むこと
+          上限で寝て起きる — 使用量上限を人工的に起こし、
+            WAITING_EXTERNAL(usage_limit) で終了して resume_after が残り、
+            その時刻まで次のティックが走らないこと
+          暴走しない — 同じ観測が N 回続いたときに
+            ESCALATE(loop_detected) が guard から出ること
+
+        あわせて判断してほしいのが1点あります。
+
+        src/domain/goal.ts の budget に max_unchanged_reconciles を足しました。
+        design.md §7 は「同じギャップが N 回連続で解消されなければ ESCALATE」と
+        書いているのに、budget にその項目が無く、§10-2 が未決として残っていた
+        ためです。確定済みのスキーマを変えたので、次の3点を見てください。
+
+        1. budget に持たせたこと。Goal ごとに変える値なので policies ではなく
+           budget が適切だと判断しましたが、上限の一種として扱ってよいか
+        2. 判定の材料を observed_digest にしたこと。Gap そのものではなく
+           観測のダイジェストを見ています。Gap が同じでも観測が違えば
+           進んでいるとみなす、という解釈になります
+        3. 判定順を budget_exhausted の次、COMPLETE より後に置いたこと。
+           空回りしていても、満たしているなら完了でよいと考えました
+
+context:
+  background: |
+    Phase 3 の3本目。1本目で1ティックの記録が読めるようになり、2本目で
+    PR の作成・通知・承認の検知が入って Goal が COMPLETED に到達した。
+    §9 の9項目のうち6つが埋まっている。
+
+    残る3つはいずれも「異常系を実際に起こしていない」ことが理由で未確認になっている。
+    テストが通るだけでは満たされないので、ac-6 で実地の結果を報告する。
+
+    本 Goal が終われば、残るのは Goal 4（自己ホストの安全装置）と
+    Goal 5（自己ホストで1周）だけになる。
+
+  constraints:
+    - テストから実際の GitHub と Claude API を叩かない。Port は注入する
+    - 既存の tests/ を弱めない。新しい振る舞いには新しいテストを足す
+    - reconcile は sleep しない。待ちは Decision として返し、寝るのは tick の入口で判定する
+    - resume_after を過ぎるまで lease を取らない。寝ている Goal が他のワーカーを塞がない
+    - src/domain/goal.ts の変更は budget への1項目追加に閉じる。実装前に合意を取る
+    - src/domain/fact-keys.ts は変更しない
+    - src/assess/ と src/observe/ と src/act/ と src/publish/ は変更しない
+    - src/reconcile/ の変更は observed_digest を DECIDE に渡す配線だけに閉じる。
+      ダイジェストは facts から作るので reconcile の中でしか作れず、
+      呼び出し側で作り直すと判断に使った値と記録が食い違いうる。
+      OBSERVE → VERIFY → ASSESS → DECIDE の順序と、各段の呼び方は変えない
+    - src/decide/ の変更は loop_detected の guard 追加だけに閉じる。
+      既存の guard の判定順（budget_exhausted → COMPLETE → WAIT）を変えない
+    - 停止条件を LLM に決めさせない。loop_detected は guard が出す
+    - docs/design.md の「3. 中核の設計判断」を勝手に変えない
+    - 依存パッケージを増やさない
+    - mise run check（サプライチェーン検査）を壊さない
+
+  references:
+    - title: 設計ドキュメント
+      path: docs/design.md
+    - title: Phase 3 の1本目
+      path: .goals/record-the-tick.yaml
+    - title: Phase 3 の2本目
+      path: .goals/open-pr-and-detect-approval.yaml
+
+policies:
+  require_human_approval:
+    - merge
+    - force_push
+    - push_to_default_branch
+    - deploy
+    - secret_access
+    - external_send
+
+budget:
+  max_actor_runs: 15
+  max_reconciles: 30
+  max_wall_clock: 4h
+  max_consecutive_failures: 3
+  max_unchanged_reconciles: 3

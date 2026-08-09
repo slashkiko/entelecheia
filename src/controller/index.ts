@@ -35,6 +35,13 @@ export interface ControllerDeps
 export interface TickResult {
   /** lease を取れずスキップした場合は false */
   ran: boolean;
+  /**
+   * 回さなかった理由。回した場合は null。
+   *
+   * 「寝ている」「他のワーカーが処理中」「終端」はどれも ran: false になる。
+   * 理由を持たせないと、cron から回したときにログから区別できない。
+   */
+  skipped: string | null;
   /** interrupted で回収した orphan Run の件数 */
   reclaimed: number;
   decision: Decision | null;
@@ -63,16 +70,34 @@ export async function tick(goal: Goal, deps: ControllerDeps): Promise<TickResult
   const goalId = goal.goal.id;
   const state = deps.store.getState(goalId);
 
+  const idle = (status: GoalStatus, skipped: string): TickResult => ({
+    ran: false,
+    skipped,
+    reclaimed: 0,
+    decision: null,
+    run: null,
+    status,
+  });
+
   // 終端の Goal を動かし続けると、完了判定が意味を失う。lease も取らない。
-  if (state === null || isTerminal(state.status)) {
-    const status = state?.status ?? "DRAFT";
-    return { ran: false, reclaimed: 0, decision: null, run: null, status };
+  if (state === null) {
+    return idle("DRAFT", "Goal が登録されていない");
+  }
+  if (isTerminal(state.status)) {
+    return idle(state.status, `終端状態（${state.status}）なので回さない`);
+  }
+
+  // 使用量上限などで寝ている間は回さない（design.md §4.4 と §10-5）。
+  // lease も取らない。取ると、寝ているだけの Goal が他のワーカーを塞ぐ。
+  const sleeping = sleepingUntil(state.resumeAfter, deps.now());
+  if (sleeping !== null) {
+    return idle(state.status, `resume_after まで寝ている: ${sleeping}`);
   }
 
   const until = new Date(deps.now().getTime() + deps.leaseSeconds * 1000);
   if (!deps.store.acquireLease(goalId, deps.owner, until)) {
     // 他のワーカーが処理中。今回のティックはスキップする（design.md §4.5）。
-    return { ran: false, reclaimed: 0, decision: null, run: null, status: state.status };
+    return idle(state.status, "他のワーカーが lease を持っている");
   }
 
   try {
@@ -84,6 +109,8 @@ export async function tick(goal: Goal, deps: ControllerDeps): Promise<TickResult
       deps.now().toISOString(),
     );
 
+    // 前のティックのダイジェストは、今回の分を書く前に読む。
+    const previousDigest = deps.store.latestDigest(goalId);
     const carriedFacts = deps.store.latestSnapshot(goalId)?.facts ?? [];
     const result = await reconcile(
       {
@@ -112,9 +139,9 @@ export async function tick(goal: Goal, deps: ControllerDeps): Promise<TickResult
       observedAt,
     );
     deps.store.saveVerifications(goalId, verifications);
-    const digest = digestOf(result.facts);
-    // 前のティックのダイジェストは、今回の分を書く前に読む。
-    const previousDigest = deps.store.latestDigest(goalId);
+    // ダイジェストは reconcile が作る。DECIDE がループ検知に使う値なので、
+    // 副作用のあるこの層で作り直すと、判断に使った値と記録が食い違いうる。
+    const digest = result.observedDigest;
     deps.store.saveDecision(goalId, digest, result.decision);
 
     const run = await maybeAct(goal, result.decision, deps);
@@ -148,11 +175,28 @@ export async function tick(goal: Goal, deps: ControllerDeps): Promise<TickResult
       deps.now().toISOString(),
     );
 
-    return { ran: true, reclaimed, decision: result.decision, run, status };
+    return { ran: true, skipped: null, reclaimed, decision: result.decision, run, status };
   } finally {
     // 例外で抜けても解放する。残すと lease の期限までどのワーカーも動けない。
     deps.store.releaseLease(goalId, deps.owner);
   }
+}
+
+/**
+ * まだ寝ているなら、その時刻を返す。起きてよければ null。
+ *
+ * 解釈できない値は「起きてよい」と読む。resume_after が壊れているせいで
+ * Goal が永久に止まる方が、1ティック早く起きるより悪い。
+ */
+function sleepingUntil(resumeAfter: string | null, now: Date): string | null {
+  if (resumeAfter === null) {
+    return null;
+  }
+  const at = Date.parse(resumeAfter);
+  if (Number.isNaN(at) || at <= now.getTime()) {
+    return null;
+  }
+  return resumeAfter;
 }
 
 /** action が ACT のときだけ Actor を起動する。write-ahead は act 側が持つ */
@@ -206,11 +250,20 @@ function usageOf(state: GoalState, goal: Goal, deps: ControllerDeps): BudgetUsag
   const elapsedSeconds =
     activatedAt === null ? 0 : Math.max(0, Math.floor((deps.now().getTime() - activatedAt) / 1000));
 
+  // 直近まで同じ観測が続いていた回数。今回のティックは含まない。
+  // 含めると、DECIDE が「今回は変わった」を判定できなくなる。
+  const digest = deps.store.latestDigest(goal.goal.id);
+  const trailingDigest = {
+    digest,
+    count: digest === null ? 0 : deps.store.countTrailingDigest(goal.goal.id, digest),
+  };
+
   return {
     actorRuns: runs.length,
     reconciles: state.reconciles,
     consecutiveFailures,
     elapsedSeconds,
+    trailingDigest,
   };
 }
 
