@@ -141,6 +141,17 @@ export interface TickResult {
  * - action が ACT のときだけ act を呼ぶ。write-ahead は act 側が持つ
  * - 前ティックの Fact を store から読んで carriedFacts に渡す
  * - 中断されたら、走行中の Actor に伝播し、lease を解放して return する
+ * - **ティックの途中で lease を失ったら、snapshot / verifications / decision /
+ *   status を1つも書かずに return する。** 期限が切れた lease は別のワーカーが
+ *   奪えるので、lease は「取れた」ではなく「まだ持っている」を確かめ続ける対象になる。
+ *   失った側が書き切ると、書き込む先はいま別のワーカーが進めている Goal の行になり、
+ *   ダイジェストの連続（countTrailingDigest）も reconciles も2つのプロセス分が混ざる。
+ *   ループ検知と予算はそこを根拠にしているので、上限の判定が静かにずれる
+ * - 失ったと分かった時点で Actor を起動しない。予算を使ってから気づいても遅い。
+ *   走行中なら中断を伝える。放置すると、奪ったワーカーの Actor と同じ worktree を
+ *   2つのプロセスが同時に書く
+ * - 失っても throw しない。`ran: false` と理由を返し、次のティックに任せる。
+ *   他人の lease は解放しない（`releaseLease` が owner で弾く）
  */
 export async function tick(goal: Goal, deps: ControllerDeps): Promise<TickResult> {
   const goalId = goal.goal.id;
@@ -156,6 +167,26 @@ export async function tick(goal: Goal, deps: ControllerDeps): Promise<TickResult
     // dryRun が付かなかった。SKILL.md は「--dry-run なら必ず dryRun: true が付く」と
     // 書いており、それを見て preview と本番を区別するエージェントが取りこぼす。
     ...(deps.dryRun === true ? ({ dryRun: true } as const) : {}),
+    status,
+  });
+
+  /**
+   * ティックの途中で lease を失ったときの戻り値。
+   *
+   * throw しない。奪われるのは異常ではなく、期限付き所有権（design.md §4.5）が
+   * 設計どおりに働いた結果でしかない。次のティックに任せる。
+   *
+   * status は失う前に読んだものを返す。このティックは書いていないので、
+   * 自分が動かした状態は無い。decision も null にする——差し替えの判断まで
+   * 済んでいても、書いていないものを「決めた」と報告すると、cron のログから
+   * 書かれたと読めてしまう。走った Run だけは、実際に走ったので残す。
+   */
+  const lost = (status: GoalStatus, reclaimed: number, run: Run | null): TickResult => ({
+    ran: false,
+    skipped: "ティックの途中で lease を失ったので何も書かない",
+    reclaimed,
+    decision: null,
+    run,
     status,
   });
 
@@ -186,6 +217,19 @@ export async function tick(goal: Goal, deps: ControllerDeps): Promise<TickResult
     return idle(state.status, "他のワーカーが lease を持っている");
   }
 
+  // lease を失ったことを、走行中の Actor に伝えるための口。
+  //
+  // 奪われたと分かっても、ACT を最後まで走らせてよい理由は無い。奪ったワーカーの
+  // Actor は同じ worktree（名前は goal.id から決まる）を使うので、放置すると
+  // 2つのプロセスが同じ作業ツリーを同時に書く。
+  //
+  // SIGTERM（deps.signal）と束ねて1本にする。Actor から見れば「止まれ」は
+  // どちらも同じ意味で、理由の違いは Run の確定値ではなく controller が返す
+  // skipped に出る。
+  const leaseLost = new AbortController();
+  const actorSignal =
+    deps.signal === undefined ? leaseLost.signal : AbortSignal.any([deps.signal, leaseLost.signal]);
+
   // ティックが走っているあいだ lease を延長し続ける。
   //
   // ACT は Claude Code の実行なので分単位で、design.md §9 の実測では
@@ -194,9 +238,14 @@ export async function tick(goal: Goal, deps: ControllerDeps): Promise<TickResult
   // そこで別プロセスが lease を奪い、同じ worktree（名前は goal.id 固定）で
   // 2つの ACT が並行する。稀な競合ではなく、実運用の既定の挙動になっていた。
   //
-  // 延長の失敗は握り潰す。タイマーのコールバックから throw すると、下の
-  // try/finally の外なので clearInterval も releaseLease も走らないまま
-  // プロセスが落ちる。lease が期限まで残り、どのワーカーもその Goal を
+  // 延長できなかったときは、その戻り値を捨てない。`acquireLease` が false を
+  // 返すのは「期限切れの lease を別のワーカーが持っていった」ということなので、
+  // ここが奪われたことを知る唯一のタイマー経路になる。以前は戻り値を捨てて
+  // いたので、奪われたことが構造上わからなかった。
+  //
+  // ただし延長の失敗そのもので throw はしない。タイマーのコールバックから
+  // throw すると、下の try/finally の外なので clearInterval も releaseLease も
+  // 走らないままプロセスが落ちる。lease が期限まで残り、どのワーカーもその Goal を
   // 進められなくなる。延長できなければ期限切れに任せる方が軽い壊れ方になる。
   //
   // 延長には上限を置く。上限が無いと、刺さった ACT や git が lease を無期限に
@@ -213,9 +262,12 @@ export async function tick(goal: Goal, deps: ControllerDeps): Promise<TickResult
         return;
       }
       try {
-        deps.store.acquireLease(goalId, deps.owner, leaseUntil(), deps.now());
+        if (!deps.store.acquireLease(goalId, deps.owner, leaseUntil(), deps.now())) {
+          leaseLost.abort();
+        }
       } catch {
         // 次の延長で取り返せる。取り返せなければ lease は期限で切れる。
+        // ここで abort しない。DB を1回読めなかったことと、奪われたことは違う。
       }
     },
     Math.max(1, Math.floor(deps.leaseSeconds / 2)) * 1000,
@@ -245,13 +297,29 @@ export async function tick(goal: Goal, deps: ControllerDeps): Promise<TickResult
       deps,
     );
 
+    // 観測しているあいだに奪われていないかを、書くより先に確かめる。
+    //
+    // heartbeat は leaseSeconds / 2 ごとにしか鳴らないので、それより短い
+    // ティックはタイマーでは1度も捕まらない。奪われたかどうかは、書く直前に
+    // DB へ訊く側を正にする。ここで捕まえれば Actor も起動しないので、
+    // 予算を使ってから気づくことにもならない。
+    if (!holdsLease(goalId, deps)) {
+      return lost(state.status, reclaimed, null);
+    }
+
     // Fact と「結論が出なかった対象」を組で書く。片方だけ書くと §3.1 が DB 層で再発する。
+    //
+    // 組み立てるのはここ（観測した直後）だが、**書くのは ACT の後**にまとめる。
+    // ACT は分単位で、そのあいだに lease を奪われうる。先に書いてしまうと、
+    // 奪われたと分かった時点では既に他のワーカーの Goal の行を汚した後になる。
+    // observedAt は観測した時刻のままにする。書いた時刻に寄せると、Fact の
+    // 時点が ACT のぶんだけ後ろにずれる。
     const observedAt = deps.now().toISOString();
-    deps.store.saveSnapshot(goalId, {
+    const snapshot = {
       observedAt,
       facts: result.facts,
       unresolved: result.unresolved,
-    });
+    };
     // criteria 単位の索引（design.md §4.5 の Verification）。同じ結果を facts と
     // unresolved から導くだけで、検証をもう一度回さない。二重に検証すると、
     // 同じティックの中で結果が食い違う余地が生まれる。
@@ -261,7 +329,6 @@ export async function tick(goal: Goal, deps: ControllerDeps): Promise<TickResult
       result.unresolved,
       observedAt,
     );
-    deps.store.saveVerifications(goalId, verifications);
     // ダイジェストは reconcile が作る。DECIDE がループ検知に使う値なので、
     // 副作用のあるこの層で作り直すと、判断に使った値と記録が食い違いうる。
     const digest = result.observedDigest;
@@ -271,7 +338,14 @@ export async function tick(goal: Goal, deps: ControllerDeps): Promise<TickResult
     // 鳴りっぱなしの関門は誰も見なくなる。差分だけを Actor の仕業として数える。
     const repoBefore = await repoBaseline(deps);
 
-    const run = await maybeAct(goal, result.decision, deps);
+    const run = await maybeAct(goal, result.decision, deps, actorSignal);
+
+    // ACT のあいだに奪われていないか。Run はもう確定している（中断は act が
+    // interrupted として書く）ので、止めるのはここから下の書き込みだけになる。
+    // Actor は実際に走ったのだから、starting のまま残す方が悪い。
+    if (!holdsLease(goalId, deps)) {
+      return lost(state.status, reclaimed, run);
+    }
 
     // Agent が触ってはいけないものに触れていないかを、ACT の外で検査する
     // （design.md §7 / §10-6）。Agent 側の disallowedTools は Agent の設定で、
@@ -285,6 +359,18 @@ export async function tick(goal: Goal, deps: ControllerDeps): Promise<TickResult
     // 前ティックの local.* が残るので、観測に失敗したティックを「汚れている」と
     // 読んでしまう（design.md §3.1）。
     const decided = uncommittedDecision(goal, guarded, result.observedFacts, deps);
+
+    // ここから下がこのティックの書き込みになる。直前にもう一度確かめる。
+    // guardedDecision は git を叩くので、ACT 直後の確認から時間が空く。
+    if (!holdsLease(goalId, deps)) {
+      return lost(state.status, reclaimed, run);
+    }
+
+    // 観測結果は ACT の後にまとめて書く（組み立ては reconcile の直後）。
+    // verifications の reconcile_seq は saveSnapshot が進めた reconciles を
+    // 読むので、この2つは必ず隣に置く。
+    deps.store.saveSnapshot(goalId, snapshot);
+    deps.store.saveVerifications(goalId, verifications);
 
     // Decision は1ティックに1行だけ書く。以前は先に result.decision を書き、
     // 差し替えたときにもう1行足していたので、保護パス違反のティックだけ
@@ -328,6 +414,31 @@ export async function tick(goal: Goal, deps: ControllerDeps): Promise<TickResult
     clearInterval(heartbeat);
     deps.store.releaseLease(goalId, deps.owner);
   }
+}
+
+/**
+ * まだ自分が lease の持ち主か。書く直前に DB へ訊く。
+ *
+ * heartbeat の戻り値だけに頼らない理由は2つある。leaseSeconds / 2 より短い
+ * ティックではタイマーが1度も鳴らないこと、そして鳴る間隔の内側でも奪われうる
+ * こと。「取れた」は1回きりの出来事だが、「持っている」は書くたびに確かめる
+ * 対象になる（design.md §4.5）。
+ *
+ * 期限も見る。owner が自分のままでも、lease_until を過ぎていれば他のワーカーが
+ * いつ奪ってもよい状態なので、持ち主とは言わない。ただし lease_until を
+ * 読めなかった場合は owner の一致だけで判断する。読めないことを「失った」と
+ * 読むと、正常なティックが書けなくなる方向に倒れる。
+ */
+function holdsLease(goalId: string, deps: ControllerDeps): boolean {
+  const current = deps.store.getState(goalId);
+  if (current === null || current.leaseOwner !== deps.owner) {
+    return false;
+  }
+  if (current.leaseUntil === null) {
+    return true;
+  }
+  const until = Date.parse(current.leaseUntil);
+  return Number.isNaN(until) || until > deps.now().getTime();
 }
 
 /**
@@ -755,8 +866,19 @@ function sleepingUntil(resumeAfter: string | null, now: Date): string | null {
   return resumeAfter;
 }
 
-/** action が ACT のときだけ Actor を起動する。write-ahead は act 側が持つ */
-async function maybeAct(goal: Goal, decision: Decision, deps: ControllerDeps): Promise<Run | null> {
+/**
+ * action が ACT のときだけ Actor を起動する。write-ahead は act 側が持つ。
+ *
+ * `signal` は deps.signal（SIGTERM）と lease の喪失を束ねたもの。act は
+ * これを見て Run を interrupted で確定するので、奪われた側の Run が failed に
+ * ならない。意図して止めたものを failed にすると、再試行の上限を無駄に消費する。
+ */
+async function maybeAct(
+  goal: Goal,
+  decision: Decision,
+  deps: ControllerDeps,
+  signal: AbortSignal,
+): Promise<Run | null> {
   if (decision.action.type !== "ACT") {
     return null;
   }
@@ -774,7 +896,7 @@ async function maybeAct(goal: Goal, decision: Decision, deps: ControllerDeps): P
     worktree: deps.worktree,
     actor: deps.actor,
     runs,
-    signal: deps.signal,
+    signal,
     now: deps.now,
   };
 

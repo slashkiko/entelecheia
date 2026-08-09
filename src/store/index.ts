@@ -162,12 +162,19 @@ export interface Store {
 export function openStore(path: string): Store {
   const db = new DatabaseSync(path);
 
+  // busy_timeout を**最初に**置く。既定値は 0 で、ロックに当たった瞬間に
+  // SQLITE_BUSY を投げる。以前は journal_mode の後ろに並べていたので、
+  // その手前で掴まれていると待たずに `database is locked` を投げて openStore が
+  // 落ちていた。ティックは1周もせず、lease もスキップの記録も残らないまま
+  // exit 1 になる。スキーマの作成（下の db.exec(SCHEMA)）も同じ理由で後ろに置く。
+  db.exec(`PRAGMA busy_timeout = ${BUSY_TIMEOUT_MS};`);
+
   // WAL にすれば「複数リーダー + 単一ライター」が同時に動く（design.md §4.7）。
-  // :memory: では journal_mode が memory のまま変わらないが、エラーにはならない。
+  // ここだけ busy_timeout では待てないので、待つ側を自前で持つ（enableWal を参照）。
+  enableWal(db);
+
   db.exec(`
-    PRAGMA journal_mode = WAL;
     PRAGMA synchronous  = NORMAL;
-    PRAGMA busy_timeout = 5000;
     PRAGMA foreign_keys = ON;
   `);
   db.exec(SCHEMA);
@@ -574,6 +581,61 @@ export function openStore(path: string): Store {
       db.close();
     },
   };
+}
+
+/** ロックが空くのを待つ上限（ミリ秒）。busy_timeout と WAL への切り替え待ちに使う */
+const BUSY_TIMEOUT_MS = 5000;
+
+/**
+ * WAL への切り替えを待ち直す間隔（ミリ秒）。
+ *
+ * 揺らぎを混ぜる。同時に起動したプロセスは同じ瞬間に SQLITE_BUSY を受け取るので、
+ * 固定間隔で待つと足並みが揃ったまま何度もぶつかりうる。
+ */
+const WAL_RETRY_BASE_MS = 10;
+const WAL_RETRY_JITTER_MS = 30;
+
+/** ロック待ちのあいだスレッドを止めるための領域。値は使わない */
+const SLEEPER = new Int32Array(new SharedArrayBuffer(4));
+
+/**
+ * journal_mode を WAL にする。既に WAL なら SQLite 側で何も起きない。
+ *
+ * **ここだけ busy_timeout に任せられない。** rollback journal から WAL への変換は
+ * データベース全体の排他ロックを要求するが、変換を試みる接続は既に共有ロックを
+ * 持っている。SQLite は「共有ロックを持ったまま排他ロックへ昇格する」要求に対して、
+ * 両者が待ち合うデッドロックを避けるため、busy handler を呼ばずにその場で
+ * SQLITE_BUSY を返す（sqlite3_busy_handler の "could result in a deadlock" の項）。
+ *
+ * 実測でも、`.goals/.state/` を消した状態から4プロセスを同時に起動すると、
+ * 落ちる側は **2ms** で throw していた。busy_timeout の 5000ms を1度も待っていない。
+ * PRAGMA の並びを直しただけでは 100 プロセス中 2 が落ちたままだった。
+ *
+ * なので待つ側を自前で持つ。相手が変換を終えてしまえば、こちらの
+ * `PRAGMA journal_mode = WAL` は既に WAL の DB に対する no-op になって通る。
+ * WAL をやめて切り抜けることはしない（design.md §4.7）。
+ *
+ * 同期のまま待つ。openStore は同期で、Promise に変えると呼び出し側が全部
+ * 非同期になる。`Atomics.wait` はイベントループを回さずにスレッドを止めるだけなので、
+ * ロックを握っている**別プロセス**の進行は妨げない。
+ */
+function enableWal(db: DatabaseSync): void {
+  let waited = 0;
+  for (;;) {
+    try {
+      db.exec("PRAGMA journal_mode = WAL;");
+      return;
+    } catch (error) {
+      if (waited >= BUSY_TIMEOUT_MS) {
+        // 待ち切っても通らないのは、開き合いの競合ではなく別の異常にあたる。
+        // 握り潰すと WAL でない DB を黙って使い続けることになるので、投げる。
+        throw error;
+      }
+      const delay = WAL_RETRY_BASE_MS + Math.floor(Math.random() * WAL_RETRY_JITTER_MS);
+      Atomics.wait(SLEEPER, 0, 0, delay);
+      waited += delay;
+    }
+  }
 }
 
 /**

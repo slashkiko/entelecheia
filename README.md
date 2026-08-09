@@ -178,6 +178,38 @@ ent agent-context                  # CLI の構造を機械可読な JSON で出
 常駐しない。`run` はどのティックも有限時間で終了し、待ちは Goal の状態として残る。
 継続して回すなら cron から `run` を叩く。
 
+### 複数の Goal を同時に回す
+
+`ent run` は複数のプロセスから同時に叩いてよい。まとめて回す口（`ent run --all` や
+常駐する watch）は用意しない。何本並べるかを決めるのは呼び出し側で、`ent` は
+「同時に叩かれても壊れない」ところまでを受け持つ。
+
+```sh
+# ワーカーを並べる側の例。slug ごとに1プロセス立てて、全部の終了を待つ
+for slug in goal-a goal-b goal-c; do
+  ent run "$slug" &
+done
+wait
+```
+
+cron から回すなら、Goal ごとに行を分ければよい（同じ分に並んでも構わない）。
+
+```cron
+*/10 * * * * cd /path/to/repo && node dist/cli.js run goal-a
+*/10 * * * * cd /path/to/repo && node dist/cli.js run goal-b
+```
+
+同じ slug を2つのプロセスに渡しても安全に扱える。Goal の所有権は期限付きの
+lease で決まるので、先に取れた側だけが進み、取れなかった側は
+「他のワーカーが lease を持っている」でスキップして exit 0 で終わる。二重に
+Actor が走ることも、状態が混ざることもない。ティックの途中で lease を失った側も、
+そのティックの記録を1つも書かずに降りる。
+
+並べる本数は機械の資源で決める。各ティックは Actor（Claude Code）と Goal の
+検証コマンド（このリポジトリなら `mise run verify`）を worktree の上で走らせるので、
+1本あたり CPU コア1〜2本を見込むとよい。目安としてコア数の半分までにしておくと、
+検証コマンドがタイムアウト側に倒れにくい。
+
 `GITHUB_TOKEN`（または `GH_TOKEN`）を渡すと GitHub を観測する。無ければ観測は
 `unobserved` に `port_failed` として残り、ASSESS も「PR は無い」とは読まない。
 Actor と LLM は Claude Code の OAuth をそのまま使う。
