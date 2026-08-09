@@ -1,0 +1,256 @@
+version: 1
+
+goal:
+  id: commit-what-the-actor-wrote
+  name: Actor が書いたものを未 commit のまま取り残さない
+  desired_state: |
+    Phase 3 の自己ホストで見つかった配管の断線を塞ぐ。
+
+    Goal `agent-friendly-cli` の1ティック目で、Actor は worktree に実装を書き切り、
+    その worktree では `mise run verify` が 454 件すべて緑になっていた。
+    **しかし commit していなかった。**
+    そこから先はこうなる。
+
+      push は commit 済みの差分しか送らない（`git push -u origin HEAD:<branch>`）
+      VERIFY は worktree の作業ツリーを見るので criteria は通る
+      controller からは「ローカルの criteria は全部 passed なのに PR だけが古い」に見える
+      DECIDE は WAIT(review_pending) を選び、Goal は WAITING_HUMAN で止まる
+      人間が待っているのは実装が載った PR なので、この待ちは永久に終わらない
+
+    `src/publish/index.ts` の148行目付近は「Actor は毎ティック worktree に
+    commit している」と書いているが、これは仮定であって、controller はどこでも
+    commit を要求していない。intent は LLM が生成するので、commit に言及しない
+    intent が出れば起きる。実際に出た。
+
+    どう作るかは Actor が決める。以下は「何が満たされていればよいか」を書く。
+
+    1. 「機械側にやることは残っていない」と言い切るティックで、未 commit の
+       変更を見落とさない
+
+      controller が言い切る形は2つある。COMPLETE と、LLM が返した WAIT を
+      そのまま採用することの2つで、どちらも「あとは人間か外部の番だ」を意味する。
+      worktree に未 commit の変更が残っているあいだ、そのどちらにも落ちない。
+
+      とくに COMPLETE は終端で、あとから取り消せない（design.md §4.4）。
+      実装が1行も push されないまま COMPLETED になる経路を残さない。
+
+    2. 検知の材料と結果を Fact / unresolved として残す
+
+      黙って WAIT に落ちない、というのがこの Goal の要点になる。`ent show` と
+      PR の進捗コメントを読んだ人間が、「なぜ完了しなかったのか」「何をすれば
+      進むのか」を追えること。確かめられなかったことを Fact の不在に畳まない
+      （design.md §3.1）のと同じ扱いにする。
+
+      材料そのものは既にある。`local.dirty` は Goal 専用の worktree を観測して
+      いて（`src/cli.ts` の `verifyRoot`）、VERIFIED な Fact として毎ティック
+      残っている。**誰も読んでいないだけ**にあたる。新しい観測を足すか、
+      いまある Fact を読むかは決めてよい。
+
+    3. 検知した結果どう動くかは決めてよい
+
+      ESCALATE して人間を呼ぶのでも、commit させる ACT を出すのでもよい。
+      決めたのが LLM ではないこと（`decidedBy` が guard であること）だけを守る。
+      停止条件と完了判定を LLM に委ねないのは design.md §7 の線で、
+      「実装が push されていない」はその判定の一部にあたる。
+
+    4. 逆向きの誤検知を作らない
+
+      「worktree が汚れていれば常に止める」も同じだけ困る。次の2つは
+      これまでどおり進む。
+
+        Gap が残っているティック。実装の途中で作業ツリーが汚れているのは正常
+        Actor がまだ1度も走っていないティック。worktree が無いので
+        `local.*` は controller 自身のリポジトリを観測する。自己ホストでは
+        人間の編集で汚れているのが普通で、それを Actor の書き残しと読むと
+        どの Goal も最初のティックから進まなくなる
+
+    5. commit を intent に含めるかは任意
+
+      「Actor に渡す intent に、worktree で commit するところまでを含める」
+      という向きもある。入れてよいが、**これは 1〜3 の代わりにはならない。**
+      intent は LLM が生成するもので、書いたとおりに Actor が動く保証は無い。
+      従わなかったティックは、やはり黙って WAIT に落ちる。原因の側を細くする
+      改善であって、閉じるのは controller 側の検知になる。だから
+      Acceptance Criteria が固定するのは 1〜3 で、これは任意にしてある。
+
+    6. 誤った前提を書いたコメントを直す
+
+      `src/publish/index.ts` の「Actor は毎ティック worktree に commit している」
+      は、観測ではなく仮定を事実として書いている。実装に合わせて直す。
+
+    テストは tests/controller-uncommitted.test.ts に書いてある。5本のうち
+    2本が着手時点で落ちる（残り3本は誤検知を作らないための固定なので、いまは通る）。
+    仕様はそちらが正で、この YAML の記述と食い違ったらテストに合わせる。
+
+repository:
+  provider: github
+  owner: slashkiko
+  name: entelecheia
+  default_branch: main
+
+setup:
+  - pnpm install --frozen-lockfile
+
+acceptance_criteria:
+  - id: ac-1
+    description: controller-uncommitted の5本が通り、既存のテストも通ったままになる（着手時点では2本落ちている）
+    verification: { type: command, run: mise run test }
+
+  - id: ac-2
+    description: 型チェックが通る
+    verification: { type: command, run: mise run typecheck }
+
+  - id: ac-3
+    description: lint と format が通る
+    verification: { type: command, run: mise run lint }
+
+  - id: ac-4
+    description: サプライチェーンと workflow のチェックが通る（baseline 由来）
+    verification: { type: command, run: mise run check }
+
+  - id: ac-5
+    description: 変更を載せた PR の CI が成功している
+    verification: { type: fact, key: github.ci.conclusion, equals: success }
+
+  - id: ac-6
+    description: 未 commit の実装が取り残されなくなったか、人間が確認する
+    verification:
+      type: human
+      prompt: |
+        この Goal が満たしたいのは「テストが通ること」ではなく、
+        「実装が push されないまま Goal が止まる経路が無いこと」です。
+        テストは代理でしかないので、次を確認してください。
+
+        1. `ent run <slug>` を回し、Actor が commit しなかったティックで
+           何が出るか。`ent show` と PR の進捗コメントだけを読んで、
+           「なぜ止まったか」「何をすれば進むか」が分かるか
+        2. 誤検知しないか。repoRoot を汚した状態で、まだ worktree が無い
+           Goal の1ティック目を回し、そこで止まらないこと。
+           実装の途中（Gap が残っているティック）でも止まらないこと
+        3. 検知した結果の行動を決めているのが guard か。LLM が返した WAIT を
+           そのまま採用する経路が残っていないか
+
+        あわせて、本 Goal に限って `src/controller/**` の保護を外している
+        （design.md §7 の自己ホストの安全装置）ので、差分を読んでください。
+
+        - 足されているのが未 commit の検知だけか。lease の取得と延長、
+          write-ahead、orphan の回収、Decision の書き込み、状態遷移の
+          順序が変わっていないか。Decision は1ティックに1行のままか
+        - 保護パスの検査そのもの（src/domain/protected-paths.ts と
+          controller の guardedDecision）が弱められていないか
+        - 5（intent に commit を含める）を入れたなら、それが 1〜3 の
+          代わりになっていないか。intent だけで塞いだ形になっていないか
+
+context:
+  background: |
+    Phase 3 で見つかった断線は、これで4つ目になる。`git branch --format` の
+    引用符不足で worktree の作成が失敗していたこと、VERIFY が worktree ではなく
+    controller 自身のリポジトリでコマンドを流していたこと、PR がある間 push
+    しなくなっていたこと、そして今回の「commit されていない」。
+    いずれもテストは緑のまま通っていた（README の「実際に回すまで、配管は
+    繋がっていると見なせない」）。
+
+    今回のものは、これまでの3つとは壊れ方が違う。前の3つは controller の
+    実装の誤りだったが、今回は controller が誤った動きをしたわけではない。
+    push も VERIFY も DECIDE も、それぞれの契約どおりに動いている。
+    足りないのは、**「Actor が commit する」という前提をどこも要求していない**
+    ことにある。前提が満たされたかを誰も確かめないまま、満たされていることに
+    して先へ進む形になっていた。design.md §3.1 が Fact について避けたかった
+    構図が、Fact ではなく前提の側で起きたことになる。
+
+    **`agent-friendly-cli` とは独立している。** この断線はあちらを回している
+    最中に見つかったが、本 Goal は origin/main を土台にしており、あちらの
+    Goal YAML も仕様テストもまだ main に入っていない。着手時点で落ちるのは
+    本 Goal の2本だけになる。2本を並行させるなら、落ちているテストが
+    どちらの担当分かはファイル名で切り分けられる（あちらは
+    tests/cli-agent-friendly.test.ts・tests/cli-agent-context.test.ts・
+    tests/controller-dry-run.test.ts の3ファイル）。
+
+    直す向きは2つある。原因を細くする（intent に commit を含める）のと、
+    結果を検知する（controller が未 commit を見る）の2つで、**検証に還元
+    できるのは後者だけになる**（design.md §3.2）。intent は LLM が生成するので、
+    「書いた」ことは確かめられても「従った」ことは確かめられない。
+    前者は入れてよいが、Acceptance Criteria が固定するのは後者にする。
+
+  constraints:
+    - tests/controller-uncommitted.test.ts は仕様なので、assert とシナリオを変えない。
+      通らないなら実装側を直す。新しい Port の口を足して既存のフィクスチャが
+      型として足りなくなった場合に限り、フィクスチャへの追記はしてよい。
+      その場合も、各シナリオが表している状態（作業ツリーが汚れている / 綺麗、
+      Actor が走った / まだ走っていない）は変えない
+    - 既存の tests/ を弱めない。とくに tests/controller*.test.ts は通ったままにする
+    - 別 Goal `agent-friendly-cli` の仕様（tests/cli-agent-friendly.test.ts・
+      tests/cli-agent-context.test.ts・tests/controller-dry-run.test.ts）が
+      先に main へ入っていても、本 Goal では実装しない
+    - 保護パスの検査そのものを弱めない。src/domain/protected-paths.ts と
+      controller の guardedDecision は、本 Goal で外したのは適用対象であって
+      仕組みではない
+    - src/controller/** に足すのは未 commit の検知だけにする。lease の取得と延長、
+      write-ahead、orphan の回収、Decision の書き込み、状態遷移の順序を変えない。
+      Decision は1ティックに1行のままにする
+    - 完了判定と停止条件を LLM に委ねない（design.md §7）。検知した結果どう動くかは
+      guard が決める
+    - 検証コマンドとローカル観測の実行先（src/cli.ts の verifyRoot）を repoRoot に
+      戻さない。worktree を見なくなると、この Goal で塞いだものとは別の断線に戻る
+    - git を新しく叩くならシェルを通さない。argv 配列で渡す（design.md §7）
+    - .goals/** は触らない（policies.protected_paths）
+    - テストから実際の GitHub と Claude API を叩かない
+    - docs/design.md の「3. 中核の設計判断」を勝手に変えない
+    - 依存パッケージを増やさない
+    - mise run check（サプライチェーン検査）を壊さない
+    - docs/design.md と README.md の該当箇所を、足したものに合わせて直す。
+      README の「Phase 3 で見つかった断線」と design.md §8 の Phase 3 節が対象
+    - PR の作成とコメントの投稿はしない。controller が行う
+
+  references:
+    - title: 仕様（未 commit を残したまま終わらない）
+      path: tests/controller-uncommitted.test.ts
+    - title: 1ティックの外側。検知を足す場所
+      path: src/controller/index.ts
+    - title: push と PR の確保。誤った前提を書いたコメントがある
+      path: src/publish/index.ts
+    - title: push と git worktree の実装
+      path: src/adapters/local.ts
+    - title: local.* の観測先を決めている verifyRoot
+      path: src/cli.ts
+    - title: 完了判定と停止条件の境界
+      path: src/decide/index.ts
+    - title: 設計ドキュメント
+      path: docs/design.md
+    - title: 人間向けの導入
+      path: README.md
+
+policies:
+  require_human_approval:
+    - merge
+    - force_push
+    - push_to_default_branch
+    - deploy
+    - secret_access
+    - external_send
+  protected_paths:
+    # 本 Goal は未 commit の検知を1ティックの外側に足すので、
+    # src/controller/** を外してある。外したのは適用対象であって、
+    # 検査の仕組みではない（constraints を参照）。
+    - .goals/**
+    # 関門そのものと、Agent の許可・拒否ツールを決めるファイル。
+    - src/domain/protected-paths.ts
+    - src/adapters/claude.ts
+    # 検証系。ここを書き換えられると Agent が自分の criteria を通せる。
+    # tests/** は入れない（理由は guard-the-controller.yaml に書いた）。
+    - mise.toml
+    - mise-tasks/**
+    - vitest.config.ts
+    - biome.json
+    - tsconfig*.json
+    - .github/**
+    # 依存の追加は人間が通す。constraints にも「依存パッケージを増やさない」と書いてある。
+    - package.json
+    - pnpm-lock.yaml
+
+budget:
+  max_actor_runs: 10
+  max_reconciles: 20
+  max_wall_clock: 3h
+  max_consecutive_failures: 3
+  max_unchanged_reconciles: 4
