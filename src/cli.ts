@@ -85,9 +85,9 @@ export function parseCommand(argv: readonly string[]): Command {
 /**
  * `ent` の本体。1ティック回して終了する。常駐しない（design.md §3.6）。
  *
- * GitHub と Actor の Port はまだ実装が無いので、呼ばれたら throw する形にしてある。
- * observe と act はそれを握って unresolved と failed に落とすので、
- * ティック自体は最後まで回り、状態が DB に残る。捏造した観測は作らない。
+ * GITHUB_TOKEN が無ければ、GitHub の Port は PortError(unavailable) を投げる。
+ * observe がそれを握って unobserved に落とすので、ティック自体は最後まで回り、
+ * 状態が DB に残る。捏造した観測は作らない。
  */
 export async function main(argv: readonly string[]): Promise<number> {
   const command = parseCommand(argv);

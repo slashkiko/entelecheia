@@ -237,8 +237,15 @@ Phase 0 では Port の camelCase フィールド名との対応表がどこに�
 
 上の表とレジストリは現時点で1対1ではない。Review 行（`author` / `submitted_at`）に
 対応するキーは無く、レビューの状態は `github.pr.review_decision` に集約されている。
-個別のレビューを観測する Port はまだ切っていない。表は取得したい対象、
+レビュー一覧は `review_decision` の導出に使うだけで、個別のレビューを Fact として
+出す Port は無い。表は取得したい対象、
 レジストリは実際に取得できる対象を表すので、実装するときはレジストリ側を正とする。
+
+`github.pr.review_decision` は REST の `pulls/{n}` と `pulls/{n}/reviews` から導出する。
+GraphQL なら1回で取れるが、ETag による conditional request（§3.4）が効くのは REST の
+GET だけなので、レビュアーごとに最後の1件を見て組み立てる。変更要求を承認より優先する。
+`github.issue.linked_pr` は「その Issue 自身が PR である」場合しか埋まらない。
+相互参照された PR は timeline API が要るので、まだ観測しない。
 
 **`github.pr.review_decision` を人間の承認の観測源にはできない。** GitHub は自分が作った
 PR に Approve を押させないので、controller が Goal の所有者と同じアカウントで PR を作る限り
@@ -423,7 +430,7 @@ Phase 3 も GitHub 単独の自己ホストなので、そこでは検証され�
 | DB | `node:sqlite`（Node 標準） | 同期 API でコードが素直。Node 22.5 以降の標準で、`mise.toml` が Node 24 を固定しているため常に使える。better-sqlite3 + Drizzle の採用予定を取り下げた（下記） |
 | CLI | `node:util` の `parseArgs`（Node 標準） | サブコマンドが3つなので依存を足す価値が出ない。10 を超えたら citty か oclif に寄せる |
 | プロセス実行 | `node:child_process`（Node 標準） | 検証コマンドと git を叩くだけなので標準で足りる。ストリーム制御が要るようになったら execa に移す |
-| GitHub | octokit + plugin-throttling/retry | ETag でポーリングのレート制限を節約 |
+| GitHub | `@octokit/rest` + plugin-throttling/retry | ETag でポーリングのレート制限を節約 |
 | ログ | pino（未着手） | 構造化ログ。Decision テーブルとは別に生ログを残す。いまは CLI が JSON を1本出すだけ |
 | テスト | Vitest | |
 | Lint | Biome | 設定が少なく速い |
@@ -444,10 +451,11 @@ DB と CLI のどちらも Node 24 標準で置き換えた。判断の根拠は
    依存が1つ増えるコストの方が重い
 
 結果として、controller の本体は zod と yaml の2つだけに依存する。
-残る依存は Port の実装側（octokit と Claude Agent SDK）に閉じる。
-
 同じ理由で、プロセス実行も execa ではなく `node:child_process` にしてある。
-ここまでで controller に足した依存はゼロで、増えるのは Port の実装からになる。
+
+外部依存は Port の実装側に寄せた。4本目で `@octokit/rest`（+ throttling / retry）と
+`@anthropic-ai/claude-agent-sdk` が入っている。octokit は `src/adapters/` に閉じており、
+Agent SDK は `src/cli.ts` が `query` を注入する1点だけが外に出る。
 
 §3.6 が触れている `ent watch` はまだ無い。常駐しない形（cron から `run` を叩く）だけを
 用意してあり、`watch` を足すかどうかは実際に cron で回してから決める。
@@ -551,7 +559,7 @@ Phase で数えるのは controller が回す段階だが、Goal で数えるの
 | 1 | `.goals/assess-and-decide.yaml` | Fact から Gap を出し、次の行動を決める。Port 注入の純ロジック | 完了 |
 | 2 | `.goals/run-actor-in-worktree.yaml` | ACT。Claude Code の headless 実行、worktree 隔離 | 完了 |
 | 3 | `.goals/persist-and-resume.yaml` | 永続化。SQLite、write-ahead、lease、状態機械、CLI | 完了 |
-| 4 | Port の実装 | octokit（GitHub の read と write）、Claude Agent SDK（Actor と LLM） | 未着手 |
+| 4 | `.goals/connect-github-and-claude.yaml` | Port の実装。`@octokit/rest`（GitHub の read）、Claude Agent SDK（Actor と LLM） | 完了 |
 
 この順にしたのは、Phase 2 で検証したいのが「reconcile ループが収束するか」だから。
 収束を判定するには、まず同じ入力から同じ Decision が出る必要がある。1本目はそこまでを担う。
@@ -561,7 +569,11 @@ ACT と永続化は収束の判定そのものには要らない。
 controller 側は Port が無くても最後まで書けてしまい、3本目の時点で
 「コードは揃っているが実環境には繋がっていない」状態になったため分けてある。
 未実装の Port は呼ばれたら throw する形にしてあり、`unobserved` / `unverified` と
-`ESCALATE` として状態に残る。捏造した観測を返さないので、繋いだ時点との差分が読める。
+`ESCALATE` として状態に残った。捏造した観測を返さないので、繋いだ時点との差分が読めた。
+
+**これで Phase 2 は完了した。** controller が OBSERVE / ASSESS / DECIDE / ACT / VERIFY を
+実際の GitHub と Claude Code に対して回す。ただし §9 の完了条件のうち確認できたのは
+9項目中4つで、残りは Phase 3 で自己ホストしながら埋める。
 
 1本目を終えて分かったのは、reconcile を「決める」までで純粋に保てることだった。
 ACT の実行と write-ahead は reconcile の外側に置ける。reconcile が Port の注入だけで動くので、
@@ -572,6 +584,13 @@ ACT の実行と write-ahead は reconcile の外側に置ける。reconcile が
 Store が `new Date()` を呼ぶと、`now` を注入されて動く `tick()` と時間軸が分かれる。
 実際、経過時間が数時間ずれて予算超過と判定された。Store は時刻を作らず引数で受け取る。
 例外は lease の期限判定で、これはプロセスの生死を測るものなので実時計でよい。
+
+4本目で分かったのは、**外部 SDK の挙動は型定義からもドキュメントからも決まらない**
+ことだった。使用量上限の判別（§10-3）は型 → ドキュメント → issue → 実装の順に読んで初めて確定した。
+あわせて、ドキュメントだけで書いた段階のコードには3つの誤りが残っていた。
+拒否ルールのパターン形式、`permissionMode` の選び方、そして「サブスクリプションの上限」と
+「一時的な 429」が同じ値で区別できないこと。いずれも実際に Agent を起動するまで
+表面化しない種類の誤りで、Port を足すときは実装まで読みに行く。
 
 ### Phase 3 の自己ホストには制約が要る
 
@@ -587,15 +606,16 @@ Store が `new Date()` を呼ぶと、`now` を注入されて動く `tick()` �
 ## 9. MVP 完了条件
 
 Goal の記述と承認を除いて、以下を人手の介入なしで1回通せたら MVP 完了とする。
+チェック済みの4項目は Phase 2 の範囲で確認した。残りは Phase 3 の自己ホストで埋める。
 自己ホストが通れば他の GitHub リポジトリでも通るが、逆は言えない。
 
-- [ ] **Goal の登録** — このツール自身への機能追加を `.goals/*.yaml` に書き、Zod 検証を通して `ent start` で ACTIVE になる
-- [ ] **実装** — reconcile ループが Claude Code を worktree 上で起動し、実装が行われる
-- [ ] **検証** — 検証コマンドが通り、Fact が VERIFIED で記録される
+- [x] **Goal の登録** — このツール自身への機能追加を `.goals/*.yaml` に書き、Zod 検証を通して `ent start` で ACTIVE になる
+- [x] **実装** — reconcile ループが Claude Code を worktree 上で起動し、実装が行われる
+- [x] **検証** — 検証コマンドが通り、Fact が VERIFIED で記録される
 - [ ] **PR と通知** — PR が作られ、進捗が PR コメントに書かれる
 - [ ] **完了判定** — 人間の承認を検知し（signal は §10）、全 criteria の `Verification.result` が `passed` になって COMPLETED へ遷移する。`unverified` が空でないうちは COMPLETED にしない
-- [ ] **取りこぼしが見える** — Port を人工的に落とし、観測できなかった対象が `unobserved` に残ること、ASSESS がそれを「対象なし」と読まないことを確認する
-- [ ] **いつでも殺せる** — Actor 実行中に `SIGTERM` を送って即座に終了し、再度 `ent run --once` を叩くと中断した Task を回収して続きから進む
+- [x] **取りこぼしが見える** — Port を人工的に落とし、観測できなかった対象が `unobserved` に残ること、ASSESS がそれを「対象なし」と読まないことを確認する
+- [ ] **いつでも殺せる** — Actor 実行中に `SIGTERM` を送って即座に終了し、再度 `ent run <slug>` を叩くと中断した Task を回収して続きから進む
 - [ ] **上限で寝て起きる** — 使用量上限を人工的に起こし、`WAITING_EXTERNAL(usage_limit)` でプロセスが終了すること、次ティックで自動再開することを確認する
 - [ ] **暴走しない** — 予算・reconcile 回数・ループ検知のいずれかが働くケースを人工的に作り、ESCALATE することを確認する
 
@@ -612,12 +632,17 @@ Goal の記述と承認を除いて、以下を人手の介入なしで1回通�
    `context.references` は `title` / `path` のみを許し、URL は受け付けない
 2. **上限値の初期チューニング** — `max_actor_runs` などの値は仮置き。
    あわせて `budget` に「同じギャップが N 回連続で解消されなければ ESCALATE」（§7）の N が無く、
-   `ESCALATE(loop_detected)` を guard から出せない。ループ検知には前ティックの Gap も要るので、
-   Port を実装する Goal で一緒に決める
-3. **使用量上限の検出方法** — Agent SDK が返すエラーの形状を実測する必要がある。
-   現状の `LlmPort.chooseAction` は `Promise<unknown>` を返すだけなので、DECIDE からは
-   使用量上限と一時障害を区別できず、どちらも `ESCALATE(invalid_decision)` になる。
-   §4.4 の `WAITING_EXTERNAL(usage_limit)` へ到達する経路が実装に無い
+   `ESCALATE(loop_detected)` を guard から出せない。ループ検知には前ティックの Gap も要る。
+   Port の Goal では決めず、Phase 3 の自己ホストで実際に空回りさせてから決める
+3. ~~**使用量上限の検出方法**~~ — Phase 2 の4本目で確定した。Agent SDK の
+   `rate_limit_event` が持つ `rate_limit_info.status` が `rejected` なら上限で、
+   応答ヘッダ `anthropic-ratelimit-unified-status` から作られる。`resetsAt` は
+   **秒**（実装が `Date.now()/1000` と引き算している）。`assistant` メッセージの
+   `error: "rate_limit"` は上限と一時的な 429 の両方に付くので、単体では根拠にならず、
+   直前に `rejected` を見ているかで判断する。Port は `PortError("usage_limit")` を投げ、
+   DECIDE が guard として `WAIT(usage_limit, resumeAfter)` を返す。
+   なおこれらはドキュメントに記載が無く、根拠は Claude Code の実装読解にある。
+   SDK が変われば黙って壊れるので、Port を触るときに読み直す
 4. **人間の承認をどの signal で検知するか** — §4.3 のとおり `github.pr.review_decision` は
    使えない。候補は PR コメントの定型文（自分の PR にも書ける）と CLI（`ent approve`）。
    `ApprovalPort` を実装する Goal で決める
@@ -625,10 +650,11 @@ Goal の記述と承認を除いて、以下を人手の介入なしで1回通�
    `WAITING_EXTERNAL(usage_limit)` で `resume_after` を書いても、次のティックがそれを見ずに
    走ってしまう。§9 の「上限で寝て起きる」を満たすには、`ent run` が
    `resume_after` を過ぎるまでスキップする必要がある
-6. **`require_human_approval` を誰が止めるか** — 現状は ACT が Actor に
-   `deniedOperations` として渡すだけで、controller 側の関門になっていない。
-   Actor が従わなければ素通りする。§7 の「人間承認を必須にする操作」を担保するには、
-   Actor の外側で止める必要がある
+6. **`require_human_approval` を誰が止めるか** — ACT は `deniedOperations` を
+   Agent SDK の `disallowedTools` に落としており、スコープ付きの拒否ルールは
+   `bypassPermissions` を含むどのモードでも効く。ただしこれは Agent 側の設定であって、
+   controller 側の関門ではない。SDK の外から同じ操作をされれば素通りする。
+   §7 の担保には Actor の外側にも関門が要る
 7. **Notion / Slack を足す時期** — 実環境ができてから
 8. **Goal YAML のスキーマ変更をどう移行するか** — 現状は `version: 1` を literal で固定してあり、
    スキーマが変わったら既存 YAML を手で書き直すしかない。Goal が数本のうちは問題ないが、

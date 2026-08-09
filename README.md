@@ -13,9 +13,11 @@
 
 ## 設計の要点
 
-「実装」列は Phase 2 の3本目（`.goals/persist-and-resume.yaml`）を完了した時点の状態を示す。
-「済」はコードとして揃っていることを意味し、実環境で動くこととは別のことになる。
-GitHub と Claude Code に繋ぐ Port はまだ無く、そこは Phase 2 の4本目に入る。
+「実装」列は Phase 2 を完了した時点の状態を示す。controller は OBSERVE / ASSESS /
+DECIDE / ACT / VERIFY を回し、GitHub の**観測**と Claude Code の起動は実際に走る。
+PR の作成とコメント投稿（書き込み側）はまだ無い。
+「済」はコードとして揃っていることを意味し、実環境で1周通したこととは別になる。
+design.md §9 の完了条件9項目のうち、確認できたのは4つ。残りは Phase 3 で埋める。
 
 | 原則 | 内容 | 実装 |
 |---|---|---|
@@ -26,9 +28,9 @@ GitHub と Claude Code に繋ぐ Port はまだ無く、そこは Phase 2 の4�
 | 宣言と収束の分離 | 人間が書くのは Desired State と Acceptance Criteria。タスク分解も Actor 選択も controller が決める | 済 |
 | write-ahead | 副作用の前に意図を DB へ書く。任意の瞬間に kill されても次ティックで回収できる | 済 |
 
-完了判定と暴走の停止条件は LLM に決めさせない。DECIDE が選ぶ行動のうち `COMPLETE` と
-`ESCALATE(budget_exhausted)` は純ロジック（guard）が決め、Gap の埋め方だけを LLM に委ねる。
-この境界は `src/decide/` にある。
+完了判定と暴走の停止条件は LLM に決めさせない。DECIDE が選ぶ行動のうち `COMPLETE`、
+`ESCALATE(budget_exhausted)`、そして待ちの判定（`WAIT`）は純ロジック（guard）が決め、
+Gap の埋め方だけを LLM に委ねる。この境界は `src/decide/` にある。
 
 Goal の状態（ACTIVE / COMPLETED など）は `.goals/.state/goals.db` が持つ。
 行動の `COMPLETE` と Goal の状態 `COMPLETED` は別のもので、前者が選ばれた結果として後者になる。
@@ -36,32 +38,28 @@ Goal の状態（ACTIVE / COMPLETED など）は `.goals/.state/goals.db` が持
 
 ## 現在地とロードマップ
 
-**Phase 2。** Phase 0（`.goals/observe-returns-facts.yaml`）と
+**Phase 2 完了。** Phase 0（`.goals/observe-returns-facts.yaml`）と
 Phase 1（`.goals/automate-observe-and-verify.yaml`）は完了し、Goal YAML のスキーマが
 `src/domain/goal.ts` に、観測キーのレジストリが `src/domain/fact-keys.ts` に確定した。
 
 Phase 2 は ASSESS / DECIDE / ACT と永続化と CLI、および GitHub と Actor に繋ぐ Port の実装を
-含み、1つの Goal には大きすぎるので4本に割ってある。3本目まで完了し、
-`ent run <slug>` が1ティックを回して状態を SQLite に残す。
+含み、1つの Goal には大きすぎるので4本に割ってあった。**4本とも完了している。**
+`ent run <slug>` が1ティックを回し、実際の GitHub を観測して状態を SQLite に残す。
 
-残るのは4本目の Port 実装になる。GitHub（octokit）と Actor（Claude Agent SDK）が
-まだ無く、呼ばれたら throw する形にしてある。ティック自体は最後まで回り、
-観測できなかった対象は `unobserved` に、LLM の不在は `ESCALATE` になって状態に残る。
-捏造した観測を返すより、落として記録した方が状態が正しく残るため。
-
-**4本目が入るまでは、実装だけを人間が回す。** Goal YAML を丸ごと Claude Code に渡して実装させ、
-検証コマンドを回し、落ちたら結果を戻す。
-この往復が ACT → VERIFY → OBSERVE の手動版になる。
+次は Phase 3 の自己ホスト。このリポジトリ自身を対象に `ent run` を回し、
+design.md §9 の完了条件のうち残る5項目（PR と通知、完了判定、いつでも殺せる、
+上限で寝て起きる、暴走しない）を埋める。
 
 Phase 1 と Phase 2 の1本目は、どちらも6本の Acceptance Criteria のうちコマンドで検証する4本を
-通しただけでは COMPLETED にならなかった。Phase 1 で残ったのは CI の結果（`type: fact`）と
-レビュー承認（`type: human`）、1本目で残ったのは CI の結果と、guard と LLM の境界が妥当かの
-確認（`type: human`）だった。**設計の中核ほど検証コマンドに落ちない。**
+通しただけでは COMPLETED にならなかった。Phase 1 で残ったのは CI の結果（`type: fact`）と、
+Port の抽象が1実装に癒着していないかの確認（`type: human`）。1本目で残ったのは
+CI の結果と、guard と LLM の境界が妥当かの確認（`type: human`）だった。**設計の中核ほど検証コマンドに落ちない。**
 
 下の表は、controller が回す範囲を累積で示す。各行はそのフェーズを**完了した時点**の
 累積範囲で、数えているのは controller が回す段階であってコードの有無ではない。
 起動の主体は「controller が回す範囲」の列には数えていない。
-無人で回り始めるのは Phase 2 を完了した時点から。
+1ティックの内側に人間の判断が入らなくなるのは Phase 2 を完了した時点からで、
+起動そのものは cron が担う。常駐プロセスは作らない（design.md §3.6）。
 
 | Phase | controller が回す範囲（累積） | 人間が担う |
 |---|---|---|
@@ -109,9 +107,9 @@ ent show <slug>                    # 宣言部と実行時状態をまとめて�
 常駐しない。`run` はどのティックも有限時間で終了し、待ちは Goal の状態として残る。
 継続して回すなら cron から `run` を叩く。
 
-いまは Port が揃っていないので、`run` は検証コマンドを流したあと
-`ESCALATE(invalid_decision)` で止まる。理由は `LlmPort` が未実装であることで、
-Phase 2 の4本目で埋まる。
+`GITHUB_TOKEN`（または `GH_TOKEN`）を渡すと GitHub を観測する。無ければ観測は
+`unobserved` に `port_failed` として残り、ASSESS も「PR は無い」とは読まない。
+Actor と LLM は Claude Code の OAuth をそのまま使う。
 
 ## ディレクトリ
 
@@ -127,6 +125,7 @@ src/domain/gap.ts         ASSESS が出す Gap と Assessment の型
 src/domain/action.ts      DECIDE が選ぶ Action と Decision の型
 src/domain/run.ts         Actor の実行記録の型
 src/domain/goal-state.ts  Goal のライフサイクルと、Action から次の状態を決める遷移
+src/domain/port-error.ts  Port の失敗の種別（usage_limit / unavailable）
 src/observe/              Observe と、依存する Port の定義
 src/verify/               Verify と、依存する Port の定義
 src/assess/               Assess。Acceptance Criteria と Fact を突き合わせて Gap を出す
@@ -135,7 +134,9 @@ src/act/                  Act。Actor を worktree 上で走らせる。write-ah
 src/reconcile/            OBSERVE → VERIFY → ASSESS → DECIDE を1ティックにまとめる
 src/store/                SQLite（node:sqlite）。lease、スナップショット、Run、Decision
 src/controller/           1ティックの外側。lease → 回収 → reconcile → 永続化 → ACT → 遷移
-src/adapters/             Port の実装。いまは node:child_process で書けるものだけ
+src/adapters/local.ts     node:child_process で書ける Port（コマンド実行、git、worktree）
+src/adapters/github.ts    CodeProviderPort。@octokit/rest + ETag
+src/adapters/claude.ts    ActorPort と LlmPort。Claude Agent SDK
 src/cli.ts                ent コマンド
 tests/                    Acceptance Criteria の実体
 ```
