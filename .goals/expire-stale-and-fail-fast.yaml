@@ -231,34 +231,31 @@ policies:
     - secret_access
     - external_send
   protected_paths:
-    # 制御ループ本体。
-    - src/controller/**
-    # Goal の宣言部。**この Goal でだけ `.goals/**` を使っていない。**
+    # 制御ループ本体と、Goal の宣言部。
     #
-    # PR #19 で関門の入力が `Run.artifacts`（Agent が編集したパス）から
-    # `changedPaths`（worktree と base の差分）に変わり、人間の commit と
+    # 回しているあいだは、この2つを一時的に外していた。COMPLETED を確認したので
+    # 戻してある。以降のティックは走らない（`isTerminal` が COMPLETED を含む）ので、
+    # 戻したことで ESCALATE することはない。
+    #
+    # `.goals/**` — PR #19 で関門の入力が `Run.artifacts`（Agent が編集したパス）
+    # から `changedPaths`（worktree と base の差分）に変わり、人間の commit と
     # Agent の編集を区別できなくなった。本 Goal の宣言は Goal 5 と同じやり方で
-    # goal ブランチに commit してある（`6c28dfe` と同じ形）ので、`.goals/**` の
-    # ままだと自分の宣言を毎ティック違反として拾い、ESCALATE から抜けられない。
-    #
-    # 一時的な回避として、この Goal の宣言 1 本だけを外し、他は個別に列挙して
-    # 保護を残す。**本 Goal が COMPLETED になったら `.goals/**` に戻すこと。**
+    # goal ブランチに commit してある（`6c28dfe` と同じ形）ため、そのままだと
+    # 自分の宣言を毎ティック違反として拾い、ESCALATE から抜けられなかった。
+    # 回避として、この Goal の宣言 1 本だけを外し、他は個別に列挙していた。
     # 恒久的な扱いは、guard 側を直すか宣言を goal ブランチに載せないかの
-    # どちらかで決める（ac-6 で聞いている）。
-    - .goals/.state/**
-    - .goals/assess-and-decide.yaml
-    - .goals/automate-observe-and-verify.yaml
-    - .goals/connect-github-and-claude.yaml
-    - .goals/guard-the-controller.yaml
-    - .goals/list-goals.yaml
-    - .goals/observe-returns-facts.yaml
-    - .goals/open-pr-and-detect-approval.yaml
-    - .goals/persist-and-resume.yaml
-    - .goals/record-the-tick.yaml
-    - .goals/run-actor-in-worktree.yaml
-    - .goals/sleep-and-stop.yaml
+    # どちらかで決める（ac-6 で聞いた）。
+    #
+    # `src/adapters/claude.ts` — PR #19 が「Agent の許可・拒否ツールを決める
+    # ファイル」として保護に入れたが、本 Goal の2件目がそのファイルを直す内容
+    # そのもので、着手はその判断が main に入る前だった。回しているあいだは外し、
+    # 代わりに ac-6 で人間の承認を取った。差分は `claudeLlm` のエラー判定だけで、
+    # `disallowedTools` にも `ALWAYS_DENIED` にも触れていない。
+    - src/controller/**
+    - .goals/**
     # 以下は PR #19（MVP レビューの指摘を反映する）が他の Goal YAML に入れた分に揃える。
     - src/domain/protected-paths.ts
+    - src/adapters/claude.ts
     - mise.toml
     - mise-tasks/**
     - vitest.config.ts
@@ -267,12 +264,6 @@ policies:
     - .github/**
     - package.json
     - pnpm-lock.yaml
-    # src/adapters/claude.ts は **この Goal でだけ** 外してある。
-    # PR #19 は「Agent の許可・拒否ツールを決めるファイル」として保護に入れたが、
-    # 本 Goal の2件目がそのファイルを直す内容そのもので、着手はその判断が
-    # main に入る前だった。いま保護に足すと、既に commit 済みの変更を
-    # changedPaths が毎ティック違反として拾い、ESCALATE から抜けられなくなる。
-    # 代わりに ac-6 で人間の承認を明示的に取る。次の Goal からは保護に戻す。
 
 budget:
   max_actor_runs: 10
