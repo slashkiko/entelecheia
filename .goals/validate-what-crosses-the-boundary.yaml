@@ -1,0 +1,246 @@
+version: 1
+
+goal:
+  id: validate-what-crosses-the-boundary
+  name: 読めなかった値で、待たずに止まる
+  desired_state: |
+    controller が外から受け取る値の検査は、直近の変更（`a59006e`）でほぼ入った。
+    GitHub の応答は `PortError(shape_mismatch)` になり、SQLite の行は zod で読み、
+    LLM が選べる行動は `Record<Action["type"], boolean>` で閉じている。
+
+    残っているのは、**分類はできたのに待ち方が変わっていない**部分にあたる。
+    ラベルを足しただけでは人間は呼ばれない。以下の3点を埋める。
+
+    どう作るかは Actor が決める。以下は「何が満たされていればよいか」を書く。
+
+    1. guard が `shape_mismatch` で止める（src/decide/index.ts）
+
+      `waitReason` は `shape_mismatch` を `port_failed` と同じ集合に入れ、
+      `WAIT(observation_failed)` を返している。Gap が無いティックの WAIT は
+      ループ検知より手前で return するので、**恒久的な不一致が予算に当たるまで
+      毎ティック再試行される**。`tests/shape-mismatch.test.ts` の冒頭が
+      「そのあいだ人間には『GitHub が不安定』に見え、原因に辿り着けない」と
+      書いている状態が、そのまま残っている。
+
+      待っても直らないと分かっているのだから、guard が止める。
+      `escalateReasonSchema` に `shape_mismatch` を足し、unresolved に1件でも
+      あれば `ESCALATE(shape_mismatch)` を選ぶ。
+
+      - 停止条件なので LLM には渡さない。`decidedBy` は `guard` になる
+      - Gap が残っていても先に止める。形が読めていないあいだの観測を根拠に
+        Actor を起動すると、根拠の無い intent に予算を使う
+      - 予算の枯渇より後に置く。既存の guard の順序を変えない
+      - `port_failed` だけのときは、これまでどおり `WAIT(observation_failed)`。
+        届かなかった失敗は待てば直りうるので、倒す向きを変えない
+      - 何が読めなかったかを rationale に残す。人間が直す先はそこからしか読めない
+
+      `nextStatus` は budget_exhausted 以外の ESCALATE を WAITING_HUMAN にするので、
+      状態機械に足すものは無い。`llmActionSchema` は ESCALATE を丸ごと弾くので、
+      理由を1つ足しても LLM 側の口は開かない。
+
+    2. verify も `shape_mismatch` を作り分ける（src/verify/index.ts）
+
+      observe は例外の種類から reason を決めているが、`judge()` の catch は
+      種類を見ずに `port_failed` を書いている。`type: human` の criteria は
+      毎ティック `githubApproval` を呼び、その中で reviews と comments を
+      parse する。つまり**承認の経路だけ分類が届いていない**。
+
+      observe が作り分けているのに verify が畳んでいるなら、区別は片肺のまま。
+      1 の guard も、承認経路の不一致では発火しない。
+
+      - 承認 Port が `PortError(shape_mismatch)` を投げたら `shape_mismatch`
+      - `unavailable` と素の Error は `port_failed` のまま。区別できない失敗を
+        恒久扱いにしない
+      - 未承認（`null`）は `pending` のまま。失敗と混ぜない
+      - 検証コマンドを起動できなかった場合も `port_failed` のまま。
+        シェルの失敗は Port の応答の形ではない
+
+    3. `runs.artifacts` を文字列の配列として読む（src/store/index.ts）
+
+      `runRowSchema` は `artifacts: z.string()` までは見るが、読む側は
+      `JSON.parse(row.artifacts) as string[]` で、**パースした結果は誰も
+      見ていない**。`Run.artifacts` は `z.array(z.string())` と宣言されて
+      いるのに、オブジェクトでも数値の配列でもそのまま外へ出る。
+
+      列を改名したときに `undefined` が素通りしたのと同じ形が、ここだけ
+      JSON の内側に残っている。`as` を挟んだ場所は実行時に何も検査しない、
+      というのが元の問題なので、列の名前で止まって中身で止まらないなら
+      直りきっていない。
+
+      効き先は関門になる。`Run.artifacts` は Agent が編集したパスの一覧で、
+      controller の `guardedDecision` が `findViolations` に渡す入力の1つに
+      あたる。文字列でないものが混ざると、`resolve()` が投げるか、
+      文字列化された別物を照合することになる。**関門の入力は、関門の一部になる。**
+
+      正しい形（文字列の配列・空配列）はこれまでどおり読めること。
+      DB のスキーマ（`SCHEMA`）は変えない。
+
+    テストは tests/shape-mismatch-stops.test.ts と
+    tests/store-run-artifacts.test.ts に書いてある。着手時点で 8 件が落ちる。
+    仕様はそちらが正で、この YAML の記述と食い違ったらテストに合わせる。
+
+repository:
+  provider: github
+  owner: slashkiko
+  name: entelecheia
+  default_branch: main
+
+setup:
+  - pnpm install --frozen-lockfile
+
+acceptance_criteria:
+  - id: ac-1
+    description: >-
+      shape-mismatch-stops と store-run-artifacts が通り、既存のテストも
+      通ったままになる。着手時点で落ちているのはこの2本の 8 件
+    verification: { type: command, run: mise run test }
+
+  - id: ac-2
+    description: 型チェックが通る
+    verification: { type: command, run: mise run typecheck }
+
+  - id: ac-3
+    description: lint と format が通る
+    verification: { type: command, run: mise run lint }
+
+  - id: ac-4
+    description: サプライチェーンと workflow のチェックが通る（baseline 由来）
+    verification: { type: command, run: mise run check }
+
+  - id: ac-5
+    description: 変更を載せた PR の CI が成功している
+    verification: { type: fact, key: github.ci.conclusion, equals: success }
+
+  - id: ac-6
+    description: 止め方が広すぎないか、人間が差分を読んで確認する
+    verification:
+      type: human
+      prompt: |
+        この Goal は「待つ」を「止まる」に変えます。倒しすぎると、GitHub が
+        一瞬おかしな応答を返しただけで人間が呼ばれ、関門と同じく
+        「鳴っても読まれない」状態になります。差分を読んでください。
+
+        1. 止める範囲
+
+           - `shape_mismatch` だけで ESCALATE しているか。`port_failed` や
+             素の Error まで巻き込んでいないか
+           - `WAIT(observation_failed)` が `port_failed` のときに残っているか
+           - 予算の枯渇より後、Gap の有無より先に置かれているか
+
+        2. LLM に渡していないか
+
+           - `decidedBy` が `guard` になっているか
+           - `ESCALATE(shape_mismatch)` を LLM が返しても採らないか
+
+        3. verify の作り分け
+
+           - 承認 Port だけを作り分けているか。検証コマンドの起動失敗まで
+             恒久扱いにしていないか
+           - 未承認（pending）と混ざっていないか
+
+        4. artifacts の検査
+
+           - `Run.artifacts` の宣言（`z.array(z.string())`）と実際の読み方が
+             揃ったか。DB のスキーマ（`SCHEMA`）を変えていないか
+           - 空の配列がこれまでどおり読めるか。Actor が1つも編集しなかった
+             ティックを違反にしていないか
+
+        5. 実際に回して確かめる
+
+           - `.goals/.state/goals.db` を `ent get` で読めるか
+           - 既存の Goal のティックが、これまでどおり回るか
+
+context:
+  background: |
+    もともとは4件を1本にまとめた Goal だった。承認の権限判定、SQLite の行キャスト、
+    `LLM_ACTIONS` の `Set<string>`、GitHub adapter の ZodError の4つで、
+    どれも「宣言はしてあるが検査していない境界」という同じ形をしていた。
+
+    仕様を書いているあいだに、別セッションが同じ4件を実装して main に入れた
+    （`a59006e` / PR #28）。`log_ref` を改名する probe まで同じ切り口だった。
+    書いた仕様を今の main に当てると、承認の権限判定は 13 本中 12 本、
+    行の検査は 12 本中 11 本、`LLM_ACTIONS` は名前が違うだけで 4 本とも
+    実装済みだった。
+
+    残ったのがこの3点になる。1 と 2 は同じ穴の両側で、**分類は入ったのに
+    待ち方が変わっていない**という一点に尽きる。3 は行の検査が JSON の内側まで
+    届いていない分にあたる。
+
+    承認の権限判定について: main は permission API と `author_association` の
+    AND になっている。書いた仕様は API を最終判断にしていたので1本落ちるが、
+    **main のほうが厳しい**ので寄せない。この Goal では触らない。
+
+  constraints:
+    - テストから実際の GitHub と Claude API を叩かない
+    - tests/shape-mismatch-stops.test.ts と tests/store-run-artifacts.test.ts は
+      仕様なので変更しない。通らないなら実装側を直す
+    - 既存の tests/ を弱めない。とくに tests/shape-mismatch.test.ts・
+      tests/store-rows.test.ts・tests/decide-llm-boundary.test.ts・
+      tests/decide.test.ts・tests/verify.test.ts・tests/observe.test.ts は
+      通ったままにする
+    - 届かなかった失敗（`port_failed`）の扱いを変えない。待てば直りうるものと、
+      区別できない失敗（素の Error）を恒久扱いにしない
+    - 既存の guard の順序を変えない。予算の枯渇はどの理由より先に止める
+    - 承認の権限判定（src/adapters/github.ts の `permitted` と permission API）を
+      触らない。main の AND のままにする
+    - DB のスキーマ（src/store/index.ts の `SCHEMA`）を変えない。migration も
+      足さない。既にある `.goals/.state/goals.db` がそのまま読めること
+    - 制御ループ本体（src/controller/**）と Goal の宣言部（.goals/**）は触らない。
+      3点とも `escalateReasonSchema` への追加と decide / verify / store の
+      変更で届く。届かないと思ったら、controller を書き換えずに人間へ相談する
+      形で止める
+    - 保護パスの検査（src/domain/protected-paths.ts）と Agent の拒否ルール
+      （src/adapters/claude.ts）を弱めない
+    - 依存パッケージを増やさない。zod は既に入っている
+    - CLI の出力と終了コードを変えない
+    - docs/design.md の「3. 中核の設計判断」を勝手に変えない
+    - mise run check（サプライチェーン検査）を壊さない
+    - PR の作成とコメントの投稿はしない。controller が行う
+
+  references:
+    - title: shape_mismatch が WAIT に落ちる場所
+      path: src/decide/index.ts
+    - title: 承認 Port の失敗を port_failed に畳む場所
+      path: src/verify/index.ts
+    - title: artifacts の JSON が検査されない場所
+      path: src/store/index.ts
+    - title: ESCALATE の理由
+      path: src/domain/action.ts
+    - title: 例外の種類から reason を決める側（既に作り分けている）
+      path: src/observe/index.ts
+    - title: 仕様（guard と verify）
+      path: tests/shape-mismatch-stops.test.ts
+    - title: 仕様（artifacts）
+      path: tests/store-run-artifacts.test.ts
+    - title: 弱めてはいけない既存の仕様
+      path: tests/shape-mismatch.test.ts
+    - title: 設計ドキュメント
+      path: docs/design.md
+
+policies:
+  require_human_approval:
+    - merge
+    - force_push
+    - push_to_default_branch
+    - deploy
+    - secret_access
+    - external_send
+  # 下限（PROTECTED_PATH_FLOOR）はスキーマが必ず混ぜるので、ここには足す分だけ書く。
+  protected_paths:
+    # 検証系。ここを書き換えられると Agent が自分の criteria を通せる。
+    - mise.toml
+    - mise-tasks/**
+    - vitest.config.ts
+    - biome.json
+    - tsconfig*.json
+    - .github/**
+    # 依存の追加は人間が通す。
+    - package.json
+    - pnpm-lock.yaml
+
+budget:
+  max_actor_runs: 8
+  max_reconciles: 20
+  max_wall_clock: 3h
+  max_consecutive_failures: 3
+  max_unchanged_reconciles: 4
