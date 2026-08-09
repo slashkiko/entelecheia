@@ -93,7 +93,7 @@ function readState(): {
       status: state?.status ?? "(none)",
       abandonReason: state?.abandonReason ?? null,
       snapshotRows: store.latestSnapshot("abandon-goal") === null ? 0 : 1,
-      verificationRows: store.listVerifications("abandon-goal").length,
+      verificationRows: store.latestVerifications("abandon-goal").length,
     };
   } finally {
     store.close();
@@ -297,9 +297,7 @@ describe("完了を名乗らせる口は作らない", () => {
 
 describe("CLI の構造に載る", () => {
   it("agent-context が abandon を出す", () => {
-    const abandon = agentContextPayload().commands.find(
-      (command) => command.name === "abandon",
-    );
+    const abandon = agentContextPayload().commands.find((command) => command.name === "abandon");
 
     expect(abandon).toBeDefined();
     expect(abandon?.args.map((arg) => arg.name)).toEqual(["slug"]);

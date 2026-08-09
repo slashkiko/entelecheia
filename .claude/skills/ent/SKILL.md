@@ -27,6 +27,26 @@ ent get <slug>              # 宣言部と実行時状態をまとめて読む
 ent list                    # 登録済みの Goal を一覧する
 ```
 
+追わなくなった Goal から降りるときだけ、もう1つある。
+
+```
+ent abandon <slug> --reason "なぜ追わないのか"
+```
+
+`--reason` は必須で、空白だけも通らない。status を `ABANDONED` にして理由を残すので、
+次のティックはその Goal を拾わなくなる。理由は `ent get` の `state.abandonReason` に出る。
+
+**対になる `ent complete` は無い。** 完了判定は VERIFIED な Fact だけで行う（§3.1）ので、
+criteria が赤いまま「完了した」と書ける口は用意していない。ループの外で desired state が
+満たされた場合——人間が手で PR をマージした、など——に使うのが `abandon` になる。
+「終わった」ではなく「もう追わない」を記録する。
+
+落とせない場合は終了コード 1 で、何も書かずに止まる。
+
+- 既に終端（`COMPLETED` / `FAILED` / `ABANDONED`）。終端は塗り替えない
+- `lease_owner` が埋まっている。別のプロセスが回している最中に横から落とさない
+- `ent start` を挟んでいない。降りる先の状態が無い
+
 `ent doctor` は書き込みを一切しない。state ディレクトリも作らない。
 
 前提が欠けていても `ent run` は入口で落ちない。トークンが無くてもローカルの観測・

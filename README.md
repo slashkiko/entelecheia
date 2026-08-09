@@ -161,6 +161,7 @@ ent run <slug> --pr <n>            # 観測対象の PR を指定する（contro
 ent run <slug> --issue <n>         # 観測対象の Issue を指定する
 ent run <slug> --dry-run           # 書かずに、次のティックの中身だけを見る
 ent get <slug>                     # 宣言部と実行時状態をまとめて表示する
+ent abandon <slug> --reason "…"    # もう追わないと宣言して終端にする（理由は必須）
 ent list                           # 登録済みの Goal を一覧する
 ent doctor                         # 回す前の前提が揃っているかを読み取り専用で調べる
 ent agent-context                  # CLI の構造を機械可読な JSON で出す
