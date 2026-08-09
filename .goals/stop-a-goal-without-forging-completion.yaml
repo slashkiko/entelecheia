@@ -1,0 +1,222 @@
+version: 1
+
+goal:
+  id: stop-a-goal-without-forging-completion
+  name: 追わなくなった Goal を、完了を偽らずに終わらせる
+  desired_state: |
+    人間が「この Goal はもう追わない」と宣言する口を CLI に足す。**完了を名乗らせる
+    口は足さない。** その2つを取り違えると、関門が飾りになる。
+
+    ## なぜ要るか
+
+    ループの外で desired state が満たされることがある。実際に起きた。
+    `guard-the-declaration-not-the-state`（PR #29）と
+    `validate-what-crosses-the-boundary`（PR #31）は、人間が手で PR をマージした。
+    コードは main に入り、CI も緑になった。それでも Goal は ACTIVE のまま残った。
+
+    残るのは正しい。`decide` が COMPLETE を返すのは Gap ゼロかつ unresolved ゼロの
+    ときだけで、そのティックは一度も回っていない。`nextStatus` にも
+    「PR が merged になったら COMPLETED」という線は無い。DB は最後に見た世界を
+    正しく記録している。
+
+    問題は**そこから降りる手段が無い**ことにある。この状態で `ent run` を回すと、
+    Gap が残っているので guard は COMPLETE にも WAIT にも倒さず、行動の選択が
+    LLM に渡る。既にマージ済みの作業をもう一度 ACT で作り直しに行き、予算を使う。
+    観測先の PR は merged で、リモートのブランチも消えている。
+
+    実際にどうしたかというと、人間が `sqlite3` で `goals.status` を直接書き換えた。
+    それが唯一の手段だった。**関門が守っている当のファイルを、人間が素手で開ける
+    のが唯一の手段**という状態は、関門の側から見て良くない。
+
+    ## 何が満たされていればよいか
+
+    どう作るかは Actor が決める。以下は満たすべき性質を書く。
+
+    1. `ent abandon <slug> --reason "<text>"` が終端へ落とす
+
+      status を `ABANDONED` にする。`isTerminal` が真になるので、次のティックは
+      その Goal を拾わない。§4.4 の状態遷移図に既にある終端で、状態機械に
+      足すものは無い。
+
+    2. **`ent complete` は足さない**
+
+      design.md §3.1「完了判定は VERIFIED のみ」は、`decide` が LLM にすら
+      COMPLETE を選ばせない根拠になっている。CLI に `complete` を足すと、
+      赤い criteria を1コマンドで飛び越えられる。**関門を回避する最短経路が
+      公式の口になる。** 上の実例で人間が選んだ `COMPLETED` は、バックアップを
+      取った1回限りの手作業であって、常設の口にしてよいものではない。
+
+      「終わった」と「もう追わない」を1つの語に畳まない。ABANDONED は後者だけを
+      主張する。前者を主張したいなら criteria を満たすほかない。
+
+    3. `--reason` を必須にする
+
+      **ここが `sqlite3` との差になる。** 理由の無い ABANDONED は、後から読む人に
+      「なぜ出荷済みの Goal が放棄されているのか」を何も伝えない。省略できる
+      オプションにすると、書かれない。
+
+      理由は `ent get` が読める場所に残す。どこに置くかは Actor が決めてよいが、
+      snapshot の facts には入れない（4 を参照）。
+
+    4. 観測の履歴を書き換えない
+
+      snapshots・facts・unresolved・verifications には触らない。これらは
+      「最後のティックが何を見たか」の記録で、そこを書き換えるのは観測の捏造に
+      なる。ac-1 が false のまま残るのは正しい。実際にその時点では落ちていた。
+
+      status と理由だけを書く。
+
+    5. 終端からは遷移させない
+
+      既に COMPLETED / FAILED / ABANDONED なら、エラーにして何も書かない。
+      design.md §4.4 は「終端の Goal を ACTIVE に戻さない。COMPLETED を後から
+      取り消せると、完了判定が意味を失う」と書いている。終端から別の終端へ移すのも
+      同じ違反になる。COMPLETED を ABANDONED で塗り替えられるなら、記録は残らない。
+
+    6. lease を持っている Goal は落とさない
+
+      `lease_owner` が埋まっているなら、別のプロセスがそのティックを回している。
+      横から終端へ落とすと、走っている controller が終端の Goal に書き戻す。
+      エラーにして止める。手で書き換えたときは、人間が事前に lease を目視した。
+      コマンドはその確認を人間の規律に任せない。
+
+    7. 文書と CLI の突き合わせが通ったままになる
+
+      `tests/docs-contract.test.ts` は README.md と SKILL.md に載っている
+      `ent <サブコマンド>` の集合を、`agentContextPayload()` の網羅集合と
+      比べている。`doctor` が文書に載らないまま出荷された経路を塞いだテストで、
+      サブコマンドを足すと必ず落ちる。README.md と
+      `.claude/skills/ent/SKILL.md` の両方に載せる。
+
+      終了コードを足すなら、SKILL.md の終了コード表にも載せる。同じテストが
+      表の行を突き合わせている。
+
+    8. 既存のサブコマンドの挙動を変えない
+
+      `SUBCOMMANDS`（src/cli.ts）に1つ足すだけにする。`start` / `run` / `get` /
+      `list` / `doctor` / `agent-context` の引数の解釈も出力も動かさない。
+
+    テストは tests/cli-abandon.test.ts に書く。**着手時点では、このファイルが
+    まだ無い。** 仕様をテストに落とすところから始める。書き終えた時点で
+    `mise run test` が落ちること（＝仕様が実装より先にあること）を確認してから
+    実装に入る。この repo の他の Goal と順序を揃える。
+
+repository:
+  provider: github
+  owner: slashkiko
+  name: entelecheia
+  default_branch: main
+
+setup:
+  - pnpm install --frozen-lockfile
+
+acceptance_criteria:
+  - id: ac-1
+    description: cli-abandon の新しいテストが通り、既存のテストも通ったままになる（着手時点の main は 623 件すべて緑）
+    verification: { type: command, run: mise run test }
+
+  - id: ac-2
+    description: 型チェックが通る
+    verification: { type: command, run: mise run typecheck }
+
+  - id: ac-3
+    description: lint と format が通る
+    verification: { type: command, run: mise run lint }
+
+  - id: ac-4
+    description: サプライチェーンと workflow のチェックが通る（baseline 由来）
+    verification: { type: command, run: mise run check }
+
+  - id: ac-5
+    description: 変更を載せた PR の CI が成功している
+    verification: { type: fact, key: github.ci.conclusion, equals: success }
+
+  - id: ac-6
+    description: 止め方が広すぎないか、人間が差分を読んで確認する
+    verification:
+      type: human
+      prompt: |
+        この Goal は「関門を回避する口」を1つ増やす方向に触ります。テストが緑に
+        なったことは「増やしすぎていない」の証明にはならないので、差分を読んで
+        ください。
+
+        1. 足した口の範囲
+
+           - `ent complete` に相当するものが入っていないか。status を
+             `COMPLETED` に書ける経路が CLI から生えていないか
+           - `--reason` が必須になっているか。省略や空文字で通らないか
+           - 書き込み先が `goals` の行だけか。snapshots / facts / unresolved /
+             verifications に触れていないか
+
+        2. 断り方
+
+           - 既に終端の Goal を弾いているか。COMPLETED を ABANDONED で
+             塗り替えられないか
+           - `lease_owner` が埋まっている Goal を弾いているか
+           - 弾いたときに何も書いていないか（部分的に書いて失敗しない）
+
+        3. 文書
+
+           - README.md と SKILL.md の両方に載っているか。`ent abandon` を
+             使う場面と、`ent complete` が無い理由が読めるか
+
+context:
+  background: |
+    PR #27 / #31 をマージできる状態にする作業の中で見つけた。
+
+    main には未実装の Goal のテストが載る（テスト先行で回すため）ので、
+    実装が入るまで main の CI は赤になる。#31 → #27 の順にマージし、
+    残っていた既存の不具合を #32 で直して、main は 52a5eac で緑に戻った。
+
+    そのあと `ent list` を見たら、マージ済みの Goal 2本が ACTIVE のまま
+    残っていた。降りる手段が無かったので、人間が `sqlite3` で
+    `goals.status` を `COMPLETED` に書き換えた。バックアップを取ったうえでの
+    1回限りの手作業で、常設の口として欲しかったのは `ABANDONED` のほうになる。
+
+    同じ状態がもう1つある。`collaborate-in-separate-worktrees`（PR #27）が、
+    `.claude/worktrees/multi-agent-review-setup-47fbaa/.goals/.state/goals.db`
+    で ACTIVE のまま残っている。別 DB なので、この Goal では扱わない。
+
+  constraints:
+    - 列を足すなら `migrate()` の追加専用の手順に乗せる（`runs.role` と同じ形）。既存の DB がそのまま開けること
+    - 状態機械（src/domain/goal-state.ts）に新しい status を足さない。ABANDONED は既にある
+    - controller のティックの経路（observe / decide / act / verify）に触れない。これは CLI だけの話になる
+    - 出力は他のサブコマンドと揃える。`--json` の扱いと終了コードの規則を独自にしない
+
+  references:
+    - title: 完了判定は VERIFIED のみ（§3.1）、状態遷移図と終端から戻さない理由（§4.4）
+      path: docs/design.md
+    - title: isTerminal と nextStatus。ABANDONED は既にある
+      path: src/domain/goal-state.ts
+    - title: SUBCOMMANDS と引数の解釈
+      path: src/cli.ts
+    - title: README / SKILL.md とサブコマンドの突き合わせ
+      path: tests/docs-contract.test.ts
+
+policies:
+  require_human_approval:
+    - merge
+    - force_push
+    - push_to_default_branch
+    - deploy
+    - secret_access
+    - external_send
+  # 下限（PROTECTED_PATH_FLOOR）はスキーマが必ず混ぜるので、ここには足す分だけ書く。
+  protected_paths:
+    # 検証系。ここを書き換えられると Agent が自分の criteria を通せる。
+    - mise.toml
+    - mise-tasks/**
+    - vitest.config.ts
+    - biome.json
+    - tsconfig*.json
+    - .github/**
+    # 依存の追加は人間が通す。
+    - package.json
+    - pnpm-lock.yaml
+
+budget:
+  max_actor_runs: 8
+  max_reconciles: 20
+  max_wall_clock: 3h
+  max_consecutive_failures: 3
+  max_unchanged_reconciles: 4

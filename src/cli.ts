@@ -56,6 +56,7 @@ const USAGE = `ent — Declare the end state; the controller converges to it.
                        --pr <n> / --issue <n> で観測対象を指定する
                        --dry-run で、書かずに次のティックの中身だけを見る
   ent get <slug>       宣言部と実行時状態をまとめて表示する
+  ent abandon <slug>   もう追わないと宣言して終端にする（--reason は必須）
   ent list             登録済みの Goal を一覧する
   ent doctor           回す前の前提が揃っているかを読み取り専用で調べる
   ent agent-context    CLI の構造を機械可読な JSON で出す
@@ -65,7 +66,7 @@ const USAGE = `ent — Declare the end state; the controller converges to it.
 `;
 
 /** エージェントが叩けるサブコマンド。エラーはこの集合をそのまま並べる（gist 2.3） */
-const SUBCOMMANDS = ["start", "run", "get", "list", "doctor", "agent-context"] as const;
+const SUBCOMMANDS = ["start", "run", "get", "abandon", "list", "doctor", "agent-context"] as const;
 type Subcommand = (typeof SUBCOMMANDS)[number];
 
 export type Command =
@@ -95,6 +96,19 @@ export type Command =
    * 揃えたいのはサブコマンド名であって、内部の識別子ではない。
    */
   | { kind: "show"; slug: string; limit?: number; json?: true }
+  /**
+   * もう追わないと宣言して ABANDONED にする。
+   *
+   * `reason` は任意項目にしない。理由の無い ABANDONED は、後から読む人に
+   * 「なぜ出荷済みの Goal が放棄されているのか」を伝えない。省略できる形にすると
+   * 書かれないので、ここが `sqlite3` を直接叩くのとの差になる。
+   *
+   * **対になる `complete` は作らない。** design.md §3.1「完了判定は VERIFIED のみ」は
+   * `decide` が LLM にすら COMPLETE を選ばせない根拠で、CLI に足すと赤い criteria を
+   * 1コマンドで飛び越える経路が公式の口になる。書ける終端を選べる形（`--status`）にも
+   * しない。ここから書けるのは ABANDONED だけ。
+   */
+  | { kind: "abandon"; slug: string; reason: string; json?: true }
   /** 登録済みの Goal を一覧する。slug は取らない */
   | { kind: "list"; limit?: number; json?: true }
   /**
@@ -196,6 +210,18 @@ export function parseCommand(argv: readonly string[]): Command {
       return { kind: "show", slug, ...(limit === undefined ? {} : { limit }), ...json };
     }
 
+    if (sub === "abandon") {
+      // 空白だけも弾く。必須にしても空文字で通れば、結局は書かれない。
+      const reason = typeof values.reason === "string" ? values.reason.trim() : "";
+      if (reason === "") {
+        return {
+          kind: "error",
+          message: `abandon には理由が要る: ent abandon ${slug} --reason "<なぜ追わないのか>"`,
+        };
+      }
+      return { kind: "abandon", slug, reason, ...json };
+    }
+
     const prNumber = positiveInteger(values.pr, "--pr");
     if (typeof prNumber === "string") {
       return { kind: "error", message: prNumber };
@@ -216,6 +242,65 @@ export function parseCommand(argv: readonly string[]): Command {
   } catch (error) {
     return { kind: "error", message: errorMessage(error) };
   }
+}
+
+/**
+ * 「もう追わない」と宣言して終端にする。
+ *
+ * 満たすべき性質:
+ * - 書けるのは status（ABANDONED）と理由だけ。観測の履歴には触らない。
+ *   snapshots / facts / verifications は「最後のティックが何を見たか」の記録で、
+ *   書き換えるのは観測の捏造になる（design.md §3.1）
+ * - 落とせない場合は何も書かずに 1 を返す。部分的に書いて失敗しない
+ * - 完了は名乗らせない。ここから書ける終端は ABANDONED だけで、対になる
+ *   `complete` は用意しない
+ *
+ * `upsertGoal` を通さずに呼ぶ。降りるのは実行時状態の話なので宣言部を書き直す
+ * 理由が無く、通すと未登録の Goal に DRAFT の行ができてしまう。
+ */
+function abandonGoal(
+  command: { slug: string; reason: string; json?: true },
+  goal: Goal,
+  store: Store,
+): number {
+  const current = store.getState(goal.goal.id);
+
+  // 回したことのない Goal を終端にすると、「一度も動いていないのに放棄済み」
+  // という読めない記録ができる。
+  if (current === null) {
+    process.stderr.write(
+      `${goal.goal.id} は登録されていない。降りる先の状態が無い（ent start から始める）\n`,
+    );
+    return 1;
+  }
+
+  // 終端から別の終端へ移さない。design.md §4.4 は「終端の Goal を ACTIVE に
+  // 戻さない。COMPLETED を後から取り消せると、完了判定そのものが意味を失う」と
+  // 書いている。COMPLETED を ABANDONED で塗り替えられるなら、同じことになる。
+  if (isTerminal(current.status)) {
+    process.stderr.write(
+      `${goal.goal.id} は既に ${current.status} なので abandon できない。終端は塗り替えない\n`,
+    );
+    return 1;
+  }
+
+  // lease を持っているなら、別のプロセスがそのティックを回している。
+  // 横から終端へ落とすと、走っている controller が終端の Goal に書き戻す。
+  if (current.leaseOwner !== null) {
+    process.stderr.write(
+      `${goal.goal.id} は ${current.leaseOwner} が回している。` +
+        "終わるのを待つか、lease が切れてから叩くこと\n",
+    );
+    return 1;
+  }
+
+  store.abandon(goal.goal.id, command.reason);
+  process.stdout.write(
+    command.json === true
+      ? `${JSON.stringify({ id: goal.goal.id, status: "ABANDONED", reason: command.reason }, null, 2)}\n`
+      : `${goal.goal.id}: ABANDONED（${command.reason}）\n`,
+  );
+  return 0;
 }
 
 function isSubcommand(value: string): value is Subcommand {
@@ -249,6 +334,10 @@ function optionsFor(sub: Subcommand): ParseArgsOptions {
     case "get":
     case "list":
       return { json: { type: "boolean" }, limit: { type: "string" } };
+    case "abandon":
+      // 書ける終端は ABANDONED だけ。`--status` のような、状態を選べる口は
+      // 置かない。置いた時点で COMPLETED を書ける経路になる。
+      return { json: { type: "boolean" }, reason: { type: "string" } };
     case "doctor":
     case "agent-context":
       // どちらも調べた結果を出すだけ。常に JSON で、絞る対象も無い。
@@ -365,6 +454,13 @@ async function runCommand(argv: readonly string[]): Promise<number> {
       );
       process.stdout.write(`${JSON.stringify(summarize(draftIdle()), null, 2)}\n`);
       return 0;
+    }
+
+    // abandon は upsert より先に片付ける。降りるのは実行時状態の話で、宣言部を
+    // 読み直す必要が無い。upsert を通すと未登録の Goal に DRAFT の行ができ、
+    // 「一度も動いていないのに放棄済み」という読めない記録を作れてしまう。
+    if (command.kind === "abandon") {
+      return abandonGoal(command, goal, store);
     }
 
     store.upsertGoal(goal);
@@ -675,6 +771,15 @@ export function agentContextPayload(): AgentContext {
         summary: "宣言部と実行時状態をまとめて出す",
         args: [slug],
         flags: [JSON_FLAG, LIMIT_FLAG],
+      },
+      {
+        name: "abandon",
+        summary: "もう追わないと宣言して ABANDONED にする。完了は名乗らせないので complete は無い",
+        args: [slug],
+        flags: [
+          JSON_FLAG,
+          { name: "--reason", type: "string", summary: "なぜ追わないのか（必須）" },
+        ],
       },
       {
         name: "list",

@@ -109,6 +109,31 @@ describe("DB の行の検証", () => {
     }
   });
 
+  it("あとから足した列が無い DB でも開ける", () => {
+    // `goalRowSchema` は `abandon_reason` を必須の列として見る。migrate() が
+    // 足す前の DB——Phase 2 から動き続けている実物がこれにあたる——を開いたときに
+    // 列が無いままだと、`getState` が「DB の行が想定と違う」で落ちる。
+    // 落ちる先は abandon だけではない。start も run も get も getState を通る。
+    //
+    // スキーマの主張だけ足して、足す前の経路を誰も通らないままにしない。
+    seed();
+
+    const raw = new DatabaseSync(dbPath);
+    raw.exec("ALTER TABLE goals DROP COLUMN abandon_reason");
+    raw.close();
+
+    const store = openStore(dbPath);
+    try {
+      const state = store.getState("rows-goal");
+      expect(state?.status).toBe("DRAFT");
+      // 既定は null。空文字にすると「理由を書かずに降りた」と
+      // 「そもそも降りていない」が同じ形になる。
+      expect(state?.abandonReason).toBeNull();
+    } finally {
+      store.close();
+    }
+  });
+
   it("型が変わっていたら落ちる", () => {
     seed();
 

@@ -51,6 +51,13 @@ export interface GoalState {
    */
   prNumber: number | null;
   issueNumber: number | null;
+  /**
+   * 人間が「もう追わない」と宣言したときの理由。ABANDONED でなければ null。
+   *
+   * status だけでは、なぜ出荷済みの Goal が放棄されているのかが読めない。
+   * ここが `sqlite3` で直接書き換えるのとの差になる（`ent abandon --reason`）。
+   */
+  abandonReason: string | null;
 }
 
 /** `ent list` / Store.listGoals が返す1件分。宣言部と実行時状態の要点だけをまとめる */
@@ -90,6 +97,18 @@ export interface Store {
     activatedAt?: string,
   ): void;
   setObserveTarget(goalId: string, prNumber: number | null, issueNumber: number | null): void;
+
+  /**
+   * 「もう追わない」を1回で書く。status を ABANDONED にし、理由を残す。
+   *
+   * `setStatus` と分けてある。ABANDONED だけは理由と対で意味を持つので、
+   * status を任意に選べる口から書けると、理由の無い ABANDONED が作れてしまう。
+   * 完了（COMPLETED）はここから書けない。完了判定は VERIFIED のみ（§3.1）。
+   *
+   * 落とせるかの判定（終端か、lease を持っていないか）は呼び出し側で行う。
+   * store は書くだけにして、断る理由を CLI と controller で二重に持たない。
+   */
+  abandon(goalId: string, reason: string): void;
 
   /**
    * lease を取る。取れたら true。同じ owner で呼び直せば期限を延長する。
@@ -224,6 +243,7 @@ export function openStore(path: string): Store {
         reconciles: row.reconciles,
         prNumber: row.pr_number,
         issueNumber: row.issue_number,
+        abandonReason: row.abandon_reason,
       };
     },
 
@@ -260,6 +280,17 @@ export function openStore(path: string): Store {
                 END
           WHERE id = ?`,
       ).run(status, resumeAfter, status, activatedAt ?? null, goalId);
+    },
+
+    abandon(goalId, reason) {
+      // status と理由を同じ UPDATE で書く。分けると、片方だけ書かれた
+      // 「理由の無い ABANDONED」や「ACTIVE なのに理由がある」行を作れてしまう。
+      // 観測の履歴（snapshots / facts / verifications）には触らない。
+      // あれは最後のティックが何を見たかの記録で、書き換えるのは観測の捏造になる。
+      db.prepare("UPDATE goals SET status = 'ABANDONED', abandon_reason = ? WHERE id = ?").run(
+        reason,
+        goalId,
+      );
     },
 
     setObserveTarget(goalId, prNumber, issueNumber) {
@@ -766,6 +797,8 @@ const goalRowSchema = z.object({
   reconciles: z.number(),
   pr_number: z.number().nullable(),
   issue_number: z.number().nullable(),
+  // migrate() が後から足した列。古い DB を開いた直後は NULL になる。
+  abandon_reason: z.string().nullable(),
 });
 
 const goalListRowSchema = z.object({
@@ -859,7 +892,10 @@ CREATE TABLE IF NOT EXISTS goals (
   activated_at  TEXT,
   reconciles    INTEGER NOT NULL DEFAULT 0,
   pr_number     INTEGER,
-  issue_number  INTEGER
+  issue_number  INTEGER,
+  -- 人間が「もう追わない」と宣言した理由。ABANDONED でなければ NULL。
+  -- 既にある DB には migrate() が足す。
+  abandon_reason TEXT
 );
 
 CREATE TABLE IF NOT EXISTS snapshots (
@@ -961,5 +997,13 @@ function migrate(db: DatabaseSync): void {
   if (!columns.some((column) => column.name === "role")) {
     // 埋め込むのは自前の定数だけ。外から来た値は入らない。
     db.exec(`ALTER TABLE runs ADD COLUMN role TEXT NOT NULL DEFAULT '${DEFAULT_ACTOR_ROLE}'`);
+  }
+
+  // 人間が「もう追わない」と宣言した理由（`ent abandon --reason`）。
+  // 既定は NULL にする。ABANDONED でない Goal に理由は無く、空文字を既定に
+  // すると「理由を書かずに降りた」と「そもそも降りていない」が同じ形になる。
+  const goalColumns = db.prepare("PRAGMA table_info(goals)").all() as unknown as { name: string }[];
+  if (!goalColumns.some((column) => column.name === "abandon_reason")) {
+    db.exec("ALTER TABLE goals ADD COLUMN abandon_reason TEXT");
   }
 }
