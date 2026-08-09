@@ -41,6 +41,15 @@ export const escalateReasonSchema = z.enum([
    * 関門が動いていない状態で先へ進めるのは、関門が無いのと同じになる。
    */
   "guard_unavailable",
+  /**
+   * Actor が書いた変更が commit されないまま worktree に残っている。
+   *
+   * push は commit 済みの差分しか送らないので、この状態で「機械側にやることは
+   * 残っていない」と言い切ると、実装が1行も remote に出ないまま Goal が
+   * COMPLETED か WAITING_HUMAN で止まる（design.md §10-11）。
+   * 触ってはいけないものに触れたわけではないので protected_path_touched とは別に立てる。
+   */
+  "uncommitted_changes",
 ]);
 export type EscalateReason = z.infer<typeof escalateReasonSchema>;
 

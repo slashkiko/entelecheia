@@ -1,7 +1,8 @@
 import { join } from "node:path";
 import { type ActDeps, act, type RunRecorderPort, worktreeNameFor } from "../act/index.js";
 import type { BudgetUsage } from "../decide/index.js";
-import type { Decision } from "../domain/action.js";
+import type { Action, Decision } from "../domain/action.js";
+import type { Fact } from "../domain/fact.js";
 import type { Goal } from "../domain/goal.js";
 import { type GoalStatus, isTerminal, nextStatus } from "../domain/goal-state.js";
 import { describeViolations, findViolations } from "../domain/protected-paths.js";
@@ -188,11 +189,15 @@ export async function tick(goal: Goal, deps: ControllerDeps): Promise<TickResult
     // SDK の外から同じ操作をされれば素通りする。
     const guarded = await guardedDecision(goal, result.decision, run, repoBefore, deps);
 
+    // 未 commit の変更を残したまま「機械側の番は終わった」と言い切らせない
+    // （design.md §10-11）。差し替えはここまでで、書き込むのは下の1行のまま。
+    const decided = uncommittedDecision(goal, guarded, result.facts, deps);
+
     // Decision は1ティックに1行だけ書く。以前は先に result.decision を書き、
     // 差し替えたときにもう1行足していたので、保護パス違反のティックだけ
     // decisions が2行になった。countTrailingDigest は行を数えるので、
     // max_unchanged_reconciles がそのぶん余計に進んでいた。
-    deps.store.saveDecision(goalId, digest, guarded);
+    deps.store.saveDecision(goalId, digest, decided);
 
     // PR を確保して進捗を書く。ここは throw しないので、通知の失敗で
     // ティック全体を落とさない（design.md §9 の「PR と通知」）。
@@ -201,7 +206,7 @@ export async function tick(goal: Goal, deps: ControllerDeps): Promise<TickResult
       {
         goal,
         run,
-        decision: guarded,
+        decision: decided,
         verifications,
         prNumber: state.prNumber,
         digest,
@@ -215,8 +220,8 @@ export async function tick(goal: Goal, deps: ControllerDeps): Promise<TickResult
       deps.store.setObserveTarget(goalId, published.prNumber, state.issueNumber);
     }
 
-    const status = nextStatus(state.status, guarded.action);
-    const action = guarded.action;
+    const status = nextStatus(state.status, decided.action);
+    const action = decided.action;
     deps.store.setStatus(
       goalId,
       status,
@@ -224,7 +229,7 @@ export async function tick(goal: Goal, deps: ControllerDeps): Promise<TickResult
       deps.now().toISOString(),
     );
 
-    return { ran: true, skipped: null, reclaimed, decision: guarded, run, status };
+    return { ran: true, skipped: null, reclaimed, decision: decided, run, status };
   } finally {
     // 例外で抜けても解放する。残すと lease の期限までどのワーカーも動けない。
     clearInterval(heartbeat);
@@ -337,6 +342,99 @@ async function guardedDecision(
     "protected_path_touched",
     `制御ループ自体に触れたので停止する: ${describeViolations(violations)}`,
   );
+}
+
+/**
+ * 未 commit の変更を残したまま「機械側の番は終わった」と言い切らせない。
+ *
+ * push は commit 済みの差分しか送らない（`git push -u origin HEAD:<branch>`）のに、
+ * VERIFY は worktree の作業ツリーを見る。Actor が実装を書いたまま commit しないと、
+ * criteria は全部 passed になるのに remote には何も出ない。controller からは
+ * 「ローカルは全部通っているのに PR だけが古い」に見え、COMPLETE か
+ * WAIT(review_pending) に落ちる。前者は終端で取り消せず、後者の待ち相手は
+ * 「実装が載った PR」なので永久に終わらない（design.md §10-11）。
+ *
+ * 満たすべき性質:
+ * - 差し替えるのは「機械側にやることが残っていない」と言い切るティックだけにする。
+ *   COMPLETE と WAIT の2つで、WAIT は LLM が返したものも guard が
+ *   Gap ゼロから出したものも同じ意味を持つ
+ * - `WAIT(usage_limit)` は差し替えない。あれは判断そのものを保留しただけで、
+ *   上限が明ければ続きがある（design.md §10-5）。待てば直る状態で人間を呼ばない
+ * - ACT が出たティックは触らない。実装の途中で作業ツリーが汚れているのは正常で、
+ *   ここまで止めると Actor は1ティックも実装を進められない
+ * - **Actor がまだ1度も走っていない Goal では見ない。** 1ティック目は worktree が
+ *   無く、`local.*` は controller 自身のリポジトリを観測する（`src/cli.ts` の
+ *   `verifyRoot`）。自己ホストでは人間の編集で汚れているのが普通なので、そこを
+ *   Actor の書き残しと読むと、どの Goal も最初のティックから進まなくなる
+ * - 材料は VERIFIED な `local.dirty` に限る。観測できなかったティックを
+ *   「汚れている」と読むと、捏造した違反で人間を呼ぶことになる（design.md §3.1）。
+ *   逆に「確かめられなかった」を「綺麗」とも読まない——そのティックは Fact が
+ *   欠けるので、そもそも criteria が揃わず COMPLETE には届かない
+ * - 判断したのは LLM ではないので decidedBy は "guard"（design.md §7）
+ * - 元の rationale を残す。何をしようとしていたのかが読めなくなる
+ */
+function uncommittedDecision(
+  goal: Goal,
+  decision: Decision,
+  facts: readonly Fact[],
+  deps: ControllerDeps,
+): Decision {
+  if (!claimsNothingLeft(decision)) {
+    return decision;
+  }
+
+  // 前のティックで書き残されたものを、このティックで検知する。だから材料は
+  // 今回の Run ではなく、Goal に紐づく Run の履歴になる。保護パスの関門と同じく、
+  // 1ティックの出来事ではなく worktree が汚れているあいだ続く状態として扱う。
+  if (deps.store.listRuns(goal.goal.id).length === 0) {
+    return decision;
+  }
+
+  const dirty = facts.find((fact) => fact.key === "local.dirty");
+  if (dirty === undefined || dirty.confidence !== "VERIFIED" || dirty.value !== true) {
+    return decision;
+  }
+
+  return {
+    decidedAt: deps.now().toISOString(),
+    action: { type: "ESCALATE", reason: "uncommitted_changes" },
+    rationale:
+      "Actor が書いた変更が worktree に未 commit のまま残っている。" +
+      `commit されていない差分は push されないので、${describeClaim(decision.action)} ` +
+      `remote には実装が1行も出ないまま止まる（元の判断: ${decision.rationale}）`,
+    decidedBy: "guard",
+  };
+}
+
+/**
+ * 「あとは人間か外部の番だ」と言い切る Decision か。
+ *
+ * COMPLETE はそのまま終端になり、WAIT は次のティックまで機械側が何もしない。
+ * どちらも「機械側にやることは残っていない」を意味するので、同じ関門で見る。
+ */
+function claimsNothingLeft(decision: Decision): boolean {
+  const action = decision.action;
+  if (action.type === "COMPLETE") {
+    return true;
+  }
+  if (action.type !== "WAIT") {
+    return false;
+  }
+  // guard が出す WAIT(usage_limit) だけは意味が違う。LlmPort が上限に当たって
+  // 判断を保留しただけで、Gap は残っているかもしれない（design.md §10-3）。
+  return !(decision.decidedBy === "guard" && action.reason === "usage_limit");
+}
+
+/** 差し替えなければ何になっていたかを、人間が読む形にする */
+function describeClaim(action: Action): string {
+  switch (action.type) {
+    case "COMPLETE":
+      return "COMPLETE にすると";
+    case "WAIT":
+      return `WAIT(${action.reason}) で待つと`;
+    default:
+      return `${action.type} にすると`;
+  }
 }
 
 /**

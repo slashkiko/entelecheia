@@ -145,7 +145,14 @@ export async function publish(target: PublishTarget, deps: PublishDeps): Promise
  * **PR の有無で push を止めない。** 最初はここで `prNumber !== null` なら
  * すぐ返していたが、それだと2ティック目以降の Actor の作業が remote に届かない。
  * 実際に自己ホストで回したとき、PR は1ティック目の内容のまま止まり、CI は
- * 「実装が無い」と言い続けた。Actor は毎ティック worktree に commit している。
+ * 「実装が無い」と言い続けた。
+ *
+ * **push が送るのは commit 済みの差分だけになる。** ここは以前「Actor は毎ティック
+ * worktree に commit している」と書いていたが、それは観測ではなく仮定だった。
+ * commit を要求しているところは controller のどこにも無く、intent は LLM が
+ * 生成するので、commit に言及しない intent が出れば Actor は書いたまま終わる。
+ * 実際に出た。書き残された変更はこの関数からは見えない（差分が無いのと区別が
+ * つかない）ので、検知は controller 側に置いてある（`uncommittedDecision`）。
  */
 async function ensurePullRequest(
   target: PublishTarget,
