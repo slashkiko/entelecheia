@@ -2,6 +2,7 @@ import { retry } from "@octokit/plugin-retry";
 import { throttling } from "@octokit/plugin-throttling";
 import { Octokit } from "@octokit/rest";
 import { z } from "zod";
+import { errorMessage } from "../domain/error-message.js";
 import { PortError } from "../domain/port-error.js";
 import type {
   CiRunSnapshot,
@@ -30,18 +31,32 @@ export interface GitHubOptions {
   fetch?: typeof fetch;
 }
 
+/**
+ * API の応答をスキーマに通す。落ちたら PortError(shape_mismatch) にする。
+ *
+ * 以前はどの `.parse()` も `get` / `request` の try/catch の外にあり、ZodError が
+ * 素の例外として controller に抜けていた。`github.ts` 自身が「失敗は必ず
+ * PortError にして、素の例外を controller に流さない」と書いているのに、
+ * 応答の形だけがその約束の外にあった。
+ *
+ * 抜けた ZodError は observe の汎用ラッパが拾い、`port_failed` に畳んでいた。
+ * つまり「GitHub がフィールドを変えた」という永久に直らない状態が、一時的な
+ * 障害として毎ティック再試行され、`max_unchanged_reconciles` に当たるまで
+ * 止まらなかった。人間には「GitHub が不安定」に見える。
+ */
+function decode<S extends z.ZodType>(schema: S, raw: unknown, source: string): z.infer<S> {
+  const parsed = schema.safeParse(raw);
+  if (!parsed.success) {
+    throw new PortError(
+      "shape_mismatch",
+      `${source}: 応答の形が想定と違う: ${parsed.error.message}`,
+    );
+  }
+  return parsed.data;
+}
+
 export function githubCodeProvider(options: GitHubOptions): CodeProviderPort {
-  const Client = Octokit.plugin(retry, throttling);
-  const octokit = new Client({
-    auth: options.token,
-    ...(options.fetch === undefined ? {} : { request: { fetch: options.fetch } }),
-    throttle: {
-      // レート制限に当たったら再試行せず、次のティックに任せる。
-      // ここで待つと reconcile が有限時間で return しなくなる（design.md §3.6）。
-      onRateLimit: () => false,
-      onSecondaryRateLimit: () => false,
-    },
-  });
+  const octokit = client(options, { retry: true });
 
   /** ETag と前回の値。同じキーで2回目を引くときに If-None-Match を送る */
   const cache = new Map<string, { etag: string; value: unknown }>();
@@ -75,7 +90,10 @@ export function githubCodeProvider(options: GitHubOptions): CodeProviderPort {
       if (status === 404) {
         return null;
       }
-      throw new PortError("unavailable", `${describe(route, params, options)}: ${message(error)}`);
+      throw new PortError(
+        "unavailable",
+        `${describe(route, params, options)}: ${errorMessage(error)}`,
+      );
     }
   };
 
@@ -87,13 +105,14 @@ export function githubCodeProvider(options: GitHubOptions): CodeProviderPort {
       if (raw === null) {
         return null;
       }
-      const pr = pullRequestSchema.parse(raw);
+      const pr = decode(pullRequestSchema, raw, "GET /pulls/{pull_number}");
 
       const rawReviews = await get("GET /repos/{owner}/{repo}/pulls/{pull_number}/reviews", {
         pull_number: prNumber,
         per_page: 100,
       });
-      const reviews = rawReviews === null ? [] : reviewsSchema.parse(rawReviews);
+      const reviews =
+        rawReviews === null ? [] : decode(reviewsSchema, rawReviews, "GET /pulls/{n}/reviews");
       const requestedReviewers = (pr.requested_reviewers ?? []).map((r) => r.login);
 
       return {
@@ -114,7 +133,7 @@ export function githubCodeProvider(options: GitHubOptions): CodeProviderPort {
       if (raw === null) {
         return null;
       }
-      const run = runsSchema.parse(raw).workflow_runs[0];
+      const run = decode(runsSchema, raw, "GET /actions/runs").workflow_runs[0];
       if (run === undefined) {
         return null;
       }
@@ -139,7 +158,7 @@ export function githubCodeProvider(options: GitHubOptions): CodeProviderPort {
       if (raw === null) {
         return null;
       }
-      const issue = issueSchema.parse(raw);
+      const issue = decode(issueSchema, raw, "GET /issues/{issue_number}");
 
       return {
         number: issue.number,
@@ -169,7 +188,7 @@ export function githubCodeWriter(options: GitHubOptions): CodeWriterPort {
         state: "open",
         per_page: 1,
       });
-      const found = openPullsSchema.parse(response)[0];
+      const found = decode(openPullsSchema, response, "GET /pulls")[0];
       return found?.number ?? null;
     },
 
@@ -181,7 +200,7 @@ export function githubCodeWriter(options: GitHubOptions): CodeWriterPort {
         body: draft.body,
       });
       // 捏造した番号を返さない。形が違えばここで throw する。
-      return createdPullSchema.parse(response).number;
+      return decode(createdPullSchema, response, "POST /pulls").number;
     },
 
     async addComment(prNumber, body) {
@@ -219,6 +238,7 @@ export function githubCodeWriter(options: GitHubOptions): CodeWriterPort {
 export function githubApproval(options: GitHubOptions & { prNumber: number | null }): ApprovalPort {
   const octokit = client(options);
   const prNumber = options.prNumber;
+  const hasWriteAccess = writeAccessChecker(octokit, options);
 
   // 1ティックで criteria の数だけ呼ばれる。同じ PR を何度も引かない。
   let cached: Promise<{ reviews: Review[]; comments: Comment[]; author: string | null }> | null =
@@ -244,9 +264,9 @@ export function githubApproval(options: GitHubOptions & { prNumber: number | nul
     ]);
 
     return {
-      author: prAuthorSchema.parse(pr).user?.login ?? null,
-      reviews: reviewsSchema.parse(reviews),
-      comments: commentsSchema.parse(comments),
+      author: decode(prAuthorSchema, pr, "GET /pulls/{pull_number}").user?.login ?? null,
+      reviews: decode(reviewsSchema, reviews, "GET /pulls/{n}/reviews"),
+      comments: decode(commentsSchema, comments, "GET /issues/{n}/comments"),
     };
   };
 
@@ -275,6 +295,10 @@ export function githubApproval(options: GitHubOptions & { prNumber: number | nul
         if (review.state !== "APPROVED" || login === author || !permitted(review)) {
           continue;
         }
+        // 関係だけでは足りない。実際に書き込めるかを権限 API で確かめる。
+        if (!(await hasWriteAccess(login))) {
+          continue;
+        }
         return { approvedBy: login, approvedAt: review.submitted_at ?? "" };
       }
 
@@ -288,10 +312,11 @@ export function githubApproval(options: GitHubOptions & { prNumber: number | nul
         if (!permitted(comment) || !approves(comment.body, criterionId)) {
           continue;
         }
-        return {
-          approvedBy: comment.user?.login ?? "unknown",
-          approvedAt: comment.created_at,
-        };
+        const login = comment.user?.login ?? "";
+        if (!(await hasWriteAccess(login))) {
+          continue;
+        }
+        return { approvedBy: login, approvedAt: comment.created_at };
       }
       return null;
     },
@@ -312,9 +337,95 @@ export function githubApproval(options: GitHubOptions & { prNumber: number | nul
  */
 const APPROVER_ASSOCIATIONS = new Set(["OWNER", "MEMBER", "COLLABORATOR"]);
 
-/** 承認を出してよい相手か。関係が読めなければ承認しない側に倒す */
+/**
+ * 前段のふるい。関係が読めなければ承認しない側に倒す。
+ *
+ * これだけでは足りない。README は「`type: human` の承認は、リポジトリに
+ * 書き込み権限がある人のものだけを数える」と書いているが、`MEMBER` は
+ * 所有 org のメンバー全員を指し、リポジトリ単位の権限を一切含意しない。
+ * `COLLABORATOR` も read / triage で招かれた相手を含む。つまりこの集合は
+ * 「書き込み権限がある」より広く、org に人がいるほど広がる。
+ *
+ * そこで2段構えにする。ここは API を1回も叩かずに落とせる相手を落とす前段で、
+ * 実際の判定は `writeAccessChecker` が権限 API で行う。
+ */
 function permitted(actor: { author_association?: string | null | undefined }): boolean {
   return actor.author_association != null && APPROVER_ASSOCIATIONS.has(actor.author_association);
+}
+
+/**
+ * 書き込み権限として数える値。GitHub の permission API が返す語をそのまま使う。
+ *
+ * `pull`（read）と `triage` は入れない。どちらもコードを変えられないので、
+ * 「実装が完了した」という判断の根拠にならない。
+ */
+const WRITE_PERMISSIONS = new Set(["push", "maintain", "admin", "write"]);
+
+const permissionSchema = z.object({ permission: z.string().nullish() });
+
+/**
+ * その login が実際にリポジトリへ書き込めるかを、権限 API で確かめる。
+ *
+ * 3つの結果を混ぜない（design.md §3.1）。
+ *
+ * - 権限がある            → true
+ * - コラボレーターでない  → false。404 がこれにあたる。承認していないのと同じ扱い
+ * - 確かめられなかった    → throw。トークンの権限不足やネットワーク断がこれ
+ *
+ * 3つ目を false に畳んではいけない。`verify` は承認が null なら `pending`、
+ * Port が throw すれば `port_failed` を返し、両者を別の unresolved として残す。
+ * 畳むと、権限 API が落ちているだけの状態が「まだ誰も承認していない」に見え、
+ * Goal は理由の分からないまま WAITING_HUMAN で止まり続ける。
+ *
+ * 一方で「確かめられなかった」を true にするのも駄目で、GitHub が落ちている
+ * あいだだけ誰でも承認できる窓が開く。倒す先は throw であって true / false ではない。
+ */
+function writeAccessChecker(
+  octokit: Octokit,
+  options: GitHubOptions,
+): (login: string) => Promise<boolean> {
+  // 1ティックで criteria の数だけ呼ばれる。同じ人を何度も引かない。
+  const cache = new Map<string, Promise<boolean>>();
+  const route = "GET /repos/{owner}/{repo}/collaborators/{username}/permission";
+
+  return (login) => {
+    if (login === "") {
+      return Promise.resolve(false);
+    }
+    const cached = cache.get(login);
+    if (cached !== undefined) {
+      return cached;
+    }
+
+    const pending = (async () => {
+      let raw: unknown;
+      try {
+        // request() を通さずに叩く。あちらは何でも PortError に畳むので、
+        // 404（コラボレーターでない）と本当の障害を区別できない。
+        const response = await octokit.request(route, {
+          owner: options.owner,
+          repo: options.repo,
+          username: login,
+        });
+        raw = response.data;
+      } catch (error) {
+        if ((error as { status?: number }).status === 404) {
+          // コラボレーターではない。確かめられた結果としての「権限なし」。
+          return false;
+        }
+        throw new PortError(
+          "unavailable",
+          `${describe(route, { username: login }, options)}: ${errorMessage(error)}`,
+        );
+      }
+
+      const permission = decode(permissionSchema, raw, route).permission;
+      return permission != null && WRITE_PERMISSIONS.has(permission);
+    })();
+
+    cache.set(login, pending);
+    return pending;
+  };
 }
 
 /**
@@ -334,8 +445,19 @@ function approves(body: string, criterionId: string): boolean {
  * どちらが正かを決められなくなるより、失敗して次のティックに任せる方がよい
  * （reconcile はどのティックも有限時間で return する。design.md §3.6）。
  */
-function client(options: GitHubOptions): Octokit {
-  const Client = Octokit.plugin(throttling);
+/**
+ * octokit を組み立てる。read と write で違うのは retry プラグインの有無だけ。
+ *
+ * 書き込み側に retry を入れないのは意図的で、500 で再試行すると1回目が実際には
+ * 成功していた場合に PR が2本立つ。どちらが正かを決められなくなるより、失敗して
+ * 次のティックに任せる方がよい（design.md §3.6）。
+ *
+ * throttle の2つのコールバックは両方で同じにする。レート制限に当たっても待たない。
+ * ここで待つと reconcile が有限時間で return しなくなる。以前は同じ設定が2箇所に
+ * あり、片方だけ直せばもう片方が黙って待つ形だった。
+ */
+function client(options: GitHubOptions, plugins: { retry: boolean } = { retry: false }): Octokit {
+  const Client = plugins.retry ? Octokit.plugin(retry, throttling) : Octokit.plugin(throttling);
   return new Client({
     auth: options.token,
     ...(options.fetch === undefined ? {} : { request: { fetch: options.fetch } }),
@@ -361,7 +483,10 @@ async function request(
     });
     return response.data;
   } catch (error) {
-    throw new PortError("unavailable", `${describe(route, params, options)}: ${message(error)}`);
+    throw new PortError(
+      "unavailable",
+      `${describe(route, params, options)}: ${errorMessage(error)}`,
+    );
   }
 }
 
@@ -463,10 +588,6 @@ function describe(route: string, params: Record<string, unknown>, options: GitHu
     path = path.replace(`{${key}}`, String(value));
   }
   return path;
-}
-
-function message(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }
 
 const pullRequestSchema = z.object({

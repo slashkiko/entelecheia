@@ -14,7 +14,18 @@ export type PortErrorKind =
   /** 使用量上限に達した。design.md §4.4 の WAITING_EXTERNAL(usage_limit) */
   | "usage_limit"
   /** 外部が落ちている、認証が無い、など。次のティックで再試行する */
-  | "unavailable";
+  | "unavailable"
+  /**
+   * 応答は返ってきたが、こちらのスキーマで解釈できなかった。
+   *
+   * `unavailable` と分けてあるのは、待っても直らないため。GitHub がフィールドを
+   * 変えた、あるいはこちらのスキーマが厳しすぎる、のどちらかで、次のティックでも
+   * 同じ応答が同じように落ちる。`unavailable` に混ぜると一時的な障害として
+   * 再試行され続け、`max_unchanged_reconciles` が `loop_detected` を出すまで
+   * 何十ティックも同じことを繰り返す。そのあいだ人間には「GitHub が不安定」に
+   * 見えて、スキーマの不一致だと気づけない。
+   */
+  | "shape_mismatch";
 
 export class PortError extends Error {
   readonly kind: PortErrorKind;
@@ -36,14 +47,28 @@ export class PortError extends Error {
  * （多重インストールなど）で取りこぼす。name と kind も見る。
  */
 export function isUsageLimit(error: unknown): error is PortError {
+  return kindOf(error) === "usage_limit";
+}
+
+/**
+ * PortError なら kind を、そうでなければ null を返す。
+ *
+ * `instanceof` だけで判定すると、SDK が別インスタンスの PortError を投げる構成
+ * （多重インストールなど）で取りこぼす。name と kind も見る。この二段構えを
+ * kind ごとに書き写していたので、片方だけ直すと挙動が食い違った。1箇所に置く。
+ */
+function kindOf(error: unknown): PortErrorKind | null {
   if (error instanceof PortError) {
-    return error.kind === "usage_limit";
+    return error.kind;
   }
   if (typeof error !== "object" || error === null) {
-    return false;
+    return null;
   }
   const candidate = error as { name?: unknown; kind?: unknown };
-  return candidate.name === "PortError" && candidate.kind === "usage_limit";
+  if (candidate.name !== "PortError" || typeof candidate.kind !== "string") {
+    return null;
+  }
+  return candidate.kind as PortErrorKind;
 }
 
 /**
@@ -57,14 +82,17 @@ export function isUsageLimit(error: unknown): error is PortError {
  * 抑止するのは1ティックの中での呼び直しだけになる。
  */
 export function isUnavailable(error: unknown): error is PortError {
-  if (error instanceof PortError) {
-    return error.kind === "unavailable";
-  }
-  if (typeof error !== "object" || error === null) {
-    return false;
-  }
-  const candidate = error as { name?: unknown; kind?: unknown };
-  return candidate.name === "PortError" && candidate.kind === "unavailable";
+  return kindOf(error) === "unavailable";
+}
+
+/**
+ * 応答は返ったが、こちらのスキーマで解釈できなかったか。
+ *
+ * 待っても直らないので、`unavailable` と同じ扱いにしない。observe はこれを
+ * `Unresolved.reason: "shape_mismatch"` として残す。
+ */
+export function isShapeMismatch(error: unknown): error is PortError {
+  return kindOf(error) === "shape_mismatch";
 }
 
 /** usage_limit なら resumeAfter を取り出す。持っていなければ null */

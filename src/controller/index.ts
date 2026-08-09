@@ -8,6 +8,7 @@ import {
 } from "../act/index.js";
 import type { BudgetUsage } from "../decide/index.js";
 import type { Action, Decision } from "../domain/action.js";
+import { errorMessage } from "../domain/error-message.js";
 import type { Fact, Unresolved } from "../domain/fact.js";
 import type { Goal } from "../domain/goal.js";
 import { type GoalStatus, isTerminal, nextStatus } from "../domain/goal-state.js";
@@ -25,6 +26,16 @@ import type { GoalState, Store } from "../store/index.js";
  * reconcile と act 自体は変更しない。あの2つを純粋に保ったまま、
  * 副作用と永続化をこの層に集める（design.md §8）。
  */
+
+/**
+ * lease を延長してよい回数の上限。
+ *
+ * 既定の leaseSeconds は 300 で延長は半分ごとなので、2.5 分に1回になる。
+ * 96 回で約4時間。design.md §9 の実測では ACT の1ティックが数十分だったので、
+ * 正常なティックがここに当たることはない。当たるのは刺さったときだけで、
+ * そのときは lease を手放して他のワーカーに渡す方がよい。
+ */
+const MAX_LEASE_RENEWALS = 96;
 
 export interface ControllerDeps
   extends ReconcileDeps,
@@ -53,6 +64,30 @@ export interface ControllerDeps
    * ACT・publish・永続化・lease・orphan Run の回収がそれにあたる。
    */
   dryRun?: boolean | undefined;
+  /**
+   * 観測対象の上書き。`--dry-run` が状態を書かずに `--pr` / `--issue` を効かせるために使う。
+   *
+   * 通常のティックでは CLI が `setObserveTarget` で永続化してから渡す。dry-run は
+   * 書かないので、渡す道がここにしか無い。以前は dry-run でも永続化していて、
+   * 覗いたつもりの1回が次の本番ティックの観測先を差し替えていた。
+   */
+  observeOverride?: { prNumber?: number; issueNumber?: number } | undefined;
+}
+
+/**
+ * このティックが観測する PR と Issue。
+ *
+ * tick と preview の両方が使う。片方だけに上書きを足すと、dry-run が
+ * 本番と違う対象を観測することになる。
+ */
+function observeTargetOf(
+  state: GoalState,
+  deps: ControllerDeps,
+): { prNumber: number | null; issueNumber: number | null } {
+  return {
+    prNumber: deps.observeOverride?.prNumber ?? state.prNumber,
+    issueNumber: deps.observeOverride?.issueNumber ?? state.issueNumber,
+  };
 }
 
 export interface TickResult {
@@ -117,6 +152,10 @@ export async function tick(goal: Goal, deps: ControllerDeps): Promise<TickResult
     reclaimed: 0,
     decision: null,
     run: null,
+    // 終端と休眠の分岐は dry-run の分岐より前にあるので、ここを通ると
+    // dryRun が付かなかった。SKILL.md は「--dry-run なら必ず dryRun: true が付く」と
+    // 書いており、それを見て preview と本番を区別するエージェントが取りこぼす。
+    ...(deps.dryRun === true ? ({ dryRun: true } as const) : {}),
     status,
   });
 
@@ -159,8 +198,20 @@ export async function tick(goal: Goal, deps: ControllerDeps): Promise<TickResult
   // try/finally の外なので clearInterval も releaseLease も走らないまま
   // プロセスが落ちる。lease が期限まで残り、どのワーカーもその Goal を
   // 進められなくなる。延長できなければ期限切れに任せる方が軽い壊れ方になる。
-  const heartbeat = setInterval(
+  //
+  // 延長には上限を置く。上限が無いと、刺さった ACT や git が lease を無期限に
+  // 抱え続け、cron から起動したどのワーカーも引き継げない。プロセスが生きて
+  // いるかぎり lease が切れないので、design.md §3.6 の「どのティックも有限時間で
+  // return する」が外から見て成立しなくなる。上限に達したら延長をやめ、lease は
+  // 期限で切れる。走行中の ACT は続くが、次のティックには別プロセスが入れる。
+  let renewals = 0;
+  const heartbeat: NodeJS.Timeout = setInterval(
     () => {
+      renewals += 1;
+      if (renewals > MAX_LEASE_RENEWALS) {
+        clearInterval(heartbeat);
+        return;
+      }
       try {
         deps.store.acquireLease(goalId, deps.owner, leaseUntil(), deps.now());
       } catch {
@@ -187,7 +238,7 @@ export async function tick(goal: Goal, deps: ControllerDeps): Promise<TickResult
     const result = await reconcile(
       {
         goal,
-        observe: { prNumber: state.prNumber, issueNumber: state.issueNumber },
+        observe: observeTargetOf(state, deps),
         carriedFacts,
         usage: usageOf(state, goal, deps),
       },
@@ -306,7 +357,7 @@ async function preview(goal: Goal, state: GoalState, deps: ControllerDeps): Prom
   const result = await reconcile(
     {
       goal,
-      observe: { prNumber: state.prNumber, issueNumber: state.issueNumber },
+      observe: observeTargetOf(state, deps),
       carriedFacts,
       usage: usageOf(state, goal, deps),
     },
@@ -337,15 +388,21 @@ async function preview(goal: Goal, state: GoalState, deps: ControllerDeps): Prom
     deps,
   );
 
+  // 未 commit の関門も通常のティックと同じに通す。ここを抜くと、worktree が
+  // 汚れていて完了 Run が履歴にある状態で、実ティックが WAITING_HUMAN になるのに
+  // dry-run は COMPLETED を予告する。「1行も push せず COMPLETED」を防ぐために
+  // 足した関門を、それを覗くための道具が見ていないことになる（design.md §10-11）。
+  const decided = uncommittedDecision(goal, guarded, result.observedFacts, deps);
+
   return {
     ran: false,
     skipped: null,
     reclaimed: 0,
-    decision: guarded,
+    decision: decided,
     run: null,
     status: state.status,
     dryRun: true,
-    wouldTransitionTo: nextStatus(state.status, guarded.action),
+    wouldTransitionTo: nextStatus(state.status, decided.action),
     observed: {
       facts: result.facts,
       unresolved,
@@ -454,7 +511,12 @@ async function guardedDecision(
 
   let escaped: readonly string[];
   try {
-    const after = await deps.worktree.repoDirtyState();
+    // before 側（repoBaseline）と同じ観測を取る。片側だけ git の汚れに絞ると、
+    // git に見えない書き込み（.git/hooks・core.hooksPath・状態 DB）は
+    // baseline にしか現れず、下の filter が after 側のエントリしか見ないので
+    // 指紋がどう変わっても escaped に入らない。観測を足したのに関門が一度も
+    // 鳴らない、という形になる。前後で同じものを見ること。
+    const after = await observedRepoState(deps);
     // 中身の指紋で比べる。パスの集合だけだと、人間が編集中のファイルを
     // Actor が上書きしたときに前後で同じパスが並び、差がゼロになる。
     //
@@ -468,9 +530,10 @@ async function guardedDecision(
     //
     // この2つは逆向きで、検知を永続化するか、編集を Actor プロセスに紐付けないと
     // 同時には解けない。MVP では両方残している。
-    escaped = [...after]
-      .filter(([path, digest]) => repoBefore.state.get(path) !== digest)
-      .map(([path]) => path);
+    // 前後どちらかにしか無いパスも変化として数える。after 側だけを走査すると、
+    // 消された hook（before にあって after に無い）が差分に出ない。
+    const paths = new Set([...repoBefore.state.keys(), ...after.keys()]);
+    escaped = [...paths].filter((path) => repoBefore.state.get(path) !== after.get(path));
   } catch (error) {
     return escalate(
       "guard_unavailable",
@@ -544,7 +607,7 @@ function worktreePathFor(goal: Goal, run: Run | null, deps: ControllerDeps): str
  *   欠けるので、そもそも criteria が揃わず COMPLETE には届かない
  * - 判断したのは LLM ではないので decidedBy は "guard"（design.md §7）
  * - **止めた理由と、進めるために何をすればよいかを rationale に書く。** ここが
- *   `ent show`（`decision.rationale`）にも PR の進捗コメントにもそのまま出る
+ *   `ent get`（`decision.rationale`）にも PR の進捗コメントにもそのまま出る
  *   唯一の説明になる。「止まった」しか読めない関門は、人間から見れば
  *   原因不明の停止と区別がつかない
  * - 元の rationale を残す。何をしようとしていたのかが読めなくなる
@@ -648,14 +711,31 @@ type RepoBaseline = { state: ReadonlyMap<string, string> } | { error: string };
 
 async function repoBaseline(deps: ControllerDeps): Promise<RepoBaseline> {
   try {
-    return { state: await deps.worktree.repoDirtyState() };
+    return { state: await observedRepoState(deps) };
   } catch (error) {
     return { error: errorMessage(error) };
   }
 }
 
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
+/**
+ * ACT の前後で比べる観測を1つにまとめる。
+ *
+ * `repoDirtyState` は git が見える汚れで、`outOfSightState` は git の観測手段では
+ * 原理的に出てこないもの（`.git/hooks/**`、`core.hooksPath`、状態 DB）を指す。
+ * 前者だけを見ていたころは、Actor が `.git/hooks/pre-push` を1本置くだけで、
+ * push のたびに controller の権限・全環境変数でそれが走った。関門の計測手段が
+ * git だったので、原理的に見えなかった（design.md §8 の主張が届かない範囲）。
+ *
+ * `outOfSightState` を持たない実装（テストの fake など）では、git 側だけを見る。
+ * 持っていないことを違反にはしない。
+ */
+async function observedRepoState(deps: ControllerDeps): Promise<Map<string, string>> {
+  const dirty = await deps.worktree.repoDirtyState();
+  const outOfSight = await deps.worktree.outOfSightState?.();
+  if (outOfSight === undefined) {
+    return dirty;
+  }
+  return new Map([...dirty, ...outOfSight]);
 }
 
 /**

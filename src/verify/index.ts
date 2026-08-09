@@ -1,3 +1,4 @@
+import { errorMessage } from "../domain/error-message.js";
 import {
   type Evidence,
   type Fact,
@@ -197,8 +198,4 @@ async function judge(
       }
     }
   }
-}
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }

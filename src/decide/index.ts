@@ -1,4 +1,5 @@
 import { type Action, actionSchema, type Decision, type WaitReason } from "../domain/action.js";
+import { errorMessage } from "../domain/error-message.js";
 import type { Unresolved } from "../domain/fact.js";
 import { criterionFactKey } from "../domain/fact-keys.js";
 import type { Assessment, Gap } from "../domain/gap.js";
@@ -181,7 +182,15 @@ function unchangedReconciles(target: DecideTarget): number {
  * 状態を取り違えるため。GitHub が落ちているだけかもしれない。
  */
 function waitReason(target: DecideTarget): WaitReason {
-  if (target.unresolved.some((u) => u.reason === "port_failed")) {
+  // 観測が成立していない理由は、届かなかった（port_failed）と
+  // 届いたが読めなかった（shape_mismatch）の2つある。どちらも「観測できて
+  // いない」ので、承認待ちや CI 待ちより先に倒す。
+  //
+  // shape_mismatch を落とすと ci_running に化ける。恒久的なスキーマ不一致が
+  // 「CI 実行待ち」を名乗り、Gap ゼロの WAIT はループ検知より手前で return する
+  // ので、予算に当たるまでそのラベルで回り続ける。reason を足した意味が消える。
+  const unobservable = new Set(["port_failed", "shape_mismatch"]);
+  if (target.unresolved.some((u) => unobservable.has(u.reason))) {
     return "observation_failed";
   }
 
@@ -246,10 +255,36 @@ function describeUnresolvedForPrompt(
  * guard 側から `loop_detected` を出す実装は下の `unchangedReconciles()` にある。
  * ここで閉じるのは LLM 側の口で、実際に停止させるのは guard になる（design.md §10-2）。
  */
-const LLM_ACTIONS = new Set(["ACT", "VERIFY", "WAIT", "REPLAN"]);
+/**
+ * 行動の種類ごとに、LLM が選んでよいかを1つずつ決める。
+ *
+ * `Set<string>` ではなく `Record<Action["type"], boolean>` にしてあるのは、
+ * ここが「LLM に何を決めさせないか」の境界そのものだから。文字列の集合だと、
+ * `"REPLANN"` のような打ち間違いが黙って合法な行動を1つ消し、`actionSchema` に
+ * 行動を1つ足してもコンパイルが通ってしまう。増えた行動は既定で拒否されるので、
+ * 壊れ方は「安全側に倒れて静かに動かない」になり、気づくのが遅れる。
+ *
+ * mapped type にすると、行動を足した時点で「LLM に選ばせるか」を書くまで
+ * ビルドが通らない。判断を忘れる余地を型で消す。
+ * `src/adapters/claude.ts` の `DENIED_TOOLS` が同じ形をしている。
+ */
+const LLM_MAY_CHOOSE: Record<Action["type"], boolean> = {
+  // guard が決める。design.md §3.1 と §7。
+  COMPLETE: false,
+  ESCALATE: false,
+  // Gap の埋め方は LLM に委ねる。
+  ACT: true,
+  VERIFY: true,
+  WAIT: true,
+  REPLAN: true,
+};
 
-const llmActionSchema = actionSchema.refine((action) => LLM_ACTIONS.has(action.type), {
-  message: `LLM が選べるのは ${[...LLM_ACTIONS].join(" / ")} だけ。COMPLETE と ESCALATE は guard が決める`,
+const LLM_ACTIONS = Object.entries(LLM_MAY_CHOOSE)
+  .filter(([, allowed]) => allowed)
+  .map(([type]) => type);
+
+const llmActionSchema = actionSchema.refine((action) => LLM_MAY_CHOOSE[action.type], {
+  message: `LLM が選べるのは ${LLM_ACTIONS.join(" / ")} だけ。COMPLETE と ESCALATE は guard が決める`,
 });
 
 /**
@@ -385,8 +420,4 @@ function describeAction(action: Action): string {
     default:
       return action.type;
   }
-}
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }
