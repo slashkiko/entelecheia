@@ -57,6 +57,7 @@ const SUCCESS = {
 };
 
 const INVOCATION: ActorInvocation = {
+  runId: "42",
   intent: "テストの失敗を直す",
   worktree: { path: "/tmp/entelecheia/worktrees/sample", branch: "entelecheia/sample" },
   deniedOperations: ["merge", "force_push"],
@@ -130,7 +131,8 @@ describe("claudeActor", () => {
 
     expect(sink.logs.length).toBe(1);
     expect(result.logRef).toBe(sink.logs[0]?.path);
-    expect(result.logRef.startsWith("/tmp/entelecheia/runs")).toBe(true);
+    // run ごとにディレクトリを分ける（design.md §4.6）。
+    expect(result.logRef).toBe("/tmp/entelecheia/runs/42/log.jsonl");
     expect(sink.logs[0]?.contents).toContain("result");
   });
 

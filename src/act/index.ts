@@ -23,6 +23,11 @@ export interface WorktreePort {
 }
 
 export interface ActorInvocation {
+  /**
+   * この実行の Run id。生ログを run ごとに分けるために渡す（design.md §4.6）。
+   * write-ahead で先に採番済みなので、Actor を起動する時点で必ず決まっている。
+   */
+  runId: string;
   /** DECIDE が決めた intent。そのまま Actor へのプロンプトになる */
   intent: string;
   /** 隔離された作業ツリー。controller 本体のコードとは物理的に分ける（design.md §7） */
@@ -137,7 +142,7 @@ export async function act(target: ActTarget, deps: ActDeps): Promise<ActResult> 
   }
 
   // ここから先は Run(starting) が残っているので、どの経路でも必ず finish で確定させる。
-  const outcome = await runActor(target.goal, action.intent, worktreeName, deps);
+  const outcome = await runActor(target.goal, runId, action.intent, worktreeName, deps);
   try {
     await deps.runs.finish(runId, outcome);
   } catch (error) {
@@ -168,6 +173,7 @@ function appendDetail(detail: string | null, added: string): string {
  */
 async function runActor(
   goal: Goal,
+  runId: string,
   intent: string,
   worktreeName: string,
   deps: ActDeps,
@@ -195,6 +201,7 @@ async function runActor(
 
   try {
     const result = await deps.actor.run({
+      runId,
       intent,
       worktree,
       // merge や force push を Agent に実行させない（design.md §7）。

@@ -63,7 +63,8 @@ export function claudeActor(options: ClaudeOptions): ActorPort {
         settingSources: [],
       });
 
-      const logRef = join(options.runsDir, `${slug(invocation.worktree.branch)}.jsonl`);
+      // design.md §4.6 の .goals/.state/runs/<run-id>/ に合わせる。
+      const logRef = join(options.runsDir, invocation.runId, "log.jsonl");
       await (options.writeLog ?? writeLogToFile)(logRef, `${outcome.log.join("\n")}\n`);
 
       return {
@@ -305,11 +306,6 @@ function parseJson(text: string): unknown {
 async function writeLogToFile(path: string, contents: string): Promise<void> {
   await mkdir(dirname(path), { recursive: true });
   await writeFile(path, contents, "utf8");
-}
-
-/** ブランチ名をファイル名に落とす。`/` を含むとディレクトリになってしまう */
-function slug(branch: string): string {
-  return branch.replace(/[^a-zA-Z0-9._-]+/g, "-");
 }
 
 const rateLimitSchema = z.object({
