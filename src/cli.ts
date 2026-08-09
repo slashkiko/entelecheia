@@ -244,6 +244,65 @@ export function parseCommand(argv: readonly string[]): Command {
   }
 }
 
+/**
+ * 「もう追わない」と宣言して終端にする。
+ *
+ * 満たすべき性質:
+ * - 書けるのは status（ABANDONED）と理由だけ。観測の履歴には触らない。
+ *   snapshots / facts / verifications は「最後のティックが何を見たか」の記録で、
+ *   書き換えるのは観測の捏造になる（design.md §3.1）
+ * - 落とせない場合は何も書かずに 1 を返す。部分的に書いて失敗しない
+ * - 完了は名乗らせない。ここから書ける終端は ABANDONED だけで、対になる
+ *   `complete` は用意しない
+ *
+ * `upsertGoal` を通さずに呼ぶ。降りるのは実行時状態の話なので宣言部を書き直す
+ * 理由が無く、通すと未登録の Goal に DRAFT の行ができてしまう。
+ */
+function abandonGoal(
+  command: { slug: string; reason: string; json?: true },
+  goal: Goal,
+  store: Store,
+): number {
+  const current = store.getState(goal.goal.id);
+
+  // 回したことのない Goal を終端にすると、「一度も動いていないのに放棄済み」
+  // という読めない記録ができる。
+  if (current === null) {
+    process.stderr.write(
+      `${goal.goal.id} は登録されていない。降りる先の状態が無い（ent start から始める）\n`,
+    );
+    return 1;
+  }
+
+  // 終端から別の終端へ移さない。design.md §4.4 は「終端の Goal を ACTIVE に
+  // 戻さない。COMPLETED を後から取り消せると、完了判定そのものが意味を失う」と
+  // 書いている。COMPLETED を ABANDONED で塗り替えられるなら、同じことになる。
+  if (isTerminal(current.status)) {
+    process.stderr.write(
+      `${goal.goal.id} は既に ${current.status} なので abandon できない。終端は塗り替えない\n`,
+    );
+    return 1;
+  }
+
+  // lease を持っているなら、別のプロセスがそのティックを回している。
+  // 横から終端へ落とすと、走っている controller が終端の Goal に書き戻す。
+  if (current.leaseOwner !== null) {
+    process.stderr.write(
+      `${goal.goal.id} は ${current.leaseOwner} が回している。` +
+        "終わるのを待つか、lease が切れてから叩くこと\n",
+    );
+    return 1;
+  }
+
+  store.abandon(goal.goal.id, command.reason);
+  process.stdout.write(
+    command.json === true
+      ? `${JSON.stringify({ id: goal.goal.id, status: "ABANDONED", reason: command.reason }, null, 2)}\n`
+      : `${goal.goal.id}: ABANDONED（${command.reason}）\n`,
+  );
+  return 0;
+}
+
 function isSubcommand(value: string): value is Subcommand {
   return (SUBCOMMANDS as readonly string[]).includes(value);
 }
@@ -397,15 +456,11 @@ async function runCommand(argv: readonly string[]): Promise<number> {
       return 0;
     }
 
-    // abandon も upsert より先に読む。upsert が行を作るので、あとから読むと
-    // 未登録の Goal が DRAFT として見え、「一度も動いていないのに放棄済み」という
-    // 読めない記録を作れてしまう。
-    const beforeUpsert = store.getState(goal.goal.id);
-    if (command.kind === "abandon" && beforeUpsert === null) {
-      process.stderr.write(
-        `${goal.goal.id} は登録されていない。降りる先の状態が無い（ent start から始める）\n`,
-      );
-      return 1;
+    // abandon は upsert より先に片付ける。降りるのは実行時状態の話で、宣言部を
+    // 読み直す必要が無い。upsert を通すと未登録の Goal に DRAFT の行ができ、
+    // 「一度も動いていないのに放棄済み」という読めない記録を作れてしまう。
+    if (command.kind === "abandon") {
+      return abandonGoal(command, goal, store);
     }
 
     store.upsertGoal(goal);
@@ -434,40 +489,6 @@ async function runCommand(argv: readonly string[]): Promise<number> {
         command.json === true
           ? `${JSON.stringify({ id: goal.goal.id, status: "ACTIVE" }, null, 2)}\n`
           : `${goal.goal.id}: ACTIVE\n`,
-      );
-      return 0;
-    }
-
-    if (command.kind === "abandon") {
-      // 読むのは upsert より前に取った状態にする。ここで読み直すと、
-      // 未登録の Goal が upsert の作った DRAFT として見える。
-      const current = beforeUpsert ?? { status: "DRAFT" as const, leaseOwner: null };
-
-      // 終端から別の終端へ移さない。design.md §4.4 は「終端の Goal を ACTIVE に
-      // 戻さない。COMPLETED を後から取り消せると、完了判定そのものが意味を失う」
-      // と書いている。COMPLETED を ABANDONED で塗り替えられるなら、同じことになる。
-      if (isTerminal(current.status)) {
-        process.stderr.write(
-          `${goal.goal.id} は既に ${current.status} なので abandon できない。終端は塗り替えない\n`,
-        );
-        return 1;
-      }
-
-      // lease を持っているなら、別のプロセスがそのティックを回している。
-      // 横から終端へ落とすと、走っている controller が終端の Goal に書き戻す。
-      if (current.leaseOwner !== null) {
-        process.stderr.write(
-          `${goal.goal.id} は ${current.leaseOwner} が回している。` +
-            "終わるのを待つか、lease が切れてから叩くこと\n",
-        );
-        return 1;
-      }
-
-      store.abandon(goal.goal.id, command.reason);
-      process.stdout.write(
-        command.json === true
-          ? `${JSON.stringify({ id: goal.goal.id, status: "ABANDONED", reason: command.reason }, null, 2)}\n`
-          : `${goal.goal.id}: ABANDONED（${command.reason}）\n`,
       );
       return 0;
     }
