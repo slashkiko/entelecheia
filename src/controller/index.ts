@@ -26,6 +26,16 @@ import type { GoalState, Store } from "../store/index.js";
  * 副作用と永続化をこの層に集める（design.md §8）。
  */
 
+/**
+ * lease を延長してよい回数の上限。
+ *
+ * 既定の leaseSeconds は 300 で延長は半分ごとなので、2.5 分に1回になる。
+ * 96 回で約4時間。design.md §9 の実測では ACT の1ティックが数十分だったので、
+ * 正常なティックがここに当たることはない。当たるのは刺さったときだけで、
+ * そのときは lease を手放して他のワーカーに渡す方がよい。
+ */
+const MAX_LEASE_RENEWALS = 96;
+
 export interface ControllerDeps
   extends ReconcileDeps,
     Pick<ActDeps, "worktree" | "actor">,
@@ -187,8 +197,20 @@ export async function tick(goal: Goal, deps: ControllerDeps): Promise<TickResult
   // try/finally の外なので clearInterval も releaseLease も走らないまま
   // プロセスが落ちる。lease が期限まで残り、どのワーカーもその Goal を
   // 進められなくなる。延長できなければ期限切れに任せる方が軽い壊れ方になる。
-  const heartbeat = setInterval(
+  //
+  // 延長には上限を置く。上限が無いと、刺さった ACT や git が lease を無期限に
+  // 抱え続け、cron から起動したどのワーカーも引き継げない。プロセスが生きて
+  // いるかぎり lease が切れないので、design.md §3.6 の「どのティックも有限時間で
+  // return する」が外から見て成立しなくなる。上限に達したら延長をやめ、lease は
+  // 期限で切れる。走行中の ACT は続くが、次のティックには別プロセスが入れる。
+  let renewals = 0;
+  const heartbeat: NodeJS.Timeout = setInterval(
     () => {
+      renewals += 1;
+      if (renewals > MAX_LEASE_RENEWALS) {
+        clearInterval(heartbeat);
+        return;
+      }
       try {
         deps.store.acquireLease(goalId, deps.owner, leaseUntil(), deps.now());
       } catch {

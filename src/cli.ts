@@ -45,9 +45,9 @@ import type { ApprovalPort } from "./verify/index.js";
  * 上限が無いと、Goal が増えるほど1回の出力がエージェントのコンテキストを食う。
  * 切り捨てたときは絞り込み方を stderr に出すので、足りないことには気づける。
  */
-export const DEFAULT_LIMIT = 50;
+const DEFAULT_LIMIT = 50;
 
-export const USAGE = `ent — Declare the end state; the controller converges to it.
+const USAGE = `ent — Declare the end state; the controller converges to it.
 
   ent start <slug>     Goal を登録して ACTIVE にする
   ent run <slug>       1ティック回して終了する（--once は既定）
@@ -280,7 +280,24 @@ function positiveInteger(value: unknown, flag: string): number | string | undefi
  * observe がそれを握って unobserved に落とすので、ティック自体は最後まで回り、
  * 状態が DB に残る。捏造した観測は作らない。
  */
+/**
+ * CLI の入口。終了コードの契約はここで閉じる。
+ *
+ * 以前は throw がそのまま呼び出し元へ抜け、1 を返していたのはモジュール末尾の
+ * エントリだった。`agent-context` が「終了コードはこれが正」と宣言しているのに、
+ * `main()` を呼ぶ側からは 1 を観測できず、テストも書けなかった。実際
+ * 「Goal YAML が無い」は 1 と文書化されているのに、`main()` は throw していた。
+ */
 export async function main(argv: readonly string[]): Promise<number> {
+  try {
+    return await runCommand(argv);
+  } catch (error) {
+    process.stderr.write(`${errorMessage(error)}\n`);
+    return 1;
+  }
+}
+
+async function runCommand(argv: readonly string[]): Promise<number> {
   const command = parseCommand(argv);
   if (command.kind === "help") {
     process.stdout.write(USAGE);
@@ -360,7 +377,11 @@ export async function main(argv: readonly string[]): Promise<number> {
           `${goal.goal.id} は ${current.status} なので start できない。` +
             "やり直すなら .goals/.state/goals.db の状態を明示的に戻すこと\n",
         );
-        return 2;
+        // 2 ではなく 1 を返す。2 は「引数が不正」で、SKILL.md はそこに
+        // 「stderr に有効値が並ぶ」と書いている。argv は妥当で打ち直せる値も
+        // 無いので、2 を返すとエージェントが argv を変えて無限に再試行する。
+        // 実行できない状態は 1 にあたる。
+        return 1;
       }
 
       const now = new Date().toISOString();
@@ -678,8 +699,12 @@ export function agentContextPayload(): AgentContext {
       { name: "ENT_EFFORT", required: false, summary: "low / medium / high / xhigh / max" },
     ],
     exitCodes: [
-      { code: 0, meaning: "成功。ティックが最後まで回った" },
-      { code: 1, meaning: "実行時エラー。詳細は stderr" },
+      { code: 0, meaning: "成功。ティックが最後まで回った（doctor では failed が1件も無い）" },
+      {
+        code: 1,
+        meaning:
+          "実行時エラー、または実行できない状態。詳細は stderr（doctor では stdout の JSON）",
+      },
       { code: 2, meaning: "引数が不正。stderr に有効値が出る" },
     ],
   };
@@ -1062,15 +1087,38 @@ function effortFrom(value: string | undefined): EffortLevel | undefined {
   return raw as EffortLevel;
 }
 
-const EFFORT_LEVELS: readonly EffortLevel[] = ["low", "medium", "high", "xhigh", "max"];
+/**
+ * SDK の `EffortLevel` の全値。
+ *
+ * `readonly EffortLevel[]` と書くと片方向しか守れない。SDK からメンバーが
+ * **消えた**ときは型エラーになるが、**増えた**ときは足りない配列もそのまま
+ * 代入でき、妥当な値を「不正」として弾く。この関数の JSDoc は「知らない値を
+ * 黙って捨てると気づけないので throw する」と書いているので、弾く側の
+ * 取りこぼしも同じだけ困る。下の検査で増えた側も落ちるようにする。
+ */
+const EFFORT_LEVELS = [
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max",
+] as const satisfies readonly EffortLevel[];
+
+/**
+ * EFFORT_LEVELS に足りない値があればビルドが落ちる。
+ *
+ * `never[]` への代入は「余りが無い」ときだけ通る。SDK に値が増えるとここで
+ * 余りが出て、代入できなくなる。
+ */
+const _effortLevelsAreExhaustive: never[] = [] as Exclude<
+  EffortLevel,
+  (typeof EFFORT_LEVELS)[number]
+>[];
+void _effortLevelsAreExhaustive;
 
 if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  main(process.argv.slice(2))
-    .then((code) => {
-      process.exitCode = code;
-    })
-    .catch((error: unknown) => {
-      process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
-      process.exitCode = 1;
-    });
+  // main() が終了コードの契約を閉じているので、ここでは受け取るだけにする。
+  main(process.argv.slice(2)).then((code) => {
+    process.exitCode = code;
+  });
 }

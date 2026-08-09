@@ -168,7 +168,10 @@ describe("ent の一周", () => {
     await main(["start", "smoke-goal"]);
     await main(["run", "smoke-goal"]);
 
-    expect(await main(["start", "smoke-goal"])).toBe(2);
+    // 1 を返す。2 は「引数が不正。stderr に有効値が並ぶ」なので、argv が妥当で
+    // 打ち直せる値も無いこの経路には当てはまらない。2 を返していたころは、
+    // SKILL.md に従うエージェントが argv を変えて再試行し続けられた。
+    expect(await main(["start", "smoke-goal"])).toBe(1);
 
     await main(["list"]);
     expect(lastJson()).toEqual([

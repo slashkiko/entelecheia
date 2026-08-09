@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
-import { describe, expect, it } from "vitest";
-import { agentContextPayload } from "../src/cli.js";
+import { describe, expect, it, vi } from "vitest";
+import { agentContextPayload, main } from "../src/cli.js";
 
 /**
  * `agent-context` が出す CLI の構造と、人間・エージェントが読む文書を突き合わせる。
@@ -39,6 +39,34 @@ describe("文書と CLI の突き合わせ", () => {
 
   it("SKILL.md が全サブコマンドを漏れなく載せている", () => {
     expect(documentedCommands(SKILL)).toEqual(implementedCommands());
+  });
+
+  it("main() が返す終了コードが、すべて agent-context に載っている", async () => {
+    // 表と payload が一致していても、実装がそこに無いコードを返せば意味が無い。
+    // 実際、終端 Goal への start が 2 を返していて、表の「引数が不正」と
+    // 食い違っていた。main() が throw していた経路では 1 すら観測できなかった。
+    const declared = new Set(agentContextPayload().exitCodes.map((entry) => entry.code));
+
+    const stdout = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    try {
+      const observed = [
+        await main(["agent-context"]),
+        await main(["nonexistent-subcommand"]),
+        await main(["start"]),
+        await main(["start", "../escape"]),
+        await main(["get", "no-such-goal"]),
+      ];
+
+      for (const code of observed) {
+        expect(declared).toContain(code);
+      }
+      // 1 を実際に通っていること。通らないと、この検査は 0 と 2 しか見ない。
+      expect(observed).toContain(1);
+    } finally {
+      stdout.mockRestore();
+      stderr.mockRestore();
+    }
   });
 
   it("SKILL.md の終了コード表が agent-context と一致する", () => {
