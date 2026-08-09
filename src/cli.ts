@@ -469,7 +469,13 @@ export interface AgentContext {
   schemaVersion: number;
   commands: {
     name: string;
-    /** 打ち直す先が分かるように、通らなくなった名前も併記する */
+    /**
+     * 同じサブコマンドを指す、いま実際に叩ける別名。
+     *
+     * 通らなくなった名前はここに載せない。ここを読んで組み立てたコマンドが
+     * 通らないなら、Layer 2 は --help より当てにならないものになる。
+     * 打ち直す先は、不明なサブコマンドのエラーが有効値を並べることで伝わる。
+     */
     aliases?: string[];
     summary: string;
     args: { name: string; required: boolean; type: string }[];
@@ -511,7 +517,6 @@ export function agentContextPayload(): AgentContext {
       },
       {
         name: "get",
-        aliases: ["show"],
         summary: "宣言部と実行時状態をまとめて出す",
         args: [slug],
         flags: [JSON_FLAG, LIMIT_FLAG],
