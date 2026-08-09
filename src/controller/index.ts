@@ -657,12 +657,19 @@ async function guardedDecision(
     );
   }
 
-  const inspected = [...(run?.artifacts ?? []), ...changed, ...escaped];
-  if (inspected.length === 0) {
+  // 出どころで分けて渡す。worktree 側と本体リポジトリ側では、同じ
+  // `.goals/.state/...` という文字列が別のものを指すため（`PathOrigin`）。
+  // 一緒くたにすると、本体の goals.db の改竄が「worktree の中の実行時状態」
+  // として除外され、関門が鳴らないまま素通りする。
+  const edited = [...(run?.artifacts ?? []), ...changed];
+  if (edited.length === 0 && escaped.length === 0) {
     return decision;
   }
 
-  const violations = findViolations(inspected, worktreePath, goal.policies.protected_paths);
+  const violations = [
+    ...findViolations(edited, worktreePath, goal.policies.protected_paths),
+    ...findViolations(escaped, worktreePath, goal.policies.protected_paths, "repo_root"),
+  ];
   if (violations.length === 0) {
     return decision;
   }

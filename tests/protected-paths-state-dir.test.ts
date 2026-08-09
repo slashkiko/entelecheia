@@ -32,6 +32,13 @@ import { findViolations } from "../src/domain/protected-paths.js";
  *
  * 外すのは `.goals/.state/` の下だけにする。`.goals/` 直下も、
  * `.goals/` の他のサブディレクトリも、これまでどおり保護する。
+ *
+ * **根拠3には穴があった。** 「worktree の外なので `..` から始まる」が成り立つのは
+ * 絶対パスで来るものだけで、`outOfSightState` は `.goals/.state/goals.db` を
+ * repoRoot 相対の**文字列**で返す（人間が読める形で残すため）。脱出の判定に
+ * 引っかからず、そのままこの除外に落ちていた。goals.db を偽造されても関門が
+ * 鳴らない、という形になる。除外を掛けてよいかは文字列ではなく出どころで決める。
+ * 下の「本体リポジトリ側を出どころとするパス」を参照。
  */
 
 const ROOT = "/tmp/entelecheia/worktrees/sample-goal";
@@ -126,6 +133,41 @@ describe("隔離の検知は弱めない", () => {
     expect(findViolations([`${ROOT}/.goals/.state/../../../etc/hosts`], ROOT, PROTECTED)).toEqual([
       { kind: "escaped_worktree", path: `${ROOT}/.goals/.state/../../../etc/hosts`, pattern: null },
     ]);
+  });
+});
+
+describe("本体リポジトリ側を出どころとするパスには、除外を掛けない", () => {
+  // `outOfSightState` が返すキーは repoRoot 相対の表示用パスで、worktree の中の
+  // 同名パスと文字列では見分けが付かない。出どころを渡して判定を分ける。
+  it("repoRoot 相対で来た goals.db の改竄を違反にする", () => {
+    const violations = findViolations([".goals/.state/goals.db"], ROOT, PROTECTED, "repo_root");
+
+    expect(violations).toEqual([
+      { kind: "protected_path", path: ".goals/.state/goals.db", pattern: ".goals/**" },
+    ]);
+  });
+
+  it("同じ文字列でも worktree 側なら、これまでどおり違反にしない", () => {
+    // 除外そのものは残す。Agent が自分の作業ツリーに一時ファイルを置いても
+    // 止まらない、という上の性質を弱めない。
+    expect(findViolations([".goals/.state/goals.db"], ROOT, PROTECTED)).toEqual([]);
+  });
+
+  it("hooks の書き換えはこれまでどおり違反", () => {
+    // 除外に落ちていなかった側。出どころを分けても判定は変わらない。
+    expect(findViolations([".git/hooks/pre-push"], ROOT, [".git/**"], "repo_root")).toHaveLength(1);
+  });
+
+  it("本体側の絶対パスは escaped_worktree のまま", () => {
+    // `repoDirtyState` は絶対パスを返す。脱出の判定が先に立つ順序は変えない。
+    const violations = findViolations(
+      ["/repo/entelecheia/README.md"],
+      ROOT,
+      PROTECTED,
+      "repo_root",
+    );
+
+    expect(violations[0]?.kind).toBe("escaped_worktree");
   });
 });
 
