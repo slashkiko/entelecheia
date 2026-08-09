@@ -278,6 +278,9 @@ export function showPayload(goal: Goal, store: Store): ShowPayload {
 function summarize(result: TickResult): unknown {
   return {
     ran: result.ran,
+    // 回さなかった理由。「寝ている」「他のワーカーが処理中」「終端」は
+    // どれも ran: false になるので、これが無いと cron のログから区別できない。
+    skipped: result.skipped,
     reclaimed: result.reclaimed,
     status: result.status,
     action: result.decision?.action ?? null,

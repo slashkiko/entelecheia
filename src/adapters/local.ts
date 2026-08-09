@@ -74,7 +74,10 @@ export function gitWorktree(repoRoot: string, root: string): WorktreePort {
         return { path, branch };
       }
 
-      const branches = await git("branch --list --format=%(refname:short)");
+      // --format の値は引用符で囲む。exec はシェル経由なので、囲まないと
+      // %(refname:short) の括弧を sh が解釈して syntax error になる。
+      // 実 Actor を初めて起動するまで表面化しなかった（テストは Port を注入する）。
+      const branches = await git("branch --list --format='%(refname:short)'");
       const exists = branches.split("\n").includes(branch);
       // 既にブランチがあれば checkout し直す。作り直すと前ティックの差分が消える。
       await git(

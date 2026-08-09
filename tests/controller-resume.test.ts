@@ -154,7 +154,9 @@ describe("resume_after を読む", () => {
     expect(terminal.skipped).toContain("終端");
 
     store.setStatus(GOAL.goal.id, "ACTIVE", null);
-    store.acquireLease(GOAL.goal.id, "worker-b", new Date(NOW.getTime() + 60_000));
+    // lease の期限判定だけは実時計を使う（design.md §8）。注入した NOW ではなく
+    // 現在時刻から先に置かないと、期限切れとみなされて奪われる。
+    store.acquireLease(GOAL.goal.id, "worker-b", new Date(Date.now() + 3_600_000));
     const leased = await tick(GOAL, deps(store));
     expect(leased.skipped).toContain("lease");
   });
