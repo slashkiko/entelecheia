@@ -77,6 +77,10 @@ goal:
     別 Goal `review-agent-reviews` の仕様（tests/review-actor.test.ts）で、
     本 Goal では実装しない。担当分はファイル名で切り分ける。
 
+    ac-1 が全件ではなく `--exclude` 付きなのはそのため。2本の仕様を同じ commit で
+    入れたので、あちらの6本は最初から作業ツリーに居る。全件を条件にすると、
+    本 Goal は自分の担当分を全部通しても ac-1 を満たせない。
+
 repository:
   provider: github
   owner: slashkiko
@@ -90,9 +94,16 @@ acceptance_criteria:
   - id: ac-1
     description: >-
       worktree-roles の12本が通り、既存のテストも通ったままになる。
-      着手時点で落ちているのは worktree-roles の7本（全体では 519 件中 13 件で、
-      差の6本は別 Goal review-agent-reviews の担当分）
-    verification: { type: command, run: mise run test }
+      着手時点で落ちているのは worktree-roles の7本。
+      別 Goal review-agent-reviews の仕様（tests/review-actor.test.ts）は
+      本 Goal の担当外なので、この criterion からは除外して流す
+    # mise run test（全件）にすると、review-agent-reviews の仕様6本が赤いあいだ
+    # 本 Goal は永久に ac-1 を満たせない。2本の仕様を同じ commit で入れたので、
+    # あちらの仕様が最初から作業ツリーに居る。担当分をファイル名で切り分ける、
+    # という constraints の線を、検証コマンド側にも通す。
+    verification:
+      type: command
+      run: pnpm exec vitest run --exclude 'tests/review-actor.test.ts'
 
   - id: ac-2
     description: 型チェックが通る（着手時点では落ちている。ActorRole と role の口がまだ無い）
