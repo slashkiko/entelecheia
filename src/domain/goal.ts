@@ -172,11 +172,63 @@ export const goalContextSchema = z.strictObject({
 });
 export type GoalContext = z.infer<typeof goalContextSchema>;
 
+/**
+ * Goal の id と、CLI が受け取る slug の形。
+ *
+ * slug はそのまま `.goals/<slug>.yaml` のパスになるので、ここを緩めると
+ * `../` でツリーの外を指せる。読めた Goal の `setup` と `verification.run` は
+ * そのままシェルで走るため、パスの形はスキーマと同じ厳しさで縛る。
+ * CLI 側と2つの正規表現を持たない。
+ */
+export const SLUG = /^[a-z0-9]+(-[a-z0-9]+)*$/;
+
+/**
+ * どの Goal からも外せない保護パスの下限。
+ *
+ * `protected_paths` は既定が空で、Goal ごとに人間が書く。実際に
+ * `agent-friendly-cli` は `.goals/**` だけを、`commit-what-the-actor-wrote` は
+ * `src/controller/**` を外した残りだけを保護した状態でマージされている。
+ * その間 Actor は、自分の拒否ツール一覧も関門のマッチャも検知されずに
+ * 編集できた。「関門の適用範囲を Goal が決める」設計のままだと、
+ * 関門を外したい Goal がいつでも外せる。
+ *
+ * ここに置くのは、書き換えられると**関門そのものが働かなくなる**ものだけ。
+ * 検証系（mise.toml / biome.json など）や依存（package.json）は入れない。
+ * あちらは「Agent が自分の criteria を通せる」問題で重要度は高いが、
+ * Goal によっては正当に触る対象になりうる。下限は最小に保つ。
+ */
+export const PROTECTED_PATH_FLOOR = [
+  // 制御ループ本体。
+  "src/controller/**",
+  // Goal の宣言部。ここを書けば自分の criteria も保護範囲も書き換えられる。
+  ".goals/**",
+  // 関門のマッチャ本体。
+  "src/domain/protected-paths.ts",
+  // 関門の適用範囲を決めるスキーマ。この定数もここにある。
+  "src/domain/goal.ts",
+  // Agent の許可・拒否ツールを決める場所。
+  "src/adapters/claude.ts",
+  // シェルを起動する唯一の場所。setup と verification.run が通る。
+  "src/adapters/local.ts",
+  // 資格情報の除去リスト。
+  "src/domain/withheld-env.ts",
+] as const;
+
+/**
+ * Goal が宣言した保護パスに下限を混ぜる。並びは宣言順を先にし、重複は落とす。
+ *
+ * Goal 側が下限と同じものを書いていても構わない。既存の Goal YAML は
+ * ほとんどが下限と重なるものを明示的に書いており、そちらは残す方が読みやすい。
+ */
+export function withProtectedPathFloor(declared: readonly string[]): string[] {
+  return [...new Set([...declared, ...PROTECTED_PATH_FLOOR])];
+}
+
 export const goalSchema = z.strictObject({
   version: z.literal(1),
   goal: z.strictObject({
     /** ファイル名の slug と一致させる。突き合わせはローダーの責務 */
-    id: z.string().regex(/^[a-z0-9]+(-[a-z0-9]+)*$/, "id は kebab-case で書く"),
+    id: z.string().regex(SLUG, "id は kebab-case で書く"),
     name: z.string().min(1),
     desired_state: z.string().min(1),
   }),
@@ -193,9 +245,11 @@ export const goalSchema = z.strictObject({
      * ここは「対象」にあたる。軸が違うものを1つの enum に混ぜると、
      * controller 側の照合が分岐だらけになる。§10-8 の未決はこの形で埋めた。
      *
-     * 既定は空。自己ホスト以外の Goal では保護するものが無い。
+     * 既定は空だが、空のまま出てくることは無い。`PROTECTED_PATH_FLOOR` を
+     * ここで必ず混ぜるので、Goal がキーごと省いても関門は下限まで働く。
+     * 「保護を外したい Goal が外せる」状態を作らないため、除去はできない。
      */
-    protected_paths: z.array(z.string().min(1)).default([]),
+    protected_paths: z.array(z.string().min(1)).default([]).transform(withProtectedPathFloor),
   }),
   budget: budgetSchema,
 });

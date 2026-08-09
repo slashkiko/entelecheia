@@ -13,9 +13,9 @@ import {
   localRepo,
   pendingApproval,
 } from "./adapters/local.js";
-import { type TickResult, tick } from "./controller/index.js";
+import { type ControllerDeps, type TickResult, tick } from "./controller/index.js";
 import type { Decision } from "./domain/action.js";
-import type { Goal } from "./domain/goal.js";
+import { type Goal, SLUG } from "./domain/goal.js";
 import { loadGoalFile } from "./domain/goal-loader.js";
 import { isTerminal } from "./domain/goal-state.js";
 import { PortError } from "./domain/port-error.js";
@@ -171,6 +171,16 @@ export function parseCommand(argv: readonly string[]): Command {
     if (positionals.length > 1) {
       return { kind: "error", message: `引数が多い: ${positionals.join(" ")}` };
     }
+    if (!SLUG.test(slug)) {
+      // slug はそのまま `.goals/<slug>.yaml` のパスになる。`../` を通すと
+      // ツリーの外の Goal を読めてしまい、その `setup` と `verification.run` が
+      // controller の権限でシェルに流れる。id 一致の検査はファイル名しか見ず、
+      // ディレクトリを縛らないので、そこでは止まらない。
+      return {
+        kind: "error",
+        message: `slug の形が不正: ${slug}（kebab-case のみ。パス区切りは使えない）`,
+      };
+    }
 
     if (sub === "start") {
       return { kind: "start", slug, ...json };
@@ -297,6 +307,13 @@ export async function main(argv: readonly string[]): Promise<number> {
     return report.exitCode;
   }
 
+  // --dry-run は覗くだけ。state ディレクトリを作るのも DB を作るのも書き込みなので、
+  // ここより前に返す。SKILL.md は「Actor の起動と PR への書き込みは起きない。
+  // snapshot / verifications / decision / status も書かない」と書いている。
+  if (command.kind === "run" && command.dryRun === true) {
+    return previewOnly(command, repoRoot, stateDir);
+  }
+
   mkdirSync(join(stateDir, "worktrees"), { recursive: true });
 
   if (command.kind === "list") {
@@ -316,6 +333,21 @@ export async function main(argv: readonly string[]): Promise<number> {
   const store = openStore(join(stateDir, "goals.db"));
 
   try {
+    // run は登録済みの Goal だけを進める。upsert より先に見る。
+    //
+    // design.md は「Goal YAML のレビューがそのまま承認ゲートを担うので、
+    // ent start は DRAFT から ACTIVE に直行する」と書いている。ここで先に
+    // upsert していたので tick 側の「Goal が登録されていない」は本番で到達せず、
+    // start を挟まない run が Actor を起動して予算を使い、1ティックで
+    // DRAFT から COMPLETED まで進めた。唯一の承認ゲートが飛ばせていた。
+    if (command.kind === "run" && store.getState(goal.goal.id) === null) {
+      process.stderr.write(
+        `${goal.goal.id} は登録されていない。先に ent start ${goal.goal.id} を叩くこと\n`,
+      );
+      process.stdout.write(`${JSON.stringify(summarize(draftIdle()), null, 2)}\n`);
+      return 0;
+    }
+
     store.upsertGoal(goal);
 
     if (command.kind === "start") {
@@ -367,32 +399,111 @@ export async function main(argv: readonly string[]): Promise<number> {
     process.on("SIGINT", stop);
 
     const result = await tick(goal, {
+      ...tickPorts(goal, store, repoRoot, stateDir),
       store,
-      owner: `${hostname()}:${process.pid}`,
-      leaseSeconds: 300,
       signal: aborter.signal,
-      // 何が起きるかを、起こす前に見るだけにする。ACT と publish と永続化を飛ばす。
-      dryRun: command.dryRun === true,
-      code: codeProvider(goal),
-      writer: codeWriter(goal),
-      branch: gitBranch(join(stateDir, "worktrees")),
-      local: localRepo(verifyRoot(stateDir, goal)),
-      command: commandRunner(verifyRoot(stateDir, goal)),
-      // 承認はレビュー承認と PR コメントの定型文の2つで検知する（design.md §10-4）。
-      // PR がまだ無い Goal では常に未承認になる。捏造した承認を作らない。
-      approval: approval(goal, store.getState(goal.goal.id)?.prNumber ?? null),
-      worktree: gitWorktree(repoRoot, join(stateDir, "worktrees")),
-      worktreeRoot: join(stateDir, "worktrees"),
-      actor: claudeActor(claudeOptions(stateDir)),
-      llm: claudeLlm({
-        ...claudeOptions(stateDir),
-        // 呼んだ直後に書く。ティックの最後にまとめて書くと、途中で kill された
-        // ぶんのトークンが消える（design.md §7）。
-        onCall: (call) => {
-          store.recordLlmCall(goal.goal.id, call);
-        },
-      }),
-      now: () => new Date(),
+    });
+
+    process.stdout.write(`${JSON.stringify(summarize(result), null, 2)}\n`);
+    return 0;
+  } finally {
+    store.close();
+  }
+}
+
+/**
+ * ティックに渡す Port 一式。
+ *
+ * 通常のティックと `--dry-run` の両方から呼ぶ。以前は呼び出し側それぞれが
+ * 同じ組み立てを書いていて、片方にだけ Port を足すと dry-run が本番と違う
+ * 配管を見ることになった。dry-run の用途が「配管が繋がっているか」なので、
+ * そこがずれると道具の意味が無くなる。
+ */
+function tickPorts(
+  goal: Goal,
+  store: Store,
+  repoRoot: string,
+  stateDir: string,
+): Omit<ControllerDeps, "store"> {
+  const worktrees = join(stateDir, "worktrees");
+  return {
+    owner: `${hostname()}:${process.pid}`,
+    leaseSeconds: 300,
+    code: codeProvider(goal),
+    writer: codeWriter(goal),
+    branch: gitBranch(worktrees),
+    local: localRepo(verifyRoot(stateDir, goal)),
+    command: commandRunner(verifyRoot(stateDir, goal)),
+    // 承認はレビュー承認と PR コメントの定型文の2つで検知する（design.md §10-4）。
+    // PR がまだ無い Goal では常に未承認になる。捏造した承認を作らない。
+    approval: approval(goal, store.getState(goal.goal.id)?.prNumber ?? null),
+    worktree: gitWorktree(repoRoot, worktrees),
+    worktreeRoot: worktrees,
+    actor: claudeActor(claudeOptions(stateDir)),
+    llm: claudeLlm({
+      ...claudeOptions(stateDir),
+      // 呼んだ直後に書く。ティックの最後にまとめて書くと、途中で kill された
+      // ぶんのトークンが消える（design.md §7）。
+      onCall: (call) => {
+        store.recordLlmCall(goal.goal.id, call);
+      },
+    }),
+    now: () => new Date(),
+  };
+}
+
+/**
+ * 登録されていない Goal に対して返すティック結果。
+ *
+ * `tick()` が state を読めなかったときに返すものと同じ形にする。DB を作らずに
+ * 同じことを言う必要があるので、ここで組み立てる。
+ */
+function draftIdle(): TickResult {
+  return {
+    ran: false,
+    skipped: "Goal が登録されていない",
+    reclaimed: 0,
+    decision: null,
+    run: null,
+    status: "DRAFT",
+  };
+}
+
+/**
+ * `ent run <slug> --dry-run` の本体。何も書かずに次のティックの中身だけを出す。
+ *
+ * 通常の経路と分けてあるのは、書き込みが tick() より前に3つあったため。
+ * state ディレクトリの作成・DB を開くこと（無ければ作られる）・upsertGoal と
+ * setObserveTarget がそれにあたる。とくに setObserveTarget は、覗いたつもりの
+ * `--dry-run --pr 42` が観測先を恒久的に差し替え、次の本番ティックが違う PR を
+ * 見る状態を作っていた。`--pr` / `--issue` は永続化せず、この1回にだけ効かせる。
+ */
+async function previewOnly(
+  command: Extract<Command, { kind: "run" }>,
+  repoRoot: string,
+  stateDir: string,
+): Promise<number> {
+  const goal = loadGoalFile(join(repoRoot, ".goals", `${command.slug}.yaml`));
+  const dbPath = join(stateDir, "goals.db");
+
+  if (!existsSync(dbPath)) {
+    // DB を開くと作られる。作るのも書き込みなので、その前に返す。
+    process.stdout.write(
+      `${JSON.stringify(summarize({ ...draftIdle(), dryRun: true }), null, 2)}\n`,
+    );
+    return 0;
+  }
+
+  const store = openStore(dbPath);
+  try {
+    const result = await tick(goal, {
+      ...tickPorts(goal, store, repoRoot, stateDir),
+      store,
+      dryRun: true,
+      observeOverride: {
+        ...(command.prNumber === undefined ? {} : { prNumber: command.prNumber }),
+        ...(command.issueNumber === undefined ? {} : { issueNumber: command.issueNumber }),
+      },
     });
 
     process.stdout.write(`${JSON.stringify(summarize(result), null, 2)}\n`);

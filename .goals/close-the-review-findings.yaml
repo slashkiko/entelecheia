@@ -1,0 +1,298 @@
+version: 1
+
+goal:
+  id: close-the-review-findings
+  name: MVP 完了後レビューの指摘を閉じる
+  desired_state: |
+    MVP 完了後にコードベース全体を5観点でレビューし、宣言と実装の食い違い・
+    自己ホストの安全装置の穴・型の境界・重複を洗い出した。ここはその全件を閉じる。
+
+    **この Goal の実装は ent の外側で行う。** Actor ではなくレビュー担当の
+    エージェントが直接書き、人間が PR で承認する。したがって
+    policies.protected_paths はこの作業を縛らない。それでもフル装備のまま
+    残してあるのは、将来この Goal に `ent run` を掛けたときに関門が外れた
+    状態で Actor が走らないようにするため。過去2本の Goal
+    （agent-friendly-cli と commit-what-the-actor-wrote）は保護を外した状態で
+    回っており、同じことを繰り返さない。
+
+    仕様はテストに書く。着手時点で落ちるテストが正で、この記述と食い違ったら
+    テストに合わせる。
+
+    ## 1. 関門と資格情報（自己ホストの安全装置）
+
+    VERIFY が controller の環境変数を Actor の書いたコードに渡さない
+      src/adapters/local.ts / src/cli.ts
+      commandRunner が env 無しで runShell を呼ぶので、setup と
+      verification.run が process.env を丸ごと継承する。criteria が
+      `mise run test` である以上、これは Actor が書いた source と test を
+      controller の資格情報付きで実行することを意味する。tests/** は
+      guard-the-controller.yaml の判断で意図的に保護対象外なので、
+      保護パスを一切踏まずにこの経路に乗れる。
+      claude.ts の withheldEnv と同じ除去リストを共有し、両方から使う。
+
+    .git/hooks と core.hooksPath の書き換えを検知する
+      changedPaths も repoDirtyState も git status / git diff なので
+      .git/** を出力しない。linked worktree は共通の .git/hooks を共有し、
+      push のたびに controller の権限で pre-push が走る。git の観測では
+      原理的に見えないので、別の観測を足す。ACT の前後で hooks の指紋と
+      core.hooksPath を比べ、変わっていたら関門を鳴らす。
+      Agent 側でも hooks path の書き換えを拒否する。
+
+    goals.db の改竄を検知する
+      .goals/.state/ は gitignore 済みで、repoDirtyState からも見えない。
+      worktree から ../../goals.db に直接書ける。プロセス隔離までは踏み込まず、
+      ACT の前後で DB の指紋を比べる。
+
+    protected_paths に、どの Goal からも外せない下限を持たせる
+      スキーマの既定が空で、下限を強制するものが無い。実際に直近2本の Goal が
+      関門を外した状態で回っている。関門そのもの・制御ループ・関門の適用範囲を
+      決めるスキーマ・シェルを起動する場所は、Goal が省いても必ず入るようにする。
+
+    /ent approve を、実際に書き込み権限がある人のものだけ数える
+      いまは author_association が OWNER / MEMBER / COLLABORATOR なら数える。
+      MEMBER は org のメンバー全員で、COLLABORATOR は read / triage も含む。
+      README は「書き込み権限がある人のものだけを数える」と書いている。
+      権限 API を引いて push / maintain / admin を要求する。
+
+    slug が .goals/ の外を指せない
+      slug がそのまま join(repoRoot, ".goals", `${slug}.yaml`) に入る。
+      実測で `ent start ../outside/escape-goal` が終了コード 0 を返し、
+      ツリー外の Goal の登録に成功する。読めた Goal の setup と
+      verification.run はそのままシェルで走る。
+
+    ## 2. 宣言と実装の食い違い
+
+    context.constraints が Actor に届く
+      src/act/index.ts
+      スキーマには「ACT にそのまま渡る自由記述」と書いてあるが、goal.context を
+      読むコードが src/ のどこにも無い。tests/** を保護対象から外した判断は、
+      constraints が届くことを前提にしている。届かないので、criteria が
+      `mise run test` の Actor は仕様テストを書き換えて通せる。
+      渡し方は問わない。intent を落とさずに文言が届けばよい。
+
+    --dry-run が DB に書かない
+      src/cli.ts
+      upsertGoal と setObserveTarget と state ディレクトリの作成が tick() の前、
+      dry-run の分岐の外にある。`--dry-run --pr 42` が観測先を恒久的に
+      差し替え、次の本番ティックが違う PR を見る。
+
+    --dry-run が未 commit の関門も通す
+      src/controller/index.ts
+      preview() が guardedDecision は呼ぶが uncommittedDecision を呼ばない。
+      実ティックが WAITING_HUMAN になる状態で COMPLETED を予告する。
+
+    --dry-run の出力が、終端や休眠のときも dryRun を名乗る
+      terminal と resume_after の分岐が dry-run の分岐より前にあるので、
+      その2つでは dryRun フィールドが付かない。SKILL.md は無条件に付くと
+      書いている。
+
+    ent start していない Goal が run で動き出さない
+      src/cli.ts
+      cli.ts が tick() の前に upsert するので、controller の
+      「Goal が登録されていない」の分岐は本番で到達しない。宣言されている
+      唯一の承認ゲートを飛ばせる。
+
+    終了コードの表と実装を一致させる
+      doctor の検査失敗が 1、終端 Goal への start が 2 になっている。前者は
+      実行時エラーではなく、後者は argv が妥当。表の側に doctor の行を足し、
+      終端 Goal への start は 1 にする。tests/cli-main.test.ts が 2 を仕様として
+      固定しているので、そこも一緒に動かす。
+
+    外部呼び出しに上限を持たせる
+      src/adapters/local.ts / src/controller/index.ts
+      runShell / runFile に timeout が無く、lease の heartbeat はティックが
+      走る限り延長し続ける。刺さった git push や Agent セッションが Goal を
+      恒久的に停め、cron から起動したどのワーカーも引き継げない。
+
+    ## 3. 型と境界
+
+    durationSeconds の default 分岐を消す
+      正規表現に d を足すという、コメント自身が予期している1文字の変更で
+      2d が 7200 秒になる。単位表を1つにして、未知の単位は null にする。
+
+    SQLite の行を zod で検証する
+      7箇所の `as unknown as XRow[]`。enum 列は再検証しているが素の string 列は
+      素通りで、列名が変わると z.string().min(1) と宣言された値に undefined が
+      入る。行ごとのスキーマにして、手書きの interface XRow も畳む。
+
+    LLM の行動集合を型に紐付ける
+      Set<string> なので typo で黙って合法な行動が消え、行動型が増えても
+      コンパイルが通る。COMPLETE / ESCALATE を LLM に選ばせない境界なので、
+      Record<Action["type"], boolean> にして未分類をビルドエラーにする。
+
+    GitHub adapter の zod 失敗を PortError にする
+      .parse() が try/catch の外にあり、ZodError が素の例外として抜ける。
+      observe が port_failed に畳むので、恒久的な形の不一致が一時的な障害として
+      永久に再試行される。到達不能と解釈不能を区別する。
+
+    EFFORT_LEVELS のドリフトを両方向で捕まえる
+      SDK 側にメンバーが増えたとき、妥当な値を「不正」として弾く。
+
+    ## 4. 重複と死んだコード
+
+    errorMessage の9重複を1つにする
+    tick() と preview() の reconcile 呼び出しを共有する
+    isUsageLimit / isUnavailable を1つの kindOf に畳む
+    Octokit のクライアント構築を read / write で共有する
+    codeProvider / codeWriter / approval のトークン判定を1回にする
+    latestDigest と countTrailingDigest を1クエリにし、listRuns の3重読みをやめる
+    Assessment.satisfied を消す（本番の読み手がおらず、decide は明示的に無視する）
+    Outcome.log と log バッファの引き回しを消す
+    ent get / ent list の truncation hint のための二重読みをやめる
+    CLI のサブコマンド定義を1つの表から導く
+
+    ## 5. 文書
+
+    ent show を要求する Goal YAML とコメントを直す（4本の YAML と3箇所）
+    design.md §3.6 の write-ahead 手順4を、実際の順序に合わせる
+    guard-the-controller.yaml のガード入力の記述を、いまの実装に合わせる
+    tests/decide-llm-boundary.test.ts の「まだ実装が無い」注記を消す
+
+repository:
+  provider: github
+  owner: slashkiko
+  name: entelecheia
+  default_branch: main
+
+setup:
+  - pnpm install --frozen-lockfile
+
+acceptance_criteria:
+  - id: ac-1
+    description: 指摘ごとに足したテストが全部通る（着手時点では落ちている）
+    verification: { type: command, run: mise run test }
+
+  - id: ac-2
+    description: 型チェックが通る（今回足した5フラグ込み）
+    verification: { type: command, run: mise run typecheck }
+
+  - id: ac-3
+    description: lint と format が通る（今回足した7ルール込み）
+    verification: { type: command, run: mise run lint }
+
+  - id: ac-4
+    description: dist/cli.js がビルドできる
+    verification: { type: command, run: mise run build }
+
+  - id: ac-5
+    description: サプライチェーンと workflow のチェックが通る（baseline 由来）
+    verification: { type: command, run: mise run check }
+
+  - id: ac-6
+    description: 変更を載せた PR の CI が成功している
+    verification: { type: fact, key: github.ci.conclusion, equals: success }
+
+  - id: ac-7
+    description: 直し切れたかを、まず実装した本人が自己確認し、そのうえで人間が承認する
+    verification:
+      type: human
+      prompt: |
+        この Goal は ent の外側で実装します。Actor ではなくレビュー担当の
+        エージェントが直接書くので、保護パスの関門は働きません。人間の承認が
+        唯一の関門になります。
+
+        承認の前に、実装したエージェント自身が次を確認して結果を報告すること。
+        報告が無いまま承認しないでください。
+
+        1. 指摘の全件に、対応するテストが1本以上あるか。直したと言いながら
+           テストが無いものは「直っていない」として数える
+        2. 既存のテストを弱めていないか。assert を緩めた・ケースを消した箇所が
+           あれば、なぜ弱めてよいのかを個別に説明する。とくに
+           tests/cli-main.test.ts の終了コードは、この Goal が意図的に
+           動かす対象なので、動かした理由を明示する
+        3. mise run verify（typecheck / lint / build / test）と mise run check が
+           全部通るか。実行した出力を示す
+        4. 関門を強くした変更が、実際に強くなっているか。ミューテーション、
+           つまり直した箇所を壊し直して、対応するテストが落ちることを確かめる。
+           落ちないなら、そのテストは関門になっていない
+        5. 直していない指摘が残っているなら、全部列挙する。「やらないと決めた」
+           ものと「まだ手を付けていない」ものを分けて書く
+
+        そのうえで人間が確認すること。
+
+        - 上の5項目の報告が揃っていて、5番目に嘘が無いか
+        - policies.protected_paths がフル装備のまま残っているか。この Goal は
+          外側で実装するので緩める理由が無く、緩んでいたら差し戻す
+        - 秘密の除去リスト、関門の適用範囲、承認の権限判定の3つは、
+          自己ホストの土台にあたる。差分を自分の目で読むこと
+
+context:
+  background: |
+    MVP 完了後、コードベース全体（src/ 26ファイル・約7.7k行、tests/ 40ファイル）を
+    5観点でレビューした。セキュリティ、意味（宣言と実装の突き合わせ）、TypeScript、
+    簡素化、テスト品質と機械的検知。
+
+    最初はこのうち「修正先が保護パスの外にあるもの」だけを Goal にした。
+    Actor に関門そのものを直させると関門が飾りになるという理由だったが、
+    実装を ent の外側で行うならその制約は無い。人間が PR で承認する形に変えて、
+    全件を1本にまとめ直した。
+
+    決定論的な検査のうち設定ファイル側に置けるもの（biome / tsconfig / mise /
+    CI / renovate / CODEOWNERS）と、退行検知のテスト3本
+    （cli-verify-root / architecture / docs-contract）は先に入れてある。
+    この Goal はその上に載る。
+
+  constraints:
+    - テストから実際の GitHub と Claude API を叩かない
+    - 指摘1件につきテストを1本以上足す。テストの無い修正は数えない
+    - 既存のテストを弱めない。assert を緩めるなら理由を PR に書く。
+      例外は終了コードの契約で、そこはこの Goal が意図的に動かす
+    - policies.protected_paths を緩めない。外側で実装するので緩める理由が無い
+    - 依存パッケージを増やさない
+    - mise run check（サプライチェーン検査）を壊さない
+    - docs/design.md の「3. 中核の設計判断」を勝手に変えない。
+      §3.6 の write-ahead 手順4など、実装が正しく文書が古い箇所だけを直す
+    - 関門を強くした変更は、壊して落ちることを確かめてから完了と言う
+
+  references:
+    - title: 設計ドキュメント
+      path: docs/design.md
+    - title: セキュリティのベースライン
+      path: docs/security-baseline.md
+    - title: エージェント向けの手順（契約の宣言側）
+      path: .claude/skills/ent/SKILL.md
+    - title: 関門の設計判断（tests/** を外した理由）
+      path: .goals/guard-the-controller.yaml
+
+policies:
+  require_human_approval:
+    - merge
+    - force_push
+    - push_to_default_branch
+    - deploy
+    - secret_access
+    - external_send
+  # この Goal は ent の外側で実装するので、ここは実装を縛らない。
+  # それでもフル装備のまま残す。緩めた Goal をディスクに置くと、将来
+  # `ent run` を掛けたときに関門が外れた状態で Actor が走る。
+  protected_paths:
+    # 制御ループ本体と、Goal の宣言部。
+    - src/controller/**
+    - .goals/**
+    # 関門そのものと、Agent の許可・拒否ツールを決めるファイル。
+    - src/domain/protected-paths.ts
+    - src/adapters/claude.ts
+    # 関門の適用範囲を決めるスキーマ。既定が空なので、ここを書き換えれば
+    # 関門そのものを外せる。過去の Goal には入っていない。
+    - src/domain/goal.ts
+    # シェルを実際に起動する唯一の場所。setup と verification.run は
+    # controller の権限と環境変数で走る。過去の Goal には入っていない。
+    - src/adapters/local.ts
+    # 検証系。ここを書き換えられると Agent が自分の criteria を通せる。
+    # tests/** は入れない（理由は guard-the-controller.yaml に書いた）。
+    - mise.toml
+    - mise-tasks/**
+    - vitest.config.ts
+    - biome.json
+    - tsconfig*.json
+    - .github/**
+    # 依存の追加は人間が通す。constraints にも書いてある。
+    - package.json
+    - pnpm-lock.yaml
+
+budget:
+  max_actor_runs: 20
+  max_reconciles: 40
+  max_wall_clock: 6h
+  max_consecutive_failures: 3
+  max_unchanged_reconciles: 4

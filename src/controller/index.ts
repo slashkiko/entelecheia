@@ -53,6 +53,30 @@ export interface ControllerDeps
    * ACT・publish・永続化・lease・orphan Run の回収がそれにあたる。
    */
   dryRun?: boolean | undefined;
+  /**
+   * 観測対象の上書き。`--dry-run` が状態を書かずに `--pr` / `--issue` を効かせるために使う。
+   *
+   * 通常のティックでは CLI が `setObserveTarget` で永続化してから渡す。dry-run は
+   * 書かないので、渡す道がここにしか無い。以前は dry-run でも永続化していて、
+   * 覗いたつもりの1回が次の本番ティックの観測先を差し替えていた。
+   */
+  observeOverride?: { prNumber?: number; issueNumber?: number } | undefined;
+}
+
+/**
+ * このティックが観測する PR と Issue。
+ *
+ * tick と preview の両方が使う。片方だけに上書きを足すと、dry-run が
+ * 本番と違う対象を観測することになる。
+ */
+function observeTargetOf(
+  state: GoalState,
+  deps: ControllerDeps,
+): { prNumber: number | null; issueNumber: number | null } {
+  return {
+    prNumber: deps.observeOverride?.prNumber ?? state.prNumber,
+    issueNumber: deps.observeOverride?.issueNumber ?? state.issueNumber,
+  };
 }
 
 export interface TickResult {
@@ -117,6 +141,10 @@ export async function tick(goal: Goal, deps: ControllerDeps): Promise<TickResult
     reclaimed: 0,
     decision: null,
     run: null,
+    // 終端と休眠の分岐は dry-run の分岐より前にあるので、ここを通ると
+    // dryRun が付かなかった。SKILL.md は「--dry-run なら必ず dryRun: true が付く」と
+    // 書いており、それを見て preview と本番を区別するエージェントが取りこぼす。
+    ...(deps.dryRun === true ? ({ dryRun: true } as const) : {}),
     status,
   });
 
@@ -187,7 +215,7 @@ export async function tick(goal: Goal, deps: ControllerDeps): Promise<TickResult
     const result = await reconcile(
       {
         goal,
-        observe: { prNumber: state.prNumber, issueNumber: state.issueNumber },
+        observe: observeTargetOf(state, deps),
         carriedFacts,
         usage: usageOf(state, goal, deps),
       },
@@ -306,7 +334,7 @@ async function preview(goal: Goal, state: GoalState, deps: ControllerDeps): Prom
   const result = await reconcile(
     {
       goal,
-      observe: { prNumber: state.prNumber, issueNumber: state.issueNumber },
+      observe: observeTargetOf(state, deps),
       carriedFacts,
       usage: usageOf(state, goal, deps),
     },
@@ -337,15 +365,21 @@ async function preview(goal: Goal, state: GoalState, deps: ControllerDeps): Prom
     deps,
   );
 
+  // 未 commit の関門も通常のティックと同じに通す。ここを抜くと、worktree が
+  // 汚れていて完了 Run が履歴にある状態で、実ティックが WAITING_HUMAN になるのに
+  // dry-run は COMPLETED を予告する。「1行も push せず COMPLETED」を防ぐために
+  // 足した関門を、それを覗くための道具が見ていないことになる（design.md §10-11）。
+  const decided = uncommittedDecision(goal, guarded, result.observedFacts, deps);
+
   return {
     ran: false,
     skipped: null,
     reclaimed: 0,
-    decision: guarded,
+    decision: decided,
     run: null,
     status: state.status,
     dryRun: true,
-    wouldTransitionTo: nextStatus(state.status, guarded.action),
+    wouldTransitionTo: nextStatus(state.status, decided.action),
     observed: {
       facts: result.facts,
       unresolved,

@@ -4,9 +4,21 @@ import { existsSync, readFileSync } from "node:fs";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { promisify } from "node:util";
 import { type Worktree, type WorktreePort, worktreeBranchFor } from "../act/index.js";
+import { VERIFY_WITHHELD_ENV, withheldEnv } from "../domain/withheld-env.js";
 import type { LocalRepoPort } from "../observe/index.js";
 import type { BranchPort, PushResult } from "../publish/index.js";
 import type { ApprovalPort, CommandResult, CommandRunnerPort } from "../verify/index.js";
+
+/**
+ * 外部プロセスの上限。ここが無いと、刺さった `git push` や検証コマンドが
+ * ティックを永久に終わらせない。lease の heartbeat はティックが走る限り
+ * 延長し続けるので、cron から起動した他のワーカーも引き継げなくなる。
+ *
+ * 検証コマンド側を長く取ってあるのは、`mise run test` が実際に数分かかるため。
+ * git は数十秒かかる時点で刺さっていると見てよい。
+ */
+const COMMAND_TIMEOUT_MS = 30 * 60 * 1000;
+const GIT_TIMEOUT_MS = 5 * 60 * 1000;
 
 /**
  * ローカル環境に対する Port の実装。
@@ -37,7 +49,11 @@ const runFile = promisify(execFile);
 
 /** git を argv 配列で叩き、標準出力をそのまま返す。終了コードが 0 以外なら reject する */
 async function gitRaw(cwd: string, args: readonly string[]): Promise<string> {
-  const { stdout } = await runFile("git", [...args], { cwd, maxBuffer: 32 * 1024 * 1024 });
+  const { stdout } = await runFile("git", [...args], {
+    cwd,
+    maxBuffer: 32 * 1024 * 1024,
+    timeout: GIT_TIMEOUT_MS,
+  });
   return stdout;
 }
 
@@ -59,12 +75,31 @@ async function git(cwd: string, args: readonly string[]): Promise<string> {
  */
 const PUSHABLE_BRANCH = /^[\w./-]+$/;
 
-/** シェルコマンドを実行する。起動そのものに失敗したときだけ throw する */
+/**
+ * シェルコマンドを実行する。起動そのものに失敗したときだけ throw する。
+ *
+ * 環境変数は明示的に絞る。ここで流すのは Goal YAML の `setup` と
+ * `verification.run` で、criteria が `mise run test` である以上、実際に走るのは
+ * **Actor が worktree に書いたテストとソース**にあたる。既定のまま
+ * `process.env` を継承すると、`src/adapters/claude.ts` が Actor 本体に対して
+ * トークンを落としているのが無意味になる。Actor は自分では受け取れない
+ * `GITHUB_TOKEN` を、VERIFY に実行させるコードを書くことで読める。
+ *
+ * `tests/**` は guard-the-controller.yaml の判断で意図的に保護対象外なので、
+ * この経路には保護パスを1つも踏まずに乗れる。関門はティックの末尾にあり
+ * VERIFY はティックの先頭なので、関門は常に1ティック遅れる。ここで落とすしかない。
+ */
 export function commandRunner(cwd: string): CommandRunnerPort {
+  const env = withheldEnv(process.env, VERIFY_WITHHELD_ENV);
   return {
     async run(command): Promise<CommandResult> {
       try {
-        const { stdout, stderr } = await runShell(command, { cwd, maxBuffer: 32 * 1024 * 1024 });
+        const { stdout, stderr } = await runShell(command, {
+          cwd,
+          env,
+          maxBuffer: 32 * 1024 * 1024,
+          timeout: COMMAND_TIMEOUT_MS,
+        });
         return { exitCode: 0, stdout, stderr };
       } catch (error) {
         // 終了コードが 0 以外なら reject されるが、これは「検証できた不合格」なので

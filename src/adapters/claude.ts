@@ -7,6 +7,14 @@ import type { LlmPort } from "../decide/index.js";
 import type { ApprovalGate } from "../domain/goal.js";
 import type { LlmCall } from "../domain/llm-call.js";
 import { PortError } from "../domain/port-error.js";
+import { WITHHELD_ENV, withheldEnv } from "../domain/withheld-env.js";
+
+/**
+ * 除去リストの置き場所は domain に移した。VERIFY 側（src/adapters/local.ts）も
+ * 同じものを見る必要があるため。ここから再輸出しているのは、既存の呼び出し元と
+ * テストが `adapters/claude` を参照しているのを壊さないため。
+ */
+export { WITHHELD_ENV };
 
 /**
  * Claude Code 向けの ActorPort と LlmPort。Claude Agent SDK の query() を使う。
@@ -420,32 +428,6 @@ function disallowedToolsFor(gates: readonly ApprovalGate[]): string[] {
     }
   }
   return [...tools];
-}
-
-/**
- * Agent に渡さない環境変数。
- *
- * SDK の `env` は「マージではなく置き換え」なので、`process.env` を広げてから落とす。
- * Bash を許している以上、`printenv` も `echo $GITHUB_TOKEN` も実行できる。
- * どちらも `secret_access` の拒否パターン（`gh secret` / `gh auth token`）に
- * 一致しないので、拒否リストでは塞げない。push と PR は controller だけが行う
- * 設計なので、Actor 側にトークンが要る場面がそもそも無い。
- */
-export const WITHHELD_ENV = [
-  "GITHUB_TOKEN",
-  "GH_TOKEN",
-  "GH_ENTERPRISE_TOKEN",
-  "GITHUB_ENTERPRISE_TOKEN",
-] as const;
-
-function withheldEnv(source: Record<string, string | undefined>): Record<string, string> {
-  const env: Record<string, string> = {};
-  for (const [key, value] of Object.entries(source)) {
-    if (value !== undefined && !WITHHELD_ENV.includes(key as (typeof WITHHELD_ENV)[number])) {
-      env[key] = value;
-    }
-  }
-  return env;
 }
 
 /**
