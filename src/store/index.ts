@@ -634,11 +634,11 @@ interface RunRow {
 /**
  * design.md §4.5 のテーブル。
  *
- * Criteria / Plan / Task / Event はまだ作らない。
+ * Criteria / Plan / Task / Event はまだ作らない（§4.5 にもそう書いてある）。
  * criteria は Goal YAML が正で、残りは Plan の永続化と webhook を入れる Goal で足す。
  * 使う前に作ると、空のテーブルがスキーマの意図を曖昧にする。
  *
- * llm_calls は §4.5 の一覧には無い。DECIDE を Actor 層経由に寄せた（§3.5）結果、
+ * llm_calls は §4.5 に後から足したテーブル。DECIDE を Actor 層経由に寄せた（§3.5）結果、
  * Run を作らない LLM 呼び出しが生まれ、そのトークンを §7 のとおり残す場所が
  * 要るようになった。
  */

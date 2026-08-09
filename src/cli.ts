@@ -239,7 +239,7 @@ export async function main(argv: readonly string[]): Promise<number> {
       branch: gitBranch(join(stateDir, "worktrees")),
       local: localRepo(verifyRoot(stateDir, goal)),
       command: commandRunner(verifyRoot(stateDir, goal)),
-      // 承認は PR コメントの定型文で検知する（design.md §10-4）。
+      // 承認はレビュー承認と PR コメントの定型文の2つで検知する（design.md §10-4）。
       // PR がまだ無い Goal では常に未承認になる。捏造した承認を作らない。
       approval: approval(goal, store.getState(goal.goal.id)?.prNumber ?? null),
       worktree: gitWorktree(repoRoot, join(stateDir, "worktrees")),
