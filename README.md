@@ -153,7 +153,7 @@ ent agent-context                  # CLI の構造を機械可読な JSON で出
 
 `--json` は出力を JSON にする（`run` / `get` / `list` は既定で JSON。`start` だけが平文）。
 `--limit <n>` は `get` / `list` の件数を絞る。既定でも上限で切り、切れたときだけ
-絞り込み方が stderr に出る。エージェント向けの手順は `SKILL.md` に置いてある。
+絞り込み方が stderr に出る。エージェント向けの手順は `.claude/skills/ent/SKILL.md` に置いてある。
 
 `ENT_MODEL` と `ENT_EFFORT` で Actor と LLM のモデルを上書きできる。
 1ティックごとに使用量を消費するので、試走は安いモデルで回せる。
@@ -201,7 +201,8 @@ src/adapters/local.ts     node:child_process で書ける Port（コマンド実
 src/adapters/github.ts    CodeProviderPort。@octokit/rest + ETag
 src/adapters/claude.ts    ActorPort と LlmPort。Claude Agent SDK
 src/cli.ts                ent コマンド。引数の解釈と agent-context もここ
-SKILL.md                  エージェントが手順として読むもの。叩く順と、人の承認で止まる場所
+.claude/skills/ent/SKILL.md  エージェントが手順として読むもの。叩く順と、人の承認で止まる場所
+AGENTS.md                 上の SKILL.md を指すだけの入口。手順は二重に書かない
 tests/                    Acceptance Criteria の実体と、実 git / 実 SQLite を叩く統合テスト
 ```
 
