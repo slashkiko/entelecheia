@@ -5,6 +5,7 @@
 import { DatabaseSync } from "node:sqlite";
 import { z } from "zod";
 import { actionSchema, type Decision, decisionSchema } from "../domain/action.js";
+import { errorMessage } from "../domain/error-message.js";
 import { type Fact, type Unresolved, unresolvedSchema } from "../domain/fact.js";
 import type { Goal } from "../domain/goal.js";
 import { type GoalStatus, goalStatusSchema } from "../domain/goal-state.js";
@@ -16,6 +17,7 @@ import {
   type Run,
   type RunIntent,
   type RunOutcome,
+  runSchema,
   runStatusSchema,
 } from "../domain/run.js";
 import { type Verification, verificationResultSchema } from "../domain/verification.js";
@@ -578,7 +580,7 @@ export function openStore(path: string): Store {
         exitCode: row.exit_code,
         logRef: row.log_ref,
         tokens: row.tokens,
-        artifacts: JSON.parse(row.artifacts) as string[],
+        artifacts: parseArtifacts(row.artifacts, "listRuns"),
         detail: row.detail,
       }));
     },
@@ -692,6 +694,45 @@ function parseRows<S extends z.ZodType>(schema: S, raw: unknown, source: string)
   const parsed = z.array(schema).safeParse(raw);
   if (!parsed.success) {
     throw new Error(`${source}: DB の行が想定と違う: ${parsed.error.message}`);
+  }
+  return parsed.data;
+}
+
+/**
+ * `runs.artifacts` の JSON を、文字列の配列として読む。
+ *
+ * `runRowSchema` は `artifacts: z.string()` までしか見ない。列の名前と型は
+ * それで止まるが、JSON の**中身**は素通りしていた。読む側が
+ * `JSON.parse(row.artifacts) as string[]` だったので、パースした結果は誰も
+ * 見ておらず、オブジェクトでも数値の配列でもそのまま外へ出る。
+ * `as` を挟んだ場所は実行時に何も検査しない、というのが元の問題（tests/store-rows.test.ts）
+ * なので、列の名前で止まって中身で止まらないなら直りきっていない。
+ *
+ * 効き先は関門になる。`Run.artifacts` は Agent が編集したパスの一覧で、
+ * controller の `guardedDecision` が `findViolations` に渡す入力の1つにあたる。
+ * 文字列でないものが混ざると、`resolve()` が投げるか、文字列化された別物を
+ * 照合することになる。関門の入力は、関門の一部になる。
+ *
+ * 宣言（`Run.artifacts`）をそのまま検査に使う。ここで `z.array(z.string())` と
+ * 書き写すと、宣言と読み方がまた別々の真実源になる。
+ *
+ * 落ちたら throw する。読めなかった行を黙って捨てると、Agent が触ったパスが
+ * 消えたことに誰も気づけない（design.md §3.1）。DB のスキーマ（SCHEMA）は
+ * TEXT のままで、migration は要らない。
+ */
+function parseArtifacts(raw: string, source: string): string[] {
+  let decoded: unknown;
+  try {
+    decoded = JSON.parse(raw);
+  } catch (error) {
+    throw new Error(
+      `${source}: DB の行が想定と違う: artifacts が JSON として読めない: ${errorMessage(error)}`,
+    );
+  }
+
+  const parsed = runSchema.shape.artifacts.safeParse(decoded);
+  if (!parsed.success) {
+    throw new Error(`${source}: DB の行が想定と違う: artifacts: ${parsed.error.message}`);
   }
   return parsed.data;
 }

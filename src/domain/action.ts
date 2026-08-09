@@ -51,6 +51,21 @@ export const escalateReasonSchema = z.enum([
    * 触ってはいけないものに触れたわけではないので protected_path_touched とは別に立てる。
    */
   "uncommitted_changes",
+  /**
+   * Port の応答は届いたが、こちらのスキーマで解釈できなかった。
+   *
+   * `port_failed`（届かなかった）と分けてあるのは、待っても直らないため。
+   * GitHub がフィールドを変えたか、こちらのスキーマが厳しすぎるかのどちらかで、
+   * 次のティックでも同じ応答が同じように落ちる。`WAIT(observation_failed)` に
+   * 畳むと、Gap ゼロの WAIT はループ検知より手前で return するので、予算に
+   * 当たるまで毎ティック再試行される。そのあいだ人間には「GitHub が不安定」に
+   * 見えて、スキーマの不一致だと気づけない。
+   *
+   * 待っても直らないと分かっているなら、待つのではなく人間を呼ぶ。停止条件なので
+   * LLM には決めさせない（design.md §7）。届かなかった失敗（`port_failed`）は
+   * これまでどおり `WAIT(observation_failed)` のままにする。
+   */
+  "shape_mismatch",
 ]);
 export type EscalateReason = z.infer<typeof escalateReasonSchema>;
 
