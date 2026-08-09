@@ -42,10 +42,16 @@ describe("agentContextPayload", () => {
     expect(names).toContain("agent-context");
   });
 
-  it("別名も併記する。show しか知らないエージェントが迷わないため", () => {
-    const get = agentContextPayload().commands.find((command) => command.name === "get");
+  it("叩けない名前を並べない。show は別名としても載せない", () => {
+    // agent-context だけを読んで組み立てたコマンドが通らないなら、Layer 2 は
+    // --help より当てにならないものになる。show の打ち直し先は、
+    // 不明なサブコマンドのエラーが有効値を並べることで伝わる。
+    const names = agentContextPayload().commands.flatMap((command) => [
+      command.name,
+      ...(command.aliases ?? []),
+    ]);
 
-    expect(get?.aliases).toContain("show");
+    expect(names).not.toContain("show");
   });
 
   it("データを出すサブコマンドは --json と --limit を申告する", () => {
