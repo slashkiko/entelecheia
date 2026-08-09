@@ -1,0 +1,198 @@
+version: 1
+
+goal:
+  id: record-the-tick
+  name: 1ティックで起きたことが全部残り、決定の境界が正しい
+  desired_state: |
+    Phase 3 の1本目。実際に ent run を2周させて見つかった断線を埋める。
+    新機能ではなく、Phase 2 で「コードは揃っているが繋がっていない」まま残った配管を通す。
+
+    2周して分かったのは、controller が回ること自体は動くが、
+    回した結果が読めないということだった。DECIDE が LLM 経由になったのに
+    その生ログもトークンも残らず、ent show は宣言部と goals の行しか出さない。
+    1周目の失敗を追うのに SQLite を直接叩くことになった。
+
+    観測対象の指定 — src/cli.ts / src/store/
+      Store は setObserveTarget を持っているが、本番の呼び出し元が無い。
+      呼んでいるのは tests だけで、GoalState.prNumber は永久に null になる。
+      その結果 observe は github.* を1つも観測せず、
+      verification: { type: fact, key: github.* } は永久に unresolved になる。
+
+      ent run <slug> --pr <n> --issue <n> で観測対象を指定できるようにし、
+      指定があれば setObserveTarget で書く。指定が無ければ前回の値を保つ。
+      PR を controller 自身が作って番号を書き戻すのは次の Goal の範囲で、
+      ここでは人間が渡す口だけを開ける。
+
+    DECIDE の記録 — src/adapters/claude.ts / src/decide/ / src/store/
+      LlmPort は consume() でメッセージを全部集めているのに捨てている。
+      生ログをファイルに書くのは claudeActor だけで、claudeLlm は書かない。
+
+      LlmPort の生ログも .goals/.state/runs/ の下に残す（design.md §4.6）。
+      DB にはパスだけを持つ。ログの粒度は Actor と揃える。
+
+      トークンも記録する。design.md §7 は「トークン使用量は必ず記録する」と
+      書いているが、DECIDE の呼び出しは Run を作らないので現状ゼロ件になる。
+      Actor と同じ経路に載せるか別に持つかは実装側で決めてよいが、
+      「従量課金だったらいくらだったか」を後から出せる形にする。
+
+    直らない失敗を繰り返さない — src/decide/index.ts
+      askLlm がリトライしないのは usage_limit のときだけ。
+      1周目は「Not logged in」を3回とも呼び直して同じ失敗を消費した。
+      未ログイン・モデル名の誤り・認証切れは待っても直らない。
+
+      PortError(unavailable) は再試行せず ESCALATE(invalid_decision) にする。
+      出力が Zod を通らなかった場合の再試行は変えない。そちらは直る見込みがある。
+
+    決定の境界 — src/decide/index.ts
+      llmActionSchema が弾いているのは COMPLETE だけで、
+      ESCALATE(budget_exhausted) と ESCALATE(loop_detected) は素通りする。
+      2周目に LLM が loop_detected を返し、そのまま採用された。
+      reconcile の2回目でループはしていない。
+
+      暴走の停止条件を LLM の判断に依存させない（design.md §3.1 / §7）。
+      LLM が選べるのは ACT / VERIFY / WAIT / REPLAN の4つにする。
+      guard 側で loop_detected を出す実装は本 Goal に含めない（次の次の Goal）。
+      ここで閉じるのは LLM 側の口だけで、§10-2 は未決のまま残る。
+
+    Verification — src/store/
+      design.md §4.5 は Verification(criteria_id, result, reason, evidence,
+      verified_at) を挙げ、§9 の完了判定を「全 criteria の Verification.result が
+      passed」と定義している。実際のテーブルは goals / snapshots / facts /
+      unresolved / decisions / runs の6つで、criteria 単位の索引が無い。
+
+      result は passed / failed / unresolved の3値にし、
+      unresolved のときだけ reason を埋める。facts と unresolved との二重表現に
+      なるが、§4.5 が明記している役割分担（criteria 単位の索引 と
+      ASSESS に渡る観測値）に従う。
+
+    ent show — src/cli.ts
+      いま出るのは宣言部と goals の行だけ。design.md §4.6 の
+      「宣言部と実行時状態をマージして1枚で出す」に届いていない。
+
+      最新スナップショットの facts と unresolved、直近の Decision、
+      Run の一覧を出す。これが無いと、壊れたときに SQLite を直接読むことになる。
+
+repository:
+  provider: github
+  owner: slashkiko
+  name: entelecheia
+  default_branch: main
+
+setup:
+  - pnpm install --frozen-lockfile
+
+acceptance_criteria:
+  - id: ac-1
+    description: store / decide / cli / adapters の全テストが通る（新しく足した仕様も含む）
+    verification: { type: command, run: mise run test }
+
+  - id: ac-2
+    description: 型チェックが通る（Verification の3値と CLI の引数が崩れていない）
+    verification: { type: command, run: mise run typecheck }
+
+  - id: ac-3
+    description: lint と format が通る
+    verification: { type: command, run: mise run lint }
+
+  - id: ac-4
+    description: サプライチェーンと workflow のチェックが通る（baseline 由来）
+    verification: { type: command, run: mise run check }
+
+  - id: ac-5
+    description: 変更を載せた PR の CI が成功している
+    verification: { type: fact, key: github.ci.conclusion, equals: success }
+
+  - id: ac-6
+    description: 実際に ent run を回して、記録が読める状態になったか人間が確認する
+    verification:
+      type: human
+      prompt: |
+        ent run を回したあと ent show <slug> を叩き、次の4つが読めるか
+        確認してください。1周目に SQLite を直接叩くことになった状態を、
+        CLI だけで追えるようにするのが本 Goal の目的です。
+
+          最新スナップショットの facts と unresolved
+          直近の Decision（action / rationale / decidedBy / observed_digest）
+          Run の一覧（status / tokens / logRef）
+          criteria ごとの Verification.result
+
+        あわせて次の3点を判断してほしいです。
+
+        1. LLM が選べる行動を ACT / VERIFY / WAIT / REPLAN の4つに絞ったこと。
+           2周目に LLM が ESCALATE(loop_detected) を返し、reconcile 2回目で
+           ループしていないのに採用されました。停止条件を LLM に握らせない
+           （§3.1 / §7）という原則からの判断ですが、逆に「人間を呼びたい」を
+           LLM が表現する手段が WAIT だけになります。狭すぎないか
+        2. Verification テーブルを足したこと。facts の criteria.<id>.passed と
+           二重表現になります。§4.5 は役割分担すると書いていますが、
+           実際に2つ持ってみて重複が過剰でないか
+        3. PR 番号を CLI の引数で渡す形にしたこと。controller が自分で PR を
+           作って書き戻すまでの繋ぎです。次の Goal で自動化したときに
+           この口を残すか消すか
+
+context:
+  background: |
+    Phase 3 の1本目。design.md §9 の完了条件は9項目で、Phase 2 の範囲で4つ確認できた。
+    残る5項目に手を付ける前に、実際に ent run を回して壊れているものを直す。
+
+    2周させた結果は次のとおり。
+
+      1周目 — LlmPort が3回とも「Not logged in」で失敗し、
+              ESCALATE(invalid_decision) → WAITING_HUMAN
+      2周目 — 認証を通したあと LLM が1回で actionSchema を通る JSON を返し、
+              ESCALATE(loop_detected) → WAITING_HUMAN
+
+    どちらも observe / verify / assess は最後まで動いた。setup も verify の
+    4コマンドも実際に流れ、ac-1〜ac-4 が VERIFIED な Fact になり、
+    ac-5 / ac-6 が unresolved に落ちた。lease の取得と解放も動いた。
+    observed_digest は2ティックで完全に一致し、「同じ入力からは同じ Decision」も
+    実地で確認できた。
+
+    ACT には到達していない。この Goal は完了済みで、残る Gap を Actor が埋められない
+    ためで、実装 Gap を持つ本 Goal が初めて ACT 経路を通すことになる。
+    worktree 隔離と disallowedTools の実地確認もそこで初めて起きる。
+
+    本 Goal は新機能を足さない。PR の作成と通知、承認の signal、resume_after を
+    読む側、loop_detected を guard から出す側、自己ホストの安全装置は
+    いずれも後続の Goal に置く。ここで通すのは、回した結果が読める状態までとする。
+
+  constraints:
+    - テストから実際の GitHub と Claude API を叩かない。Port は注入する
+    - 既存の tests/ を弱めない。新しい振る舞いには新しいテストを足す。
+      既存のテストが落ちるなら実装側を直す
+    - 生ログを DB に入れない。ファイルに書いてパスだけ持つ
+    - 捏造した観測を返さない。取れないなら throw して unobserved に落とす
+    - reconcile は sleep しない。待ちは Decision として返す
+    - src/domain/goal.ts と src/domain/fact-keys.ts は変更しない。
+      本 Goal の範囲では変更する理由が無い（パス条件の追加は自己ホストの Goal で扱う）
+    - src/reconcile/ と src/act/ と src/assess/ と src/observe/ は変更しない。
+      直すのは記録と決定境界であって、決め方そのものではない
+    - src/decide/ の変更は2点に閉じる。llmActionSchema の絞り込みと、
+      PortError(unavailable) の再試行抑止。既存の guard の判定順を変えない
+    - guard 側の loop_detected は実装しない。§10-2 は未決のまま残す
+    - docs/design.md の「3. 中核の設計判断」を勝手に変えない
+    - 依存パッケージを増やさない。zod / yaml / octokit / Agent SDK で足りる
+    - mise run check（サプライチェーン検査）を壊さない
+
+  references:
+    - title: 設計ドキュメント
+      path: docs/design.md
+    - title: Phase 2 の3本目（Store と CLI の現状）
+      path: .goals/persist-and-resume.yaml
+    - title: Phase 2 の4本目（Port の実装と PortError）
+      path: .goals/connect-github-and-claude.yaml
+
+policies:
+  require_human_approval:
+    - merge
+    - force_push
+    - push_to_default_branch
+    - deploy
+    - secret_access
+    - external_send
+
+budget:
+  max_actor_runs: 15
+  max_reconciles: 30
+  max_wall_clock: 4h
+  max_consecutive_failures: 3

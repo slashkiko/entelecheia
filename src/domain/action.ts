@@ -39,8 +39,14 @@ export const actionSchema = z.discriminatedUnion("type", [
   z.object({
     type: z.literal("WAIT"),
     reason: waitReasonSchema,
-    /** 再開してよい時刻。分からなければ null にして指数バックオフに任せる */
-    resumeAfter: z.string().datetime().nullable(),
+    /**
+     * 再開してよい時刻。分からなければ null にして指数バックオフに任せる。
+     *
+     * 省略も null と同じに扱う。LLM は `{"type":"WAIT","reason":"review_pending"}` を
+     * 返してきたが、必須にしていたせいで弾かれ、再試行に3万トークン以上かかった。
+     * 「キーが無い」と「分からない」を区別しても controller の分岐は変わらない。
+     */
+    resumeAfter: z.string().datetime().nullable().default(null),
   }),
   z.object({ type: z.literal("ESCALATE"), reason: escalateReasonSchema }),
   /** Plan を作り直す。今の Plan では Gap が埋まらないと判断したとき */

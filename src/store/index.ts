@@ -3,6 +3,7 @@ import { actionSchema, type Decision } from "../domain/action.js";
 import { type Fact, type Unresolved, unresolvedSchema } from "../domain/fact.js";
 import type { Goal } from "../domain/goal.js";
 import { type GoalStatus, goalStatusSchema } from "../domain/goal-state.js";
+import type { LlmCall } from "../domain/llm-call.js";
 import {
   actorKindSchema,
   type Run,
@@ -10,6 +11,7 @@ import {
   type RunOutcome,
   runStatusSchema,
 } from "../domain/run.js";
+import { type Verification, verificationResultSchema } from "../domain/verification.js";
 
 /**
  * design.md §4.5 のテーブルを SQLite に持つ。
@@ -80,10 +82,26 @@ export interface Store {
   /** 直近のスナップショット。facts は次ティックの carriedFacts になる */
   latestSnapshot(goalId: string): Snapshot | null;
 
+  /**
+   * design.md §4.5 の Verification テーブル。criteria 単位の索引になる。
+   * facts の `criteria.<id>.passed` と二重表現になるが、§4.5 の役割分担に従う。
+   */
+  saveVerifications(goalId: string, verifications: readonly Verification[]): void;
+  /** 直近のティックの検証結果。§9 の完了判定はこれを読む */
+  latestVerifications(goalId: string): Verification[];
+
   /** design.md §4.5 の Decision テーブル。L5 に食わせる履歴なので必ず残す */
   saveDecision(goalId: string, observedDigest: string, decision: Decision): void;
   /** 古い順。収束したかを見るには並びが要る */
   listDecisions(goalId: string): Decision[];
+
+  /**
+   * LlmPort を1回呼んだ記録。Run とは別に持つ（design.md §7）。
+   * 呼んだ直後に書く。まとめて後から書くと、途中で kill されたぶんが消える。
+   */
+  recordLlmCall(goalId: string, call: LlmCall): void;
+  /** 古い順。トークンの合計はここから出す */
+  listLlmCalls(goalId: string): LlmCall[];
 
   /** 副作用の前に意図を書く（§3.6）。戻り値は Run の id */
   startRun(goalId: string, intent: RunIntent): string;
@@ -269,6 +287,56 @@ export function openStore(path: string): Store {
       };
     },
 
+    saveVerifications(goalId, verifications) {
+      // 1ティック分をまとめて1つの reconcile_seq に載せる。criteria をまたいで
+      // 時点がずれると、「このティックの検証結果」を引けなくなる。
+      inTransaction(() => {
+        const insert = db.prepare(
+          `INSERT INTO verifications
+             (goal_id, reconcile_seq, criterion_id, result, reason,
+              evidence_source, evidence_detail, detail, verified_at)
+           VALUES (?, (SELECT reconciles FROM goals WHERE id = ?), ?, ?, ?, ?, ?, ?, ?)`,
+        );
+        for (const verification of verifications) {
+          insert.run(
+            goalId,
+            goalId,
+            verification.criterionId,
+            verification.result,
+            verification.reason,
+            verification.evidence?.source ?? null,
+            verification.evidence?.detail ?? null,
+            verification.detail,
+            verification.verifiedAt,
+          );
+        }
+      });
+    },
+
+    latestVerifications(goalId) {
+      // 最後に書いたティックの分だけを返す。過去のティックと混ぜると、
+      // 直したはずの criteria が failed のまま残って見える。
+      const rows = db
+        .prepare(
+          `SELECT * FROM verifications
+            WHERE goal_id = ?
+              AND reconcile_seq = (SELECT MAX(reconcile_seq) FROM verifications WHERE goal_id = ?)
+            ORDER BY id`,
+        )
+        .all(goalId, goalId) as unknown as VerificationRow[];
+      return rows.map((row) => ({
+        criterionId: row.criterion_id,
+        result: verificationResultSchema.parse(row.result),
+        reason: row.reason,
+        evidence:
+          row.evidence_source === null
+            ? null
+            : { source: row.evidence_source, detail: row.evidence_detail ?? "" },
+        detail: row.detail,
+        verifiedAt: row.verified_at,
+      }));
+    },
+
     saveDecision(goalId, observedDigest, decision) {
       // L5 の改善レイヤーに食わせる履歴。必ず残す（design.md §4.5）。
       db.prepare(
@@ -295,6 +363,26 @@ export function openStore(path: string): Store {
         action: actionSchema.parse(JSON.parse(row.action)),
         rationale: row.rationale,
         decidedBy: row.decided_by === "llm" ? "llm" : "guard",
+      }));
+    },
+
+    recordLlmCall(goalId, call) {
+      db.prepare(
+        `INSERT INTO llm_calls (goal_id, purpose, tokens, log_ref, ok, called_at)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+      ).run(goalId, call.purpose, call.tokens, call.logRef, call.ok ? 1 : 0, call.calledAt);
+    },
+
+    listLlmCalls(goalId) {
+      const rows = db
+        .prepare("SELECT * FROM llm_calls WHERE goal_id = ? ORDER BY id")
+        .all(goalId) as unknown as LlmCallRow[];
+      return rows.map((row) => ({
+        purpose: "decide" as const,
+        tokens: row.tokens,
+        logRef: row.log_ref,
+        ok: row.ok === 1,
+        calledAt: row.called_at,
       }));
     },
 
@@ -439,6 +527,23 @@ interface DecisionRow {
   decided_at: string;
 }
 
+interface VerificationRow {
+  criterion_id: string;
+  result: string;
+  reason: string | null;
+  evidence_source: string | null;
+  evidence_detail: string | null;
+  detail: string;
+  verified_at: string;
+}
+
+interface LlmCallRow {
+  tokens: number;
+  log_ref: string;
+  ok: number;
+  called_at: string;
+}
+
 interface RunRow {
   id: number;
   intent: string;
@@ -458,9 +563,13 @@ interface RunRow {
 /**
  * design.md §4.5 のテーブル。
  *
- * Criteria / Plan / Task / Verification / Event はまだ作らない。
+ * Criteria / Plan / Task / Event はまだ作らない。
  * criteria は Goal YAML が正で、残りは Plan の永続化と webhook を入れる Goal で足す。
  * 使う前に作ると、空のテーブルがスキーマの意図を曖昧にする。
+ *
+ * llm_calls は §4.5 の一覧には無い。DECIDE を Actor 層経由に寄せた（§3.5）結果、
+ * Run を作らない LLM 呼び出しが生まれ、そのトークンを §7 のとおり残す場所が
+ * 要るようになった。
  */
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS goals (
@@ -504,6 +613,29 @@ CREATE TABLE IF NOT EXISTS unresolved (
   PRIMARY KEY (snapshot_id, seq)
 );
 
+CREATE TABLE IF NOT EXISTS verifications (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  goal_id         TEXT NOT NULL REFERENCES goals(id),
+  reconcile_seq   INTEGER NOT NULL,
+  criterion_id    TEXT NOT NULL,
+  result          TEXT NOT NULL,
+  reason          TEXT,
+  evidence_source TEXT,
+  evidence_detail TEXT,
+  detail          TEXT NOT NULL,
+  verified_at     TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS llm_calls (
+  id        INTEGER PRIMARY KEY AUTOINCREMENT,
+  goal_id   TEXT NOT NULL REFERENCES goals(id),
+  purpose   TEXT NOT NULL,
+  tokens    INTEGER NOT NULL,
+  log_ref   TEXT NOT NULL,
+  ok        INTEGER NOT NULL,
+  called_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS decisions (
   id              INTEGER PRIMARY KEY AUTOINCREMENT,
   goal_id         TEXT NOT NULL REFERENCES goals(id),
@@ -534,4 +666,5 @@ CREATE TABLE IF NOT EXISTS runs (
 
 CREATE INDEX IF NOT EXISTS idx_snapshots_goal ON snapshots(goal_id, id);
 CREATE INDEX IF NOT EXISTS idx_runs_goal_status ON runs(goal_id, status);
+CREATE INDEX IF NOT EXISTS idx_verifications_goal ON verifications(goal_id, reconcile_seq);
 `;
