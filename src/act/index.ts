@@ -1,6 +1,13 @@
 import type { Decision } from "../domain/action.js";
 import type { ApprovalGate, Goal } from "../domain/goal.js";
-import type { ActorKind, Run, RunIntent, RunOutcome } from "../domain/run.js";
+import {
+  type ActorKind,
+  type ActorRole,
+  DEFAULT_ACTOR_ROLE,
+  type Run,
+  type RunIntent,
+  type RunOutcome,
+} from "../domain/run.js";
 
 /**
  * ACT が依存する外部世界。observe / verify と同じく、実装ではなくインターフェースで切る。
@@ -58,6 +65,14 @@ export interface ActorInvocation {
   runId: string;
   /** DECIDE が決めた intent。そのまま Actor へのプロンプトになる */
   intent: string;
+  /**
+   * どの役割として起動するか（design.md §4.2）。
+   *
+   * Actor 側が role によって使ってよいツールを変える。渡っていなければ、
+   * レビュー役に「読むだけ」を指示で頼むことになり、Agent が従わなければ
+   * 実装を書き換えられる。権限で分けるために、intent とは別に渡す。
+   */
+  role: ActorRole;
   /** 隔離された作業ツリー。controller 本体のコードとは物理的に分ける（design.md §7） */
   worktree: Worktree;
   /** 人間の承認が要る操作。Actor に実行させてはいけない */
@@ -130,7 +145,9 @@ export type ActResult = { acted: true; run: Run } | { acted: false; reason: stri
  *   worktree の作成も副作用なので、Run を書けなかったら worktree も作らない
  * - worktree 隔離は必須。作れなかったら Actor を起動しない（design.md §7）。
  *   controller 本体を動かしているコードと Agent が編集するコードを物理的に分ける
- * - worktree の名前は goal.id から決まる。ティックをまたいで同じ作業ツリーを使う
+ * - worktree の名前は (goal.id, role) から決まる。ティックをまたいで同じ作業ツリーを使う。
+ *   role を書かない ACT は実装役として扱い、既存の作業ツリーから動かさない
+ * - どの役割として走ったかを Run に残す。write-ahead の starting 側に入れる
  * - `policies.require_human_approval` はそのまま Actor に渡す。
  *   merge や force push を Agent に実行させない
  * - 中断されたら Actor に伝播し、Run を interrupted で確定してから return する。
@@ -150,11 +167,15 @@ export async function act(target: ActTarget, deps: ActDeps): Promise<ActResult> 
     return { acted: false, reason: "Actor を起動する前に中断された" };
   }
 
-  const worktreeName = worktreeNameFor(target.goal.goal.id);
+  // role を書いていない Decision は実装役として読む。既に走っている Goal の
+  // Decision には role が無いので、ここで別の作業ツリーへ移すと差分が分かれる。
+  const role = action.role ?? DEFAULT_ACTOR_ROLE;
+  const worktreeName = worktreeNameFor(target.goal.goal.id, role);
   const startedAt = deps.now().toISOString();
   const intent: RunIntent = {
     intent: action.intent,
     actor: deps.actor.kind,
+    role,
     worktree: worktreeName,
     attempt: target.attempt,
     startedAt,
@@ -170,7 +191,7 @@ export async function act(target: ActTarget, deps: ActDeps): Promise<ActResult> 
   }
 
   // ここから先は Run(starting) が残っているので、どの経路でも必ず finish で確定させる。
-  const outcome = await runActor(target.goal, runId, action.intent, worktreeName, deps);
+  const outcome = await runActor(target.goal, runId, action.intent, role, worktreeName, deps);
   try {
     await deps.runs.finish(runId, outcome);
   } catch (error) {
@@ -203,6 +224,7 @@ async function runActor(
   goal: Goal,
   runId: string,
   intent: string,
+  role: ActorRole,
   worktreeName: string,
   deps: ActDeps,
 ): Promise<RunOutcome> {
@@ -231,6 +253,8 @@ async function runActor(
     const result = await deps.actor.run({
       runId,
       intent,
+      // 使ってよいツールは Actor 側が role から決める（design.md §4.2）。
+      role,
       worktree,
       // merge や force push を Agent に実行させない（design.md §7）。
       deniedOperations: goal.policies.require_human_approval,
@@ -266,16 +290,35 @@ async function runActor(
 }
 
 /**
- * worktree の名前。goal.id から決まる。
+ * worktree の名前。(goal.id, role) から決まる。
  *
  * 試行ごとに変えない。ティックをまたいで同じ作業ツリーに差分を積み上げ、
  * それがそのまま PR になるため。
  *
+ * role を混ぜるのは、同じ Goal の中で役割の違う Actor が同じ作業ツリーを
+ * 共有しないようにするため。レビュー役が checkout や clean を行えば実装側の
+ * 途中の差分が消えるし、実装側が書き換えればレビュー役は「いつの時点の
+ * コードを読んだのか」を言えなくなる。
+ *
+ * **`implement` だけは goal.id のまま据え置く。** 既存の worktree と PR の
+ * ブランチは `entelecheia/<goal.id>` にあり、規則を変えると走行中の Goal が
+ * 別ブランチに乗り換えて、それまでの差分が PR から消える。
+ *
+ * **第2引数に既定値を置かない。** `verifyRoot`（src/cli.ts）と未 commit の
+ * 関門（src/controller/index.ts）は、観測した `local.branch` を
+ * `worktreeBranchFor(worktreeNameFor(...))` と突き合わせて「その dirty が
+ * どこを観測した値か」を判定している（design.md §10-11）。候補のブランチが
+ * 2本ある以上、呼び出し側が「どちらの作業ツリーの話か」を毎回書かなければ、
+ * review の作業ツリーの汚れを実装の書き残しと読んでも型でもテストでも
+ * 気づけない。role を書いていない入力に既定を当てるのは、値を読む側
+ * （`act`・`Run` を読む controller）の仕事にする（`DEFAULT_ACTOR_ROLE`）。
+ *
  * controller も保護パスの検査で同じ作業ツリーを指す必要があるので export する。
- * 規則を2箇所に書くと、検査が別の作業ツリーを見ていても誰も気づけない。
+ * `src/cli.ts` の `verifyRoot` も含め、規則を2箇所に書くと、検査や検証が
+ * 別の作業ツリーを見ていても誰も気づけない。
  */
-export function worktreeNameFor(goalId: string): string {
-  return goalId;
+export function worktreeNameFor(goalId: string, role: ActorRole): string {
+  return role === "implement" ? goalId : `${goalId}-${role}`;
 }
 
 /**

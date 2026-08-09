@@ -313,6 +313,7 @@ describe("tick", () => {
       store.startRun("sample-goal", {
         intent: "前のティックの実行",
         actor: "claude-code",
+        role: "implement",
         worktree: "sample-goal",
         attempt: 1,
         startedAt: "2026-08-09T04:00:00.000Z",

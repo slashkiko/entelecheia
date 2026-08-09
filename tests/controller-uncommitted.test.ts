@@ -172,6 +172,7 @@ function seedCompletedRun(store: Store): void {
   const runId = store.startRun(GOAL_ID, {
     intent: "criteria を満たす実装を書く",
     actor: "claude-code",
+    role: "implement",
     worktree: GOAL_ID,
     attempt: 1,
     startedAt: "2026-08-09T08:00:00.000Z",
@@ -199,6 +200,7 @@ function seedFailedRun(store: Store): void {
   const runId = store.startRun(GOAL_ID, {
     intent: "criteria を満たす実装を書く",
     actor: "claude-code",
+    role: "implement",
     worktree: GOAL_ID,
     attempt: 1,
     startedAt: "2026-08-09T08:00:00.000Z",

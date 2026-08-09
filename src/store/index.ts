@@ -10,6 +10,8 @@ import { type GoalStatus, goalStatusSchema } from "../domain/goal-state.js";
 import { type LlmCall, llmCallSchema } from "../domain/llm-call.js";
 import {
   actorKindSchema,
+  actorRoleSchema,
+  DEFAULT_ACTOR_ROLE,
   type Run,
   type RunIntent,
   type RunOutcome,
@@ -170,6 +172,7 @@ export function openStore(path: string): Store {
     PRAGMA foreign_keys = ON;
   `);
   db.exec(SCHEMA);
+  migrate(db);
 
   const inTransaction = (write: () => void): void => {
     db.exec("BEGIN");
@@ -465,13 +468,14 @@ export function openStore(path: string): Store {
       const inserted = db
         .prepare(
           `INSERT INTO runs
-             (goal_id, intent, actor, worktree, attempt, status, started_at, artifacts)
-           VALUES (?, ?, ?, ?, ?, 'starting', ?, '[]')`,
+             (goal_id, intent, actor, role, worktree, attempt, status, started_at, artifacts)
+           VALUES (?, ?, ?, ?, ?, ?, 'starting', ?, '[]')`,
         )
         .run(
           goalId,
           intent.intent,
           intent.actor,
+          intent.role,
           intent.worktree,
           intent.attempt,
           intent.startedAt,
@@ -518,6 +522,8 @@ export function openStore(path: string): Store {
         id: String(row.id),
         intent: row.intent,
         actor: actorKindSchema.parse(row.actor),
+        // role を持たない DB から読んだ行は実装役として読む（列の既定値と同じ）。
+        role: actorRoleSchema.parse(row.role ?? DEFAULT_ACTOR_ROLE),
         worktree: row.worktree,
         attempt: row.attempt,
         startedAt: row.started_at,
@@ -633,6 +639,8 @@ interface RunRow {
   id: number;
   intent: string;
   actor: string;
+  /** role を足す前に書かれた行には無い。読む側で実装役に倒す */
+  role: string | null;
   worktree: string;
   attempt: number;
   status: string;
@@ -737,6 +745,7 @@ CREATE TABLE IF NOT EXISTS runs (
   goal_id     TEXT NOT NULL REFERENCES goals(id),
   intent      TEXT NOT NULL,
   actor       TEXT NOT NULL,
+  role        TEXT NOT NULL DEFAULT 'implement',
   worktree    TEXT NOT NULL,
   attempt     INTEGER NOT NULL,
   status      TEXT NOT NULL,
@@ -753,3 +762,21 @@ CREATE INDEX IF NOT EXISTS idx_snapshots_goal ON snapshots(goal_id, id);
 CREATE INDEX IF NOT EXISTS idx_runs_goal_status ON runs(goal_id, status);
 CREATE INDEX IF NOT EXISTS idx_verifications_goal ON verifications(goal_id, reconcile_seq);
 `;
+
+/**
+ * 既にあるテーブルに、あとから足した列を付ける。
+ *
+ * `CREATE TABLE IF NOT EXISTS` は、テーブルが既にあれば列の差を埋めない。
+ * 自己ホストの goals.db は Phase 2 から動き続けているので、新しい列は
+ * ここで足さないと `INSERT` が落ちる。
+ *
+ * 既定値は実装役にする。role を持たなかった頃の Run は、作業ツリーが
+ * 1つしか無かった時期のもので、すべて実装役として走っている。
+ */
+function migrate(db: DatabaseSync): void {
+  const columns = db.prepare("PRAGMA table_info(runs)").all() as unknown as { name: string }[];
+  if (!columns.some((column) => column.name === "role")) {
+    // 埋め込むのは自前の定数だけ。外から来た値は入らない。
+    db.exec(`ALTER TABLE runs ADD COLUMN role TEXT NOT NULL DEFAULT '${DEFAULT_ACTOR_ROLE}'`);
+  }
+}

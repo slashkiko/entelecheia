@@ -12,7 +12,7 @@ import type { Fact, Unresolved } from "../domain/fact.js";
 import type { Goal } from "../domain/goal.js";
 import { type GoalStatus, isTerminal, nextStatus } from "../domain/goal-state.js";
 import { describeViolations, findViolations } from "../domain/protected-paths.js";
-import type { Run } from "../domain/run.js";
+import { type ActorRole, DEFAULT_ACTOR_ROLE, type Run } from "../domain/run.js";
 import { toVerifications, type Verification } from "../domain/verification.js";
 import { type PublishDeps, publish } from "../publish/index.js";
 import { type ReconcileDeps, reconcile } from "../reconcile/index.js";
@@ -425,8 +425,13 @@ async function guardedDecision(
 ): Promise<Decision> {
   // act と同じ規則で worktree の場所を決める。ここがずれると、
   // 隔離の中の編集を「外に出た」と読んでしまう。
-  const worktreeName = worktreeNameFor(goal.goal.id);
-  const worktreePath = worktreePathFor(goal, run, deps);
+  //
+  // 見るのは「このティックで Actor が走った作業ツリー」にする。走っていない
+  // ティック（ACT 以外・dry-run）は実装役の作業ツリーを見る。前のティックが
+  // 残した違反は worktree に残したままなので、そちらは次のティックが拾う。
+  const role = run?.role ?? DEFAULT_ACTOR_ROLE;
+  const worktreeName = worktreeNameFor(goal.goal.id, role);
+  const worktreePath = worktreePathFor(goal, role, run, deps);
 
   const escalate = (reason: "protected_path_touched" | "guard_unavailable", detail: string) => ({
     decidedAt: deps.now().toISOString(),
@@ -495,13 +500,21 @@ async function guardedDecision(
 }
 
 /**
- * Goal 専用の worktree の場所。act と同じ規則で決める。
+ * 役割ごとの worktree の場所。act と同じ規則で決める。
  *
  * WorktreePort は名前からパスを決めるが、その規則を controller は知らない。
  * `worktreeRoot` を渡されていなければ、走った Run が控えた場所に落とす。
+ *
+ * role を明示で受ける。既定を持たせると、呼び出し側が implement と review の
+ * どちらを指しているのかが読めなくなる（`worktreeNameFor` と同じ理由）。
  */
-function worktreePathFor(goal: Goal, run: Run | null, deps: ControllerDeps): string {
-  const worktreeName = worktreeNameFor(goal.goal.id);
+function worktreePathFor(
+  goal: Goal,
+  role: ActorRole,
+  run: Run | null,
+  deps: ControllerDeps,
+): string {
+  const worktreeName = worktreeNameFor(goal.goal.id, role);
   return deps.worktreeRoot === undefined
     ? (run?.worktree ?? worktreeName)
     : join(deps.worktreeRoot, worktreeName);
@@ -568,7 +581,13 @@ function uncommittedDecision(
 
   // 今ティックの観測が worktree を見ていなければ、その dirty は Actor の
   // 書き残しではない。controller 自身のリポジトリの汚れで人間を呼ばない。
-  const worktreeBranch = worktreeBranchFor(worktreeNameFor(goal.goal.id));
+  //
+  // 突き合わせる相手は**実装役の作業ツリー**に固定する。`local.*` を観測する
+  // のも criteria のコマンドを流すのも実装役の側で（`src/cli.ts` の
+  // `verifyRoot`）、PR に載るのもそのブランチだからになる。役割が増えても
+  // ここを review 側にすると、レビュー中の作業ツリーの汚れを実装の書き残しと
+  // 読む一方で、実装役が書き残したものを見落とす。
+  const worktreeBranch = worktreeBranchFor(worktreeNameFor(goal.goal.id, "implement"));
   if (!observedValue(observedFacts, "local.branch", worktreeBranch)) {
     return decision;
   }
@@ -577,7 +596,8 @@ function uncommittedDecision(
     return decision;
   }
 
-  const worktreePath = worktreePathFor(goal, null, deps);
+  // 人間に案内するパスも、上で突き合わせた実装役の作業ツリーに揃える。
+  const worktreePath = worktreePathFor(goal, "implement", null, deps);
   return {
     decidedAt: deps.now().toISOString(),
     action: { type: "ESCALATE", reason: "uncommitted_changes" },
