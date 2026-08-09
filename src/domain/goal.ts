@@ -225,6 +225,12 @@ export const PROTECTED_PATH_FLOOR = [
   "src/adapters/local.ts",
   // 資格情報の除去リスト。
   "src/domain/withheld-env.ts",
+  // git が観測しないが、書き換えられると controller の権限でコードが走る場所。
+  // `repoDirtyState` が指紋で見るので、ここに glob を置いて関門に繋ぐ。
+  // hooks は linked worktree でも共通の .git を共有し、push のたびに走る。
+  ".git/**",
+  // 状態 DB。gitignore 済みで git status には出ないが、直接書けば状態を偽造できる。
+  ".goals/.state/**",
 ] as const;
 
 /**

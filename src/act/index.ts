@@ -1,4 +1,5 @@
 import type { Decision } from "../domain/action.js";
+import { errorMessage } from "../domain/error-message.js";
 import type { ApprovalGate, Goal } from "../domain/goal.js";
 import type { ActorKind, Run, RunIntent, RunOutcome } from "../domain/run.js";
 
@@ -48,6 +49,14 @@ export interface WorktreePort {
    * 上限で、そこは design.md §10-6 に残す。
    */
   repoDirtyState(): Promise<Map<string, string>>;
+  /**
+   * git が観測しない場所の指紋。`.git/hooks/**`、`core.hooksPath`、状態 DB。
+   *
+   * `repoDirtyState` と分けるのは、あちらが「git が見える汚れ」を意味するため。
+   * こちらは git の観測手段では原理的に出てこないものを、別の手段で見る。
+   * 実装が用意していなければ controller は検査を飛ばす（省略可）。
+   */
+  outOfSightState?(): Promise<Map<string, string>>;
 }
 
 /**
@@ -326,7 +335,3 @@ export function worktreeBranchFor(worktreeName: string): string {
 
 /** signal を渡されなかった呼び出しに使う。中断されることはない */
 const NEVER_ABORTED: AbortSignal = new AbortController().signal;
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}

@@ -8,6 +8,7 @@ import {
 } from "../act/index.js";
 import type { BudgetUsage } from "../decide/index.js";
 import type { Action, Decision } from "../domain/action.js";
+import { errorMessage } from "../domain/error-message.js";
 import type { Fact, Unresolved } from "../domain/fact.js";
 import type { Goal } from "../domain/goal.js";
 import { type GoalStatus, isTerminal, nextStatus } from "../domain/goal-state.js";
@@ -704,14 +705,31 @@ type RepoBaseline = { state: ReadonlyMap<string, string> } | { error: string };
 
 async function repoBaseline(deps: ControllerDeps): Promise<RepoBaseline> {
   try {
-    return { state: await deps.worktree.repoDirtyState() };
+    return { state: await observedRepoState(deps) };
   } catch (error) {
     return { error: errorMessage(error) };
   }
 }
 
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
+/**
+ * ACT の前後で比べる観測を1つにまとめる。
+ *
+ * `repoDirtyState` は git が見える汚れで、`outOfSightState` は git の観測手段では
+ * 原理的に出てこないもの（`.git/hooks/**`、`core.hooksPath`、状態 DB）を指す。
+ * 前者だけを見ていたころは、Actor が `.git/hooks/pre-push` を1本置くだけで、
+ * push のたびに controller の権限・全環境変数でそれが走った。関門の計測手段が
+ * git だったので、原理的に見えなかった（design.md §8 の主張が届かない範囲）。
+ *
+ * `outOfSightState` を持たない実装（テストの fake など）では、git 側だけを見る。
+ * 持っていないことを違反にはしない。
+ */
+async function observedRepoState(deps: ControllerDeps): Promise<Map<string, string>> {
+  const dirty = await deps.worktree.repoDirtyState();
+  const outOfSight = await deps.worktree.outOfSightState?.();
+  if (outOfSight === undefined) {
+    return dirty;
+  }
+  return new Map([...dirty, ...outOfSight]);
 }
 
 /**

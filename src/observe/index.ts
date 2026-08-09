@@ -1,3 +1,4 @@
+import { errorMessage } from "../domain/error-message.js";
 import type { Fact, ObserveResult, Unresolved, VerifiedFact } from "../domain/fact.js";
 import { isShapeMismatch } from "../domain/port-error.js";
 
@@ -98,10 +99,6 @@ async function observed<T>(read: () => Promise<T>): Promise<Read<T>> {
   } catch (error) {
     return { ok: false, error };
   }
-}
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }
 
 /**

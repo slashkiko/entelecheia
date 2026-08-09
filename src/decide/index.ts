@@ -1,4 +1,5 @@
 import { type Action, actionSchema, type Decision, type WaitReason } from "../domain/action.js";
+import { errorMessage } from "../domain/error-message.js";
 import type { Unresolved } from "../domain/fact.js";
 import { criterionFactKey } from "../domain/fact-keys.js";
 import type { Assessment, Gap } from "../domain/gap.js";
@@ -411,8 +412,4 @@ function describeAction(action: Action): string {
     default:
       return action.type;
   }
-}
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }

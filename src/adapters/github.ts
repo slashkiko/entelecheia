@@ -2,6 +2,7 @@ import { retry } from "@octokit/plugin-retry";
 import { throttling } from "@octokit/plugin-throttling";
 import { Octokit } from "@octokit/rest";
 import { z } from "zod";
+import { errorMessage } from "../domain/error-message.js";
 import { PortError } from "../domain/port-error.js";
 import type {
   CiRunSnapshot,
@@ -99,7 +100,10 @@ export function githubCodeProvider(options: GitHubOptions): CodeProviderPort {
       if (status === 404) {
         return null;
       }
-      throw new PortError("unavailable", `${describe(route, params, options)}: ${message(error)}`);
+      throw new PortError(
+        "unavailable",
+        `${describe(route, params, options)}: ${errorMessage(error)}`,
+      );
     }
   };
 
@@ -421,7 +425,7 @@ function writeAccessChecker(
         }
         throw new PortError(
           "unavailable",
-          `${describe(route, { username: login }, options)}: ${message(error)}`,
+          `${describe(route, { username: login }, options)}: ${errorMessage(error)}`,
         );
       }
 
@@ -478,7 +482,10 @@ async function request(
     });
     return response.data;
   } catch (error) {
-    throw new PortError("unavailable", `${describe(route, params, options)}: ${message(error)}`);
+    throw new PortError(
+      "unavailable",
+      `${describe(route, params, options)}: ${errorMessage(error)}`,
+    );
   }
 }
 
@@ -580,10 +587,6 @@ function describe(route: string, params: Record<string, unknown>, options: GitHu
     path = path.replace(`{${key}}`, String(value));
   }
   return path;
-}
-
-function message(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }
 
 const pullRequestSchema = z.object({

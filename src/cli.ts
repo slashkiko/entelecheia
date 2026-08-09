@@ -15,6 +15,7 @@ import {
 } from "./adapters/local.js";
 import { type ControllerDeps, type TickResult, tick } from "./controller/index.js";
 import type { Decision } from "./domain/action.js";
+import { errorMessage } from "./domain/error-message.js";
 import { type Goal, SLUG } from "./domain/goal.js";
 import { loadGoalFile } from "./domain/goal-loader.js";
 import { isTerminal } from "./domain/goal-state.js";
@@ -212,7 +213,7 @@ export function parseCommand(argv: readonly string[]): Command {
       ...json,
     };
   } catch (error) {
-    return { kind: "error", message: error instanceof Error ? error.message : String(error) };
+    return { kind: "error", message: errorMessage(error) };
   }
 }
 
@@ -925,10 +926,6 @@ function isWritable(dir: string): boolean {
   }
 }
 
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
-
 function summarize(result: TickResult): unknown {
   return {
     ran: result.ran,
@@ -1118,7 +1115,8 @@ void _effortLevelsAreExhaustive;
 
 if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href) {
   // main() が終了コードの契約を閉じているので、ここでは受け取るだけにする。
-  main(process.argv.slice(2)).then((code) => {
+  // reject しないことは main() 側の try/catch が保証している。
+  void main(process.argv.slice(2)).then((code) => {
     process.exitCode = code;
   });
 }
