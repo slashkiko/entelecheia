@@ -86,7 +86,9 @@ controller は承認待ちで止まった。人間が待っているのは実装
 未 commit の変更を検知し、`ESCALATE(uncommitted_changes)` で人間を呼ぶ
 （design.md §10-11）。読むのは**今ティックの観測が worktree を見て作った**
 `local.dirty` だけで、観測に失敗したティックや worktree がまだ無いティックでは
-止まらない。止めた理由と次の一手は `ent show` と PR のコメントの両方に出す。
+止まらない。役割ごとに worktree が分かれた（design.md §4.2）あとも、突き合わせるのは
+**実装役のブランチ**に固定してある。検証コマンドと `local.*` を観測する先が
+そちらだからで、レビュー役の作業ツリーの汚れを実装の書き残しと読まない。止めた理由と次の一手は `ent show` と PR のコメントの両方に出す。
 
 MVP 完了後のレビューでも、同じ形の穴が残っていた。Port を注入するテストは
 `src/adapters/local.ts`（実際の git とシェル）と `src/cli.ts` の `main()` を1行も通らず、
@@ -220,6 +222,8 @@ Actor と LLM は Claude Code の OAuth をそのまま使う。
 .goals/<slug>.yaml        人間が編集。Git 管理。宣言部のみ。slug は goal.id と一致させる
 .goals/.state/goals.db    controller が書く実行時状態。gitignore 済み
 .goals/.state/worktrees/  Actor が編集する worktree。controller 本体とは物理的に分ける
+                          名前は (goal.id, role) から決まる。実装役は <slug>、
+                          それ以外は <slug>-<role>（design.md §4.2）
 .goals/.state/runs/<run-id>/  Agent の生ログ。DB にはパスだけ持つ
 src/domain/fact.ts        Fact の型（VERIFIED / INFERRED の分離）と Unresolved
 src/domain/fact-keys.ts   観測キーのレジストリ。Goal YAML の fact 検証はここを参照する
@@ -227,7 +231,7 @@ src/domain/goal.ts        Goal YAML の Zod スキーマ
 src/domain/goal-loader.ts Goal YAML の読み込みと、slug と goal.id の突き合わせ
 src/domain/gap.ts         ASSESS が出す Gap と Assessment の型
 src/domain/action.ts      DECIDE が選ぶ Action と Decision の型
-src/domain/run.ts         Actor の実行記録の型
+src/domain/run.ts         Actor の実行記録の型と ActorRole（役割ごとに worktree が分かれる）
 src/domain/goal-state.ts  Goal のライフサイクルと、Action から次の状態を決める遷移
 src/domain/port-error.ts  Port の失敗の種別（usage_limit / unavailable）
 src/domain/verification.ts criteria 単位の検証結果。§9 の完了判定が読む索引
@@ -246,6 +250,8 @@ src/controller/           1ティックの外側。lease → 回収 → reconcil
 src/adapters/local.ts     node:child_process で書ける Port（コマンド実行、git、worktree）
 src/adapters/github.ts    CodeProviderPort。@octokit/rest + ETag
 src/adapters/claude.ts    ActorPort と LlmPort。Claude Agent SDK
+                          role ごとの許可・拒否ツールとプロンプトもここ。編集の
+                          ツールを持つのは実装役だけ（design.md §4.2）
 src/cli.ts                ent コマンド。引数の解釈と agent-context もここ
 .claude/skills/ent/SKILL.md  エージェントが手順として読むもの。叩く順と、人の承認で止まる場所
 AGENTS.md                 上の SKILL.md を指すだけの入口。手順は二重に書かない

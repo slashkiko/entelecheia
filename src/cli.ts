@@ -4,6 +4,7 @@ import { basename, dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
 import { type EffortLevel, query } from "@anthropic-ai/claude-agent-sdk";
+import { worktreeNameFor } from "./act/index.js";
 import { type ClaudeOptions, claudeActor, claudeLlm } from "./adapters/claude.js";
 import { githubApproval, githubCodeProvider, githubCodeWriter } from "./adapters/github.js";
 import {
@@ -1032,6 +1033,14 @@ function approval(goal: Goal, prNumber: number | null): ApprovalPort {
  *
  * Goal 専用の worktree があればそちらを使う。無ければ controller のリポジトリ。
  *
+ * **見るのは実装役の作業ツリーに固定する。** レビュー役の作業ツリーで criteria を
+ * 検証すると、レビュー中に書き換わったものを実装の検証結果として読むことになる。
+ * `local.*` も同じ場所を観測するので、未 commit の関門（design.md §10-11）が
+ * 突き合わせる `local.branch` も実装役のブランチになる。
+ *
+ * 名前の規則は `worktreeNameFor` が正で、ここで組み立て直さない。2箇所に書くと、
+ * 規則が変わったときに検証だけ別の作業ツリーを見ていても誰も気づけない。
+ *
  * repoRoot 固定にしていたところ、自己ホストで回して初めて破綻した。Actor は
  * worktree の中で実装するのに、VERIFY は controller 自身のリポジトリで
  * `mise run test` を流す。実装しても criteria は落ちたままになり、
@@ -1042,7 +1051,7 @@ function approval(goal: Goal, prNumber: number | null): ApprovalPort {
  * のは「着手前の状態」で、Gap が出るのは正しい。
  */
 function verifyRoot(stateDir: string, goal: Goal): string {
-  const worktree = join(stateDir, "worktrees", goal.goal.id);
+  const worktree = join(stateDir, "worktrees", worktreeNameFor(goal.goal.id, "implement"));
   return existsSync(worktree) ? worktree : process.cwd();
 }
 

@@ -14,7 +14,8 @@ import { z } from "zod";
  *
  * 命名規則:
  * - ドット区切りの小文字 snake_case
- * - 第1セグメントは観測元（`local` / `github`）
+ * - 第1セグメントは観測元（`local` / `github` / `review`）。`review` だけは外部の
+ *   サービスではなく、controller 自身が起動した Actor の実行が出どころになる
  * - 第2セグメント以降は論理リソース（`pr` / `ci` / `issue`）とその属性
  * - Port の camelCase フィールド名はここで snake_case に変換される
  */
@@ -42,6 +43,32 @@ export const observedFactKeySchema = z.enum([
   "github.issue.state",
   "github.issue.labels",
   "github.issue.linked_pr",
+
+  // レビュー役の Actor の Run から作る（design.md §4.2 の `role: review`）。
+  //
+  // 第1セグメントが観測元の規則からは外れて見えるが、外れていない。出どころは
+  // GitHub でもローカルの git でもなく、この controller が起動した Actor の実行
+  // そのものになる。`github.pr.review_decision` とは別物で、あちらは GitHub 上の
+  // 人間（または bot）のレビュー、こちらは controller が回したレビュー役の結論。
+  //
+  // **作る側はまだ居ない。** レビュー役をいつ起動するかは別 Goal
+  // （.goals/review-agent-reviews.yaml の desired_state 6）に分けてあり、
+  // `role: review` の ACT を出す経路が無い。キーを先に登録するのは、Goal YAML が
+  // `verification: { type: fact, key: review.verdict, equals: approved }` と
+  // 書けるようにするため。参照する側が既にあれば、Fact が無い間は Gap が残り、
+  // COMPLETE には届かない。それが正しい振る舞いになる（design.md §3.1）。
+  //
+  // 作る側を足すときも、レビューを回していないティックで値を捏造しない。
+  // 確かめられなければ Fact を作らず、理由を付けて unobserved に残す。
+  /** レビュー役の結論。`approved` か `changes_requested` */
+  "review.verdict",
+  /**
+   * その結論がどの commit を読んだ結果か。
+   *
+   * verdict だけでは、いつの時点のコードのレビューか分からない。実装が進んだ
+   * あとの Fact をそのまま完了判定に使わせないために、対にして残す。
+   */
+  "review.reviewed_sha",
 ]);
 export type ObservedFactKey = z.infer<typeof observedFactKeySchema>;
 

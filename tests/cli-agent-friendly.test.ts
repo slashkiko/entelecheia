@@ -199,6 +199,7 @@ describe("出力は既定で上限を持つ（2.5）", () => {
       store.startRun(goal.goal.id, {
         intent: `intent-${String(index).padStart(3, "0")}`,
         actor: "claude-code",
+        role: "implement",
         worktree: "sample-goal",
         attempt: index + 1,
         startedAt: AT,
@@ -220,6 +221,7 @@ describe("出力は既定で上限を持つ（2.5）", () => {
       store.startRun(goal.goal.id, {
         intent: `intent-${index}`,
         actor: "claude-code",
+        role: "implement",
         worktree: "sample-goal",
         attempt: index + 1,
         startedAt: AT,

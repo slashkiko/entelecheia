@@ -146,6 +146,7 @@ describe("showPayload", () => {
     const runId = store.startRun(GOAL.goal.id, {
       intent: "テストの失敗を直す",
       actor: "claude-code",
+      role: "implement",
       worktree: "sample-goal",
       attempt: 1,
       startedAt: AT,

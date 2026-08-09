@@ -229,6 +229,38 @@ interface Actor {
 MVP では `claude-code` だけを実装し、3つの role をすべて持たせる。
 Codex を足すときに Planner 側のコードを変えなくて済む形にしておけば十分。
 
+`ActorRole` の実体は `src/domain/run.ts` の `actorRoleSchema` にある。`Actor` の方は
+まだ切っていない（`ActorPort` が `kind` を持つだけ）が、role は次の4箇所を通る。
+
+- **role が Agent の許可・拒否ツールを決める**（`src/adapters/claude.ts` の `ACTOR_TOOLS`）。
+  編集のツール（Edit / Write / NotebookEdit）を持つのは `implement` だけで、`review` と
+  `investigate` は読むためのツールと Bash だけを持つ。**指示ではなく権限で分ける。**
+  intent は LLM が生成するもので、「書いた」ことは確かめられても「従った」ことは
+  確かめられない（§3.2）。編集のツールは許可リストから外すだけでなく拒否リストにも
+  入れる。許可リストから外すだけでは、設定の読み込み順や既定値が変わったときに
+  素通りしうる。`policies.require_human_approval` から来る拒否は role によらず
+  そのまま落とす（レビュー役だからといって merge や force push を許さない）。
+  プロンプトも role ごとに分ける。権限だけ分けて文面が同じだと、レビュー役は編集を
+  試みて拒否され続け、ターンをそこに使い切る
+- **worktree の名前が (goal.id, role) から決まる**（`worktreeNameFor`）。役割が違えば
+  作業ツリーもブランチも分かれる。同じ作業ツリーを共有すると、レビュー役の checkout や
+  clean で実装側の途中の差分が消え、実装側が書き換えればレビュー役は「いつの時点の
+  コードを読んだのか」を言えなくなる。**`implement` だけは `goal.id` のまま据え置く。**
+  既存の worktree と PR のブランチが `entelecheia/<goal.id>` にあり、規則を変えると
+  走行中の Goal が別ブランチに乗り換えて、それまでの差分が PR から消える
+- **第2引数に既定値を置かない。** `verifyRoot`（§10-9）と未 commit の関門（§10-11）は
+  観測した `local.branch` を `worktreeBranchFor(worktreeNameFor(...))` と突き合わせて
+  観測の出自を判定する。候補のブランチが2本ある以上、呼び出し側が「どちらの作業ツリーの
+  話か」を毎回書かなければ、review の作業ツリーの汚れを実装の書き残しと読んでも
+  型でもテストでも気づけない。role を書いていない入力（既存の Decision と既存の Run）に
+  実装役を当てるのは、読む側の仕事にする（`DEFAULT_ACTOR_ROLE`）
+- **どの役割として走ったかを Run に残す**（§4.5）。write-ahead の `starting` 側に書く。
+  確定側に回すと、途中で kill された Run の role が空のまま残る（§3.6）
+
+**検証コマンドと `local.*` の観測先は `implement` の作業ツリーに固定する**（§10-9）。
+レビュー役の作業ツリーで criteria を検証すると、レビュー中に書き換わったものを
+実装の検証結果として読むことになる。PR に載るのも実装役のブランチになる。
+
 ### 4.3 OBSERVE が取得するもの
 
 ```
@@ -253,6 +285,18 @@ Phase 0 では Port の camelCase フィールド名との対応表がどこに�
 レビュー一覧は `review_decision` の導出に使うだけで、個別のレビューを Fact として
 出す Port は無い。表は取得したい対象、
 レジストリは実際に取得できる対象を表すので、実装するときはレジストリ側を正とする。
+
+`review.verdict` と `review.reviewed_sha` はレジストリにあるが、上の表には無い。
+出どころが外部のサービスではなく、この controller が起動したレビュー役の Actor の
+実行そのものだからで、`github.pr.review_decision`（GitHub 上の人間または bot の
+レビュー）とは別物になる。`verdict` と対で `reviewed_sha` を置くのは、「通った」だけでは
+いつの時点のコードのレビューか分からず、実装が進んだあとの Fact をそのまま完了判定に
+使うことになるため。**作る側はまだ無い。** `role: review` の ACT を出す経路が無く、
+レビュー役をいつ起動するかは別の Goal に分けてある。キーだけ先に登録してあるのは、
+Goal YAML が `verification: { type: fact, key: review.verdict, equals: approved }` と
+書けるようにするためで、Fact が無い間は Gap が残り COMPLETE には届かない（§3.1）。
+guard に「レビューを通れ」という条件は足していない。完了判定の境界（§7）を
+動かさずに済む形を選んである。
 
 `github.pr.review_decision` は REST の `pulls/{n}` と `pulls/{n}/reviews` から導出する。
 GraphQL なら1回で取れるが、ETag による conditional request（§3.4）が効くのは REST の
@@ -320,7 +364,7 @@ Verification  goal_id, reconcile_seq, criterion_id, result, reason,
               evidence, detail, verified_at
 Decision      goal_id, reconcile_seq, observed_digest, action, rationale,
               decided_by, decided_at
-Run           goal_id, intent, actor, worktree, attempt, status, started_at,
+Run           goal_id, intent, actor, role, worktree, attempt, status, started_at,
               finished_at, exit_code, log_ref, tokens, artifacts, detail
 LlmCall       goal_id, purpose, tokens, log_ref, ok, called_at
 
@@ -360,8 +404,8 @@ GitHub が一時的に落ちただけで直したはずの Gap が復活する�
 **ティックが走っているあいだは期限を延長し続ける。** ACT は Claude Code の実行なので
 分単位でかかる（§9 の実測では、1ティック目に 1,341,349 tokens を消費している）。
 `leaseSeconds` は 300 なので、延長しないと ACT の途中で期限が切れる。cron から回す構成
-（§3.6）では、そこで別プロセスが lease を奪い、同じ worktree（名前は `goal.id` 固定）で
-2つの ACT が並行する。稀な競合ではなく、実運用の既定の挙動になっていた。
+（§3.6）では、そこで別プロセスが lease を奪い、同じ worktree（名前は (goal.id, role) から
+決まるので、同じ役割どうしなら同じ場所になる）で2つの ACT が並行する。稀な競合ではなく、実運用の既定の挙動になっていた。
 
 ```sql
 UPDATE goals
@@ -381,7 +425,8 @@ UPDATE goals
 .goals/<slug>.yaml            人間が編集。Git 管理。宣言部のみ
 .goals/.state/goals.db        SQLite。機械のみが書く。gitignore
 .goals/.state/runs/<run-id>/  Agent の生ログ・diff。DB にはパスだけ持つ
-.goals/.state/worktrees/<slug>/ Actor が編集する worktree
+.goals/.state/worktrees/<slug>/ Actor が編集する worktree（実装役。§4.2）
+.goals/.state/worktrees/<slug>-<role>/ 実装役以外の Actor が編集する worktree
 ```
 
 人間が編集する宣言部と、機械が書き換える実行時状態を混ぜない。
@@ -441,7 +486,11 @@ PRAGMA foreign_keys = ON;
 - Slack 連携（同上）
 - Web UI（CLI と生成レポートのみ）
 - GitLab / Linear / Jira の Adapter 実装（インターフェースだけ切る）
-- 複数 Actor の並列実行（インターフェースは複数対応、実装は逐次1本）
+- 複数 Actor の並列実行（インターフェースは複数対応、実装は逐次1本）。
+  役割ごとに worktree は分かれるようになった（§4.2）が、**1ティックで起動する Actor は
+  1体のまま**で、Decision も1ティックに1行のままにしてある。協働は同時ではなく
+  ティックをまたいだ交代で成立させる。同じティックに2体を走らせると、Run の確定・
+  lease・write-ahead の前提（§3.6 / §4.5）まで変わる
 - Codex CLI の実装（`kind` の型だけ用意）
 - L5 改善レイヤー（History は貯めるだけ、学習はしない）
 
@@ -936,6 +985,11 @@ MVP を止める未確定は残っていない。ただし、他のリポジト�
    ので、そのティックの Run だけを見ていると、次のティックが保護パスに触れずに終わった
    時点で汚れた worktree ごと push される。違反は1ティックの出来事ではなく、
    worktree が汚れているあいだ続く状態として扱う。
+   **見るのは、そのティックで Actor が走った作業ツリー**（Run の `role`。§4.2）。
+   Actor を起動していないティック（`ACT` 以外・dry-run）は実装役の作業ツリーを見る。
+   1ティックで起動する Actor は1体なので、検査する作業ツリーも1つに定まる。
+   役割が交代しても、違反は worktree に残り続けるので、次に同じ役割が走るか
+   Actor を起動しないティックが来た時点で拾われる。
    照合はシンボリックリンクを実体へ解決してから行い、大文字小文字は区別しない。
    macOS も Windows も既定でパスの大小を区別しないので、`src/Controller/index.ts` と
    書けば同じファイルに届くのに glob には一致しない、という抜け道ができる。
@@ -983,6 +1037,11 @@ MVP を止める未確定は残っていない。ただし、他のリポジト�
    変えたが、規則が「worktree があればそちら」という暗黙のものになっている。
    Goal YAML から指定できる方がよいかは決めていない。1ティック目は worktree が
    無いので `repoRoot` を見る、という非対称も残る。
+   **役割が増えても、見るのは実装役の作業ツリーに固定する**（§4.2）。`verifyRoot` は
+   場所の規則を直書きせず `worktreeNameFor(goal.id, 'implement')` を通す。2箇所に書くと、
+   規則が変わったときに検証だけ別の作業ツリーを見ていても誰も気づけない。
+   レビュー役の作業ツリーで criteria を検証すると、レビュー中に書き換わったものを
+   実装の検証結果として読むことになる。
    **より大きな未決は、検証コマンドを controller の権限で実行していること。**
    worktree で `mise run test` を流すということは、worktree の `mise.toml` が
    何を実行するかを決める、ということでもある。検証系を `protected_paths` に入れて
@@ -1025,8 +1084,13 @@ MVP を止める未確定は残っていない。ただし、他のリポジト�
     落ちるのは `github.ci.*` だけ）。それを今の観測として読むと、「確かめられなかった」が
     「汚れている」に化ける。そのティックは `WAIT(observation_failed)` のまま進む。
     *どこ* — 同じ観測が作る `local.branch` が worktree のブランチ
-    （`worktreeBranchFor`）と一致するときだけ見る。「Run が1件でもあれば worktree を
-    観測している」は代理にならない。`act` は `worktree.ensure` より先に Run(starting) を
+    （`worktreeBranchFor`）と一致するときだけ見る。**役割ごとに worktree が分かれた
+    （§4.2）ので、突き合わせる相手は `worktreeNameFor(goal.id, 'implement')` の
+    ブランチだと明示する。** `local.*` を観測するのも criteria のコマンドを流すのも
+    実装役の作業ツリーで（§10-9）、push されるのもそのブランチになる。ここを review 側に
+    向けると、レビュー中の作業ツリーの汚れを実装の書き残しと読む一方で、実装役が
+    書き残したものは見落とす。人間に案内する worktree のパスも同じ役割に揃える。
+    「Run が1件でもあれば worktree を観測している」は代理にならない。`act` は `worktree.ensure` より先に Run(starting) を
     書くので、worktree を作れずに失敗した Run が1本あるだけで `verifyRoot` は
     controller 自身のリポジトリに落ちたままになり、人間の編集を Actor の書き残しと読む。
     **逆向きの誤検知を2つ避ける。** 実装の途中で作業ツリーが汚れているのは正常なので、

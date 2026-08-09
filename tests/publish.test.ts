@@ -51,6 +51,7 @@ const COMPLETED_RUN: Run = {
   id: "1",
   intent: "テストの失敗を直す",
   actor: "claude-code",
+  role: "implement",
   worktree: "sample-goal",
   attempt: 1,
   startedAt: NOW.toISOString(),

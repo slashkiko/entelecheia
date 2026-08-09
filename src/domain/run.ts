@@ -12,6 +12,29 @@ export const actorKindSchema = z.enum(["claude-code", "codex", "human"]);
 export type ActorKind = z.infer<typeof actorKindSchema>;
 
 /**
+ * Actor の役割。design.md §4.2 の `ActorRole` に対応する。
+ *
+ * 役割が違えば作業ツリーも分かれる（`worktreeNameFor`）。同じ Goal の中で
+ * 実装役とレビュー役が同じ作業ツリーを共有すると、レビュー中に実装側が
+ * 書き換わり、レビューの対象が定まらない。
+ *
+ * `investigate` は §4.2 が宣言している3つ目で、いまは起動する側が居ない。
+ * 型に残しておくのは、あとで足すときに列挙の変更が要らないようにするため。
+ */
+export const actorRoleSchema = z.enum(["implement", "review", "investigate"]);
+export type ActorRole = z.infer<typeof actorRoleSchema>;
+
+/**
+ * role を書いていない入力をどう読むか。
+ *
+ * 既に走っている Goal の Decision には role が無く、DB に残っている Run にも
+ * 無い。読み直したときに別の作業ツリーへ移らないよう、実装役として扱う。
+ * `worktreeNameFor` の第2引数には既定値を置かない（呼び出し側に「どちらの
+ * 作業ツリーの話か」を毎回書かせる）ので、既定はここ1箇所に集める。
+ */
+export const DEFAULT_ACTOR_ROLE: ActorRole = "implement";
+
+/**
  * Run の状態。design.md §3.6 の write-ahead は starting → 確定 の2段で書く。
  *
  * starting のまま残った Run は、プロセスが途中で死んだことを意味する。
@@ -31,7 +54,15 @@ export const runIntentSchema = z.object({
   /** DECIDE が決めた intent。そのまま Actor へのプロンプトになる */
   intent: z.string().min(1),
   actor: actorKindSchema,
-  /** 隔離に使う worktree の名前 */
+  /**
+   * どの役割として走ったか。誰がどの作業ツリーで何をしたかを、あとから
+   * `ent get` で読めるようにする。
+   *
+   * 副作用の前に書く側（starting）に置く。確定側に回すと、途中で kill された
+   * Run の role が空のまま残り、どの作業ツリーの Run だったのかが読めなくなる。
+   */
+  role: actorRoleSchema,
+  /** 隔離に使う worktree の名前。role ごとに分かれる（`worktreeNameFor`） */
   worktree: z.string().min(1),
   /** 同じ intent の何回目の試行か */
   attempt: z.number().int().positive(),

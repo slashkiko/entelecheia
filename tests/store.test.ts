@@ -48,6 +48,7 @@ function verifiedFact(key: string, value: unknown): Fact {
 const RUN_INTENT: RunIntent = {
   intent: "テストの失敗を直す",
   actor: "claude-code",
+  role: "implement",
   worktree: "sample-goal",
   attempt: 1,
   startedAt: NOW.toISOString(),

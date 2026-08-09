@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { actorRoleSchema } from "./run.js";
 
 /**
  * DECIDE が選ぶ行動。design.md §1 の図の分岐にあたる。
@@ -71,7 +72,18 @@ export type EscalateReason = z.infer<typeof escalateReasonSchema>;
 export const actionSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("COMPLETE") }),
   /** Actor に実装させる。intent はそのまま Claude Code へのプロンプトになる */
-  z.object({ type: z.literal("ACT"), intent: z.string().min(1) }),
+  z.object({
+    type: z.literal("ACT"),
+    intent: z.string().min(1),
+    /**
+     * どの役割の Actor を起動するか。書かなければ実装役として扱う
+     * （`DEFAULT_ACTOR_ROLE`）。
+     *
+     * 任意にしてあるのは、既に走っている Goal の Decision に role が無いため。
+     * 必須にすると、読み直した時点で既存の ACT が Zod に落ちる。
+     */
+    role: actorRoleSchema.optional(),
+  }),
   /** criteria を検証しにいく。Fact が無くて判定できないときに選ぶ */
   z.object({ type: z.literal("VERIFY") }),
   z.object({

@@ -60,6 +60,7 @@ const GOAL: Goal = {
 const RUN_INTENT: RunIntent = {
   intent: "テストの失敗を直す",
   actor: "claude-code",
+  role: "implement",
   worktree: GOAL_ID,
   attempt: 1,
   startedAt: NOW,

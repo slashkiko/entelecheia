@@ -7,6 +7,7 @@ import type { LlmPort } from "../decide/index.js";
 import type { ApprovalGate } from "../domain/goal.js";
 import type { LlmCall } from "../domain/llm-call.js";
 import { PortError } from "../domain/port-error.js";
+import type { ActorRole } from "../domain/run.js";
 import { WITHHELD_ENV, withheldEnv } from "../domain/withheld-env.js";
 
 /**
@@ -88,9 +89,13 @@ export function claudeActor(options: ClaudeOptions): ActorPort {
         artifacts: [],
       });
 
+      // 役割で分けるのは指示ではなく権限（design.md §4.2）。intent は LLM が
+      // 生成するもので、「書いた」ことは確かめられても「従った」ことは確かめられない。
+      const role = invocation.role;
+
       let outcome: Outcome;
       try {
-        outcome = await consumeAndLog(options, logRef, ACTOR_PROMPT(invocation.intent), {
+        outcome = await consumeAndLog(options, logRef, PROMPT_FOR[role](invocation.intent), {
           // controller 本体のコードと Agent が編集するコードを物理的に分ける（§7）。
           cwd: invocation.worktree.path,
           abortController: aborter,
@@ -98,12 +103,12 @@ export function claudeActor(options: ClaudeOptions): ActorPort {
           // acceptEdits はファイル操作しか自動承認しないので、mise run test の
           // ような Bash 呼び出しが canUseTool に落ちる。コールバックを渡していない
           // controller では、そこで止まって何も実行できない。
-          allowedTools: [...ACTOR_TOOLS],
+          allowedTools: [...ACTOR_TOOLS[role]],
           permissionMode: "dontAsk",
           // merge や force push を Agent に実行させない（§7）。
           // 拒否ルールは許可ルールより先に評価され、bypassPermissions を含む
           // どのモードでも効く。allowedTools に Bash があっても抜けない。
-          disallowedTools: disallowedToolsFor(invocation.deniedOperations),
+          disallowedTools: disallowedToolsIn(role, invocation.deniedOperations),
           // ホストの ~/.claude や repo の .claude を読み込ませない。
           // 省略すると user / project / local がすべて読まれ、controller が
           // 与えた拒否リスト以外の設定が Agent の挙動に混ざる。
@@ -407,7 +412,7 @@ function editedPathsOf(message: unknown): string[] {
     const tool = toolUseSchema.safeParse(block);
     if (
       tool.success &&
-      EDIT_TOOLS.has(tool.data.name) &&
+      EDIT_TOOL_NAMES.has(tool.data.name) &&
       tool.data.input?.file_path !== undefined
     ) {
       paths.push(tool.data.input.file_path);
@@ -433,21 +438,61 @@ function disallowedToolsFor(gates: readonly ApprovalGate[]): string[] {
 }
 
 /**
- * Actor が使ってよいツール。ここに無いものは dontAsk が拒否する。
+ * 実際に SDK へ渡す拒否リスト。承認ゲート由来の分に、role 由来の分を足す。
  *
- * 実装させる以上、読む・探す・書く・コマンドを流すの4種類が要る。
- * Bash は必要だが、危険な呼び出しは下の拒否ルールで個別に塞ぐ。
+ * **足すだけで、引かない。** `disallowedToolsFor` は role を見ない
+ * （`policies.require_human_approval` は役割によらずそのまま落ちる）。
+ * レビュー役だからといって merge や force push を許す経路を作らないため、
+ * ゲートの解決と役割の制限は別の関数のままにしてある。
+ *
+ * 編集のツールは `ACTOR_TOOLS` から外したうえで、ここにも入れる。許可リストから
+ * 外すだけでは、設定の読み込み順や既定値が変わったときに素通りしうる。
+ * 拒否ルールは許可ルールより先に評価されるので、二重にしておく。
  */
-const ACTOR_TOOLS = [
-  "Read",
-  "Glob",
-  "Grep",
-  "Edit",
-  "Write",
-  "NotebookEdit",
-  "Bash",
-  "TodoWrite",
-] as const;
+function disallowedToolsIn(role: ActorRole, gates: readonly ApprovalGate[]): string[] {
+  const tools = disallowedToolsFor(gates);
+  for (const tool of EDIT_TOOLS) {
+    if (!ACTOR_TOOLS[role].includes(tool) && !tools.includes(tool)) {
+      tools.push(tool);
+    }
+  }
+  return tools;
+}
+
+/** どの役割にも要る、読むためのツール。これが無ければコードを読めない */
+const READ_TOOLS = ["Read", "Glob", "Grep"] as const;
+
+/**
+ * ファイルを書き換えるツール。**実装役だけが持つ。**
+ *
+ * `editedPathsOf` が Run の artifacts を拾うのにも使う。1箇所にまとめてあるのは、
+ * 役割ごとの許可・拒否と「何を編集と見なすか」がずれないようにするため。
+ */
+const EDIT_TOOLS = ["Edit", "Write", "NotebookEdit"] as const;
+const EDIT_TOOL_NAMES = new Set<string>(EDIT_TOOLS);
+
+/**
+ * コマンドを流す側。レビュー役にも残す。
+ *
+ * 読むだけでも `mise run test` は流せる必要がある。テストを回さないレビューは
+ * 「読んだ感想」にしかならない。危険な呼び出しは拒否ルールで個別に塞ぐ。
+ */
+const RUN_TOOLS = ["Bash", "TodoWrite"] as const;
+
+/**
+ * 役割ごとに、Actor が使ってよいツール。ここに無いものは dontAsk が拒否する。
+ *
+ * design.md §4.2 の `ActorRole` を、指示ではなく権限に落とす場所になる。
+ * 「レビューして」という intent を実装役に渡すのは、読み方だけ変えるよう
+ * 頼んでいるのと同じで、Agent が従わなければ実装を書き換えられる。
+ *
+ * `investigate` は読む側なので review と同じにしてある。調べるのに編集は要らない。
+ */
+const ACTOR_TOOLS: Record<ActorRole, readonly string[]> = {
+  implement: [...READ_TOOLS, ...EDIT_TOOLS, ...RUN_TOOLS],
+  review: [...READ_TOOLS, ...RUN_TOOLS],
+  investigate: [...READ_TOOLS, ...RUN_TOOLS],
+};
 
 /**
  * 承認が要る操作に対応する拒否ルール。
@@ -518,15 +563,76 @@ const ALWAYS_DENIED = [
   "Bash(git config --global core.hooksPath *)",
 ] as const;
 
-const EDIT_TOOLS = new Set(["Edit", "Write", "NotebookEdit"]);
+/**
+ * どの役割でも同じ末尾。承認と公開は controller の側に残す。
+ *
+ * Agent が PR コメントを書けると自分で自分を承認できてしまい、§7 の
+ * human approval が空文になる（拒否ルールと二重にする）。
+ */
+const COMMON_TAIL = `PR の作成とコメントの投稿はしない。push も含めて controller が行う。
+承認の定型文（/ent approve）を書くことは、どの理由があっても認められない。`;
 
-const ACTOR_PROMPT = (intent: string): string =>
+const IMPLEMENT_PROMPT = (intent: string): string =>
   `${intent}
 
 作業は現在のディレクトリの中だけで行う。終わったら何をしたかを1段落で述べる。
 
-PR の作成とコメントの投稿はしない。push も含めて controller が行う。
-承認の定型文（/ent approve）を書くことは、どの理由があっても認められない。`;
+${COMMON_TAIL}`;
+
+/**
+ * レビュー役のプロンプト。
+ *
+ * 権限だけ分けてプロンプトが同じだと、レビュー役は編集を試みて拒否され続け、
+ * ターンをそこに使い切る。読む側に何を求めるかを先に書いておく。
+ *
+ * 結論を1語に寄せるのは、`review.verdict`（src/domain/fact-keys.ts）に落とす
+ * ときに、読み手が本文を解釈しないで済むようにするため。どの commit を読んだか
+ * まで言わせるのは、実装が進んだあとの結論をそのまま完了判定に使わせないため。
+ * ただし**ここで言わせた文字列はまだ Fact ではない。** Fact にするのは
+ * 観測側の仕事で、確かめられなければ作らない（design.md §3.1）。
+ */
+const REVIEW_PROMPT = (intent: string): string =>
+  `${intent}
+
+あなたはレビュー役として起動している。**ファイルは書き換えない。**
+編集のツールは渡していないので、試みても拒否される。読むことと、
+コマンドを流して確かめることだけを行う。
+
+作業は現在のディレクトリの中だけで行う。手順は次のとおり。
+
+1. どの commit を読んだのかを git rev-parse HEAD で確かめ、その sha を述べる
+2. 差分と、その差分が壊しうる箇所を読む。必要ならテストを流して確かめる
+3. 指摘を重い順に並べる。直し方まで書く必要は無いが、なぜ問題なのかは書く
+4. 最後の行を「verdict: approved」か「verdict: changes_requested」のどちらか
+   1行だけにする。確かめられなかったことを「問題なし」と書かない
+
+${COMMON_TAIL}`;
+
+/**
+ * 調べる役のプロンプト。ツールはレビュー役と同じだが、結論の形が違う。
+ *
+ * レビュー役の文面を流用すると、調べただけの実行が `verdict:` の行を出す。
+ * それを観測側が拾えば、レビューを回していないティックの approved になる。
+ * 起動する側はまだ居ない（design.md §4.2）が、口を残す以上は分けておく。
+ */
+const INVESTIGATE_PROMPT = (intent: string): string =>
+  `${intent}
+
+あなたは調べる役として起動している。**ファイルは書き換えない。**
+編集のツールは渡していないので、試みても拒否される。
+
+作業は現在のディレクトリの中だけで行う。分かったことと、その根拠
+（読んだファイル、流したコマンドとその出力）を述べる。確かめられなかったことは、
+確かめられなかったと書く。推測で埋めない。
+
+${COMMON_TAIL}`;
+
+/** 役割ごとのプロンプト */
+const PROMPT_FOR: Record<ActorRole, (intent: string) => string> = {
+  implement: IMPLEMENT_PROMPT,
+  review: REVIEW_PROMPT,
+  investigate: INVESTIGATE_PROMPT,
+};
 
 const JSON_ONLY = `JSON オブジェクトだけを返す。前置きも説明も付けない。`;
 
