@@ -323,6 +323,7 @@ UPDATE goals
 .goals/<slug>.yaml            人間が編集。Git 管理。宣言部のみ
 .goals/.state/goals.db        SQLite。機械のみが書く。gitignore
 .goals/.state/runs/<run-id>/  Agent の生ログ・diff。DB にはパスだけ持つ
+.goals/.state/worktrees/<slug>/ Actor が編集する作業ツリー
 ```
 
 人間が編集する宣言部と、機械が書き換える実行時状態を混ぜない。
@@ -419,16 +420,41 @@ Phase 3 も GitHub 単独の自己ホストなので、そこでは検証され�
 | Actor 実行 | `@anthropic-ai/claude-agent-sdk` | Claude Code のライブラリ版。`claude -p` の exec と違い権限制御・hooks・セッション管理を API で扱える。Max の OAuth をそのまま使う |
 | スキーマ | Zod | Agent 出力の検証ゲートと YAML バリデーションを同一定義で兼ねる |
 | YAML | `yaml`（eemeli） | コメント保持のラウンドトリップ編集。機械が書き戻すなら必須 |
-| DB | better-sqlite3 + Drizzle | 同期 API でコードが素直。Drizzle はマイグレーションが軽い |
-| CLI | citty | 軽量で型が効く。プラグイン機構が要るなら oclif |
-| プロセス実行 | execa | ストリーム・タイムアウト・kill の扱いが素直 |
+| DB | `node:sqlite`（Node 標準） | 同期 API でコードが素直。Node 22.5 以降の標準で、`mise.toml` が Node 24 を固定しているため常に使える。better-sqlite3 + Drizzle の採用予定を取り下げた（下記） |
+| CLI | `node:util` の `parseArgs`（Node 標準） | サブコマンドが3つなので依存を足す価値が出ない。10 を超えたら citty か oclif に寄せる |
+| プロセス実行 | `node:child_process`（Node 標準） | 検証コマンドと git を叩くだけなので標準で足りる。ストリーム制御が要るようになったら execa に移す |
 | GitHub | octokit + plugin-throttling/retry | ETag でポーリングのレート制限を節約 |
-| ログ | pino | 構造化ログ。Decision テーブルとは別に生ログを残す |
+| ログ | pino（未着手） | 構造化ログ。Decision テーブルとは別に生ログを残す。いまは CLI が JSON を1本出すだけ |
 | テスト | Vitest | |
 | Lint | Biome | 設定が少なく速い |
 | 状態機械 | 自前の discriminated union | DECIDE が LLM 判断なので状態機械は薄く保つ。可視化が欲しくなったら XState |
 
 `@notionhq/client` と `@slack/bolt` は MVP から外れたので、現時点では入れない。
+
+### DB と CLI を Node 標準に寄せた理由
+
+Phase 2 の3本目で better-sqlite3 + Drizzle と citty を入れる直前に見直し、
+DB と CLI のどちらも Node 24 標準で置き換えた。判断の根拠は3つ。
+
+1. better-sqlite3 はネイティブモジュールで、上表が TypeScript の欠点に挙げた
+   配布の重さをさらに増やす。`node:sqlite` は同じ同期 API を標準で持つ
+2. Drizzle の価値はマイグレーションだが、Goal YAML のスキーマは `version: 1` を
+   literal で固定してあり（§10-8）、まだマイグレーションが存在しない
+3. CLI のサブコマンドは `start` / `run` / `show` の3つで、citty の型の恩恵より
+   依存が1つ増えるコストの方が重い
+
+結果として、controller の本体は zod と yaml の2つだけに依存する。
+残る依存は Port の実装側（octokit と Claude Agent SDK）に閉じる。
+
+同じ理由で、プロセス実行も execa ではなく `node:child_process` にしてある。
+ここまでで controller に足した依存はゼロで、増えるのは Port の実装からになる。
+
+§3.6 が触れている `ent watch` はまだ無い。常駐しない形（cron から `run` を叩く）だけを
+用意してあり、`watch` を足すかどうかは実際に cron で回してから決める。
+
+`node:sqlite` は標準とはいえ better-sqlite3 ほど枯れていない。API が変わった場合の
+移行先は better-sqlite3 で、`Store` インターフェースの内側に閉じているので
+実装だけ差し替えれば済む。
 
 ### タスクランナー
 
@@ -513,26 +539,39 @@ Phase 1 が完了すると、Acceptance Criteria の検証は人間がコマン�
 `verify()` が回す。reconcile ループはまだ無いので、人間に残るのは
 ASSESS / DECIDE / ACT と、全段階の起動になる。
 
-### Phase 2 は Goal 3本に割る
+### Phase 2 は Goal 4本に割る
 
-Phase 2 の範囲は ASSESS / DECIDE / ACT と永続化と CLI で、1つの Goal には大きすぎる。
+Phase 2 の範囲は ASSESS / DECIDE / ACT と永続化と CLI、および GitHub と Actor に繋ぐ
+Port の実装で、1つの Goal には大きすぎる。
 Phase で数えるのは controller が回す段階だが、Goal で数えるのは1回の
 「宣言 → 実装 → 検証」で閉じる単位なので、粒度が合わない。
 
 | 順 | Goal | 範囲 | 状態 |
 |---|---|---|---|
 | 1 | `.goals/assess-and-decide.yaml` | Fact から Gap を出し、次の行動を決める。Port 注入の純ロジック | 完了 |
-| 2 | ACT | Claude Code の headless 実行、worktree 隔離 | 未着手 |
-| 3 | 永続化 | SQLite、write-ahead、lease、状態機械、CLI | 未着手 |
+| 2 | `.goals/run-actor-in-worktree.yaml` | ACT。Claude Code の headless 実行、worktree 隔離 | 完了 |
+| 3 | `.goals/persist-and-resume.yaml` | 永続化。SQLite、write-ahead、lease、状態機械、CLI | 完了 |
+| 4 | Port の実装 | octokit（GitHub の read と write）、Claude Agent SDK（Actor と LLM） | 未着手 |
 
 この順にしたのは、Phase 2 で検証したいのが「reconcile ループが収束するか」だから。
 収束を判定するには、まず同じ入力から同じ Decision が出る必要がある。1本目はそこまでを担う。
 ACT と永続化は収束の判定そのものには要らない。
 
+4本目は当初 Phase 2 の範囲に数えていなかった。Port を注入する設計にした結果、
+controller 側は Port が無くても最後まで書けてしまい、3本目の時点で
+「コードは揃っているが実環境には繋がっていない」状態になったため分けてある。
+未実装の Port は呼ばれたら throw する形にしてあり、`unobserved` / `unverified` と
+`ESCALATE` として状態に残る。捏造した観測を返さないので、繋いだ時点との差分が読める。
+
 1本目を終えて分かったのは、reconcile を「決める」までで純粋に保てることだった。
 ACT の実行と write-ahead は reconcile の外側に置ける。reconcile が Port の注入だけで動くので、
 収束のテストが実際の Claude Code も DB も使わずに書ける。ここでの reconcile は
 `src/reconcile/` の決定コアを指す。lease の取得と write-ahead（§3.6）はその外側のシェルが持つ。
+
+3本目で分かったのは、**時刻をどの層が作るかを決めておく必要がある**ことだった。
+Store が `new Date()` を呼ぶと、`now` を注入されて動く `tick()` と時間軸が分かれる。
+実際、経過時間が数時間ずれて予算超過と判定された。Store は時刻を作らず引数で受け取る。
+例外は lease の期限判定で、これはプロセスの生死を測るものなので実時計でよい。
 
 ### Phase 3 の自己ホストには制約が要る
 
@@ -574,7 +613,7 @@ Goal の記述と承認を除いて、以下を人手の介入なしで1回通�
 2. **上限値の初期チューニング** — `max_actor_runs` などの値は仮置き。
    あわせて `budget` に「同じギャップが N 回連続で解消されなければ ESCALATE」（§7）の N が無く、
    `ESCALATE(loop_detected)` を guard から出せない。ループ検知には前ティックの Gap も要るので、
-   永続化の Goal で一緒に決める
+   Port を実装する Goal で一緒に決める
 3. **使用量上限の検出方法** — Agent SDK が返すエラーの形状を実測する必要がある。
    現状の `LlmPort.chooseAction` は `Promise<unknown>` を返すだけなので、DECIDE からは
    使用量上限と一時障害を区別できず、どちらも `ESCALATE(invalid_decision)` になる。
@@ -582,10 +621,18 @@ Goal の記述と承認を除いて、以下を人手の介入なしで1回通�
 4. **人間の承認をどの signal で検知するか** — §4.3 のとおり `github.pr.review_decision` は
    使えない。候補は PR コメントの定型文（自分の PR にも書ける）と CLI（`ent approve`）。
    `ApprovalPort` を実装する Goal で決める
-5. **Notion / Slack を足す時期** — 実環境ができてから
-6. **Goal YAML のスキーマ変更をどう移行するか** — 現状は `version: 1` を literal で固定してあり、
+5. **`resume_after` を誰が読むか** — 永続化の Goal で書き込む側は入ったが、読む側が無い。
+   `WAITING_EXTERNAL(usage_limit)` で `resume_after` を書いても、次のティックがそれを見ずに
+   走ってしまう。§9 の「上限で寝て起きる」を満たすには、`ent run` が
+   `resume_after` を過ぎるまでスキップする必要がある
+6. **`require_human_approval` を誰が止めるか** — 現状は ACT が Actor に
+   `deniedOperations` として渡すだけで、controller 側の関門になっていない。
+   Actor が従わなければ素通りする。§7 の「人間承認を必須にする操作」を担保するには、
+   Actor の外側で止める必要がある
+7. **Notion / Slack を足す時期** — 実環境ができてから
+8. **Goal YAML のスキーマ変更をどう移行するか** — 現状は `version: 1` を literal で固定してあり、
    スキーマが変わったら既存 YAML を手で書き直すしかない。Goal が数本のうちは問題ないが、
-   マイグレーション方針は永続化の Goal までに決める。あわせて `require_human_approval` の
+   マイグレーション方針は Phase 3 に入るまでに決める。あわせて `require_human_approval` の
    閉じた enum に、§7 の自己ホスト用（`src/controller/**` と `.goals/**` への変更）を
    どう載せるかも決める。現状はパス条件を表現できない
 
