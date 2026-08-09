@@ -1,3 +1,8 @@
+---
+name: ent
+description: ent CLI で Goal を収束させるときの手順。start / run / get / list の1周、--dry-run での事前確認、--limit での出力の絞り方、WAITING_HUMAN や ESCALATE で人の承認を待つところを扱う。
+---
+
 # ent を回す
 
 `ent` は宣言した end state に収束させる controller。エージェントが叩く前提の手順を書く。
