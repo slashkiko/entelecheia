@@ -194,36 +194,96 @@ export function githubCodeWriter(options: GitHubOptions): CodeWriterPort {
 }
 
 /**
- * PR コメントの定型文を人間の承認として読む。design.md §10-4 の未決を埋める。
+ * 人間の承認を検知する。design.md §10-4 の未決を埋める。
  *
- * §4.3 のとおり `github.pr.review_decision` は使えない。GitHub は自分が作った
- * PR に Approve を押させないので、controller が Goal の所有者と同じアカウントで
- * PR を作る限り `APPROVED` にならない。
+ * signal は2つある。どちらか一方でも成立すれば承認とみなす。
  *
- * 代わりに `/ent approve <criterion-id>` というコメントを signal にする。
- * ポーリングでそのまま拾え（§3.4）、承認が GitHub 上に監査記録として残る。
+ * 1. **GitHub のレビュー承認** — 他人が Approve を押した場合。仕事で使うときの
+ *    本来の経路にあたる。§4.3 が言うとおり、これ *だけ* には頼れない。GitHub は
+ *    自分が作った PR に Approve を押させないので、1人で開発しているあいだは
+ *    永久に成立しない。逆に言えば、成立しないだけで誤りではない
+ * 2. **PR コメントの定型文** `/ent approve <criterion-id>` — レビュアーが
+ *    いない状況でも承認できる経路。criterion 単位で書ける
  *
- * PR がまだ無ければ常に未承認を返す。承認コメントの置き場所が無い状態を
+ * 粒度が違うことに注意する。レビュー承認は PR 全体に対するもので、
+ * criterion を選べない。したがって `type: human` の criteria すべてを満たす。
+ * 個別に承認したいなら定型文を使う。
+ *
+ * 変更要求（CHANGES_REQUESTED）が最新のレビューとして残っているあいだは、
+ * どちらの経路でも承認しない。変更を求められている PR を承認済みと読むのは
+ * 矛盾している。§4.3 の `reviewDecisionOf` と同じく、変更要求を承認より優先する。
+ *
+ * PR がまだ無ければ常に未承認を返す。承認の置き場所が無い状態を
  * 「承認された」と読まないため。
  */
 export function githubApproval(options: GitHubOptions & { prNumber: number | null }): ApprovalPort {
   const octokit = client(options);
+  const prNumber = options.prNumber;
+
+  // 1ティックで criteria の数だけ呼ばれる。同じ PR を何度も引かない。
+  let cached: Promise<{ reviews: Review[]; comments: Comment[]; author: string | null }> | null =
+    null;
+
+  const load = async (): Promise<{
+    reviews: Review[];
+    comments: Comment[];
+    author: string | null;
+  }> => {
+    const [pr, reviews, comments] = await Promise.all([
+      request(octokit, "GET /repos/{owner}/{repo}/pulls/{pull_number}", options, {
+        pull_number: prNumber,
+      }),
+      request(octokit, "GET /repos/{owner}/{repo}/pulls/{pull_number}/reviews", options, {
+        pull_number: prNumber,
+        per_page: 100,
+      }),
+      request(octokit, "GET /repos/{owner}/{repo}/issues/{issue_number}/comments", options, {
+        issue_number: prNumber,
+        per_page: 100,
+      }),
+    ]);
+
+    return {
+      author: prAuthorSchema.parse(pr).user?.login ?? null,
+      reviews: reviewsSchema.parse(reviews),
+      comments: commentsSchema.parse(comments),
+    };
+  };
 
   return {
     async getApproval(criterionId) {
-      if (options.prNumber === null) {
+      if (prNumber === null) {
+        return null;
+      }
+      cached ??= load();
+      const { reviews, comments, author } = await cached;
+
+      // 同じ人が何度もレビューするので、人ごとに最後の1件だけを見る。
+      const latest = new Map<string, Review>();
+      for (const review of reviews) {
+        if (review.state !== "APPROVED" && review.state !== "CHANGES_REQUESTED") {
+          continue;
+        }
+        latest.set(review.user?.login ?? "", review);
+      }
+
+      // 変更を求められている PR を承認済みと読まない。
+      if ([...latest.values()].some((r) => r.state === "CHANGES_REQUESTED")) {
         return null;
       }
 
-      const response = await request(
-        octokit,
-        "GET /repos/{owner}/{repo}/issues/{issue_number}/comments",
-        options,
-        { issue_number: options.prNumber, per_page: 100 },
-      );
-      const comments = commentsSchema.parse(response);
+      // 1. レビュー承認。PR 全体に対するものなので human の criteria すべてを満たす。
+      //    作成者自身のレビューは数えない。GitHub も普通は許さないが、
+      //    別アカウントで作った PR を自分で承認する形を型の外で塞いでおく。
+      for (const review of latest.values()) {
+        const login = review.user?.login ?? "";
+        if (review.state !== "APPROVED" || login === author) {
+          continue;
+        }
+        return { approvedBy: login, approvedAt: review.submitted_at ?? "" };
+      }
 
-      // 最初の1件を採る。同じ criterion を2回承認しても、最初の判断が残る。
+      // 2. コメントの定型文。最初の1件を採る。2回承認しても最初の判断が残る。
       for (const comment of comments) {
         if (!approves(comment.body, criterionId)) {
           continue;
@@ -392,9 +452,13 @@ const reviewsSchema = z.array(
   z.object({
     user: z.object({ login: z.string() }).nullish(),
     state: z.string(),
+    /** 承認した時刻。Approval.approvedAt に入る */
+    submitted_at: z.string().nullish(),
   }),
 );
 type Review = z.infer<typeof reviewsSchema>[number];
+
+const prAuthorSchema = z.object({ user: z.object({ login: z.string() }).nullish() });
 
 const runsSchema = z.object({
   workflow_runs: z.array(
@@ -431,6 +495,7 @@ const commentsSchema = z.array(
     created_at: z.string(),
   }),
 );
+type Comment = z.infer<typeof commentsSchema>[number];
 
 const issueSchema = z.object({
   number: z.number(),

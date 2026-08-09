@@ -106,87 +106,192 @@ describe("githubCodeWriter", () => {
   });
 });
 
+/**
+ * 承認は2つの signal で検知する。どちらか一方でも成立すれば承認になる。
+ *
+ * 1. GitHub のレビュー承認 — 他人が Approve を押す。仕事で使うときの本来の経路
+ * 2. PR コメントの定型文 — レビュアーがいない状況でも承認できる経路
+ *
+ * §4.3 が言うとおり 1 だけには頼れない。自分が作った PR に Approve を押せないので、
+ * 1人で開発しているあいだは永久に成立しない。成立しないだけで誤りではないため、
+ * 経路は残したうえで 2 を足してある。
+ */
 describe("githubApproval", () => {
-  const approvalPort = (comments: unknown[], prNumber: number | null = 11) =>
+  interface Fixture {
+    author?: string;
+    reviews?: unknown[];
+    comments?: unknown[];
+    prNumber?: number | null;
+  }
+
+  const approvalPort = (fixture: Fixture) =>
     githubApproval({
       ...BASE,
-      prNumber,
-      fetch: fakeFetch(() => ({ body: comments })).fetch,
+      prNumber: fixture.prNumber === undefined ? 11 : fixture.prNumber,
+      fetch: fakeFetch((url) => {
+        if (url.includes("/reviews")) {
+          return { body: fixture.reviews ?? [] };
+        }
+        if (url.includes("/comments")) {
+          return { body: fixture.comments ?? [] };
+        }
+        return { body: { user: { login: fixture.author ?? "pr-author" } } };
+      }).fetch,
     });
 
-  it("定型文があれば承認として読む", async () => {
-    const approval = await approvalPort([
-      {
-        body: "/ent approve ac-6",
-        user: { login: "pr-author" },
-        created_at: "2026-08-09T06:00:00Z",
-      },
-    ]).getApproval("ac-6");
-
-    expect(approval).toEqual({ approvedBy: "pr-author", approvedAt: "2026-08-09T06:00:00Z" });
+  const comment = (body: string, login = "pr-author") => ({
+    body,
+    user: { login },
+    created_at: "2026-08-09T06:00:00Z",
   });
 
-  it("別の criterion の承認は読まない", async () => {
-    const approval = await approvalPort([
-      { body: "/ent approve ac-1", user: { login: "pr-author" }, created_at: "2026-08-09T06:00:00Z" },
-    ]).getApproval("ac-6");
-
-    expect(approval).toBeNull();
+  const review = (state: string, login: string) => ({
+    state,
+    user: { login },
+    submitted_at: "2026-08-09T07:00:00Z",
   });
 
-  it("行の途中に混ざった文字列は承認にしない", async () => {
-    // 引用やコード例の中の同じ文字列を承認と読むと、捏造した承認が作れてしまう。
-    const approval = await approvalPort([
-      {
-        body: "承認するときは `/ent approve ac-6` と書いてください",
-        user: { login: "pr-author" },
-        created_at: "2026-08-09T06:00:00Z",
-      },
-    ]).getApproval("ac-6");
+  describe("コメントの定型文", () => {
+    it("定型文があれば承認として読む", async () => {
+      const approval = await approvalPort({
+        comments: [comment("/ent approve ac-6")],
+      }).getApproval("ac-6");
 
-    expect(approval).toBeNull();
+      expect(approval).toEqual({ approvedBy: "pr-author", approvedAt: "2026-08-09T06:00:00Z" });
+    });
+
+    it("別の criterion の承認は読まない", async () => {
+      const approval = await approvalPort({
+        comments: [comment("/ent approve ac-1")],
+      }).getApproval("ac-6");
+
+      expect(approval).toBeNull();
+    });
+
+    it("行の途中に混ざった文字列は承認にしない", async () => {
+      // 引用やコード例の中の同じ文字列を承認と読むと、捏造した承認が作れてしまう。
+      const approval = await approvalPort({
+        comments: [comment("承認は `/ent approve ac-6` と書いてください")],
+      }).getApproval("ac-6");
+
+      expect(approval).toBeNull();
+    });
+
+    it("行頭の空白は許す", async () => {
+      const approval = await approvalPort({
+        comments: [comment("  /ent approve ac-6  ")],
+      }).getApproval("ac-6");
+
+      expect(approval?.approvedBy).toBe("pr-author");
+    });
+
+    it("複数行のコメントでも1行として一致すれば読む", async () => {
+      const approval = await approvalPort({
+        comments: [comment("見ました。問題ありません。\n/ent approve ac-6")],
+      }).getApproval("ac-6");
+
+      expect(approval?.approvedBy).toBe("pr-author");
+    });
+
+    it("最初に承認した人を残す", async () => {
+      const approval = await approvalPort({
+        comments: [comment("/ent approve ac-6", "first"), comment("/ent approve ac-6", "second")],
+      }).getApproval("ac-6");
+
+      expect(approval?.approvedBy).toBe("first");
+    });
   });
 
-  it("行頭の空白は許す", async () => {
-    const approval = await approvalPort([
-      {
-        body: "  /ent approve ac-6  ",
-        user: { login: "pr-author" },
-        created_at: "2026-08-09T06:00:00Z",
-      },
-    ]).getApproval("ac-6");
+  describe("レビュー承認", () => {
+    it("他人の Approve を承認として読む", async () => {
+      // 仕事で使うときの本来の経路。
+      const approval = await approvalPort({
+        author: "pr-author",
+        reviews: [review("APPROVED", "reviewer")],
+      }).getApproval("ac-6");
 
-    expect(approval?.approvedBy).toBe("pr-author");
+      expect(approval).toEqual({ approvedBy: "reviewer", approvedAt: "2026-08-09T07:00:00Z" });
+    });
+
+    it("レビュー承認は human の criteria すべてを満たす", async () => {
+      // PR 全体に対する承認なので criterion を選べない。
+      const port = approvalPort({ author: "pr-author", reviews: [review("APPROVED", "reviewer")] });
+
+      expect(await port.getApproval("ac-6")).not.toBeNull();
+      expect(await port.getApproval("ac-7")).not.toBeNull();
+    });
+
+    it("作成者自身の Approve は数えない", async () => {
+      const approval = await approvalPort({
+        author: "pr-author",
+        reviews: [review("APPROVED", "pr-author")],
+      }).getApproval("ac-6");
+
+      expect(approval).toBeNull();
+    });
+
+    it("変更要求が残っていれば承認しない", async () => {
+      // 変更を求められている PR を承認済みと読むのは矛盾している。
+      const approval = await approvalPort({
+        author: "pr-author",
+        reviews: [review("APPROVED", "a"), review("CHANGES_REQUESTED", "b")],
+      }).getApproval("ac-6");
+
+      expect(approval).toBeNull();
+    });
+
+    it("変更要求はコメントの定型文より優先する", async () => {
+      const approval = await approvalPort({
+        author: "pr-author",
+        reviews: [review("CHANGES_REQUESTED", "b")],
+        comments: [comment("/ent approve ac-6")],
+      }).getApproval("ac-6");
+
+      expect(approval).toBeNull();
+    });
+
+    it("同じ人の最後のレビューだけを見る", async () => {
+      // 変更要求のあとに承認し直した場合は承認として読む。
+      const approval = await approvalPort({
+        author: "pr-author",
+        reviews: [review("CHANGES_REQUESTED", "b"), review("APPROVED", "b")],
+      }).getApproval("ac-6");
+
+      expect(approval?.approvedBy).toBe("b");
+    });
+
+    it("COMMENTED は承認ではない", async () => {
+      const approval = await approvalPort({
+        author: "pr-author",
+        reviews: [review("COMMENTED", "reviewer")],
+      }).getApproval("ac-6");
+
+      expect(approval).toBeNull();
+    });
   });
 
-  it("複数行のコメントでも1行として一致すれば読む", async () => {
-    const approval = await approvalPort([
-      {
-        body: "見ました。問題ありません。\n/ent approve ac-6",
-        user: { login: "pr-author" },
-        created_at: "2026-08-09T06:00:00Z",
-      },
-    ]).getApproval("ac-6");
-
-    expect(approval?.approvedBy).toBe("pr-author");
-  });
-
-  it("コメントが無ければ未承認", async () => {
-    expect(await approvalPort([]).getApproval("ac-6")).toBeNull();
+  it("承認がどこにも無ければ null", async () => {
+    expect(await approvalPort({}).getApproval("ac-6")).toBeNull();
   });
 
   it("PR がまだ無ければ未承認", async () => {
-    // 承認コメントの置き場所が無い状態を「承認された」と読まない。
-    expect(await approvalPort([], null).getApproval("ac-6")).toBeNull();
+    // 承認の置き場所が無い状態を「承認された」と読まない。
+    expect(await approvalPort({ prNumber: null }).getApproval("ac-6")).toBeNull();
   });
 
-  it("最初に承認した人を残す", async () => {
-    const approval = await approvalPort([
-      { body: "/ent approve ac-6", user: { login: "first" }, created_at: "2026-08-09T06:00:00Z" },
-      { body: "/ent approve ac-6", user: { login: "second" }, created_at: "2026-08-09T07:00:00Z" },
-    ]).getApproval("ac-6");
+  it("criteria をまたいで同じ PR を引き直さない", async () => {
+    // 1ティックで criteria の数だけ呼ばれる。毎回3本叩くとレート制限を無駄に使う。
+    const fake = fakeFetch((url) =>
+      url.includes("/reviews") || url.includes("/comments")
+        ? { body: [] }
+        : { body: { user: null } },
+    );
+    const port = githubApproval({ ...BASE, prNumber: 11, fetch: fake.fetch });
 
-    expect(approval?.approvedBy).toBe("first");
+    await port.getApproval("ac-6");
+    await port.getApproval("ac-7");
+
+    expect(fake.calls).toHaveLength(3);
   });
 
   it("取得に失敗したら PortError を投げる", async () => {
