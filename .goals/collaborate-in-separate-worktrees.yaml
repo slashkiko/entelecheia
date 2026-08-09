@@ -1,0 +1,241 @@
+version: 1
+
+goal:
+  id: collaborate-in-separate-worktrees
+  name: 役割の違う Agent が、別々の worktree で協働できる
+  desired_state: |
+    1つの Goal の中で、役割の違う Actor がそれぞれ自分の worktree を持って動ける。
+    レビュー役を足すのは次の Goal（.goals/review-agent-reviews.yaml）で、
+    ここで作るのはその土台にあたる配管だけになる。
+
+    いまは `worktreeNameFor` が goal.id だけから名前を決めるので、1つの Goal が
+    持てる作業ツリーは1つしかない。役割を足しても両者が同じ作業ツリーを共有し、
+    レビュー役が checkout や clean を行えば実装側の途中の差分が消える。逆に
+    実装側が書き換えれば、レビュー役は「いつの時点のコードを読んだのか」を
+    言えなくなる。design.md §4.2 は `ActorRole` を宣言しているが、`src/` には
+    role という語が1つも無い。
+
+    どう作るかは Actor が決める。以下は「何が満たされていればよいか」を書く。
+
+    1. worktree の名前が (goal.id, role) から決まる
+
+      role が違えば別の作業ツリー・別のブランチになる。同じ (goal.id, role) を
+      何度呼んでも同じ名前になる（ティックをまたいで差分を積み上げるため、
+      試行ごとに変えない）。
+
+      **`implement` の名前だけは goal.id のまま据え置く。** 既存の worktree と
+      PR のブランチは `entelecheia/<goal.id>` にあり、規則を変えると走行中の
+      Goal が別ブランチに乗り換えて、それまでの差分が PR から消える。
+
+    2. 第2引数を必須にする
+
+      既定値を持たせない。`verifyRoot`（src/cli.ts）と未 commit の関門
+      （src/controller/index.ts）は、観測した `local.branch` を
+      `worktreeBranchFor(worktreeNameFor(...))` と突き合わせて「その dirty が
+      どこを観測した値か」を判定している（design.md §10-11）。候補のブランチが
+      2本になった時点で、この判定は「どちらと突き合わせるか」を明示しない限り
+      成り立たない。既定値があると、review の作業ツリーの汚れを実装の書き残しと
+      読んでも、型でもテストでも気づけない。
+
+      呼び出し側は `src/act/index.ts`・`src/controller/index.ts`（3箇所）と、
+      `src/cli.ts` の `verifyRoot` にある。`verifyRoot` はいま
+      `join(stateDir, "worktrees", goal.goal.id)` と規則を直書きしていて
+      `worktreeNameFor` を通っていない。ここも同じ関数を通す。規則の正を
+      1箇所にする理由は `worktreeNameFor` の doc コメントに書いてある。
+
+    3. 検証と観測の対象は implement の作業ツリーのまま変えない
+
+      `mise run test` を流す先も `local.*` の観測先も implement 側にする。
+      レビュー役の作業ツリーで criteria を検証すると、レビュー中に書き換わった
+      ものを実装の検証結果として読むことになる。ここは Phase 3 の5本目で
+      repoRoot から worktree に移した線で、役割を足しても動かさない。
+
+    4. role が Run に残る
+
+      誰がどの作業ツリーで何をしたかを、あとから `ent get` で読めるようにする。
+      write-ahead の starting 側に入れる。あとから足すと、途中で kill された
+      Run の role が空のまま残る（design.md §3.6）。
+
+    5. role を書かない ACT は implement として扱う
+
+      既に走っている Goal の Decision には role が無い。読み直したときに
+      別の作業ツリーへ移らないようにする。ACT の action に role を持たせるなら
+      任意項目にする。
+
+    6. 1ティックで起動する Actor は1体のまま
+
+      **並列実行はここでは求めない。** 協働はティックをまたいだ交代で成立させる。
+      同じティックで2体を同時に走らせると、Run の確定・lease・「1ティックに
+      Decision 1行」の設計まで巻き込むことになる（design.md §5 の
+      「複数 Actor の並列実行」は据え置き）。lease の取得と延長、write-ahead、
+      orphan の回収、状態遷移の順序は変えない。
+
+    テストは tests/worktree-roles.test.ts に12本ある。着手時点ではそのうち7本が
+    落ちている。仕様はそちらが正で、この YAML の記述と食い違ったらテストに合わせる。
+
+    **`mise run test` の全体は、着手時点で 519 件中 13 件落ちている。** 差の6本は
+    別 Goal `review-agent-reviews` の仕様（tests/review-actor.test.ts）で、
+    本 Goal では実装しない。担当分はファイル名で切り分ける。
+
+    ac-1 が全件ではなく `--exclude` 付きなのはそのため。2本の仕様を同じ commit で
+    入れたので、あちらの6本は最初から作業ツリーに居る。全件を条件にすると、
+    本 Goal は自分の担当分を全部通しても ac-1 を満たせない。
+
+repository:
+  provider: github
+  owner: slashkiko
+  name: entelecheia
+  default_branch: main
+
+setup:
+  - pnpm install --frozen-lockfile
+
+acceptance_criteria:
+  - id: ac-1
+    description: >-
+      worktree-roles の12本が通り、既存のテストも通ったままになる。
+      着手時点で落ちているのは worktree-roles の7本。
+      別 Goal review-agent-reviews の仕様（tests/review-actor.test.ts）は
+      本 Goal の担当外なので、この criterion からは除外して流す
+    # mise run test（全件）にすると、review-agent-reviews の仕様6本が赤いあいだ
+    # 本 Goal は永久に ac-1 を満たせない。2本の仕様を同じ commit で入れたので、
+    # あちらの仕様が最初から作業ツリーに居る。担当分をファイル名で切り分ける、
+    # という constraints の線を、検証コマンド側にも通す。
+    verification:
+      type: command
+      run: pnpm exec vitest run --exclude 'tests/review-actor.test.ts'
+
+  - id: ac-2
+    description: 型チェックが通る（着手時点では落ちている。ActorRole と role の口がまだ無い）
+    verification: { type: command, run: mise run typecheck }
+
+  - id: ac-3
+    description: lint と format が通る
+    verification: { type: command, run: mise run lint }
+
+  - id: ac-4
+    description: サプライチェーンと workflow のチェックが通る（baseline 由来）
+    verification: { type: command, run: mise run check }
+
+  - id: ac-5
+    description: 変更を載せた PR の CI が成功している
+    verification: { type: fact, key: github.ci.conclusion, equals: success }
+
+  - id: ac-6
+    description: 隔離と観測の出自が後退していないか、人間が確認する
+    verification:
+      type: human
+      prompt: |
+        この Goal が満たしたいのは「テストが通ること」ではなく、
+        「役割を足しても、隔離と観測の出自の判定が壊れないこと」です。
+        次を確認してください。
+
+        1. `worktreeNameFor` の呼び出し側が全部たどられているか。とくに
+           `src/cli.ts` の `verifyRoot` が、規則を直書きしたままになっていないか。
+           あそこが `worktreeNameFor` を通らないと、規則が2箇所に分かれます
+        2. 検証コマンドと `local.*` の観測先が implement の作業ツリーのままか。
+           review 側に移っていないか
+        3. 未 commit の関門（design.md §10-11）が、どちらのブランチと
+           突き合わせるかを明示しているか。implement の作業ツリーの
+           書き残しを見落とす形になっていないか
+        4. 1ティックで起動する Actor が1体のままか。lease の取得と延長、
+           write-ahead、orphan の回収、Decision の書き込み、状態遷移の順序が
+           変わっていないか。Decision は1ティックに1行のままか
+        5. 保護パスの検査そのもの（src/domain/protected-paths.ts と
+           controller の guardedDecision）が弱められていないか
+
+context:
+  background: |
+    「複数のエージェントが別 worktree で協働できる」を、この Goal と
+    .goals/review-agent-reviews.yaml の2本に割った。1本目が worktree と Run を
+    role 単位にする配管で、2本目がレビュー役そのものになる。この順にしたのは、
+    レビュー役に自分の作業ツリーが無いと、読んでいる最中に実装側が書き換わり、
+    レビューの対象が定まらないため。
+
+    協働の形は「同時」ではなく「交代」にしてある。controller は1ティックで
+    1つの Decision を書き、1体の Actor を起動する設計で（design.md §3.6）、
+    同じティックに2体を走らせると write-ahead と lease の前提が変わる。
+    ティックをまたいで役割が入れ替われば、実装 → レビュー → 修正の往復は
+    成立する。並列化はそれが回ってから別に判断する。
+
+    `src/controller/**` を protected_paths から外してある。外したのは適用対象で
+    あって検査の仕組みではない（constraints を参照）。未 commit の関門と
+    保護パスの検査がどちらも `worktreeNameFor` を呼んでいるので、第2引数を
+    必須にすると controller に手が入る。
+
+  constraints:
+    - tests/worktree-roles.test.ts は仕様なので、assert とシナリオを変えない。
+      通らないなら実装側を直す。新しい口を足して既存のフィクスチャが型として
+      足りなくなった場合に限り、フィクスチャへの追記はしてよい
+    - 既存の tests/ を弱めない。とくに tests/controller*.test.ts と
+      tests/act.test.ts は通ったままにする
+    - 別 Goal `review-agent-reviews` の仕様（tests/review-actor.test.ts）は
+      本 Goal では実装しない。落ちているテストの担当分はファイル名で切り分ける
+    - 検証コマンドとローカル観測の実行先（src/cli.ts の verifyRoot）を
+      implement の作業ツリーから動かさない。repoRoot にも review 側にも移さない
+    - 保護パスの検査そのものを弱めない。src/domain/protected-paths.ts と
+      controller の guardedDecision は、本 Goal で外したのは適用対象であって
+      仕組みではない
+    - src/controller/** に足すのは role の受け渡しだけにする。lease の取得と延長、
+      write-ahead、orphan の回収、状態遷移の順序を変えない。
+      Decision は1ティックに1行のままにする
+    - 1ティックで起動する Actor は1体のままにする。並列実行を入れない
+    - 完了判定と停止条件を LLM に委ねない（design.md §7）
+    - git を新しく叩くならシェルを通さない。argv 配列で渡す（design.md §7）
+    - .goals/** は触らない（policies.protected_paths）
+    - テストから実際の GitHub と Claude API を叩かない。git worktree も作らない
+    - docs/design.md の「3. 中核の設計判断」を勝手に変えない
+    - 依存パッケージを増やさない
+    - mise run check（サプライチェーン検査）を壊さない
+    - docs/design.md と README.md を、足したものに合わせて直す。design.md §4.2 の
+      ActorRole と §5 の「複数 Actor の並列実行」の扱い、§10-11 の未 commit の
+      関門が読むブランチが対象になる
+    - PR の作成とコメントの投稿はしない。controller が行う
+
+  references:
+    - title: 仕様（role ごとの worktree）
+      path: tests/worktree-roles.test.ts
+    - title: worktree の名前とブランチの規則
+      path: src/act/index.ts
+    - title: 保護パスの検査と未 commit の関門
+      path: src/controller/index.ts
+    - title: 検証と観測の実行先を決めている verifyRoot
+      path: src/cli.ts
+    - title: 次の Goal（レビュー役そのもの）
+      path: .goals/review-agent-reviews.yaml
+    - title: 設計ドキュメント
+      path: docs/design.md
+
+policies:
+  require_human_approval:
+    - merge
+    - force_push
+    - push_to_default_branch
+    - deploy
+    - secret_access
+    - external_send
+  protected_paths:
+    # 本 Goal は worktreeNameFor の第2引数を必須にするので、その呼び出し側である
+    # src/controller/** を外してある。外したのは適用対象であって、検査の仕組みでは
+    # ない（constraints を参照）。
+    - .goals/**
+    # 関門そのものと、Agent の許可・拒否ツールを決めるファイル。
+    - src/domain/protected-paths.ts
+    - src/adapters/claude.ts
+    # 検証系。ここを書き換えられると Agent が自分の criteria を通せる。
+    - mise.toml
+    - mise-tasks/**
+    - vitest.config.ts
+    - biome.json
+    - tsconfig*.json
+    - .github/**
+    # 依存の追加は人間が通す。
+    - package.json
+    - pnpm-lock.yaml
+
+budget:
+  max_actor_runs: 10
+  max_reconciles: 20
+  max_wall_clock: 3h
+  max_consecutive_failures: 3
+  max_unchanged_reconciles: 4
