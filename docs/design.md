@@ -428,7 +428,7 @@ Phase 3 も GitHub 単独の自己ホストなので、そこでは検証され�
 | スキーマ | Zod | Agent 出力の検証ゲートと YAML バリデーションを同一定義で兼ねる |
 | YAML | `yaml`（eemeli） | コメント保持のラウンドトリップ編集。機械が書き戻すなら必須 |
 | DB | `node:sqlite`（Node 標準） | 同期 API でコードが素直。Node 22.5 以降の標準で、`mise.toml` が Node 24 を固定しているため常に使える。better-sqlite3 + Drizzle の採用予定を取り下げた（下記） |
-| CLI | `node:util` の `parseArgs`（Node 標準） | サブコマンドが3つなので依存を足す価値が出ない。10 を超えたら citty か oclif に寄せる |
+| CLI | `node:util` の `parseArgs`（Node 標準） | サブコマンドが4つなので依存を足す価値が出ない。10 を超えたら citty か oclif に寄せる |
 | プロセス実行 | `node:child_process`（Node 標準） | 検証コマンドと git を叩くだけなので標準で足りる。ストリーム制御が要るようになったら execa に移す |
 | GitHub | `@octokit/rest` + plugin-throttling/retry | ETag でポーリングのレート制限を節約 |
 | ログ | pino（未着手） | 構造化ログ。Decision テーブルとは別に生ログを残す。いまは CLI が JSON を1本出すだけ |
@@ -447,7 +447,7 @@ DB と CLI のどちらも Node 24 標準で置き換えた。判断の根拠は
    配布の重さをさらに増やす。`node:sqlite` は同じ同期 API を標準で持つ
 2. Drizzle の価値はマイグレーションだが、Goal YAML のスキーマは `version: 1` を
    literal で固定してあり（§10-8）、まだマイグレーションが存在しない
-3. CLI のサブコマンドは `start` / `run` / `show` の3つで、citty の型の恩恵より
+3. CLI のサブコマンドは `start` / `run` / `show` / `list` の4つで、citty の型の恩恵より
    依存が1つ増えるコストの方が重い
 
 結果として、controller の本体は zod と yaml の2つだけに依存する。
@@ -592,7 +592,38 @@ Store が `new Date()` を呼ぶと、`now` を注入されて動く `tick()` �
 「一時的な 429」が同じ値で区別できないこと。いずれも実際に Agent を起動するまで
 表面化しない種類の誤りで、Port を足すときは実装まで読みに行く。
 
-### Phase 3 の自己ホストには制約が要る
+### Phase 3 は Goal 5本に割った
+
+Phase 3 の範囲は §9 の残り5項目と §7 の自己ホスト用の制約で、Phase 2 と同じく
+1つの Goal には大きすぎる。
+
+| 順 | Goal | 範囲 | 状態 |
+|---|---|---|---|
+| 1 | `.goals/record-the-tick.yaml` | 1ティックの記録。観測対象の指定、LlmPort の生ログとトークン、Verification、`ent show` | 完了 |
+| 2 | `.goals/open-pr-and-detect-approval.yaml` | PR の作成と通知、`ApprovalPort`（§10-4） | 完了 |
+| 3 | `.goals/sleep-and-stop.yaml` | `resume_after` を読む（§10-5）、ループ検知（§10-2）、中断と使用量上限の実測 | 完了 |
+| 4 | `.goals/guard-the-controller.yaml` | 自己ホストの安全装置。`protected_paths`（§10-8）と controller 側の関門（§10-6） | 完了 |
+| 5 | `.goals/list-goals.yaml` | 自己ホストで1周。**controller に実装させた** | 完了 |
+
+1本目で分かったのは、**実際に回すまで配管は繋がっていないと見なすべき**だった。
+`Store.setObserveTarget()` に本番の呼び出し元が無く、`github.*` を1つも観測して
+いなかった。テストは Port を注入するので、この種の断線を通してしまう。
+
+3本目で分かったのは、その一般形だった。`git branch --list --format=%(refname:short)` を
+シェル経由で流していたため括弧が解釈され、**worktree の作成が Phase 2 からずっと
+失敗していた**。ACT はどのティックでも起動していない。§9 の「実装」に付いていた
+チェックは、実 Actor を起動して初めて成立した。
+
+5本目で分かったのは、**VERIFY が worktree ではなく controller 自身のリポジトリを
+見ていた**ことだった。Actor は worktree の中で実装するのに、`mise run test` は
+`repoRoot` で走る。criteria が確かめるのは「その変更」であって controller が
+動いているコードではない。worktree 隔離が実際に効くようになって初めて表面化した。
+
+あわせて、`publish` が PR の存在を見て push を止めていたため、2ティック目以降の
+Actor の commit が remote に届いていなかった。この誤りは2本目で書いたテストが
+仕様として固定しており、テストが緑でも壊れていた。
+
+### 自己ホストには制約が要る
 
 自分自身を書き換えさせる以上、暴走すれば被害は自分に返ってくる。
 
@@ -601,23 +632,63 @@ Store が `new Date()` を呼ぶと、`now` を注入されて動く `tick()` �
 - `src/controller/**` と `.goals/**` への変更は human approval を必須にし、
   制御ループ自体を Agent に書き換えさせない
 
+後者は `policies.protected_paths` として宣言し、controller が ACT の外側で
+`Run.artifacts` を検査する。Agent 側の `disallowedTools` は残したまま二重にする。
+片方は Agent の設定、もう片方は controller の判定で、破れ方が違う。
+
+実際に「`src/controller/index.ts` にコメントを1行足す」と指示したところ、Agent は
+worktree 内でそれを実行し、controller が検知して `WAITING_HUMAN` で止めた。
+**Agent 側の設定だけでは止まらない**ことが実地で確認できた。
+
 ---
 
 ## 9. MVP 完了条件
 
 Goal の記述と承認を除いて、以下を人手の介入なしで1回通せたら MVP 完了とする。
-チェック済みの4項目は Phase 2 の範囲で確認した。残りは Phase 3 の自己ホストで埋める。
+**9項目すべてを Phase 3 で確認した。MVP は完了している。**
 自己ホストが通れば他の GitHub リポジトリでも通るが、逆は言えない。
 
 - [x] **Goal の登録** — このツール自身への機能追加を `.goals/*.yaml` に書き、Zod 検証を通して `ent start` で ACTIVE になる
 - [x] **実装** — reconcile ループが Claude Code を worktree 上で起動し、実装が行われる
 - [x] **検証** — 検証コマンドが通り、Fact が VERIFIED で記録される
-- [ ] **PR と通知** — PR が作られ、進捗が PR コメントに書かれる
-- [ ] **完了判定** — 人間の承認を検知し（signal は §10）、全 criteria の `Verification.result` が `passed` になって COMPLETED へ遷移する。`unverified` が空でないうちは COMPLETED にしない
+- [x] **PR と通知** — PR が作られ、進捗が PR コメントに書かれる
+- [x] **完了判定** — 人間の承認を検知し（signal は §10-4）、全 criteria の `Verification.result` が `passed` になって COMPLETED へ遷移する。`unverified` が空でないうちは COMPLETED にしない
 - [x] **取りこぼしが見える** — Port を人工的に落とし、観測できなかった対象が `unobserved` に残ること、ASSESS がそれを「対象なし」と読まないことを確認する
-- [ ] **いつでも殺せる** — Actor 実行中に `SIGTERM` を送って即座に終了し、再度 `ent run <slug>` を叩くと中断した Task を回収して続きから進む
-- [ ] **上限で寝て起きる** — 使用量上限を人工的に起こし、`WAITING_EXTERNAL(usage_limit)` でプロセスが終了すること、次ティックで自動再開することを確認する
-- [ ] **暴走しない** — 予算・reconcile 回数・ループ検知のいずれかが働くケースを人工的に作り、ESCALATE することを確認する
+- [x] **いつでも殺せる** — Actor 実行中に `SIGTERM` を送って即座に終了し、再度 `ent run <slug>` を叩くと中断した Task を回収して続きから進む
+- [x] **上限で寝て起きる** — 使用量上限を人工的に起こし、`WAITING_EXTERNAL(usage_limit)` でプロセスが終了すること、次ティックで自動再開することを確認する
+- [x] **暴走しない** — 予算・reconcile 回数・ループ検知のいずれかが働くケースを人工的に作り、ESCALATE することを確認する
+
+### 確認の仕方に幅がある
+
+同じ「確認した」でも、実地の度合いが違う。あとから読む人が誤解しないように分けておく。
+
+| 度合い | 項目 |
+|---|---|
+| 実物をそのまま通した | Goal の登録、実装、検証、PR と通知、完了判定、暴走しない |
+| Port の1つだけ差し替えた | いつでも殺せる（LlmPort を固定）、上限で寝て起きる（`query()` を差し替え） |
+
+「上限で寝て起きる」は Agent SDK が上限時に流すメッセージを再現したもので、
+本物の使用量上限に当たったわけではない。store・controller・状態機械・`PortError` の
+判定はすべて本物を通している。
+
+### 通しで1周したときの実測
+
+`.goals/list-goals.yaml` を controller に実装させたときの記録。
+
+```
+tick 1  ACT   Actor が worktree で実装        1,341,349 tokens
+tick 2  ACT   再試行                            462,017 tokens
+tick 3  ACT   再試行、worktree に commit         446,598 tokens
+tick 4  WAIT(review_pending) → WAITING_HUMAN
+```
+
+controller が PR を自分で立て、進捗コメントを3件積み、承認待ちで止まった。
+人間がやったのは Goal YAML と Acceptance Criteria を書き、`ent start` してから
+`ent run` を繰り返しただけになる。
+
+1ティック目のトークンが突出しているのは、Actor がコードベース全体を読むため。
+大半はキャッシュ読み出しで、`Run.tokens` は4種類（input / cache_creation /
+cache_read / output）の合計を持つ。単価が違うので、合計1つから正確な金額は出ない。
 
 ---
 
@@ -630,10 +701,14 @@ Goal の記述と承認を除いて、以下を人手の介入なしで1回通�
    `command` の1形式から `command` / `fact` / `human` の3形式に広げ、
    `adapters` / `goal.status` / `goal.source` を削ったこと。
    `context.references` は `title` / `path` のみを許し、URL は受け付けない
-2. **上限値の初期チューニング** — `max_actor_runs` などの値は仮置き。
-   あわせて `budget` に「同じギャップが N 回連続で解消されなければ ESCALATE」（§7）の N が無く、
-   `ESCALATE(loop_detected)` を guard から出せない。ループ検知には前ティックの Gap も要る。
-   Port の Goal では決めず、Phase 3 の自己ホストで実際に空回りさせてから決める
+2. **上限値の初期チューニング** — `max_actor_runs` などの値は仮置きのまま。
+   ~~ループ検知の N が無い~~ — Phase 3 の3本目で `budget.max_unchanged_reconciles` を
+   足して確定した。材料は前ティックの Gap ではなく `Decision.observed_digest` にしてある。
+   2ティック続けて完全に一致することを実測しており、Gap を別に永続化しなくてよい。
+   今ティックの digest が直近の連続と違えば数え直す。「3回同じだったが今回は変わった」を
+   空回りと読むと、進んだ直後に止めてしまう。
+   判定順は `budget_exhausted` → `COMPLETE` → `WAIT` → `loop_detected`。
+   人間の承認を待つあいだも観測は変わらないので、Gap が無い場合より後に置く
 3. ~~**使用量上限の検出方法**~~ — Phase 2 の4本目で確定した。Agent SDK の
    `rate_limit_event` が持つ `rate_limit_info.status` が `rejected` なら上限で、
    応答ヘッダ `anthropic-ratelimit-unified-status` から作られる。`resetsAt` は
@@ -643,24 +718,43 @@ Goal の記述と承認を除いて、以下を人手の介入なしで1回通�
    DECIDE が guard として `WAIT(usage_limit, resumeAfter)` を返す。
    なおこれらはドキュメントに記載が無く、根拠は Claude Code の実装読解にある。
    SDK が変われば黙って壊れるので、Port を触るときに読み直す
-4. **人間の承認をどの signal で検知するか** — §4.3 のとおり `github.pr.review_decision` は
-   使えない。候補は PR コメントの定型文（自分の PR にも書ける）と CLI（`ent approve`）。
-   `ApprovalPort` を実装する Goal で決める
-5. **`resume_after` を誰が読むか** — 永続化の Goal で書き込む側は入ったが、読む側が無い。
-   `WAITING_EXTERNAL(usage_limit)` で `resume_after` を書いても、次のティックがそれを見ずに
-   走ってしまう。§9 の「上限で寝て起きる」を満たすには、`ent run` が
-   `resume_after` を過ぎるまでスキップする必要がある
-6. **`require_human_approval` を誰が止めるか** — ACT は `deniedOperations` を
-   Agent SDK の `disallowedTools` に落としており、スコープ付きの拒否ルールは
-   `bypassPermissions` を含むどのモードでも効く。ただしこれは Agent 側の設定であって、
-   controller 側の関門ではない。SDK の外から同じ操作をされれば素通りする。
-   §7 の担保には Actor の外側にも関門が要る
+4. ~~**人間の承認をどの signal で検知するか**~~ — Phase 3 の2本目で確定した。
+   signal は2つあり、どちらか一方でも成立すれば承認とみなす。
+   GitHub のレビュー承認（他人が Approve を押す。仕事で使うときの本来の経路）と、
+   PR コメントの定型文 `/ent approve <criterion-id>`。§4.3 が言うのは
+   「`review_decision` *だけ* には頼れない」で、経路そのものが誤りではない。
+   1人で開発しているあいだ成立しないだけになる。
+   レビュー承認は PR 全体に対するものなので `type: human` の criteria すべてを満たす。
+   作成者自身の Approve は数えない。変更要求が最新として残っていれば、どちらの経路でも
+   承認しない。定型文は行全体で照合する。引用やコード例の中の同じ文字列を承認と読むと、
+   捏造した承認が作れてしまう
+5. ~~**`resume_after` を誰が読むか**~~ — Phase 3 の3本目で確定した。`tick` が入口で
+   判定し、過ぎるまで何もせずに return する。lease も取らない。取ると、寝ているだけの
+   Goal が他のワーカーを塞ぐ。解釈できない値は「起きてよい」と読む。壊れた値のせいで
+   Goal が永久に止まる方が、1ティック早く起きるより悪い
+6. ~~**`require_human_approval` を誰が止めるか**~~ — Phase 3 の4本目で確定した。
+   controller が ACT の外側で `Run.artifacts` を検査し、worktree の外に出た編集と
+   保護パスへの編集を見つけたら `ESCALATE(protected_path_touched)` にする。
+   Agent 側の `disallowedTools` は残して二重にする。片方は Agent の設定、
+   もう片方は controller の判定で、破れ方が違う。ただし検査できるのは
+   `Run.artifacts`（Edit / Write / NotebookEdit が触ったパス）だけで、
+   Bash 経由の書き込みは artifacts に現れない。**そこは依然として素通りする**
 7. **Notion / Slack を足す時期** — 実環境ができてから
-8. **Goal YAML のスキーマ変更をどう移行するか** — 現状は `version: 1` を literal で固定してあり、
-   スキーマが変わったら既存 YAML を手で書き直すしかない。Goal が数本のうちは問題ないが、
-   マイグレーション方針は Phase 3 に入るまでに決める。あわせて `require_human_approval` の
-   閉じた enum に、§7 の自己ホスト用（`src/controller/**` と `.goals/**` への変更）を
-   どう載せるかも決める。現状はパス条件を表現できない
+8. ~~**`require_human_approval` にパス条件をどう載せるか**~~ — Phase 3 の4本目で確定した。
+   enum には載せず、`policies.protected_paths`（glob の配列）を別に持つ。
+   enum の6値は「操作の種類」で、パスは「対象」なので軸が違う。1つの enum に混ぜると
+   controller 側の照合が分岐だらけになる。
+   **Goal YAML のスキーマ変更の移行方針は未決のまま。** Phase 3 で2回
+   （`budget.max_unchanged_reconciles` と `policies.protected_paths`）変更し、
+   どちらも既存 YAML 8〜9本を手で書き直した。`version: 1` は literal で固定したままで、
+   Goal が増えたときに同じやり方は続けられない
+9. **VERIFY をどこで流すか** — Phase 3 の5本目で `repoRoot` から Goal 専用の worktree に
+   変えたが、規則が「worktree があればそちら」という暗黙のものになっている。
+   Goal YAML から指定できる方がよいかは決めていない。1ティック目は worktree が
+   無いので `repoRoot` を見る、という非対称も残る
+10. **トークンから金額をどう出すか** — `Run.tokens` は4種類の合計で、単価が違う。
+    合計1つから正確な金額は出ない。内訳は生ログにあるので、§7 の「従量課金だったら
+    いくらだったか」を出すには、そこから読む口が要る
 
 ---
 
