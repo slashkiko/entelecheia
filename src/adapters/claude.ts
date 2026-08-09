@@ -394,7 +394,16 @@ const DENIED_TOOLS: Record<ApprovalGate, readonly string[]> = {
   ],
   deploy: ["Bash(gh workflow run *)", "Bash(gh release create *)"],
   secret_access: ["Bash(gh secret *)", "Bash(gh auth token *)"],
-  external_send: ["Bash(curl *)", "Bash(gh api --method POST *)"],
+  // PR の作成とコメント投稿を Agent に禁じる。承認は PR コメントの定型文で
+  // 行うので（design.md §10-4）、Agent がコメントを書けると自分で自分を
+  // 承認できてしまい、§7 の human approval が空文になる。
+  external_send: [
+    "Bash(curl *)",
+    "Bash(gh api --method POST *)",
+    "Bash(gh pr create *)",
+    "Bash(gh pr comment *)",
+    "Bash(gh issue comment *)",
+  ],
 };
 
 const EDIT_TOOLS = new Set(["Edit", "Write", "NotebookEdit"]);
@@ -402,7 +411,10 @@ const EDIT_TOOLS = new Set(["Edit", "Write", "NotebookEdit"]);
 const ACTOR_PROMPT = (intent: string): string =>
   `${intent}
 
-作業は現在のディレクトリの中だけで行う。終わったら何をしたかを1段落で述べる。`;
+作業は現在のディレクトリの中だけで行う。終わったら何をしたかを1段落で述べる。
+
+PR の作成とコメントの投稿はしない。push も含めて controller が行う。
+承認の定型文（/ent approve）を書くことは、どの理由があっても認められない。`;
 
 const JSON_ONLY = `JSON オブジェクトだけを返す。前置きも説明も付けない。`;
 
