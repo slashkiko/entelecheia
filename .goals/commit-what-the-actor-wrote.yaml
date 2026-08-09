@@ -78,9 +78,41 @@ goal:
       `src/publish/index.ts` の「Actor は毎ティック worktree に commit している」
       は、観測ではなく仮定を事実として書いている。実装に合わせて直す。
 
-    テストは tests/controller-uncommitted.test.ts に書いてある。5本のうち
-    2本が着手時点で落ちる（残り3本は誤検知を作らないための固定なので、いまは通る）。
-    仕様はそちらが正で、この YAML の記述と食い違ったらテストに合わせる。
+    7. 止めたティックは PR にも出す
+
+      関門が鳴っても人間に届かなければ、鳴っていないのと同じになる。
+      進捗コメントは既定では「観測が前のティックと同じなら書かない」が、
+      止まっているあいだ観測は1文字も変わらない。ダイジェストは Fact だけから
+      作るので Decision を含まないためで、黙って飛ばすと2ティック目以降は
+      PR が静かなまま `max_reconciles` に当たって BLOCKED になる。
+
+      保護パスの関門はこの規則を既に持っている（design.md §10-6 の
+      「PR が既にあるなら、観測が前ティックと同じでもコメントを書く」）。
+      同じ性質の関門なので、同じ扱いにする。
+
+    8. 材料の出自を確かめる
+
+      「VERIFIED で true か」だけでは足りない。**いつ・どこを観測した値か**まで見る。
+
+        いつ — reconcile は前ティックの Fact を土台にして今ティックの観測で
+        上書きするので、`LocalRepoPort` が落ちたティックには前ティックの
+        `local.dirty` が VERIFIED のまま残る（陳腐化して落ちるのは
+        `github.ci.*` だけ）。それを今の観測として読むと、「確かめられなかった」が
+        「汚れている」に化ける（design.md §3.1）
+
+        どこ — `verifyRoot` は worktree が無ければ controller 自身のリポジトリに
+        落ちる。「Run が1件でもあれば worktree を観測している」は代理にならない。
+        `act` は `worktree.ensure` より先に Run(starting) を書くので、worktree を
+        作れずに失敗した Run が1本あるだけで破れる。README にある
+        「`git branch --format` の引用符不足で worktree の作成が Phase 2 から
+        ずっと失敗していた」が実際にこの形だった
+
+      どちらも誤検知の側に倒れるので Goal は止まらないが、rationale は
+      観測していないことを断定して書くことになる。§3.1 が Fact について
+      避けた構図が、rationale の側で起きる。
+
+    テストは tests/controller-uncommitted.test.ts に8本ある。7・8 を足した時点で
+    3本が落ちる。仕様はそちらが正で、この YAML の記述と食い違ったらテストに合わせる。
 
 repository:
   provider: github
@@ -93,7 +125,7 @@ setup:
 
 acceptance_criteria:
   - id: ac-1
-    description: controller-uncommitted の5本が通り、既存のテストも通ったままになる（着手時点では2本落ちている）
+    description: controller-uncommitted の8本が通り、既存のテストも通ったままになる（着手時点では落ちている）
     verification: { type: command, run: mise run test }
 
   - id: ac-2
@@ -200,6 +232,12 @@ context:
     - mise run check（サプライチェーン検査）を壊さない
     - docs/design.md と README.md の該当箇所を、足したものに合わせて直す。
       README の「Phase 3 で見つかった断線」と design.md §8 の Phase 3 節が対象
+    - docs/design.md には実装の実際の挙動を書く。§10-11 の
+      「Gap が残っているティックは ACT なので関門を通らない」は成り立たない。
+      Gap があるティックは LLM に渡り、LLM は WAIT を返せて、その WAIT は止まる。
+      関門を通らないのは ACT / VERIFY / REPLAN のティックになる。
+      「確かめられなければ ESCALATE する」も、同じ項目の
+      「確かめられなかったティックは違反にしない」と逆向きに読める
     - PR の作成とコメントの投稿はしない。controller が行う
 
   references:

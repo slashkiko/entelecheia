@@ -122,6 +122,10 @@ export async function publish(target: PublishTarget, deps: PublishDeps): Promise
   // 前ティックと1文字も変わらないまま decision だけが ESCALATE に差し替わる。
   // そこを黙って飛ばすと、隔離が破れたことが PR に一度も出ないまま
   // WAITING_HUMAN になる。人間に届かない関門は鳴っていないのと同じ。
+  //
+  // 未 commit の関門（`uncommitted_changes`）も同じ性質を持つ。止まっているあいだ
+  // 観測は1文字も変わらないので、初回しか書かないと2ティック目以降は PR が静かな
+  // まま max_reconciles に当たって BLOCKED になり、止めた理由がどこにも出ない。
   if (target.previousDigest === target.digest && !stoppedByGuard(target.decision)) {
     return { prNumber, created, commented: false, skipped: "観測が前のティックと同じ" };
   }
@@ -145,7 +149,14 @@ export async function publish(target: PublishTarget, deps: PublishDeps): Promise
  * **PR の有無で push を止めない。** 最初はここで `prNumber !== null` なら
  * すぐ返していたが、それだと2ティック目以降の Actor の作業が remote に届かない。
  * 実際に自己ホストで回したとき、PR は1ティック目の内容のまま止まり、CI は
- * 「実装が無い」と言い続けた。Actor は毎ティック worktree に commit している。
+ * 「実装が無い」と言い続けた。
+ *
+ * **push が送るのは commit 済みの差分だけになる。** ここは以前「Actor は毎ティック
+ * worktree に commit している」と書いていたが、それは観測ではなく仮定だった。
+ * commit を要求しているところは controller のどこにも無く、intent は LLM が
+ * 生成するので、commit に言及しない intent が出れば Actor は書いたまま終わる。
+ * 実際に出た。書き残された変更はこの関数からは見えない（差分が無いのと区別が
+ * つかない）ので、検知は controller 側に置いてある（`uncommittedDecision`）。
  */
 async function ensurePullRequest(
   target: PublishTarget,
@@ -155,7 +166,7 @@ async function ensurePullRequest(
   // remote に出た時点で、通常の変更として流れる余地が生まれる。
   // 検査できなかった場合も同じ扱いにする。関門が動いていない状態で push するのは、
   // 関門が無いのと同じになる。
-  if (stoppedByGuard(target.decision)) {
+  if (blocksPush(target.decision)) {
     return {
       prNumber: target.prNumber,
       created: false,
@@ -193,11 +204,25 @@ async function ensurePullRequest(
 }
 
 /** push を止める ESCALATE の理由。どちらも「関門が通っていない」を意味する */
-const GUARD_REASONS = new Set<string>(["protected_path_touched", "guard_unavailable"]);
+const UNPUSHABLE_REASONS = new Set<string>(["protected_path_touched", "guard_unavailable"]);
 
-/** 関門が止めたティックか。push の抑止と、通知の必須化の両方が読む */
+/**
+ * 通知を必ず書く ESCALATE の理由。controller の関門（guard）が止めたティック。
+ *
+ * push を止める理由に `uncommitted_changes` を足さないのは、あれが「commit された
+ * ものは出してよい」状態だから。逆に通知の側では同じ扱いにする。どれもダイジェストに
+ * 現れない理由で止まるので、黙って飛ばすと PR が静かなまま max_reconciles に当たる。
+ */
+const GUARD_REASONS = new Set<string>([...UNPUSHABLE_REASONS, "uncommitted_changes"]);
+
+/** 関門が止めたティックか。通知の必須化が読む */
 function stoppedByGuard(decision: Decision): boolean {
   return decision.action.type === "ESCALATE" && GUARD_REASONS.has(decision.action.reason);
+}
+
+/** 関門が push まで止めるティックか */
+function blocksPush(decision: Decision): boolean {
+  return decision.action.type === "ESCALATE" && UNPUSHABLE_REASONS.has(decision.action.reason);
 }
 
 /**
