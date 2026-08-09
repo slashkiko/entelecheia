@@ -1,7 +1,7 @@
 import { type Action, actionSchema, type Decision, type WaitReason } from "../domain/action.js";
 import type { Unresolved } from "../domain/fact.js";
 import { criterionFactKey } from "../domain/fact-keys.js";
-import type { Assessment } from "../domain/gap.js";
+import type { Assessment, Gap } from "../domain/gap.js";
 import { type AcceptanceCriterion, type Budget, durationSeconds } from "../domain/goal.js";
 import { isUnavailable, isUsageLimit, resumeAfterOf } from "../domain/port-error.js";
 
@@ -204,6 +204,34 @@ function describeUnresolved(unresolved: readonly Unresolved[]): string {
 }
 
 /**
+ * プロンプト用に unresolved を並べる。Gap に現れる分は detail を落とす。
+ *
+ * `type: human` の criterion が pending のとき、verify は prompt 全文を
+ * `Unresolved.detail` に積む。assess の unknownDetail() はそれを Gap の detail に
+ * 丸ごと埋め込むので、そのまま並べると同じ数十行がプロンプトに2回入る。
+ *
+ * 2つのセクションは重なり方が非対称になっている。criterion に紐づく unresolved
+ * （key が `criteria.<id>.passed`）は必ず対応する Gap があり、detail ごとそちらに
+ * 現れる。観測レベルの unresolved（`github.ci` の port_failed など）は Gap には
+ * 現れず、このセクションが唯一の置き場になる。したがって落としてよいのは前者だけ。
+ *
+ * 判断材料の全文は Gap 側に一本化する。あちらは kind が付いていて、LLM が
+ * ACT と VERIFY を選び分ける材料になる。どの criterion が pending かは
+ * key と reason が残るのでこちらからも読める。
+ */
+function describeUnresolvedForPrompt(
+  unresolved: readonly Unresolved[],
+  gaps: readonly Gap[],
+): string {
+  const inGaps = new Set(gaps.map((gap) => criterionFactKey(gap.criterionId)));
+  return unresolved
+    .map((u) =>
+      inGaps.has(u.key) ? `${u.key}(${u.reason})` : `${u.key}(${u.reason}): ${u.detail}`,
+    )
+    .join(" / ");
+}
+
+/**
  * LLM が選んでよい行動。ここに無いものは受け取らない。
  *
  * COMPLETE と ESCALATE を除くのは、収束と停止の判定を推論で迂回させないため。
@@ -312,7 +340,9 @@ function buildPrompt(target: DecideTarget, failures: readonly string[]): string 
     .map((g) => `- ${g.criterionId} [${g.kind}] ${g.detail}`)
     .join("\n");
   const unresolved =
-    target.unresolved.length === 0 ? "- なし" : `- ${describeUnresolved(target.unresolved)}`;
+    target.unresolved.length === 0
+      ? "- なし"
+      : `- ${describeUnresolvedForPrompt(target.unresolved, target.assessment.gaps)}`;
 
   const sections = [
     "Goal の Acceptance Criteria に対して埋まっていない差分がある。次に取る行動を1つ選べ。",
@@ -330,7 +360,8 @@ function buildPrompt(target: DecideTarget, failures: readonly string[]): string 
       "COMPLETE と ESCALATE は選べない。完了判定と停止条件は controller が決める。",
       "WAIT にいつまで寝るかは書けない。起きる時刻も controller が決める。",
       "人間を待つべきだと判断したら WAIT(review_pending) を選ぶ。",
-      "JSON オブジェクトだけを返す。",
+      // 出力形式の強制はトランスポートの責務なので adapter 側に一本化する。
+      // LlmPort の契約は「戻り値を Zod で検証する」までしか言っていない。
     ].join("\n"),
   ];
 
