@@ -44,6 +44,16 @@ export interface GoalState {
   issueNumber: number | null;
 }
 
+/** `ent list` / Store.listGoals が返す1件分。宣言部と実行時状態の要点だけをまとめる */
+export interface GoalListItem {
+  id: string;
+  name: string;
+  status: GoalStatus;
+  reconciles: number;
+  prNumber: number | null;
+  resumeAfter: string | null;
+}
+
 export interface Snapshot {
   observedAt: string;
   facts: readonly Fact[];
@@ -55,6 +65,8 @@ export interface Store {
   /** Goal を登録する。既にあれば宣言部だけ更新し、実行時状態は触らない */
   upsertGoal(goal: Goal): void;
   getState(goalId: string): GoalState | null;
+  /** 登録済みの Goal を id の昇順で一覧する */
+  listGoals(): GoalListItem[];
   /**
    * 状態を書く。時刻は store が作らず、呼び出し側の時計から受け取る。
    * store が `new Date()` を使うと、注入した時計で動くティックと時間軸がずれる。
@@ -188,6 +200,22 @@ export function openStore(path: string): Store {
         prNumber: row.pr_number,
         issueNumber: row.issue_number,
       };
+    },
+
+    listGoals() {
+      const rows = db
+        .prepare(
+          "SELECT id, name, status, reconciles, pr_number, resume_after FROM goals ORDER BY id ASC",
+        )
+        .all() as unknown as GoalListRow[];
+      return rows.map((row) => ({
+        id: row.id,
+        name: row.name,
+        status: goalStatusSchema.parse(row.status),
+        reconciles: row.reconciles,
+        prNumber: row.pr_number,
+        resumeAfter: row.resume_after,
+      }));
     },
 
     setStatus(goalId, status, resumeAfter, activatedAt) {
@@ -537,6 +565,15 @@ interface GoalRow {
   reconciles: number;
   pr_number: number | null;
   issue_number: number | null;
+}
+
+interface GoalListRow {
+  id: string;
+  name: string;
+  status: string;
+  reconciles: number;
+  pr_number: number | null;
+  resume_after: string | null;
 }
 
 interface FactRow {
