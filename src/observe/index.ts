@@ -1,4 +1,5 @@
 import type { Fact, ObserveResult, Unresolved, VerifiedFact } from "../domain/fact.js";
+import { isShapeMismatch } from "../domain/port-error.js";
 
 /**
  * Observe が依存する外部世界。実装ではなくインターフェースとして切っておく。
@@ -134,7 +135,10 @@ export async function observe(target: ObserveTarget, deps: ObserveDeps): Promise
   const failed = (keyPrefix: string, source: string, error: unknown): void => {
     unobserved.push({
       key: keyPrefix,
-      reason: "port_failed",
+      // 「届かなかった」と「届いたが読めなかった」を畳まない。後者は待っても
+      // 直らないので、同じ reason にすると恒久的な不一致を一時的な障害として
+      // 再試行し続ける（design.md §3.1）。
+      reason: isShapeMismatch(error) ? "shape_mismatch" : "port_failed",
       detail: `${source}: ${errorMessage(error)}`,
     });
   };

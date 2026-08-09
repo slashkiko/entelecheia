@@ -3,6 +3,7 @@
 // 起動時に ExperimentalWarning が出る。API が変わったときの移行先は
 // better-sqlite3 で、Store インターフェースの内側に閉じている（design.md §6）。
 import { DatabaseSync } from "node:sqlite";
+import { z } from "zod";
 import { actionSchema, type Decision, decisionSchema } from "../domain/action.js";
 import { type Fact, type Unresolved, unresolvedSchema } from "../domain/fact.js";
 import type { Goal } from "../domain/goal.js";
@@ -193,7 +194,11 @@ export function openStore(path: string): Store {
     },
 
     getState(goalId) {
-      const row = db.prepare("SELECT * FROM goals WHERE id = ?").get(goalId) as GoalRow | undefined;
+      const row = parseRow(
+        goalRowSchema,
+        db.prepare("SELECT * FROM goals WHERE id = ?").get(goalId),
+        "getState",
+      );
       if (row === undefined) {
         return null;
       }
@@ -211,11 +216,15 @@ export function openStore(path: string): Store {
     },
 
     listGoals() {
-      const rows = db
-        .prepare(
-          "SELECT id, name, status, reconciles, pr_number, resume_after FROM goals ORDER BY id ASC",
-        )
-        .all() as unknown as GoalListRow[];
+      const rows = parseRows(
+        goalListRowSchema,
+        db
+          .prepare(
+            "SELECT id, name, status, reconciles, pr_number, resume_after FROM goals ORDER BY id ASC",
+          )
+          .all(),
+        "listGoals",
+      );
       return rows.map((row) => ({
         id: row.id,
         name: row.name,
@@ -308,19 +317,29 @@ export function openStore(path: string): Store {
     },
 
     latestSnapshot(goalId) {
-      const row = db
-        .prepare("SELECT id, observed_at FROM snapshots WHERE goal_id = ? ORDER BY id DESC LIMIT 1")
-        .get(goalId) as { id: number; observed_at: string } | undefined;
+      const row = parseRow(
+        snapshotHeadSchema,
+        db
+          .prepare(
+            "SELECT id, observed_at FROM snapshots WHERE goal_id = ? ORDER BY id DESC LIMIT 1",
+          )
+          .get(goalId),
+        "latestSnapshot",
+      );
       if (row === undefined) {
         return null;
       }
 
-      const factRows = db
-        .prepare("SELECT * FROM facts WHERE snapshot_id = ? ORDER BY seq")
-        .all(row.id) as unknown as FactRow[];
-      const unresolvedRows = db
-        .prepare("SELECT * FROM unresolved WHERE snapshot_id = ? ORDER BY seq")
-        .all(row.id) as unknown as UnresolvedRow[];
+      const factRows = parseRows(
+        factRowSchema,
+        db.prepare("SELECT * FROM facts WHERE snapshot_id = ? ORDER BY seq").all(row.id),
+        "latestSnapshot.facts",
+      );
+      const unresolvedRows = parseRows(
+        unresolvedRowSchema,
+        db.prepare("SELECT * FROM unresolved WHERE snapshot_id = ? ORDER BY seq").all(row.id),
+        "latestSnapshot.unresolved",
+      );
 
       return {
         observedAt: row.observed_at,
@@ -362,14 +381,18 @@ export function openStore(path: string): Store {
     latestVerifications(goalId) {
       // 最後に書いたティックの分だけを返す。過去のティックと混ぜると、
       // 直したはずの criteria が failed のまま残って見える。
-      const rows = db
-        .prepare(
-          `SELECT * FROM verifications
+      const rows = parseRows(
+        verificationRowSchema,
+        db
+          .prepare(
+            `SELECT * FROM verifications
             WHERE goal_id = ?
               AND reconcile_seq = (SELECT MAX(reconcile_seq) FROM verifications WHERE goal_id = ?)
             ORDER BY id`,
-        )
-        .all(goalId, goalId) as unknown as VerificationRow[];
+          )
+          .all(goalId, goalId),
+        "latestVerifications",
+      );
       return rows.map((row) => ({
         criterionId: row.criterion_id,
         result: verificationResultSchema.parse(row.result),
@@ -401,9 +424,11 @@ export function openStore(path: string): Store {
     },
 
     listDecisions(goalId) {
-      const rows = db
-        .prepare("SELECT * FROM decisions WHERE goal_id = ? ORDER BY id")
-        .all(goalId) as unknown as DecisionRow[];
+      const rows = parseRows(
+        decisionRowSchema,
+        db.prepare("SELECT * FROM decisions WHERE goal_id = ? ORDER BY id").all(goalId),
+        "listDecisions",
+      );
       return rows.map((row) => ({
         decidedAt: row.decided_at,
         action: actionSchema.parse(JSON.parse(row.action)),
@@ -416,18 +441,28 @@ export function openStore(path: string): Store {
     },
 
     latestDigest(goalId) {
-      const row = db
-        .prepare("SELECT observed_digest FROM decisions WHERE goal_id = ? ORDER BY id DESC LIMIT 1")
-        .get(goalId) as { observed_digest: string } | undefined;
+      const row = parseRow(
+        digestRowSchema,
+        db
+          .prepare(
+            "SELECT observed_digest FROM decisions WHERE goal_id = ? ORDER BY id DESC LIMIT 1",
+          )
+          .get(goalId),
+        "latestDigest",
+      );
       return row?.observed_digest ?? null;
     },
 
     countTrailingDigest(goalId, digest) {
       // 末尾から数える。間に別の観測が挟まれば連続は切れる。
       // 全件を数えると、過去に同じ状態を通ったぶんまで足してしまう。
-      const rows = db
-        .prepare("SELECT observed_digest FROM decisions WHERE goal_id = ? ORDER BY id DESC")
-        .all(goalId) as unknown as { observed_digest: string }[];
+      const rows = parseRows(
+        digestRowSchema,
+        db
+          .prepare("SELECT observed_digest FROM decisions WHERE goal_id = ? ORDER BY id DESC")
+          .all(goalId),
+        "countTrailingDigest",
+      );
 
       let count = 0;
       for (const row of rows) {
@@ -447,9 +482,11 @@ export function openStore(path: string): Store {
     },
 
     listLlmCalls(goalId) {
-      const rows = db
-        .prepare("SELECT * FROM llm_calls WHERE goal_id = ? ORDER BY id")
-        .all(goalId) as unknown as LlmCallRow[];
+      const rows = parseRows(
+        llmCallRowSchema,
+        db.prepare("SELECT * FROM llm_calls WHERE goal_id = ? ORDER BY id").all(goalId),
+        "listLlmCalls",
+      );
       return rows.map((row) => ({
         // 列を捨てて固定値を返していたころは、purpose が union になった瞬間に
         // 全レコードが decide を名乗るようになる形だった（型エラーは出ない）。
@@ -511,9 +548,11 @@ export function openStore(path: string): Store {
     },
 
     listRuns(goalId) {
-      const rows = db
-        .prepare("SELECT * FROM runs WHERE goal_id = ? ORDER BY id")
-        .all(goalId) as unknown as RunRow[];
+      const rows = parseRows(
+        runRowSchema,
+        db.prepare("SELECT * FROM runs WHERE goal_id = ? ORDER BY id").all(goalId),
+        "listRuns",
+      );
       return rows.map((row) => ({
         id: String(row.id),
         intent: row.intent,
@@ -568,82 +607,123 @@ function toFact(row: FactRow): Fact {
   };
 }
 
-interface GoalRow {
-  id: string;
-  status: string;
-  lease_owner: string | null;
-  lease_until: string | null;
-  resume_after: string | null;
-  activated_at: string | null;
-  reconciles: number;
-  pr_number: number | null;
-  issue_number: number | null;
+/**
+ * SQLite の行をスキーマに通す。
+ *
+ * `node:sqlite` は行を `any` 相当で返すので、これまでは `as unknown as XRow[]` で
+ * 名乗らせていた。列挙の列だけは後段で zod にかけていたが、素の string / number は
+ * 素通りしていた。列名を1つ変えると——`log_ref` を `log_path` にする、のような——
+ * `z.string().min(1)` と宣言されたフィールドに `undefined` が入ったまま外へ出る。
+ * tsc も実行時も何も言わない。DB のスキーマ（SCHEMA）と手書きの型が別々の
+ * 真実源になっていたのが原因なので、型をスキーマから導いて突き合わせる。
+ *
+ * 落ちたら throw する。読めなかった行を黙って捨てると、Fact が1件消えたことに
+ * 誰も気づけない（design.md §3.1）。
+ */
+function parseRows<S extends z.ZodType>(schema: S, raw: unknown, source: string): z.infer<S>[] {
+  const parsed = z.array(schema).safeParse(raw);
+  if (!parsed.success) {
+    throw new Error(`${source}: DB の行が想定と違う: ${parsed.error.message}`);
+  }
+  return parsed.data;
 }
 
-interface GoalListRow {
-  id: string;
-  name: string;
-  status: string;
-  reconciles: number;
-  pr_number: number | null;
-  resume_after: string | null;
+/** 1行版。行が無ければ undefined */
+function parseRow<S extends z.ZodType>(
+  schema: S,
+  raw: unknown,
+  source: string,
+): z.infer<S> | undefined {
+  if (raw === undefined || raw === null) {
+    return undefined;
+  }
+  const parsed = schema.safeParse(raw);
+  if (!parsed.success) {
+    throw new Error(`${source}: DB の行が想定と違う: ${parsed.error.message}`);
+  }
+  return parsed.data;
 }
 
-interface FactRow {
-  key: string;
-  value: string;
-  observed_at: string;
-  confidence: string;
-  evidence_source: string | null;
-  evidence_detail: string | null;
-}
+const snapshotHeadSchema = z.object({ id: z.number(), observed_at: z.string() });
+const digestRowSchema = z.object({ observed_digest: z.string() });
 
-interface UnresolvedRow {
-  key: string;
-  reason: string;
-  detail: string;
-}
+const goalRowSchema = z.object({
+  id: z.string(),
+  status: z.string(),
+  lease_owner: z.string().nullable(),
+  lease_until: z.string().nullable(),
+  resume_after: z.string().nullable(),
+  activated_at: z.string().nullable(),
+  reconciles: z.number(),
+  pr_number: z.number().nullable(),
+  issue_number: z.number().nullable(),
+});
 
-interface DecisionRow {
-  action: string;
-  rationale: string;
-  decided_by: string;
-  decided_at: string;
-}
+const goalListRowSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  status: z.string(),
+  reconciles: z.number(),
+  pr_number: z.number().nullable(),
+  resume_after: z.string().nullable(),
+});
 
-interface VerificationRow {
-  criterion_id: string;
-  result: string;
-  reason: string | null;
-  evidence_source: string | null;
-  evidence_detail: string | null;
-  detail: string;
-  verified_at: string;
-}
+const factRowSchema = z.object({
+  key: z.string(),
+  value: z.string(),
+  observed_at: z.string(),
+  confidence: z.string(),
+  evidence_source: z.string().nullable(),
+  evidence_detail: z.string().nullable(),
+});
+type FactRow = z.infer<typeof factRowSchema>;
 
-interface LlmCallRow {
-  purpose: string;
-  tokens: number;
-  log_ref: string;
-  ok: number;
-  called_at: string;
-}
+const unresolvedRowSchema = z.object({
+  key: z.string(),
+  reason: z.string(),
+  detail: z.string(),
+});
 
-interface RunRow {
-  id: number;
-  intent: string;
-  actor: string;
-  worktree: string;
-  attempt: number;
-  status: string;
-  started_at: string;
-  finished_at: string | null;
-  exit_code: number | null;
-  log_ref: string | null;
-  tokens: number | null;
-  artifacts: string;
-  detail: string | null;
-}
+const decisionRowSchema = z.object({
+  action: z.string(),
+  rationale: z.string(),
+  decided_by: z.string(),
+  decided_at: z.string(),
+});
+
+const verificationRowSchema = z.object({
+  criterion_id: z.string(),
+  result: z.string(),
+  reason: z.string().nullable(),
+  evidence_source: z.string().nullable(),
+  evidence_detail: z.string().nullable(),
+  detail: z.string(),
+  verified_at: z.string(),
+});
+
+const llmCallRowSchema = z.object({
+  purpose: z.string(),
+  tokens: z.number(),
+  log_ref: z.string(),
+  ok: z.number(),
+  called_at: z.string(),
+});
+
+const runRowSchema = z.object({
+  id: z.number(),
+  intent: z.string(),
+  actor: z.string(),
+  worktree: z.string(),
+  attempt: z.number(),
+  status: z.string(),
+  started_at: z.string(),
+  finished_at: z.string().nullable(),
+  exit_code: z.number().nullable(),
+  log_ref: z.string().nullable(),
+  tokens: z.number().nullable(),
+  artifacts: z.string(),
+  detail: z.string().nullable(),
+});
 
 /**
  * design.md §4.5 のテーブル。

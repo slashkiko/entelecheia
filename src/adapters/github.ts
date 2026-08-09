@@ -30,6 +30,30 @@ export interface GitHubOptions {
   fetch?: typeof fetch;
 }
 
+/**
+ * API の応答をスキーマに通す。落ちたら PortError(shape_mismatch) にする。
+ *
+ * 以前はどの `.parse()` も `get` / `request` の try/catch の外にあり、ZodError が
+ * 素の例外として controller に抜けていた。`github.ts` 自身が「失敗は必ず
+ * PortError にして、素の例外を controller に流さない」と書いているのに、
+ * 応答の形だけがその約束の外にあった。
+ *
+ * 抜けた ZodError は observe の汎用ラッパが拾い、`port_failed` に畳んでいた。
+ * つまり「GitHub がフィールドを変えた」という永久に直らない状態が、一時的な
+ * 障害として毎ティック再試行され、`max_unchanged_reconciles` に当たるまで
+ * 止まらなかった。人間には「GitHub が不安定」に見える。
+ */
+function decode<S extends z.ZodType>(schema: S, raw: unknown, source: string): z.infer<S> {
+  const parsed = schema.safeParse(raw);
+  if (!parsed.success) {
+    throw new PortError(
+      "shape_mismatch",
+      `${source}: 応答の形が想定と違う: ${parsed.error.message}`,
+    );
+  }
+  return parsed.data;
+}
+
 export function githubCodeProvider(options: GitHubOptions): CodeProviderPort {
   const Client = Octokit.plugin(retry, throttling);
   const octokit = new Client({
@@ -87,13 +111,14 @@ export function githubCodeProvider(options: GitHubOptions): CodeProviderPort {
       if (raw === null) {
         return null;
       }
-      const pr = pullRequestSchema.parse(raw);
+      const pr = decode(pullRequestSchema, raw, "GET /pulls/{pull_number}");
 
       const rawReviews = await get("GET /repos/{owner}/{repo}/pulls/{pull_number}/reviews", {
         pull_number: prNumber,
         per_page: 100,
       });
-      const reviews = rawReviews === null ? [] : reviewsSchema.parse(rawReviews);
+      const reviews =
+        rawReviews === null ? [] : decode(reviewsSchema, rawReviews, "GET /pulls/{n}/reviews");
       const requestedReviewers = (pr.requested_reviewers ?? []).map((r) => r.login);
 
       return {
@@ -114,7 +139,7 @@ export function githubCodeProvider(options: GitHubOptions): CodeProviderPort {
       if (raw === null) {
         return null;
       }
-      const run = runsSchema.parse(raw).workflow_runs[0];
+      const run = decode(runsSchema, raw, "GET /actions/runs").workflow_runs[0];
       if (run === undefined) {
         return null;
       }
@@ -139,7 +164,7 @@ export function githubCodeProvider(options: GitHubOptions): CodeProviderPort {
       if (raw === null) {
         return null;
       }
-      const issue = issueSchema.parse(raw);
+      const issue = decode(issueSchema, raw, "GET /issues/{issue_number}");
 
       return {
         number: issue.number,
@@ -169,7 +194,7 @@ export function githubCodeWriter(options: GitHubOptions): CodeWriterPort {
         state: "open",
         per_page: 1,
       });
-      const found = openPullsSchema.parse(response)[0];
+      const found = decode(openPullsSchema, response, "GET /pulls")[0];
       return found?.number ?? null;
     },
 
@@ -181,7 +206,7 @@ export function githubCodeWriter(options: GitHubOptions): CodeWriterPort {
         body: draft.body,
       });
       // 捏造した番号を返さない。形が違えばここで throw する。
-      return createdPullSchema.parse(response).number;
+      return decode(createdPullSchema, response, "POST /pulls").number;
     },
 
     async addComment(prNumber, body) {
@@ -245,9 +270,9 @@ export function githubApproval(options: GitHubOptions & { prNumber: number | nul
     ]);
 
     return {
-      author: prAuthorSchema.parse(pr).user?.login ?? null,
-      reviews: reviewsSchema.parse(reviews),
-      comments: commentsSchema.parse(comments),
+      author: decode(prAuthorSchema, pr, "GET /pulls/{pull_number}").user?.login ?? null,
+      reviews: decode(reviewsSchema, reviews, "GET /pulls/{n}/reviews"),
+      comments: decode(commentsSchema, comments, "GET /issues/{n}/comments"),
     };
   };
 
@@ -347,9 +372,19 @@ const permissionSchema = z.object({ permission: z.string().nullish() });
 /**
  * その login が実際にリポジトリへ書き込めるかを、権限 API で確かめる。
  *
- * 落ちたときは承認しない側に倒す。ここで「確かめられなかった」を「権限がある」と
- * 読むと、GitHub が一時的に落ちているあいだだけ誰でも承認できる窓が開く。
- * 完了判定の根拠なので、確かめられない承認は数えない（design.md §3.1）。
+ * 3つの結果を混ぜない（design.md §3.1）。
+ *
+ * - 権限がある            → true
+ * - コラボレーターでない  → false。404 がこれにあたる。承認していないのと同じ扱い
+ * - 確かめられなかった    → throw。トークンの権限不足やネットワーク断がこれ
+ *
+ * 3つ目を false に畳んではいけない。`verify` は承認が null なら `pending`、
+ * Port が throw すれば `port_failed` を返し、両者を別の unresolved として残す。
+ * 畳むと、権限 API が落ちているだけの状態が「まだ誰も承認していない」に見え、
+ * Goal は理由の分からないまま WAITING_HUMAN で止まり続ける。
+ *
+ * 一方で「確かめられなかった」を true にするのも駄目で、GitHub が落ちている
+ * あいだだけ誰でも承認できる窓が開く。倒す先は throw であって true / false ではない。
  */
 function writeAccessChecker(
   octokit: Octokit,
@@ -357,6 +392,7 @@ function writeAccessChecker(
 ): (login: string) => Promise<boolean> {
   // 1ティックで criteria の数だけ呼ばれる。同じ人を何度も引かない。
   const cache = new Map<string, Promise<boolean>>();
+  const route = "GET /repos/{owner}/{repo}/collaborators/{username}/permission";
 
   return (login) => {
     if (login === "") {
@@ -368,19 +404,29 @@ function writeAccessChecker(
     }
 
     const pending = (async () => {
+      let raw: unknown;
       try {
-        const raw = await request(
-          octokit,
-          "GET /repos/{owner}/{repo}/collaborators/{username}/permission",
-          options,
-          { username: login },
+        // request() を通さずに叩く。あちらは何でも PortError に畳むので、
+        // 404（コラボレーターでない）と本当の障害を区別できない。
+        const response = await octokit.request(route, {
+          owner: options.owner,
+          repo: options.repo,
+          username: login,
+        });
+        raw = response.data;
+      } catch (error) {
+        if ((error as { status?: number }).status === 404) {
+          // コラボレーターではない。確かめられた結果としての「権限なし」。
+          return false;
+        }
+        throw new PortError(
+          "unavailable",
+          `${describe(route, { username: login }, options)}: ${message(error)}`,
         );
-        const permission = permissionSchema.parse(raw).permission;
-        return permission != null && WRITE_PERMISSIONS.has(permission);
-      } catch {
-        // 404（コラボレーターでない）も PortError になる。どちらも承認しない。
-        return false;
       }
+
+      const permission = decode(permissionSchema, raw, route).permission;
+      return permission != null && WRITE_PERMISSIONS.has(permission);
     })();
 
     cache.set(login, pending);

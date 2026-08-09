@@ -279,10 +279,13 @@ describe("githubApproval", () => {
       }
     });
 
-    it("権限が読めなければ承認にしない", async () => {
+    it("権限が読めなければ throw する。未承認と同じにしない", async () => {
       // 確かめられなかったことを「権限がある」と読むと、GitHub が落ちている
-      // あいだだけ誰でも承認できる窓が開く（design.md §3.1）。
-      const approval = await githubApproval({
+      // あいだだけ誰でも承認できる窓が開く。一方、null（未承認）に畳むのも駄目で、
+      // verify はそれを pending として扱う。権限 API が落ちているだけの状態が
+      // 「まだ誰も承認していない」に見え、理由の分からないまま WAITING_HUMAN で
+      // 止まり続ける。倒す先は throw になる（design.md §3.1）。
+      const port = githubApproval({
         ...BASE,
         prNumber: 11,
         fetch: fakeFetch((url) => {
@@ -294,6 +297,29 @@ describe("githubApproval", () => {
           }
           if (url.includes("/permission")) {
             return { status: 500, body: { message: "boom" } };
+          }
+          return { body: { user: { login: "pr-author" } } };
+        }).fetch,
+      });
+
+      await expect(port.getApproval("ac-6")).rejects.toThrow(PortError);
+    });
+
+    it("コラボレーターでなければ承認にしない（404 は確かめられた結果）", async () => {
+      // 404 は「その人は権限を持っていない」を確かめられた状態なので、
+      // throw ではなく未承認として返す。
+      const approval = await githubApproval({
+        ...BASE,
+        prNumber: 11,
+        fetch: fakeFetch((url) => {
+          if (url.includes("/reviews")) {
+            return { body: [] };
+          }
+          if (url.includes("/comments")) {
+            return { body: [comment("/ent approve ac-6", "outsider", "MEMBER")] };
+          }
+          if (url.includes("/permission")) {
+            return { status: 404, body: { message: "Not Found" } };
           }
           return { body: { user: { login: "pr-author" } } };
         }).fetch,
