@@ -95,6 +95,21 @@ function deps(options: Options = {}): ControllerDeps {
       run: async () => ({ exitCode: options.exitCode ?? 0, stdout: "", stderr: "" }),
     },
     approval: { getApproval: async () => null },
+    // PR の確保と通知（design.md §9）。既定は「差分が無い」ので何も起きない。
+    // 通知そのものの仕様は tests/publish.test.ts が持つ。
+    writer: {
+      findPullRequest: async () => null,
+      createPullRequest: async () => {
+        events.push("writer.createPullRequest");
+        return 1;
+      },
+      addComment: async () => {
+        events.push("writer.addComment");
+      },
+    },
+    branch: {
+      push: async (name) => ({ branch: `entelecheia/${name}`, pushed: false }),
+    },
     llm: options.llm ?? { chooseAction: async () => ({ type: "ACT", intent: "テストを直す" }) },
     now: () => NOW,
   };

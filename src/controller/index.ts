@@ -7,6 +7,7 @@ import type { Goal } from "../domain/goal.js";
 import { type GoalStatus, isTerminal, nextStatus } from "../domain/goal-state.js";
 import type { Run } from "../domain/run.js";
 import { toVerifications } from "../domain/verification.js";
+import { type PublishDeps, publish } from "../publish/index.js";
 import { type ReconcileDeps, reconcile } from "../reconcile/index.js";
 import type { GoalState, Store } from "../store/index.js";
 
@@ -18,7 +19,10 @@ import type { GoalState, Store } from "../store/index.js";
  * 副作用と永続化をこの層に集める（design.md §8）。
  */
 
-export interface ControllerDeps extends ReconcileDeps, Pick<ActDeps, "worktree" | "actor"> {
+export interface ControllerDeps
+  extends ReconcileDeps,
+    Pick<ActDeps, "worktree" | "actor">,
+    Pick<PublishDeps, "writer" | "branch"> {
   store: Store;
   /** lease の所有者。プロセスごとに一意にする */
   owner: string;
@@ -101,13 +105,39 @@ export async function tick(goal: Goal, deps: ControllerDeps): Promise<TickResult
     // criteria 単位の索引（design.md §4.5 の Verification）。同じ結果を facts と
     // unresolved から導くだけで、検証をもう一度回さない。二重に検証すると、
     // 同じティックの中で結果が食い違う余地が生まれる。
-    deps.store.saveVerifications(
-      goalId,
-      toVerifications(goal.acceptance_criteria, result.facts, result.unresolved, observedAt),
+    const verifications = toVerifications(
+      goal.acceptance_criteria,
+      result.facts,
+      result.unresolved,
+      observedAt,
     );
-    deps.store.saveDecision(goalId, digestOf(result.facts), result.decision);
+    deps.store.saveVerifications(goalId, verifications);
+    const digest = digestOf(result.facts);
+    // 前のティックのダイジェストは、今回の分を書く前に読む。
+    const previousDigest = deps.store.latestDigest(goalId);
+    deps.store.saveDecision(goalId, digest, result.decision);
 
     const run = await maybeAct(goal, result.decision, deps);
+
+    // PR を確保して進捗を書く。ここは throw しないので、通知の失敗で
+    // ティック全体を落とさない（design.md §9 の「PR と通知」）。
+    const published = await publish(
+      {
+        goal,
+        run,
+        decision: result.decision,
+        verifications,
+        prNumber: state.prNumber,
+        digest,
+        previousDigest,
+      },
+      deps,
+    );
+    if (published.prNumber !== null && published.prNumber !== state.prNumber) {
+      // 次のティックが observe できるように書き戻す。ここを落とすと、
+      // 作った PR を controller 自身が二度と見つけられない。
+      deps.store.setObserveTarget(goalId, published.prNumber, state.issueNumber);
+    }
 
     const status = nextStatus(state.status, result.decision.action);
     const action = result.decision.action;

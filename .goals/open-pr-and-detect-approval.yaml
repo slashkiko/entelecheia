@@ -1,0 +1,196 @@
+version: 1
+
+goal:
+  id: open-pr-and-detect-approval
+  name: PR を自分で立てて進捗を書き、人間の承認を検知できる
+  desired_state: |
+    Phase 3 の2本目。design.md §9 の「PR と通知」と「完了判定」を埋める。
+
+    1本目で観測側は通ったが、PR を作るのも番号を渡すのも人間の手作業だった。
+    ここを controller に移し、あわせて承認の signal を決める（§10-4）。
+
+    書き込み側 — src/adapters/github.ts
+      CodeProviderPort に書き込みのメソッドを足す。read と write を分ける
+      （design.md §4.1）ので、インターフェースは別に切る。
+
+        createPullRequest  head / base / title / body から PR を作り、番号を返す
+        findPullRequest    head ブランチに紐づく open な PR を探す。無ければ null
+        addComment         PR にコメントを投稿する
+        listComments       PR のコメントを著者付きで読む
+
+      findPullRequest を先に引く。ティックをまたいで同じ worktree を使うので、
+      2回目のティックが2本目の PR を立てると、どちらが正かが決まらなくなる。
+
+      失敗したら throw する。捏造した PR 番号を返さない。
+
+    PR を立てる — src/controller/
+      ACT が成功して worktree に差分があるときだけ立てる。差分が無ければ
+      立てない。空の PR は通知にも検証にも使えない。
+
+      手順は次のとおり。副作用の前に意図を書く（design.md §3.6）。
+
+        1. worktree の差分を feature ブランチに push する
+        2. findPullRequest で既存を探す。あればその番号を使う
+        3. 無ければ createPullRequest で立てる
+        4. 番号を setObserveTarget で書き戻す
+
+      2 を 3 より先に置くのは、push まで済んで PR 作成の前に kill された
+      次のティックが2本目を立てないようにするため。
+
+      main への直接 push はしない。policies.require_human_approval の
+      push_to_default_branch がそれを禁じている。push 先は Goal ごとの
+      feature ブランチだけになる。
+
+    進捗を書く — src/controller/
+      ティックごとの Decision を PR コメントに書く。ただし毎ティック書かない。
+      observed_digest が前のティックと同じなら書かない。同じ状態を何度も
+      通知すると、人間が読むのをやめる。
+
+      書く内容は action と rationale と、criteria ごとの Verification.result。
+      これが §9 の「進捗が PR コメントに書かれる」にあたる。
+
+    承認の signal — src/adapters/github.ts
+      design.md §10-4 の未決を埋める。§4.3 のとおり github.pr.review_decision は
+      使えない。自分が作った PR に Approve を押せないので、controller が
+      Goal の所有者と同じアカウントで PR を作る限り APPROVED にならない。
+
+      PR コメントの定型文を signal にする。
+
+        /ent approve <criterion-id>
+
+      理由は3つ。
+
+        1. §3.4 のポーリングでそのまま拾える。承認を待つあいだ controller が
+           常駐する必要がない
+        2. 承認が GitHub 上に監査記録として残る。CLI だと DB にしか残らず、
+           誰がいつ承認したかを外から追えない
+        3. 自分の PR にもコメントは書けるので、§4.3 の制約に当たらない
+
+      ApprovalPort はこのコメントを探し、著者と投稿時刻を Approval として返す。
+      見つからなければ null を返す。捏造した承認を作らない。
+
+      **Agent に承認コメントを書かせない。** ここが担保されないと §7 が空文になる。
+      DENIED_TOOLS の external_send に gh pr comment と gh pr create を足し、
+      Actor のプロンプトにも「PR の作成とコメントは controller が行う」と書く。
+      ただしこれは Agent 側の設定にすぎず、controller 側の関門ではない
+      （design.md §10-6）。そこは自己ホストの Goal で扱う。
+
+repository:
+  provider: github
+  owner: slashkiko
+  name: entelecheia
+  default_branch: main
+
+setup:
+  - pnpm install --frozen-lockfile
+
+acceptance_criteria:
+  - id: ac-1
+    description: adapters / controller / verify の全テストが通る（着手時点では落ちているのが正しい）
+    verification: { type: command, run: mise run test }
+
+  - id: ac-2
+    description: 型チェックが通る（read と write のインターフェース分割が崩れていない）
+    verification: { type: command, run: mise run typecheck }
+
+  - id: ac-3
+    description: lint と format が通る
+    verification: { type: command, run: mise run lint }
+
+  - id: ac-4
+    description: サプライチェーンと workflow のチェックが通る（baseline 由来）
+    verification: { type: command, run: mise run check }
+
+  - id: ac-5
+    description: 変更を載せた PR の CI が成功している
+    verification: { type: fact, key: github.ci.conclusion, equals: success }
+
+  - id: ac-6
+    description: 承認の signal を PR コメントの定型文にした判断が妥当か、人間が確認する
+    verification:
+      type: human
+      prompt: |
+        design.md §10-4 は「人間の承認をどの signal で検知するか」を未決のまま
+        残していました。候補は PR コメントの定型文と CLI（ent approve）の2つです。
+
+        PR コメントの定型文を選びました。
+
+          /ent approve <criterion-id>
+
+        選んだ理由は3つです。
+
+          1. §3.4 のポーリングでそのまま拾える。承認を待つあいだ controller が
+             常駐しなくてよい
+          2. 承認が GitHub 上に監査記録として残る。CLI だと DB にしか残らない
+          3. 自分の PR にもコメントを書けるので、§4.3 の制約に当たらない
+
+        確認してほしいのは4点です。
+
+        1. この選択そのもの。CLI（ent approve）を残さなくてよいか。
+           PR が無い段階の Goal では、いまのところ承認する手段がありません
+        2. 承認者を誰に限るか。現状はコメントの著者をそのまま記録するだけで、
+           権限の検査をしていません。リポジトリに write 権限がある人しか
+           コメントできない前提に乗っていますが、public repo では成り立ちません
+        3. Agent に承認コメントを書かせない担保。DENIED_TOOLS に
+           gh pr comment を足しましたが、これは Agent 側の設定です。
+           SDK の外から同じことをされれば素通りします（§10-6）
+        4. 進捗コメントを observed_digest が変わったときだけ書くようにしたこと。
+           静かすぎないか、うるさすぎないか
+
+context:
+  background: |
+    Phase 3 の2本目。1本目（.goals/record-the-tick.yaml）で1ティックの記録が
+    残るようになり、実際に回して ac-1 〜 ac-5 が passed になるところまで動いた。
+    ただし PR を立てたのも --pr で番号を渡したのも人間で、controller は
+    観測しかしていない。
+
+    1本目を回して分かったことが2つある。
+
+      Goal は WAITING_HUMAN で止まり、そこから先へ進む経路が無い。
+      ApprovalPort が pendingApproval()（常に null）のままだから
+
+      github.pr.review_decision は実測でも null だった。§4.3 の想定どおりで、
+      自分の PR には Approve を押せない
+
+    本 Goal で §9 の9項目のうち2つ（PR と通知、完了判定）が埋まり、
+    残りは「いつでも殺せる」「上限で寝て起きる」「暴走しない」の3つになる。
+
+  constraints:
+    - テストから実際の GitHub と Claude API を叩かない。octokit は fetch を注入する
+    - テストから git push しない。push も Port 経由で注入する
+    - 対象が無ければ null、取得に失敗したら throw。この2つを混ぜない
+    - 捏造した承認を作らない。定型文が無ければ null を返す
+    - 同じ head ブランチに2本目の PR を立てない。作る前に必ず探す
+    - main への直接 push をしない。push 先は Goal ごとの feature ブランチだけ
+    - 進捗コメントを毎ティック書かない。observed_digest が変わったときだけ書く
+    - tests/ 配下の既存の仕様を弱めない。新しい振る舞いには新しいテストを足す
+    - src/reconcile/ と src/assess/ と src/observe/ と src/decide/ は変更しない。
+      本 Goal が触るのは Port の実装と、その呼び出し元の controller になる
+    - src/domain/goal.ts と src/domain/fact-keys.ts は変更しない。
+      承認は ApprovalPort が直接返すので、新しい観測キーは要らない
+    - docs/design.md の「3. 中核の設計判断」を勝手に変えない
+    - 依存パッケージを増やさない。octokit と Agent SDK で足りる
+    - mise run check（サプライチェーン検査）を壊さない
+
+  references:
+    - title: 設計ドキュメント
+      path: docs/design.md
+    - title: Phase 3 の1本目
+      path: .goals/record-the-tick.yaml
+    - title: Phase 2 の4本目（Port の実装）
+      path: .goals/connect-github-and-claude.yaml
+
+policies:
+  require_human_approval:
+    - merge
+    - force_push
+    - push_to_default_branch
+    - deploy
+    - secret_access
+    - external_send
+
+budget:
+  max_actor_runs: 15
+  max_reconciles: 30
+  max_wall_clock: 4h
+  max_consecutive_failures: 3

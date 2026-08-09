@@ -2,6 +2,7 @@ import { exec } from "node:child_process";
 import { promisify } from "node:util";
 import type { Worktree, WorktreePort } from "../act/index.js";
 import type { LocalRepoPort } from "../observe/index.js";
+import type { BranchPort, PushResult } from "../publish/index.js";
 import type { ApprovalPort, CommandResult, CommandRunnerPort } from "../verify/index.js";
 
 /**
@@ -87,11 +88,44 @@ export function gitWorktree(repoRoot: string, root: string): WorktreePort {
 }
 
 /**
- * 人間の承認。
+ * worktree の差分を feature ブランチに push する。
  *
- * 承認をどの signal で検知するかは未決（design.md §10）。GitHub の
- * `review_decision` は自分が作った PR に Approve を押せないので使えない。
- * 決まるまでは常に未承認（pending）を返す。捏造した承認を作らないため。
+ * push 先は worktree が checkout しているブランチだけにする。base ブランチへ
+ * 直接 push しない（design.md §7 の push_to_default_branch）。
+ */
+export function gitBranch(root: string): BranchPort {
+  return {
+    async push(name, baseBranch): Promise<PushResult> {
+      const cwd = `${root}/${name}`;
+      const git = async (args: string): Promise<string> => {
+        const { stdout } = await run(`git ${args}`, { cwd });
+        return stdout.trim();
+      };
+
+      const branch = await git("rev-parse --abbrev-ref HEAD");
+      if (branch === baseBranch) {
+        // ここを通すと controller が main を書き換えられる。設定ではなく実装で塞ぐ。
+        throw new Error(`base ブランチには push しない: ${branch}`);
+      }
+
+      // base との差分が無ければ push しない。空の PR は通知にも検証にも使えない。
+      const ahead = await git(`rev-list --count origin/${baseBranch}..HEAD`);
+      if (ahead === "0") {
+        return { branch, pushed: false };
+      }
+
+      // HEAD:<branch> の形にして、ローカルとリモートで名前がずれても同じ先に送る。
+      await git(`push -u origin HEAD:${branch}`);
+      return { branch, pushed: true };
+    },
+  };
+}
+
+/**
+ * 人間の承認が常に未承認になる Port。
+ *
+ * PR がまだ無い Goal で使う。承認コメントの置き場所が無い状態を
+ * 「承認された」と読まないため、捏造せずに null を返す。
  */
 export function pendingApproval(): ApprovalPort {
   return { getApproval: async () => null };

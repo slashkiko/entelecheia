@@ -9,6 +9,8 @@ import type {
   IssueSnapshot,
   PullRequestSnapshot,
 } from "../observe/index.js";
+import type { CodeWriterPort } from "../publish/index.js";
+import type { ApprovalPort } from "../verify/index.js";
 
 /**
  * GitHub 向けの CodeProviderPort。octokit を使う。
@@ -150,6 +152,141 @@ export function githubCodeProvider(options: GitHubOptions): CodeProviderPort {
 }
 
 /**
+ * 書き込み側。design.md §4.1 のとおり read と別のインターフェースにする。
+ *
+ * ETag のキャッシュは持たない。POST は conditional request が効かないうえ、
+ * 「前回と同じだから作らない」判断は findPullRequest が担うため。
+ */
+export function githubCodeWriter(options: GitHubOptions): CodeWriterPort {
+  const octokit = client(options);
+
+  return {
+    async findPullRequest(head) {
+      // 作る前に必ず探す。2本目を立てるとどちらが正かを決められなくなる。
+      const response = await request(octokit, "GET /repos/{owner}/{repo}/pulls", options, {
+        // owner:branch の形にしないと、fork からの PR を取りこぼす。
+        head: `${options.owner}:${head}`,
+        state: "open",
+        per_page: 1,
+      });
+      const found = openPullsSchema.parse(response)[0];
+      return found?.number ?? null;
+    },
+
+    async createPullRequest(draft) {
+      const response = await request(octokit, "POST /repos/{owner}/{repo}/pulls", options, {
+        head: draft.head,
+        base: draft.base,
+        title: draft.title,
+        body: draft.body,
+      });
+      // 捏造した番号を返さない。形が違えばここで throw する。
+      return createdPullSchema.parse(response).number;
+    },
+
+    async addComment(prNumber, body) {
+      await request(octokit, "POST /repos/{owner}/{repo}/issues/{issue_number}/comments", options, {
+        issue_number: prNumber,
+        body,
+      });
+    },
+  };
+}
+
+/**
+ * PR コメントの定型文を人間の承認として読む。design.md §10-4 の未決を埋める。
+ *
+ * §4.3 のとおり `github.pr.review_decision` は使えない。GitHub は自分が作った
+ * PR に Approve を押させないので、controller が Goal の所有者と同じアカウントで
+ * PR を作る限り `APPROVED` にならない。
+ *
+ * 代わりに `/ent approve <criterion-id>` というコメントを signal にする。
+ * ポーリングでそのまま拾え（§3.4）、承認が GitHub 上に監査記録として残る。
+ *
+ * PR がまだ無ければ常に未承認を返す。承認コメントの置き場所が無い状態を
+ * 「承認された」と読まないため。
+ */
+export function githubApproval(options: GitHubOptions & { prNumber: number | null }): ApprovalPort {
+  const octokit = client(options);
+
+  return {
+    async getApproval(criterionId) {
+      if (options.prNumber === null) {
+        return null;
+      }
+
+      const response = await request(
+        octokit,
+        "GET /repos/{owner}/{repo}/issues/{issue_number}/comments",
+        options,
+        { issue_number: options.prNumber, per_page: 100 },
+      );
+      const comments = commentsSchema.parse(response);
+
+      // 最初の1件を採る。同じ criterion を2回承認しても、最初の判断が残る。
+      for (const comment of comments) {
+        if (!approves(comment.body, criterionId)) {
+          continue;
+        }
+        return {
+          approvedBy: comment.user?.login ?? "unknown",
+          approvedAt: comment.created_at,
+        };
+      }
+      return null;
+    },
+  };
+}
+
+/**
+ * `/ent approve <criterion-id>` を含むか。
+ *
+ * 行全体で照合する。引用した本文やコード例の中の同じ文字列を承認と読むと、
+ * 捏造した承認が作れてしまう。行頭の空白だけは許す。
+ */
+function approves(body: string, criterionId: string): boolean {
+  return body.split("\n").some((line) => line.trim() === `/ent approve ${criterionId}`);
+}
+
+/**
+ * 書き込み側の octokit。read 側と違って retry プラグインを入れない。
+ *
+ * 500 で再試行すると、1回目が実際には成功していた場合に PR が2本立つ。
+ * どちらが正かを決められなくなるより、失敗して次のティックに任せる方がよい
+ * （reconcile はどのティックも有限時間で return する。design.md §3.6）。
+ */
+function client(options: GitHubOptions): Octokit {
+  const Client = Octokit.plugin(throttling);
+  return new Client({
+    auth: options.token,
+    ...(options.fetch === undefined ? {} : { request: { fetch: options.fetch } }),
+    throttle: {
+      onRateLimit: () => false,
+      onSecondaryRateLimit: () => false,
+    },
+  });
+}
+
+/** 書き込み側の共通経路。失敗は必ず PortError にして、素の例外を controller に流さない */
+async function request(
+  octokit: Octokit,
+  route: string,
+  options: GitHubOptions,
+  params: Record<string, unknown>,
+): Promise<unknown> {
+  try {
+    const response = await octokit.request(route, {
+      owner: options.owner,
+      repo: options.repo,
+      ...params,
+    });
+    return response.data;
+  } catch (error) {
+    throw new PortError("unavailable", `${describe(route, params, options)}: ${message(error)}`);
+  }
+}
+
+/**
  * review_decision を REST から導出する。
  *
  * GraphQL なら1回で取れるが、ETag による conditional request（design.md §3.4）が
@@ -279,6 +416,21 @@ const jobsSchema = z.object({
     }),
   ),
 });
+
+const openPullsSchema = z.array(z.object({ number: z.number() }));
+
+const createdPullSchema = z.object({ number: z.number() });
+
+const commentsSchema = z.array(
+  z.object({
+    body: z
+      .string()
+      .nullish()
+      .transform((value) => value ?? ""),
+    user: z.object({ login: z.string() }).nullish(),
+    created_at: z.string(),
+  }),
+);
 
 const issueSchema = z.object({
   number: z.number(),

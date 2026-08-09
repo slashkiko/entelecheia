@@ -5,8 +5,14 @@ import { pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
 import { type EffortLevel, query } from "@anthropic-ai/claude-agent-sdk";
 import { type ClaudeOptions, claudeActor, claudeLlm } from "./adapters/claude.js";
-import { githubCodeProvider } from "./adapters/github.js";
-import { commandRunner, gitWorktree, localRepo, pendingApproval } from "./adapters/local.js";
+import { githubApproval, githubCodeProvider, githubCodeWriter } from "./adapters/github.js";
+import {
+  commandRunner,
+  gitBranch,
+  gitWorktree,
+  localRepo,
+  pendingApproval,
+} from "./adapters/local.js";
 import { type TickResult, tick } from "./controller/index.js";
 import type { Decision } from "./domain/action.js";
 import type { Goal } from "./domain/goal.js";
@@ -15,7 +21,9 @@ import { PortError } from "./domain/port-error.js";
 import type { Run } from "./domain/run.js";
 import type { Verification } from "./domain/verification.js";
 import type { CodeProviderPort } from "./observe/index.js";
+import type { CodeWriterPort } from "./publish/index.js";
 import { type GoalState, openStore, type Snapshot, type Store } from "./store/index.js";
+import type { ApprovalPort } from "./verify/index.js";
 
 /**
  * `ent` コマンド。常駐しない（design.md §3.6）。
@@ -199,9 +207,13 @@ export async function main(argv: readonly string[]): Promise<number> {
       leaseSeconds: 300,
       signal: aborter.signal,
       code: codeProvider(goal),
+      writer: codeWriter(goal),
+      branch: gitBranch(join(stateDir, "worktrees")),
       local: localRepo(repoRoot),
       command: commandRunner(repoRoot),
-      approval: pendingApproval(),
+      // 承認は PR コメントの定型文で検知する（design.md §10-4）。
+      // PR がまだ無い Goal では常に未承認になる。捏造した承認を作らない。
+      approval: approval(goal, store.getState(goal.goal.id)?.prNumber ?? null),
       worktree: gitWorktree(repoRoot, join(stateDir, "worktrees")),
       actor: claudeActor(claudeOptions(stateDir)),
       llm: claudeLlm({
@@ -294,6 +306,53 @@ function codeProvider(goal: Goal): CodeProviderPort {
     repo: goal.repository.name,
     token,
   });
+}
+
+/**
+ * GitHub の書き込み側。read と分けてある（design.md §4.1）。
+ *
+ * トークンが無ければ呼ばれた時点で throw する。publish はそれを握って
+ * skipped の理由に変えるので、通知に失敗してもティックは最後まで回る。
+ */
+function codeWriter(goal: Goal): CodeWriterPort {
+  const token = githubToken();
+  if (token === null) {
+    const fail = async (): Promise<never> => {
+      throw new PortError("unavailable", "GITHUB_TOKEN が設定されていない");
+    };
+    return { findPullRequest: fail, createPullRequest: fail, addComment: fail };
+  }
+
+  return githubCodeWriter({
+    owner: goal.repository.owner,
+    repo: goal.repository.name,
+    token,
+  });
+}
+
+/**
+ * 人間の承認。PR コメントの `/ent approve <criterion-id>` を signal にする。
+ *
+ * PR もトークンも無ければ、常に未承認を返す Port にする。
+ * 「確かめられなかった」を「承認された」と読まないため（design.md §3.1）。
+ */
+function approval(goal: Goal, prNumber: number | null): ApprovalPort {
+  const token = githubToken();
+  if (token === null || prNumber === null) {
+    return pendingApproval();
+  }
+
+  return githubApproval({
+    owner: goal.repository.owner,
+    repo: goal.repository.name,
+    token,
+    prNumber,
+  });
+}
+
+function githubToken(): string | null {
+  const token = process.env.GITHUB_TOKEN ?? process.env.GH_TOKEN;
+  return token === undefined || token === "" ? null : token;
 }
 
 /**

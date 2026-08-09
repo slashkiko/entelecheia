@@ -94,6 +94,11 @@ export interface Store {
   saveDecision(goalId: string, observedDigest: string, decision: Decision): void;
   /** 古い順。収束したかを見るには並びが要る */
   listDecisions(goalId: string): Decision[];
+  /**
+   * 直近の Decision に付いた観測ダイジェスト。1件も無ければ null。
+   * 「前のティックから状態が変わったか」を、Fact を読み直さずに判定する。
+   */
+  latestDigest(goalId: string): string | null;
 
   /**
    * LlmPort を1回呼んだ記録。Run とは別に持つ（design.md §7）。
@@ -364,6 +369,13 @@ export function openStore(path: string): Store {
         rationale: row.rationale,
         decidedBy: row.decided_by === "llm" ? "llm" : "guard",
       }));
+    },
+
+    latestDigest(goalId) {
+      const row = db
+        .prepare("SELECT observed_digest FROM decisions WHERE goal_id = ? ORDER BY id DESC LIMIT 1")
+        .get(goalId) as { observed_digest: string } | undefined;
+      return row?.observed_digest ?? null;
     },
 
     recordLlmCall(goalId, call) {
