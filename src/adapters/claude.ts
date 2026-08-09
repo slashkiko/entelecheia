@@ -47,11 +47,16 @@ export function claudeActor(options: ClaudeOptions): ActorPort {
         // controller 本体のコードと Agent が編集するコードを物理的に分ける（§7）。
         cwd: invocation.worktree.path,
         abortController: aborter,
+        // 使ってよいツールを列挙し、それ以外は拒否する。
+        // acceptEdits はファイル操作しか自動承認しないので、mise run test の
+        // ような Bash 呼び出しが canUseTool に落ちる。コールバックを渡していない
+        // controller では、そこで止まって何も実行できない。
+        allowedTools: [...ACTOR_TOOLS],
+        permissionMode: "dontAsk",
         // merge や force push を Agent に実行させない（§7）。
-        // 公式ドキュメントによれば、スコープ付きの拒否は bypassPermissions を
-        // 含むどのモードでも効く。permissionMode を緩めても抜けない。
+        // 拒否ルールは許可ルールより先に評価され、bypassPermissions を含む
+        // どのモードでも効く。allowedTools に Bash があっても抜けない。
         disallowedTools: disallowedToolsFor(invocation.deniedOperations),
-        permissionMode: "acceptEdits",
         // ホストの ~/.claude や repo の .claude を読み込ませない。
         // 省略すると user / project / local がすべて読まれ、controller が
         // 与えた拒否リスト以外の設定が Agent の挙動に混ざる。
@@ -212,13 +217,47 @@ function disallowedToolsFor(gates: readonly ApprovalGate[]): string[] {
   return [...tools];
 }
 
+/**
+ * Actor が使ってよいツール。ここに無いものは dontAsk が拒否する。
+ *
+ * 実装させる以上、読む・探す・書く・コマンドを流すの4種類が要る。
+ * Bash は必要だが、危険な呼び出しは下の拒否ルールで個別に塞ぐ。
+ */
+const ACTOR_TOOLS = [
+  "Read",
+  "Glob",
+  "Grep",
+  "Edit",
+  "Write",
+  "NotebookEdit",
+  "Bash",
+  "TodoWrite",
+] as const;
+
+/**
+ * 承認が要る操作に対応する拒否ルール。
+ *
+ * パターンはグロブ形式（`Bash(git merge *)`）で書く。古い Claude Code の
+ * コロン形式（`Bash(git merge:*)`）は現行のドキュメントに無く、一致しなければ
+ * 拒否が黙って効かなくなる。引数なしで叩かれる形も併記する。
+ */
 const DENIED_TOOLS: Record<ApprovalGate, readonly string[]> = {
-  merge: ["Bash(git merge:*)", "Bash(gh pr merge:*)"],
-  force_push: ["Bash(git push --force:*)", "Bash(git push -f:*)"],
-  push_to_default_branch: ["Bash(git push origin main:*)", "Bash(git push origin master:*)"],
-  deploy: ["Bash(gh workflow run:*)", "Bash(gh release create:*)"],
-  secret_access: ["Bash(gh secret:*)", "Bash(gh auth token:*)"],
-  external_send: ["Bash(curl:*)", "Bash(gh api --method POST:*)"],
+  merge: ["Bash(git merge)", "Bash(git merge *)", "Bash(gh pr merge *)"],
+  force_push: [
+    "Bash(git push --force *)",
+    "Bash(git push -f *)",
+    "Bash(git push * --force)",
+    "Bash(git push * -f)",
+  ],
+  push_to_default_branch: [
+    "Bash(git push origin main)",
+    "Bash(git push origin main *)",
+    "Bash(git push origin master)",
+    "Bash(git push origin master *)",
+  ],
+  deploy: ["Bash(gh workflow run *)", "Bash(gh release create *)"],
+  secret_access: ["Bash(gh secret *)", "Bash(gh auth token *)"],
+  external_send: ["Bash(curl *)", "Bash(gh api --method POST *)"],
 };
 
 const EDIT_TOOLS = new Set(["Edit", "Write", "NotebookEdit"]);
