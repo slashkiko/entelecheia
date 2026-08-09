@@ -268,6 +268,36 @@ describe("verify", () => {
     expect(verifiedOnly(result.facts)[0]?.evidence.detail).toContain("pr-author");
   });
 
+  it("ApprovalPort が落ちたら port_failed。不合格を捏造しない", async () => {
+    // GitHub の一時 500 を「検証済み不合格」にすると、assess が unmet を出し、
+    // DECIDE が WAIT ではなく ACT を選ぶ。§3.1 が名指しで避けたかった読み違い。
+    const result = await verify(
+      {
+        setup: [],
+        criteria: [
+          {
+            id: "ac-6",
+            description: "Port が癒着していない",
+            verification: { type: "human", prompt: "確認してください" },
+          },
+        ],
+        facts: [],
+      },
+      deps({
+        approval: {
+          getApproval: async () => {
+            throw new Error("500 Internal Server Error");
+          },
+        },
+      }),
+    );
+
+    expect(result.facts).toHaveLength(0);
+    expect(result.unverified).toHaveLength(1);
+    expect(result.unverified[0]?.reason).toBe("port_failed");
+    expect(result.unverified[0]?.detail).toContain("500");
+  });
+
   it("1件が検証できなくても他の criteria の結果は残る", async () => {
     const result = await verify(
       {

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { ActorInvocation } from "../src/act/index.js";
-import { type AgentQuery, claudeActor, claudeLlm } from "../src/adapters/claude.js";
+import { type AgentQuery, claudeActor, claudeLlm, WITHHELD_ENV } from "../src/adapters/claude.js";
 import { PortError } from "../src/domain/port-error.js";
 
 /**
@@ -88,15 +88,96 @@ describe("claudeActor", () => {
 
     const options = sink.options[0] as { abortController?: AbortController };
     expect(options.abortController).toBeInstanceOf(AbortController);
+    // インスタンスであることだけを見ていると、外から来た signal と繋がって
+    // いなくても緑になる。実際に伝播することまで確かめる。
+    expect(options.abortController?.signal.aborted).toBe(false);
+    controller.abort();
+    expect(options.abortController?.signal.aborted).toBe(true);
+  });
+
+  it("起動前に中断されていれば SDK 側も中断済みで渡す", async () => {
+    const sink = recorded([SUCCESS]);
+    const controller = new AbortController();
+    controller.abort();
+    await claudeActor(deps(sink)).run({ ...INVOCATION, signal: controller.signal });
+
+    const options = sink.options[0] as { abortController?: AbortController };
+    expect(options.abortController?.signal.aborted).toBe(true);
   });
 
   it("承認が要る操作を禁止ツールに落とす", async () => {
     // merge や force push を Agent に実行させない（design.md §7）。
+    // 件数だけを見ていたころは、external_send を空にしても merge を
+    // 旧コロン形式に戻しても緑のまま通った。中身まで固定する。
+    const sink = recorded([SUCCESS]);
+    await claudeActor(deps(sink)).run({
+      ...INVOCATION,
+      deniedOperations: ["merge", "external_send"],
+    });
+
+    const options = sink.options[0] as { disallowedTools?: string[] };
+    expect(options.disallowedTools).toEqual([
+      // Goal の設定によらず常に拒否する分。関門が観測に使っている前提を
+      // Actor 側から壊せないようにする（base の ref を消すと commit 済みの
+      // 違反が diff から消え、changedPaths が「変更なし」を返した）。
+      "Bash(git update-ref *)",
+      "Bash(git symbolic-ref *)",
+      "Bash(git branch -D *)",
+      "Bash(git branch -d *)",
+      "Bash(git branch --delete *)",
+      "Bash(git worktree *)",
+      "Bash(git merge)",
+      "Bash(git merge *)",
+      "Bash(gh pr merge *)",
+      "Bash(curl *)",
+      "Bash(gh api --method POST *)",
+      "Bash(gh pr create *)",
+      "Bash(gh pr comment *)",
+      "Bash(gh issue comment *)",
+    ]);
+  });
+
+  it("承認ゲートが空でも、関門の前提を壊す呼び出しは拒否する", async () => {
+    // Goal が require_human_approval を1つも書かなくても、
+    // base の ref を消す経路は塞ぐ。消されると、違反を commit してから
+    // ref を消すだけで changedPaths が「変更なし」を返した。
+    const sink = recorded([SUCCESS]);
+    await claudeActor(deps(sink)).run({ ...INVOCATION, deniedOperations: [] });
+
+    const options = sink.options[0] as { disallowedTools?: string[] };
+    expect(options.disallowedTools).toContain("Bash(git update-ref *)");
+    expect(options.disallowedTools).toContain("Bash(git worktree *)");
+  });
+
+  it("使ってよいツールと設定源を固定する", async () => {
+    // settingSources を省くと、ホストの ~/.claude と repo の .claude が
+    // すべて読まれ、controller が与えた拒否リスト以外の設定が混ざる。
     const sink = recorded([SUCCESS]);
     await claudeActor(deps(sink)).run(INVOCATION);
 
-    const options = sink.options[0] as { disallowedTools?: string[] };
-    expect(options.disallowedTools?.length).toBeGreaterThan(0);
+    expect(sink.options[0]).toMatchObject({
+      allowedTools: ["Read", "Glob", "Grep", "Edit", "Write", "NotebookEdit", "Bash", "TodoWrite"],
+      permissionMode: "dontAsk",
+      settingSources: [],
+    });
+  });
+
+  it("controller の資格情報を Agent に渡さない", async () => {
+    // Bash を許している以上 printenv も echo $GITHUB_TOKEN も実行できる。
+    // どちらも secret_access の拒否パターンに一致しないので、拒否リストでは塞げない。
+    //
+    // 落とすキーは WITHHELD_ENV から組み立てる。テスト側に同じ一覧を書き写すと、
+    // 実装からキーが1つ減っても緑のまま通る。
+    const secrets = Object.fromEntries(WITHHELD_ENV.map((key) => [key, `secret-${key}`]));
+    const kept = { PATH: "/usr/bin", HOME: "/home/x" };
+    const sink = recorded([SUCCESS]);
+    await claudeActor({ ...deps(sink), env: { ...kept, ...secrets } }).run(INVOCATION);
+
+    const options = sink.options[0] as { env?: Record<string, string> };
+    expect(options.env).toEqual(kept);
+    // 一覧が空になっていないことも見る。空なら上の toEqual は素通りする。
+    expect(WITHHELD_ENV).toContain("GITHUB_TOKEN");
+    expect(WITHHELD_ENV).toContain("GH_TOKEN");
   });
 
   it("トークンを記録する", async () => {

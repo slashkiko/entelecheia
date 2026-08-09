@@ -31,6 +31,13 @@ export interface AssessDeps {
  *   混ぜると DECIDE が「直す」と「確かめる」を選び分けられない
  * - unresolved に残っている criteria は unknown。落ちたことにしない
  * - gaps が空であることと satisfied は一致する
+ *
+ * `src/domain/verification.ts` の `toVerifications` と似た3値判定をするが、
+ * **答えている問いが違うので1つに畳まない**（design.md §4.5）。
+ * ここは「VERIFIED な根拠で満たされているか」で、前ティックから繰り越した Fact も
+ * 根拠に数える。そうしないと、GitHub が一時的に落ちただけで直したはずの Gap が復活する。
+ * 向こうは「このティックで何が起きたか」なので、繰り越しより今ティックの
+ * unresolved を優先する。
  */
 export function assess(target: AssessTarget, deps: AssessDeps): Assessment {
   // 1 回だけ読む。同じ評価に含まれる Gap の時刻を揃える。

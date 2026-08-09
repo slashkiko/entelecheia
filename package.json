@@ -5,7 +5,7 @@
   "description": "Declare the end state; the controller converges to it.",
   "type": "module",
   "engines": {
-    "node": ">=22"
+    "node": ">=24"
   },
   "bin": {
     "ent": "./dist/cli.js"

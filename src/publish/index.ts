@@ -116,7 +116,13 @@ export async function publish(target: PublishTarget, deps: PublishDeps): Promise
   }
 
   // 同じ状態を毎ティック通知しない。読まれなくなる通知は無いのと同じ。
-  if (target.previousDigest === target.digest) {
+  //
+  // ただし関門が止めたティックは必ず書く。ダイジェストは Fact だけから作るので
+  // Decision を含まない。Actor が worktree の外だけを書いた場合、観測は
+  // 前ティックと1文字も変わらないまま decision だけが ESCALATE に差し替わる。
+  // そこを黙って飛ばすと、隔離が破れたことが PR に一度も出ないまま
+  // WAITING_HUMAN になる。人間に届かない関門は鳴っていないのと同じ。
+  if (target.previousDigest === target.digest && !stoppedByGuard(target.decision)) {
     return { prNumber, created, commented: false, skipped: "観測が前のティックと同じ" };
   }
 
@@ -147,14 +153,13 @@ async function ensurePullRequest(
 ): Promise<{ prNumber: number | null; created: boolean; skipped: string | null }> {
   // 制御ループ自体に触れた変更は push もしない（design.md §7）。
   // remote に出た時点で、通常の変更として流れる余地が生まれる。
-  if (
-    target.decision.action.type === "ESCALATE" &&
-    target.decision.action.reason === "protected_path_touched"
-  ) {
+  // 検査できなかった場合も同じ扱いにする。関門が動いていない状態で push するのは、
+  // 関門が無いのと同じになる。
+  if (stoppedByGuard(target.decision)) {
     return {
       prNumber: target.prNumber,
       created: false,
-      skipped: "保護パスに触れたので push も PR 作成もしない",
+      skipped: "保護パスの関門が通っていないので push も PR 作成もしない",
     };
   }
   if (target.run === null || target.run.status !== "completed") {
@@ -187,6 +192,14 @@ async function ensurePullRequest(
   return { prNumber: number, created: true, skipped: null };
 }
 
+/** push を止める ESCALATE の理由。どちらも「関門が通っていない」を意味する */
+const GUARD_REASONS = new Set<string>(["protected_path_touched", "guard_unavailable"]);
+
+/** 関門が止めたティックか。push の抑止と、通知の必須化の両方が読む */
+function stoppedByGuard(decision: Decision): boolean {
+  return decision.action.type === "ESCALATE" && GUARD_REASONS.has(decision.action.reason);
+}
+
 /**
  * PR の本文。Goal の宣言部から作る。
  *
@@ -216,6 +229,19 @@ function pullRequestBody(goal: Goal): string {
 }
 
 /**
+ * controller が書いた進捗コメントであることの目印。
+ *
+ * 承認の検知（design.md §10-4）がこれを見て自分のコメントを除外する。
+ * rationale には LLM が決めた intent がそのまま載るので、そこに
+ * `/ent approve <criterion-id>` を書かせれば、controller 自身のコメントとして
+ * 承認の定型文が成立してしまう。Agent に `gh pr comment` を禁じて塞いだ経路を、
+ * controller が迂回する形になっていた。
+ *
+ * 目印は HTML コメントにして、人間が読む本文には出さない。
+ */
+export const PROGRESS_MARKER = "<!-- ent:progress -->";
+
+/**
  * 進捗コメント。
  *
  * action と rationale だけでは「何が残っているか」が読めないので、
@@ -227,9 +253,12 @@ function commentBody(target: PublishTarget, now: Date): string {
   );
 
   return [
+    PROGRESS_MARKER,
     `### ${describeAction(target.decision)}`,
     "",
-    target.decision.rationale,
+    // 改行を潰す。承認の定型文は行単位で照合されるので、本文の途中に
+    // 独立した1行を作らせない。目印による除外と二重にしておく。
+    flatten(target.decision.rationale),
     "",
     "| criterion | result | detail |",
     "|---|---|---|",
@@ -265,9 +294,14 @@ function describeAction(decision: Decision): string {
   }
 }
 
+/** 改行と連続する空白を1つに潰す。切り詰めない */
+function flatten(text: string): string {
+  return text.replace(/\s+/g, " ").trim();
+}
+
 /** 表のセルとタイトルに入れる。改行と `|` が混ざると GFM の表が崩れる */
 function oneLine(text: string): string {
-  const collapsed = text.replace(/\s+/g, " ").replace(/\|/g, "\\|").trim();
+  const collapsed = flatten(text).replace(/\|/g, "\\|");
   return collapsed.length > 120 ? `${collapsed.slice(0, 117)}...` : collapsed;
 }
 

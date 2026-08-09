@@ -70,16 +70,19 @@ const DECISION: Decision = {
   decidedBy: "llm",
 };
 
-const VERIFICATIONS: Verification[] = [
-  {
+function verification(over: Partial<Verification> = {}): Verification {
+  return {
     criterionId: "ac-1",
     result: "failed",
     reason: null,
     evidence: { source: "mise run test", detail: "exit_code=1" },
     detail: "exit_code=1",
     verifiedAt: NOW.toISOString(),
-  },
-];
+    ...over,
+  };
+}
+
+const VERIFICATIONS: Verification[] = [verification()];
 
 interface Sink {
   writer: CodeWriterPort;
@@ -256,6 +259,34 @@ describe("進捗を書く", () => {
     expect(s.comments).toEqual([]);
   });
 
+  it("関門が止めたティックは、観測が同じでも必ず書く", async () => {
+    // ダイジェストは Fact だけから作るので Decision を含まない。Actor が
+    // worktree の外だけを書いたティックは、観測が1文字も変わらないまま
+    // decision だけが ESCALATE に差し替わる。そこを飛ばすと、隔離が破れた
+    // ことが PR に一度も出ないまま WAITING_HUMAN になる。
+    const s = sink({ existing: 11 });
+    const result = await publish(
+      target({
+        digest: "same",
+        previousDigest: "same",
+        // 関門が止めたティックでは PR を作らないので、既にある PR に書く。
+        prNumber: 11,
+        decision: {
+          decidedAt: NOW.toISOString(),
+          action: { type: "ESCALATE", reason: "protected_path_touched" },
+          rationale: "制御ループ自体に触れたので停止する",
+          decidedBy: "guard",
+        },
+      }),
+      deps(s),
+    );
+
+    expect(result.commented).toBe(true);
+    expect(s.comments[0]?.body).toContain("制御ループ自体に触れた");
+    // 通知はするが push はしない。
+    expect(s.pushes).toEqual([]);
+  });
+
   it("action と rationale と criteria の結果を載せる", async () => {
     const s = sink({ existing: 11 });
     await publish(target(), deps(s));
@@ -281,7 +312,7 @@ describe("進捗を書く", () => {
     const s = sink({ existing: 11 });
     await publish(
       target({
-        verifications: [{ ...VERIFICATIONS[0]!, detail: "1行目\n2行目 | 3列目" }],
+        verifications: [verification({ detail: "1行目\n2行目 | 3列目" })],
       }),
       deps(s),
     );

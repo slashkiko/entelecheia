@@ -1,9 +1,13 @@
+// node:sqlite は Node 22.5 から入り、22.13 まではフラグが要る。package.json の
+// engines を ">=24" にしてあるのはこのため。標準ではあるが experimental のままで、
+// 起動時に ExperimentalWarning が出る。API が変わったときの移行先は
+// better-sqlite3 で、Store インターフェースの内側に閉じている（design.md §6）。
 import { DatabaseSync } from "node:sqlite";
-import { actionSchema, type Decision } from "../domain/action.js";
+import { actionSchema, type Decision, decisionSchema } from "../domain/action.js";
 import { type Fact, type Unresolved, unresolvedSchema } from "../domain/fact.js";
 import type { Goal } from "../domain/goal.js";
 import { type GoalStatus, goalStatusSchema } from "../domain/goal-state.js";
-import type { LlmCall } from "../domain/llm-call.js";
+import { type LlmCall, llmCallSchema } from "../domain/llm-call.js";
 import {
   actorKindSchema,
   type Run,
@@ -83,10 +87,14 @@ export interface Store {
   setObserveTarget(goalId: string, prNumber: number | null, issueNumber: number | null): void;
 
   /**
-   * lease を取る。取れたら true。
+   * lease を取る。取れたら true。同じ owner で呼び直せば期限を延長する。
    * 行ロックではなく期限付きの所有権にすることで、クラッシュしても自動で解放される。
+   *
+   * 期限切れの判定に使う `now` も引数で受け取る。ここだけ store が実時計を
+   * 読んでいたので、注入した時計で動くティックと時間軸が分かれ、
+   * 「期限切れの lease を奪う」経路をテストから再現できなかった。
    */
-  acquireLease(goalId: string, owner: string, until: Date): boolean;
+  acquireLease(goalId: string, owner: string, until: Date, now: Date): boolean;
   releaseLease(goalId: string, owner: string): void;
 
   /** 1ティックの観測結果をまとめて書く。reconciles もここで進める */
@@ -241,7 +249,7 @@ export function openStore(path: string): Store {
       );
     },
 
-    acquireLease(goalId, owner, until) {
+    acquireLease(goalId, owner, until, now) {
       // 期限付きの所有権にすることで、プロセスがクラッシュしても自動で解放される。
       // 更新行数が 0 なら他のワーカーが処理中（design.md §4.5）。
       const result = db
@@ -251,7 +259,7 @@ export function openStore(path: string): Store {
             WHERE id = ?
               AND (lease_owner IS NULL OR lease_owner = ? OR lease_until IS NULL OR lease_until < ?)`,
         )
-        .run(owner, until.toISOString(), goalId, owner, new Date().toISOString());
+        .run(owner, until.toISOString(), goalId, owner, now.toISOString());
       return result.changes > 0;
     },
 
@@ -400,7 +408,10 @@ export function openStore(path: string): Store {
         decidedAt: row.decided_at,
         action: actionSchema.parse(JSON.parse(row.action)),
         rationale: row.rationale,
-        decidedBy: row.decided_by === "llm" ? "llm" : "guard",
+        // 他の列挙列と同じく Zod で読む。三項で畳んでいたころは、
+        // decidedBy に3つ目の値を足しても型エラーにならないまま
+        // DB の正しい値が "guard" に化けた。
+        decidedBy: decisionSchema.shape.decidedBy.parse(row.decided_by),
       }));
     },
 
@@ -440,7 +451,9 @@ export function openStore(path: string): Store {
         .prepare("SELECT * FROM llm_calls WHERE goal_id = ? ORDER BY id")
         .all(goalId) as unknown as LlmCallRow[];
       return rows.map((row) => ({
-        purpose: "decide" as const,
+        // 列を捨てて固定値を返していたころは、purpose が union になった瞬間に
+        // 全レコードが decide を名乗るようになる形だった（型エラーは出ない）。
+        purpose: llmCallSchema.shape.purpose.parse(row.purpose),
         tokens: row.tokens,
         logRef: row.log_ref,
         ok: row.ok === 1,
@@ -609,6 +622,7 @@ interface VerificationRow {
 }
 
 interface LlmCallRow {
+  purpose: string;
   tokens: number;
   log_ref: string;
   ok: number;

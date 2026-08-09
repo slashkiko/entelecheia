@@ -113,41 +113,54 @@ describe("store", () => {
   });
 
   describe("lease", () => {
-    // 期限切れの判定は実時計で行うので、固定時刻の NOW ではなく現在時刻から取る。
-    const until = new Date(Date.now() + 5 * 60 * 1000);
+    // 期限切れの判定に使う時刻も引数で受け取る。store は時刻を作らない。
+    const until = new Date(NOW.getTime() + 5 * 60 * 1000);
 
     it("誰も持っていなければ取れる", () => {
-      expect(store.acquireLease("sample-goal", "worker-a", until)).toBe(true);
+      expect(store.acquireLease("sample-goal", "worker-a", until, NOW)).toBe(true);
       expect(store.getState("sample-goal")?.leaseOwner).toBe("worker-a");
     });
 
     it("他のワーカーが持っている間は取れない", () => {
-      store.acquireLease("sample-goal", "worker-a", until);
-      expect(store.acquireLease("sample-goal", "worker-b", until)).toBe(false);
+      store.acquireLease("sample-goal", "worker-a", until, NOW);
+      expect(store.acquireLease("sample-goal", "worker-b", until, NOW)).toBe(false);
     });
 
     it("同じワーカーは取り直せる", () => {
-      store.acquireLease("sample-goal", "worker-a", until);
-      expect(store.acquireLease("sample-goal", "worker-a", until)).toBe(true);
+      store.acquireLease("sample-goal", "worker-a", until, NOW);
+      expect(store.acquireLease("sample-goal", "worker-a", until, NOW)).toBe(true);
+    });
+
+    it("同じワーカーの取り直しは期限を延ばす", () => {
+      // ACT は分単位で走る。延長しないと途中で期限が切れ、cron の次の起動が
+      // 同じ Goal を奪って、同じ worktree で2つの ACT が並行する。
+      store.acquireLease("sample-goal", "worker-a", until, NOW);
+      const later = new Date(NOW.getTime() + 4 * 60 * 1000);
+      const extended = new Date(later.getTime() + 5 * 60 * 1000);
+      store.acquireLease("sample-goal", "worker-a", extended, later);
+
+      // 元の期限を過ぎた時刻でも、他のワーカーは奪えない。
+      const afterOriginal = new Date(NOW.getTime() + 6 * 60 * 1000);
+      expect(store.acquireLease("sample-goal", "worker-b", until, afterOriginal)).toBe(false);
     });
 
     it("期限が切れた lease は奪える", () => {
       // 行ロックではなく期限付きの所有権にすることで、
       // プロセスがクラッシュしても自動で解放される。
-      store.acquireLease("sample-goal", "worker-a", new Date(Date.now() - 1000));
-      expect(store.acquireLease("sample-goal", "worker-b", until)).toBe(true);
+      store.acquireLease("sample-goal", "worker-a", new Date(NOW.getTime() - 1000), NOW);
+      expect(store.acquireLease("sample-goal", "worker-b", until, NOW)).toBe(true);
     });
 
     it("解放すれば別のワーカーが取れる", () => {
-      store.acquireLease("sample-goal", "worker-a", until);
+      store.acquireLease("sample-goal", "worker-a", until, NOW);
       store.releaseLease("sample-goal", "worker-a");
 
       expect(store.getState("sample-goal")?.leaseOwner).toBeNull();
-      expect(store.acquireLease("sample-goal", "worker-b", until)).toBe(true);
+      expect(store.acquireLease("sample-goal", "worker-b", until, NOW)).toBe(true);
     });
 
     it("他人の lease は解放できない", () => {
-      store.acquireLease("sample-goal", "worker-a", until);
+      store.acquireLease("sample-goal", "worker-a", until, NOW);
       store.releaseLease("sample-goal", "worker-b");
 
       expect(store.getState("sample-goal")?.leaseOwner).toBe("worker-a");

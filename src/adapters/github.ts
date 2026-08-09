@@ -9,7 +9,7 @@ import type {
   IssueSnapshot,
   PullRequestSnapshot,
 } from "../observe/index.js";
-import type { CodeWriterPort } from "../publish/index.js";
+import { type CodeWriterPort, PROGRESS_MARKER } from "../publish/index.js";
 import type { ApprovalPort } from "../verify/index.js";
 
 /**
@@ -258,16 +258,11 @@ export function githubApproval(options: GitHubOptions & { prNumber: number | nul
       cached ??= load();
       const { reviews, comments, author } = await cached;
 
-      // 同じ人が何度もレビューするので、人ごとに最後の1件だけを見る。
-      const latest = new Map<string, Review>();
-      for (const review of reviews) {
-        if (review.state !== "APPROVED" && review.state !== "CHANGES_REQUESTED") {
-          continue;
-        }
-        latest.set(review.user?.login ?? "", review);
-      }
+      const latest = latestReviewByUser(reviews);
 
       // 変更を求められている PR を承認済みと読まない。
+      // 権限の無い相手からの変更要求も止める側に数える。承認を厳しくするのと、
+      // 拒否を厳しくするのは別の話で、後者は倒す向きが逆になる。
       if ([...latest.values()].some((r) => r.state === "CHANGES_REQUESTED")) {
         return null;
       }
@@ -277,15 +272,20 @@ export function githubApproval(options: GitHubOptions & { prNumber: number | nul
       //    別アカウントで作った PR を自分で承認する形を型の外で塞いでおく。
       for (const review of latest.values()) {
         const login = review.user?.login ?? "";
-        if (review.state !== "APPROVED" || login === author) {
+        if (review.state !== "APPROVED" || login === author || !permitted(review)) {
           continue;
         }
         return { approvedBy: login, approvedAt: review.submitted_at ?? "" };
       }
 
       // 2. コメントの定型文。最初の1件を採る。2回承認しても最初の判断が残る。
+      //    controller 自身が書いた進捗コメントは数えない。rationale には LLM が
+      //    決めた intent が載るので、そこに定型文を書かせれば自己承認になる。
       for (const comment of comments) {
-        if (!approves(comment.body, criterionId)) {
+        if (comment.body.includes(PROGRESS_MARKER)) {
+          continue;
+        }
+        if (!permitted(comment) || !approves(comment.body, criterionId)) {
           continue;
         }
         return {
@@ -296,6 +296,25 @@ export function githubApproval(options: GitHubOptions & { prNumber: number | nul
       return null;
     },
   };
+}
+
+/**
+ * 承認として数えてよい投稿者の関係。
+ *
+ * `author_association` は GitHub が返す「その PR のリポジトリに対する関係」で、
+ * クライアントが名乗るものではない。ここを見ないと、公開リポジトリでは
+ * **通りすがりの誰でも** `/ent approve <criterion-id>` の1行で `type: human` の
+ * criterion を VERIFIED にできた。§9 の完了判定は人間の承認を根拠にしているので、
+ * ここが開いていると完了判定そのものが成立しない。
+ *
+ * `CONTRIBUTOR`（過去にマージされた PR がある）は含めない。書き込み権限とは別物で、
+ * 一度貢献しただけの相手に完了判定を渡す理由が無い。
+ */
+const APPROVER_ASSOCIATIONS = new Set(["OWNER", "MEMBER", "COLLABORATOR"]);
+
+/** 承認を出してよい相手か。関係が読めなければ承認しない側に倒す */
+function permitted(actor: { author_association?: string | null | undefined }): boolean {
+  return actor.author_association != null && APPROVER_ASSOCIATIONS.has(actor.author_association);
 }
 
 /**
@@ -347,6 +366,25 @@ async function request(
 }
 
 /**
+ * 人ごとに最後の1件のレビューだけを残す。COMMENTED は数えない。
+ *
+ * 承認の成立条件（自己承認の除外、変更要求の優先）は安全性の根幹なので、
+ * その土台になるこの集約は1箇所に置く。observe が読む `review_decision` と
+ * verify が読む承認が別々にこれを書いていたころは、片方だけ直すと
+ * 2つが別の結論を出せた。
+ */
+function latestReviewByUser(reviews: readonly Review[]): Map<string, Review> {
+  const latest = new Map<string, Review>();
+  for (const review of reviews) {
+    if (review.state !== "APPROVED" && review.state !== "CHANGES_REQUESTED") {
+      continue;
+    }
+    latest.set(review.user?.login ?? "", review);
+  }
+  return latest;
+}
+
+/**
  * review_decision を REST から導出する。
  *
  * GraphQL なら1回で取れるが、ETag による conditional request（design.md §3.4）が
@@ -357,15 +395,7 @@ function reviewDecisionOf(
   reviews: readonly Review[],
   requestedReviewers: readonly string[],
 ): PullRequestSnapshot["reviewDecision"] {
-  // 同じ人が何度もレビューするので、人ごとに最後の1件だけを見る。
-  const latest = new Map<string, string>();
-  for (const review of reviews) {
-    if (review.state !== "APPROVED" && review.state !== "CHANGES_REQUESTED") {
-      continue;
-    }
-    latest.set(review.user?.login ?? "", review.state);
-  }
-  const states = [...latest.values()];
+  const states = [...latestReviewByUser(reviews).values()].map((review) => review.state);
 
   if (states.includes("CHANGES_REQUESTED")) {
     return "CHANGES_REQUESTED";
@@ -454,6 +484,8 @@ const reviewsSchema = z.array(
     state: z.string(),
     /** 承認した時刻。Approval.approvedAt に入る */
     submitted_at: z.string().nullish(),
+    /** リポジトリに対する関係。承認を数えてよい相手かの判定に使う */
+    author_association: z.string().nullish(),
   }),
 );
 type Review = z.infer<typeof reviewsSchema>[number];
@@ -493,6 +525,8 @@ const commentsSchema = z.array(
       .transform((value) => value ?? ""),
     user: z.object({ login: z.string() }).nullish(),
     created_at: z.string(),
+    /** リポジトリに対する関係。承認を数えてよい相手かの判定に使う */
+    author_association: z.string().nullish(),
   }),
 );
 type Comment = z.infer<typeof commentsSchema>[number];

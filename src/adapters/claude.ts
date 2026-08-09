@@ -42,6 +42,12 @@ export interface ClaudeOptions {
   /** テスト時に固定するための時刻ソース。省略すると実時計を使う */
   now?: (() => Date) | undefined;
   /**
+   * Actor と LLM に渡す元の環境変数。省略すると `process.env`。
+   *
+   * ここから資格情報を落として SDK に渡す。テストから差し替えられるようにしてある。
+   */
+  env?: Record<string, string | undefined> | undefined;
+  /**
    * LlmPort を1回呼ぶたびに通知する。トークンと生ログのパスを controller に渡す。
    *
    * DECIDE は Actor を起動しないので Run が作られず、design.md §7 が求める
@@ -95,6 +101,8 @@ export function claudeActor(options: ClaudeOptions): ActorPort {
           // 省略すると user / project / local がすべて読まれ、controller が
           // 与えた拒否リスト以外の設定が Agent の挙動に混ざる。
           settingSources: [],
+          // controller の資格情報を Agent のシェルに残さない。
+          env: withheldEnv(options.env ?? process.env),
         });
       } catch (error) {
         // 中断されたなら throw で返さない。act が catch すると logRef を落とすので、
@@ -138,6 +146,7 @@ export function claudeLlm(options: ClaudeOptions): LlmPort {
           allowedTools: [],
           permissionMode: "default",
           settingSources: [],
+          env: withheldEnv(options.env ?? process.env),
         });
       } catch (error) {
         // 失敗した呼び出しもトークンは消費している。記録しないと §7 の
@@ -404,13 +413,39 @@ function editedPathsOf(message: unknown): string[] {
  * controller 側の関門は別に要る（design.md §10-6）。
  */
 function disallowedToolsFor(gates: readonly ApprovalGate[]): string[] {
-  const tools = new Set<string>();
+  const tools = new Set<string>(ALWAYS_DENIED);
   for (const gate of gates) {
     for (const tool of DENIED_TOOLS[gate]) {
       tools.add(tool);
     }
   }
   return [...tools];
+}
+
+/**
+ * Agent に渡さない環境変数。
+ *
+ * SDK の `env` は「マージではなく置き換え」なので、`process.env` を広げてから落とす。
+ * Bash を許している以上、`printenv` も `echo $GITHUB_TOKEN` も実行できる。
+ * どちらも `secret_access` の拒否パターン（`gh secret` / `gh auth token`）に
+ * 一致しないので、拒否リストでは塞げない。push と PR は controller だけが行う
+ * 設計なので、Actor 側にトークンが要る場面がそもそも無い。
+ */
+export const WITHHELD_ENV = [
+  "GITHUB_TOKEN",
+  "GH_TOKEN",
+  "GH_ENTERPRISE_TOKEN",
+  "GITHUB_ENTERPRISE_TOKEN",
+] as const;
+
+function withheldEnv(source: Record<string, string | undefined>): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const [key, value] of Object.entries(source)) {
+    if (value !== undefined && !WITHHELD_ENV.includes(key as (typeof WITHHELD_ENV)[number])) {
+      env[key] = value;
+    }
+  }
+  return env;
 }
 
 /**
@@ -464,6 +499,32 @@ const DENIED_TOOLS: Record<ApprovalGate, readonly string[]> = {
     "Bash(gh issue comment *)",
   ],
 };
+
+/**
+ * Goal の設定によらず常に拒否する呼び出し。
+ *
+ * ここに並ぶのは「危ないこと」ではなく、**関門が観測に使っている前提を壊すもの**。
+ * `changedPaths` は commit 済みの違反を `<base>...HEAD` の diff で見るので、
+ * base の ref を消されると、違反を commit してから ref を消すだけで
+ * 差分が読めなくなる。ref を消す側を塞いでおかないと、検査の入力そのものを
+ * Actor が選べることになる。
+ *
+ * これは二重化の片側でしかない（design.md §10-6）。SDK の設定は SDK の外から
+ * 同じ操作をされれば素通りするので、`changedPaths` 側も解決できなければ
+ * throw して guard_unavailable に倒す。
+ *
+ * `git worktree` は読み取りの `list` ごと拒否する。サブコマンドだけを列挙すると、
+ * 書ける形（`add` / `remove` / `move` / `prune`）を1つ書き落とした時点で穴になる。
+ * Actor が作業ツリーの構成を知る必要は無いので、動詞ごと閉じる方を採る。
+ */
+const ALWAYS_DENIED = [
+  "Bash(git update-ref *)",
+  "Bash(git symbolic-ref *)",
+  "Bash(git branch -D *)",
+  "Bash(git branch -d *)",
+  "Bash(git branch --delete *)",
+  "Bash(git worktree *)",
+] as const;
 
 const EDIT_TOOLS = new Set(["Edit", "Write", "NotebookEdit"]);
 
