@@ -33,6 +33,8 @@ export interface Violation {
  * - シンボリックリンクは実体へ解決してから見る。worktree の中に
  *   `link -> ../../src/controller` を置かれると、`..` で始まらずグロブにも
  *   一致しないパスができ、脱出の検査と保護パスの検査を両方すり抜けた
+ * - worktree の中の `.goals/.state/` は照合しない。controller が書く実行時状態で、
+ *   保護したい宣言部（`.goals/*.yaml`）ではない。詳しくは RUNTIME_STATE_DIR
  * - 判定できないものは違反にしない。捏造した違反で人間を呼ぶと、
  *   関門そのものが信用されなくなる
  */
@@ -54,6 +56,12 @@ export function findViolations(
       continue;
     }
 
+    // 実行時状態は宣言部ではない。脱出の判定の「後」に置く。
+    // 本体リポジトリ側の state dir はこの行に届く前に escaped_worktree になる。
+    if (isRuntimeState(inside)) {
+      continue;
+    }
+
     const pattern = protectedPaths.find((glob) => matches(inside, glob));
     if (pattern !== undefined) {
       violations.push({ kind: "protected_path", path: artifact, pattern });
@@ -72,6 +80,44 @@ export function describeViolations(violations: readonly Violation[]): string {
         : `保護パスを編集した: ${v.path}（${v.pattern}）`,
     )
     .join(" / ");
+}
+
+/**
+ * 照合から外す唯一の場所。worktree の直下にある実行時状態の置き場。
+ *
+ * `.goals/**` は宣言部（人間が書く `.goals/*.yaml`）を守るために書かれているのに、
+ * worktree の中の `.goals/.state/` にも一致する。Agent が自分の作業ツリーへ
+ * 一時ファイルを1つ置いただけで `protected_path_touched` になり、しかも
+ * 止まった時点でそのファイルはもう無い——人間に片付けるものが残らない停止になる。
+ * 捏造した違反で人間を呼べば、関門そのものが信用されなくなる。
+ *
+ * 外してよい根拠は3つ:
+ * - `.goals/.state/` は controller が書く実行時状態で gitignore 済み。
+ *   design.md §4.6 が宣言部と分けている当のもので、人間は編集しない
+ * - worktree の中のそれは本体の state dir ですらない。goals.db も Run のログも
+ *   本体リポジトリ側にあり、ここは Agent が作った空きスペースにすぎない
+ * - 本体側の state dir への書き込みは worktree の外なので escaped_worktree で
+ *   先に捕まる。除外を足しても判定の順序は変わらない
+ */
+const RUNTIME_STATE_DIR = ".goals/.state";
+
+/**
+ * worktree からの相対パスが実行時状態の下に入るかを、パスの区切りで判定する。
+ *
+ * 前方一致にすると `.goals/.stateful.yaml` のように名前を寄せるだけで宣言部を
+ * 編集できるので、区切りまで含めて見る。ディレクトリ自身（`.goals/.state`）は
+ * 中身と同じ扱いにする。丸ごと置き換えられても、そこにあるのは実行時状態になる。
+ *
+ * 基点は worktree の直下だけになる。`src/controller/.goals/.state/x.ts` は
+ * この形にならないので、他の保護パターンに一致したまま残る。
+ *
+ * 大文字小文字は matches と同じく区別しない。区別しない FS では
+ * `.goals/.State/` も同じディレクトリに届くので、照合と揃えないと
+ * 「保護は広いのに除外は狭い」という誤検知がそのまま残る。
+ */
+function isRuntimeState(inside: string): boolean {
+  const normalized = normalize(inside);
+  return normalized === RUNTIME_STATE_DIR || normalized.startsWith(`${RUNTIME_STATE_DIR}/`);
 }
 
 /**
@@ -105,12 +151,23 @@ function realpath(path: string): string {
  * 広すぎて人間を呼ぶほうが、狭すぎて素通りするより安全側になる。
  */
 function matches(path: string, glob: string): boolean {
-  const normalized = path.split("\\").join("/").normalize("NFC").toLowerCase();
+  const normalized = normalize(path);
+  // glob 側は区切りの読み替えをしない。`\` はエスケープとして扱う文字になる。
   const pattern = glob.normalize("NFC").toLowerCase();
   if (pattern.endsWith("/**") && normalized === pattern.slice(0, -3)) {
     return true;
   }
   return toRegExp(pattern).test(normalized);
+}
+
+/**
+ * パスを照合できる形に揃える。区切りは `/`、Unicode は NFC、大文字小文字は畳む。
+ *
+ * 除外（isRuntimeState）と照合（matches）で同じ関数を使う。片方だけ揺れると、
+ * 保護される形と除外される形がずれる。
+ */
+function normalize(path: string): string {
+  return path.split("\\").join("/").normalize("NFC").toLowerCase();
 }
 
 function toRegExp(glob: string): RegExp {
