@@ -601,7 +601,7 @@ function worktreePathFor(goal: Goal, run: Run | null, deps: ControllerDeps): str
  *   欠けるので、そもそも criteria が揃わず COMPLETE には届かない
  * - 判断したのは LLM ではないので decidedBy は "guard"（design.md §7）
  * - **止めた理由と、進めるために何をすればよいかを rationale に書く。** ここが
- *   `ent show`（`decision.rationale`）にも PR の進捗コメントにもそのまま出る
+ *   `ent get`（`decision.rationale`）にも PR の進捗コメントにもそのまま出る
  *   唯一の説明になる。「止まった」しか読めない関門は、人間から見れば
  *   原因不明の停止と区別がつかない
  * - 元の rationale を残す。何をしようとしていたのかが読めなくなる

@@ -536,7 +536,7 @@ async function previewOnly(
 }
 
 /**
- * `ent show` が出すもの。宣言部と実行時状態をマージして1枚にする（design.md §4.6）。
+ * `ent get` が出すもの。宣言部と実行時状態をマージして1枚にする（design.md §4.6）。
  *
  * 初めて ent run を全周させたとき、失敗の理由を追うのに SQLite を直接叩くことに
  * なった。goals の行だけでは、何を観測して何を確かめられなかったのかが読めない。
@@ -589,7 +589,7 @@ export function showPayload(goal: Goal, store: Store, options: LimitOptions = {}
  * `ent list` が出すもの。Store.listGoals をそのまま JSON にできる形で返す。
  *
  * cron から回す構成では、どの Goal が ACTIVE でどれが WAITING_HUMAN かを
- * まとめて見る手段が要る。Goal ごとに ent show を叩く手間を無くす。
+ * まとめて見る手段が要る。Goal ごとに ent get を叩く手間を無くす。
  */
 export function listPayload(store: Store, options: LimitOptions = {}): GoalListItem[] {
   const goals = store.listGoals();
@@ -769,7 +769,7 @@ export interface DoctorProbes {
  * unknown だけでは終了コードを 1 にしない。確かめられなかったことを不合格として
  * 扱うと、doctor が常に赤くなって読まれなくなる。
  *
- * 出力は JSON にする。ent show / ent list と同じく機械可読を保つ。
+ * 出力は JSON にする。ent get / ent list と同じく機械可読を保つ。
  */
 export async function doctorPayload(probes: DoctorProbes): Promise<DoctorReport> {
   const checks: DoctorCheck[] = [

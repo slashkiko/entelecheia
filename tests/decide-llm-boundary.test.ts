@@ -12,8 +12,9 @@ import { PortError } from "../src/domain/port-error.js";
  * ループしていないのに停止判断が通る。design.md §7 の「暴走の停止条件を
  * LLM の判断に依存させない」からすると、ESCALATE も guard 側に置く。
  *
- * guard から loop_detected を出す実装はまだ無い（§10-2）。ここで閉じるのは
- * LLM 側の口だけになる。
+ * guard から loop_detected を出す実装は src/decide/index.ts の
+ * unchangedReconciles() にある（§10-2 はその形で埋まった）。ここで閉じるのは
+ * LLM 側の口で、実際に停止させるのは guard になる。
  */
 
 const NOW = new Date("2026-08-09T03:00:00.000Z");
