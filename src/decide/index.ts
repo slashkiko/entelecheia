@@ -3,6 +3,7 @@ import type { Unresolved } from "../domain/fact.js";
 import { criterionFactKey } from "../domain/fact-keys.js";
 import type { Assessment } from "../domain/gap.js";
 import type { AcceptanceCriterion, Budget } from "../domain/goal.js";
+import { isUsageLimit, resumeAfterOf } from "../domain/port-error.js";
 
 /**
  * これまでに使った分。Goal の budget と突き合わせて上限判定に使う。
@@ -212,7 +213,18 @@ async function askLlm(
     try {
       raw = await deps.llm.chooseAction(buildPrompt(target, failures));
     } catch (error) {
-      // Port が落ちているのか出力が壊れているのかを、ここでは区別できない。
+      // 使用量上限だけは名指しで分かる（design.md §10-3）。待てば直るので
+      // ESCALATE ではなく WAIT にし、§4.4 の WAITING_EXTERNAL(usage_limit) へ繋ぐ。
+      // 再試行しない。上限に当たっている間は何度呼んでも同じで、回数を消費するだけ。
+      if (isUsageLimit(error)) {
+        return {
+          decidedAt,
+          action: { type: "WAIT", reason: "usage_limit", resumeAfter: resumeAfterOf(error) },
+          rationale: `LlmPort が使用量上限に達した: ${errorMessage(error)}`,
+          decidedBy: "guard",
+        };
+      }
+      // それ以外は、Port が落ちているのか出力が壊れているのかを区別できない。
       // どちらも「採用できなかった試行」として同じ回数制限に載せる。
       failures.push(`LlmPort が失敗した: ${errorMessage(error)}`);
       continue;

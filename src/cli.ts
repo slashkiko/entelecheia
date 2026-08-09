@@ -3,11 +3,14 @@ import { hostname } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
-import type { ActorPort } from "./act/index.js";
+import { query } from "@anthropic-ai/claude-agent-sdk";
+import { type ClaudeOptions, claudeActor, claudeLlm } from "./adapters/claude.js";
+import { githubCodeProvider } from "./adapters/github.js";
 import { commandRunner, gitWorktree, localRepo, pendingApproval } from "./adapters/local.js";
 import { type TickResult, tick } from "./controller/index.js";
-import type { LlmPort } from "./decide/index.js";
+import type { Goal } from "./domain/goal.js";
 import { loadGoalFile } from "./domain/goal-loader.js";
+import { PortError } from "./domain/port-error.js";
 import type { CodeProviderPort } from "./observe/index.js";
 import { openStore } from "./store/index.js";
 
@@ -131,13 +134,13 @@ export async function main(argv: readonly string[]): Promise<number> {
       owner: `${hostname()}:${process.pid}`,
       leaseSeconds: 300,
       signal: aborter.signal,
-      code: unavailable("CodeProviderPort"),
+      code: codeProvider(goal),
       local: localRepo(repoRoot),
       command: commandRunner(repoRoot),
       approval: pendingApproval(),
       worktree: gitWorktree(repoRoot, join(stateDir, "worktrees")),
-      actor: unavailableActor(),
-      llm: unavailableLlm(),
+      actor: claudeActor(claudeOptions(stateDir)),
+      llm: claudeLlm(claudeOptions(stateDir)),
       now: () => new Date(),
     });
 
@@ -159,29 +162,31 @@ function summarize(result: TickResult): unknown {
   };
 }
 
-/** 未実装の Port。捏造した観測を返すより、落として unresolved に残す */
-function unavailable(name: string): CodeProviderPort {
-  const fail = async (): Promise<never> => {
-    throw new Error(`${name} は未実装（次の Goal で octokit を入れる）`);
-  };
-  return { getPullRequest: fail, getLatestCiRun: fail, getIssue: fail };
+/**
+ * GitHub に繋ぐ。トークンが無ければ throw する Port を返す。
+ *
+ * 捏造した観測を返すより、落として unobserved に残した方が状態が正しく残る
+ * （design.md §3.1）。
+ */
+function codeProvider(goal: Goal): CodeProviderPort {
+  const token = process.env.GITHUB_TOKEN ?? process.env.GH_TOKEN;
+  if (token === undefined || token === "") {
+    const fail = async (): Promise<never> => {
+      throw new PortError("unavailable", "GITHUB_TOKEN が設定されていない");
+    };
+    return { getPullRequest: fail, getLatestCiRun: fail, getIssue: fail };
+  }
+
+  return githubCodeProvider({
+    owner: goal.repository.owner,
+    repo: goal.repository.name,
+    token,
+  });
 }
 
-function unavailableActor(): ActorPort {
-  return {
-    kind: "claude-code",
-    run: async () => {
-      throw new Error("ActorPort は未実装（次の Goal で Claude Agent SDK を入れる）");
-    },
-  };
-}
-
-function unavailableLlm(): LlmPort {
-  return {
-    chooseAction: async () => {
-      throw new Error("LlmPort は未実装（次の Goal で Claude Agent SDK を入れる）");
-    },
-  };
+/** Agent SDK の query() をそのまま渡す。認証は Claude Code の OAuth に任せる */
+function claudeOptions(stateDir: string): ClaudeOptions {
+  return { query, runsDir: join(stateDir, "runs") };
 }
 
 if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href) {
