@@ -1,4 +1,7 @@
-import { exec } from "node:child_process";
+import { exec, execFile } from "node:child_process";
+import { createHash } from "node:crypto";
+import { existsSync, readFileSync } from "node:fs";
+import { isAbsolute, join, relative, resolve } from "node:path";
 import { promisify } from "node:util";
 import type { Worktree, WorktreePort } from "../act/index.js";
 import type { LocalRepoPort } from "../observe/index.js";
@@ -12,14 +15,56 @@ import type { ApprovalPort, CommandResult, CommandRunnerPort } from "../verify/i
  * ここにあるのは node:child_process だけで書けるもので、依存パッケージが要らない。
  */
 
-const run = promisify(exec);
+/**
+ * シェルを経由する実行。Goal YAML の `setup` と `verification.run` **だけ**に使う。
+ * あちらは「任意のシェルコマンドを流す」ことが宣言された機能なので、
+ * シェルであること自体が仕様にあたる。
+ */
+const runShell = promisify(exec);
+
+/**
+ * argv 配列で実行する。シェルを経由しないので、引数に何が入っても実行されない。
+ *
+ * git の呼び出しはすべてこちらを通す。以前は `exec` にテンプレート文字列を渡していて、
+ * 引数のどれか1つでもこちらの制御下に無ければシェルインジェクションになった。
+ * 実際、`gitBranch.push` はブランチ名を worktree から読む。worktree の中身は Actor が
+ * 書き換えられ、git は `;` や `$()` をブランチ名に許すので、Actor が
+ * `evil;touch${IFS}PWNED` という名前のブランチを1本作るだけで controller の
+ * プロセス上で任意コマンドが走った。隔離はファイルの置き場所の話でしかなく、
+ * 実行の境界にはなっていなかった。
+ */
+const runFile = promisify(execFile);
+
+/** git を argv 配列で叩き、標準出力をそのまま返す。終了コードが 0 以外なら reject する */
+async function gitRaw(cwd: string, args: readonly string[]): Promise<string> {
+  const { stdout } = await runFile("git", [...args], { cwd, maxBuffer: 32 * 1024 * 1024 });
+  return stdout;
+}
+
+/**
+ * git を argv 配列で叩き、前後の空白を落とした標準出力を返す。
+ *
+ * `status --porcelain` にはこちらを使わない。あの出力は先頭2桁が状態で
+ * 3桁目が区切りなので、trim すると1行目だけ列がずれてパスが1文字欠ける。
+ */
+async function git(cwd: string, args: readonly string[]): Promise<string> {
+  return (await gitRaw(cwd, args)).trim();
+}
+
+/**
+ * push 先にしてよいブランチ名。
+ *
+ * argv 化でシェルインジェクションは塞がるが、「どの remote ref を作るか」は
+ * 依然として worktree 側が決める。push 先を予測可能にするために形も縛る。
+ */
+const PUSHABLE_BRANCH = /^[\w./-]+$/;
 
 /** シェルコマンドを実行する。起動そのものに失敗したときだけ throw する */
 export function commandRunner(cwd: string): CommandRunnerPort {
   return {
     async run(command): Promise<CommandResult> {
       try {
-        const { stdout, stderr } = await run(command, { cwd, maxBuffer: 32 * 1024 * 1024 });
+        const { stdout, stderr } = await runShell(command, { cwd, maxBuffer: 32 * 1024 * 1024 });
         return { exitCode: 0, stdout, stderr };
       } catch (error) {
         // 終了コードが 0 以外なら reject されるが、これは「検証できた不合格」なので
@@ -41,14 +86,10 @@ export function commandRunner(cwd: string): CommandRunnerPort {
 export function localRepo(cwd: string): LocalRepoPort {
   return {
     async snapshot() {
-      const git = async (args: string): Promise<string> => {
-        const { stdout } = await run(`git ${args}`, { cwd });
-        return stdout.trim();
-      };
       const [branch, headSha, status] = await Promise.all([
-        git("rev-parse --abbrev-ref HEAD"),
-        git("rev-parse HEAD"),
-        git("status --porcelain"),
+        git(cwd, ["rev-parse", "--abbrev-ref", "HEAD"]),
+        git(cwd, ["rev-parse", "HEAD"]),
+        git(cwd, ["status", "--porcelain"]),
       ]);
       return { branch, headSha, dirty: status.length > 0 };
     },
@@ -60,34 +101,198 @@ export function localRepo(cwd: string): LocalRepoPort {
  * ティックをまたいで同じ作業ツリーに差分を積み上げる。
  */
 export function gitWorktree(repoRoot: string, root: string): WorktreePort {
+  const pathOf = (name: string): string => join(root, name);
+
   return {
     async ensure(name, baseBranch): Promise<Worktree> {
-      const path = `${root}/${name}`;
+      const path = pathOf(name);
       const branch = `entelecheia/${name}`;
-      const git = async (args: string): Promise<string> => {
-        const { stdout } = await run(`git ${args}`, { cwd: repoRoot });
-        return stdout.trim();
-      };
-
-      const existing = await git("worktree list --porcelain");
-      if (existing.includes(`worktree ${path}`)) {
+      // 既にある作業ツリーは作り直さない。作り直すと前ティックの差分が消える。
+      // `worktree list` の出力は realpath なので、パスの表記が揺れても
+      // 取りこぼさないようにディレクトリの実在も見る。
+      if (existsSync(join(path, ".git"))) {
         return { path, branch };
       }
 
-      // --format の値は引用符で囲む。exec はシェル経由なので、囲まないと
-      // %(refname:short) の括弧を sh が解釈して syntax error になる。
-      // 実 Actor を初めて起動するまで表面化しなかった（テストは Port を注入する）。
-      const branches = await git("branch --list --format='%(refname:short)'");
+      const existing = await git(repoRoot, ["worktree", "list", "--porcelain"]);
+      if (existing.split("\n").includes(`worktree ${path}`)) {
+        return { path, branch };
+      }
+
+      const branches = await git(repoRoot, ["branch", "--list", "--format=%(refname:short)"]);
       const exists = branches.split("\n").includes(branch);
       // 既にブランチがあれば checkout し直す。作り直すと前ティックの差分が消える。
       await git(
+        repoRoot,
         exists
-          ? `worktree add ${path} ${branch}`
-          : `worktree add -b ${branch} ${path} ${baseBranch}`,
+          ? ["worktree", "add", path, branch]
+          : ["worktree", "add", "-b", branch, path, baseBranch],
       );
       return { path, branch };
     },
+
+    /**
+     * 作業ツリーで実際に変わったパス。Actor の自己申告ではなく git から取る。
+     *
+     * `Run.artifacts` は SDK の Edit / Write / NotebookEdit から作られるので、
+     * Bash 経由の書き込みが1件も現れない（design.md §10-6）。保護パスの検査を
+     * そこに載せている限り、`echo >` で制御ループを書き換えられても素通りする。
+     * 「書けた結果」を git から観測するのが、Bash を許したまま取れる唯一の検査点になる。
+     *
+     * commit 済みと未 commit の両方を返す。前者を落とすと、違反した編集が
+     * commit された次のティックで検知できなくなる。
+     */
+    async changedPaths(name, baseBranch): Promise<string[]> {
+      const path = pathOf(name);
+      if (!existsSync(path)) {
+        // まだ作業ツリーが無い。「変更が無い」であって「確かめられなかった」ではない。
+        return [];
+      }
+      if (!existsSync(join(path, ".git"))) {
+        // ディレクトリはあるが作業ツリーではない。ここで git を回すと、
+        // git は親をたどって controller 本体のリポジトリに当たり、
+        // 本体の汚れを「worktree の中の変更」として返す。
+        // 確かめられなかったこととして扱う（design.md §3.1）。
+        throw new Error(`作業ツリーが壊れている（.git が無い）: ${path}`);
+      }
+
+      const paths = new Set<string>();
+
+      // 未 commit の変更。-uall で未追跡ファイルも1件ずつ出す。
+      // ディレクトリ名だけにまとめられると、その下のパスが glob に一致しない。
+      const status = await gitRaw(path, ["status", "--porcelain", "--untracked-files=all"]);
+      for (const line of status.split("\n")) {
+        for (const entry of porcelainPaths(line)) {
+          paths.add(entry);
+        }
+      }
+
+      // base から分岐して以降の commit 済みの変更。
+      //
+      // ここで例外を握り潰してはいけない。以前は catch{} で「変更なし」に
+      // 畳んでいたが、Actor は `git update-ref -d refs/heads/main` を実行できる。
+      // 保護パスへの違反を commit してから base の ref を消せば、
+      // 未 commit の変更は無く、diff は fatal で握り潰され、`changedPaths` は
+      // 空を返す。origin/main は残るので push だけは通り、違反が通常の変更として
+      // PR に流れた。「解決できなかった」を「変わっていない」と読ませないために、
+      // 解決できなければ throw して guard_unavailable に倒す（design.md §3.1）。
+      const committed = await gitDiffAgainst(path, baseBranch);
+      for (const line of committed.split("\n")) {
+        if (line !== "") {
+          paths.add(line);
+        }
+      }
+
+      return [...paths];
+    },
+
+    /**
+     * 本体リポジトリ側で変わったパス。絶対パスで返す。
+     *
+     * `changedPaths` は worktree の中で git を回すので、`git worktree add` で
+     * 分けた本体側の作業ツリーは観測できない（別の作業ツリーなので当然そうなる）。
+     * Actor は Bash を持っているから、`echo > ../../src/controller/index.ts` の
+     * 1行で隔離の外を書ける。そこを見るための口をもう1つ開ける。
+     *
+     * **ここで見えない範囲（design.md §10-6 の残る穴 (a) (b) (e)）:**
+     * - repoRoot の外（`~/.zshrc`、`~/.claude/**` など）。git の観測範囲が上限で、
+     *   ここから先は git ベースの検査では原理的に届かない
+     * - gitignore されたパス。`--ignored` を付ければ出るが、controller 自身が
+     *   `.goals/.state/**` に毎ティック書くので、自分の書き込みが毎回違反として
+     *   並ぶ。DB を直接書き換えられる経路がここに残る
+     * - commit 済みの変更。本体側のブランチは controller が動かさないので
+     *   作業ツリーの汚れだけを見ているが、`git -C ../.. commit` や
+     *   `git -C ../.. stash` は拒否リストに無い。本体側で書いてから commit されると、
+     *   汚れの集合から消えて検査の外に出る
+     *
+     * パスだけでなく中身の指紋も返す。controller は ACT の前後を比べて
+     * 「Actor が書いた分」を切り出すが、パスの集合だけで比べると、
+     * **人間が編集中のファイルを Actor が上書きしたときに前後で同じパスが並び、
+     * 差がゼロになる**。自己ホストでは保護対象がまさに編集中でありうるうえ、
+     * Actor は `git -C ../.. status` でどれが汚れているかを読める。
+     * どこを上書きすれば検知されないかを選べる状態になってしまう。
+     *
+     * worktree の置き場（`root`）配下は除く。既定では `.goals/.state/` の下で
+     * gitignore されているので出てこないが、repoRoot の中に worktree を置く
+     * 構成では未追跡ファイルとして並び、ACT のたびに違反と読んでしまう。
+     */
+    async repoDirtyState(): Promise<Map<string, string>> {
+      const status = await gitRaw(repoRoot, ["status", "--porcelain", "--untracked-files=all"]);
+      const state = new Map<string, string>();
+      for (const line of status.split("\n")) {
+        for (const entry of porcelainPaths(line)) {
+          const absolute = resolve(repoRoot, entry);
+          if (isInside(root, absolute)) {
+            continue;
+          }
+          state.set(absolute, fingerprint(absolute));
+        }
+      }
+      return state;
+    },
   };
+}
+
+/**
+ * ファイルの中身の指紋。
+ *
+ * 大きさと更新時刻ではなく中身を読む。Actor は `touch -t` も `truncate` も
+ * 実行できるので、メタデータだけを見ていると同じ値に戻される。
+ * 読めないもの（削除された、ディレクトリ）は読めなかったことを値にする。
+ * 「無い」も前後で変われば変更として数える。
+ */
+function fingerprint(path: string): string {
+  try {
+    return createHash("sha256").update(readFileSync(path)).digest("hex");
+  } catch {
+    return "unreadable";
+  }
+}
+
+/**
+ * base から分岐して以降に commit されたパス。
+ *
+ * ローカルの base が消えていたら `origin/<base>` に落とす。clone 直後や
+ * base を checkout していない worktree では、ローカル側に ref が無いことが
+ * 正常にありうる。両方とも解決できなければ throw する。握り潰すと
+ * 「確かめられなかった」が「変わっていない」になる。
+ */
+async function gitDiffAgainst(cwd: string, baseBranch: string): Promise<string> {
+  try {
+    return await git(cwd, ["diff", "--name-only", `${baseBranch}...HEAD`]);
+  } catch (error) {
+    try {
+      return await git(cwd, ["diff", "--name-only", `origin/${baseBranch}...HEAD`]);
+    } catch {
+      throw error;
+    }
+  }
+}
+
+/** `parent` の中にあるか。同じパスも中に数える */
+function isInside(parent: string, target: string): boolean {
+  const inside = relative(resolve(parent), target);
+  return inside === "" || (!inside.startsWith("..") && !isAbsolute(inside));
+}
+
+/**
+ * `git status --porcelain` の1行からパスを取り出す。
+ *
+ * `R  old -> new` のようにリネームは2つ持つ。片方だけ見ると、保護パスから
+ * 逃がす形のリネームを取りこぼす。
+ */
+function porcelainPaths(line: string): string[] {
+  if (line.length <= 3) {
+    return [];
+  }
+  const body = line.slice(3);
+  const renamed = body.split(" -> ");
+  return renamed.map((entry) => unquote(entry.trim())).filter((entry) => entry !== "");
+}
+
+/** core.quotePath が有効だと、非 ASCII を含むパスが二重引用符で囲まれて出る */
+function unquote(entry: string): string {
+  return entry.startsWith('"') && entry.endsWith('"') ? entry.slice(1, -1) : entry;
 }
 
 /**
@@ -99,26 +304,27 @@ export function gitWorktree(repoRoot: string, root: string): WorktreePort {
 export function gitBranch(root: string): BranchPort {
   return {
     async push(name, baseBranch): Promise<PushResult> {
-      const cwd = `${root}/${name}`;
-      const git = async (args: string): Promise<string> => {
-        const { stdout } = await run(`git ${args}`, { cwd });
-        return stdout.trim();
-      };
+      const cwd = join(root, name);
 
-      const branch = await git("rev-parse --abbrev-ref HEAD");
+      const branch = await git(cwd, ["rev-parse", "--abbrev-ref", "HEAD"]);
       if (branch === baseBranch) {
         // ここを通すと controller が main を書き換えられる。設定ではなく実装で塞ぐ。
         throw new Error(`base ブランチには push しない: ${branch}`);
       }
+      if (!PUSHABLE_BRANCH.test(branch)) {
+        // ブランチ名は worktree 側、つまり Actor が決める。argv で渡すので実行は
+        // されないが、どの remote ref を作るかまで委ねる理由は無い。
+        throw new Error(`push 先にできないブランチ名: ${branch}`);
+      }
 
       // base との差分が無ければ push しない。空の PR は通知にも検証にも使えない。
-      const ahead = await git(`rev-list --count origin/${baseBranch}..HEAD`);
+      const ahead = await git(cwd, ["rev-list", "--count", `origin/${baseBranch}..HEAD`]);
       if (ahead === "0") {
         return { branch, pushed: false };
       }
 
       // HEAD:<branch> の形にして、ローカルとリモートで名前がずれても同じ先に送る。
-      await git(`push -u origin HEAD:${branch}`);
+      await git(cwd, ["push", "-u", "origin", `HEAD:${branch}`]);
       return { branch, pushed: true };
     },
   };

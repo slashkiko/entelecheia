@@ -157,8 +157,33 @@ policies:
     - secret_access
     - external_send
   protected_paths:
+    # 制御ループ本体と、Goal の宣言部。
     - src/controller/**
     - .goals/**
+    # 関門そのものと、Agent の許可・拒否ツールを決めるファイル。
+    # ここが保護されていないと、Agent は matches() を常に false にするか
+    # disallowedTools を空にするだけで、他の保護を全部外せる。
+    - src/domain/protected-paths.ts
+    - src/adapters/claude.ts
+    # 検証系。VERIFY は worktree で criteria のコマンドを流すので、ここを
+    # 書き換えられると Agent が自分の Acceptance Criteria を通せる。
+    # そのとき生まれる Fact は VERIFIED になり、§3.1 が成立しなくなる。
+    # tests/** は入れない。criteria を「確かめる仕組み」と「確かめる中身」は
+    # 別で、後者まで凍らせると新しいテストを1本足すたびに ESCALATE する。
+    - mise.toml
+    - mise-tasks/**
+    - vitest.config.ts
+    - biome.json
+    - tsconfig*.json
+    - .github/**
+    # 依存の追加は人間が通す。ここを入れると Agent は依存を1つも足せなくなるが、
+    # このリポジトリは baseline がサプライチェーンを固定する規約を持っており
+    # （mise の minimum_release_age、pinact、renovate）、その判断を Agent に
+    # 委ねる形にはしない。「依存パッケージを増やさない」は Goal の constraints にも
+    # 毎回書いている制約なので、機械の側にも置く。
+    # 検知は状態として続くので、依存を足したいときは人間が worktree を確認して通す。
+    - package.json
+    - pnpm-lock.yaml
 
 budget:
   max_actor_runs: 15

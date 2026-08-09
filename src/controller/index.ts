@@ -1,9 +1,7 @@
-import { createHash } from "node:crypto";
 import { join } from "node:path";
-import { type ActDeps, act, type RunRecorderPort } from "../act/index.js";
+import { type ActDeps, act, type RunRecorderPort, worktreeNameFor } from "../act/index.js";
 import type { BudgetUsage } from "../decide/index.js";
 import type { Decision } from "../domain/action.js";
-import type { Fact } from "../domain/fact.js";
 import type { Goal } from "../domain/goal.js";
 import { type GoalStatus, isTerminal, nextStatus } from "../domain/goal-state.js";
 import { describeViolations, findViolations } from "../domain/protected-paths.js";
@@ -104,11 +102,36 @@ export async function tick(goal: Goal, deps: ControllerDeps): Promise<TickResult
     return idle(state.status, `resume_after まで寝ている: ${sleeping}`);
   }
 
-  const until = new Date(deps.now().getTime() + deps.leaseSeconds * 1000);
-  if (!deps.store.acquireLease(goalId, deps.owner, until)) {
+  const leaseUntil = (): Date => new Date(deps.now().getTime() + deps.leaseSeconds * 1000);
+  if (!deps.store.acquireLease(goalId, deps.owner, leaseUntil(), deps.now())) {
     // 他のワーカーが処理中。今回のティックはスキップする（design.md §4.5）。
     return idle(state.status, "他のワーカーが lease を持っている");
   }
+
+  // ティックが走っているあいだ lease を延長し続ける。
+  //
+  // ACT は Claude Code の実行なので分単位で、design.md §9 の実測では
+  // 1ティック目が 1,341,349 tokens だった。leaseSeconds は 300 なので、
+  // 延長しないと ACT の途中で期限が切れる。cron から回す構成（§3.6）では、
+  // そこで別プロセスが lease を奪い、同じ worktree（名前は goal.id 固定）で
+  // 2つの ACT が並行する。稀な競合ではなく、実運用の既定の挙動になっていた。
+  //
+  // 延長の失敗は握り潰す。タイマーのコールバックから throw すると、下の
+  // try/finally の外なので clearInterval も releaseLease も走らないまま
+  // プロセスが落ちる。lease が期限まで残り、どのワーカーもその Goal を
+  // 進められなくなる。延長できなければ期限切れに任せる方が軽い壊れ方になる。
+  const heartbeat = setInterval(
+    () => {
+      try {
+        deps.store.acquireLease(goalId, deps.owner, leaseUntil(), deps.now());
+      } catch {
+        // 次の延長で取り返せる。取り返せなければ lease は期限で切れる。
+      }
+    },
+    Math.max(1, Math.floor(deps.leaseSeconds / 2)) * 1000,
+  );
+  // ティックが終わればプロセスは落ちてよい。タイマーで生かし続けない。
+  heartbeat.unref?.();
 
   try {
     // 回収を reconcile より先に置く。前のプロセスが死んだまま残った Run を
@@ -152,18 +175,24 @@ export async function tick(goal: Goal, deps: ControllerDeps): Promise<TickResult
     // ダイジェストは reconcile が作る。DECIDE がループ検知に使う値なので、
     // 副作用のあるこの層で作り直すと、判断に使った値と記録が食い違いうる。
     const digest = result.observedDigest;
-    deps.store.saveDecision(goalId, digest, result.decision);
+
+    // 本体リポジトリ側の汚れを ACT の前に控える。自己ホストなので、人間が
+    // 編集中のファイルが最初から並んでいる。それを違反と読むと関門が毎回鳴り、
+    // 鳴りっぱなしの関門は誰も見なくなる。差分だけを Actor の仕業として数える。
+    const repoBefore = await repoBaseline(deps);
 
     const run = await maybeAct(goal, result.decision, deps);
 
     // Agent が触ってはいけないものに触れていないかを、ACT の外で検査する
     // （design.md §7 / §10-6）。Agent 側の disallowedTools は Agent の設定で、
     // SDK の外から同じ操作をされれば素通りする。
-    const guarded = guardedDecision(goal, result.decision, run, deps);
-    if (guarded !== result.decision) {
-      // 判断を差し替えたので、記録も差し替えた方で残す。
-      deps.store.saveDecision(goalId, digest, guarded);
-    }
+    const guarded = await guardedDecision(goal, result.decision, run, repoBefore, deps);
+
+    // Decision は1ティックに1行だけ書く。以前は先に result.decision を書き、
+    // 差し替えたときにもう1行足していたので、保護パス違反のティックだけ
+    // decisions が2行になった。countTrailingDigest は行を数えるので、
+    // max_unchanged_reconciles がそのぶん余計に進んでいた。
+    deps.store.saveDecision(goalId, digest, guarded);
 
     // PR を確保して進捗を書く。ここは throw しないので、通知の失敗で
     // ティック全体を落とさない（design.md §9 の「PR と通知」）。
@@ -198,47 +227,137 @@ export async function tick(goal: Goal, deps: ControllerDeps): Promise<TickResult
     return { ran: true, skipped: null, reclaimed, decision: guarded, run, status };
   } finally {
     // 例外で抜けても解放する。残すと lease の期限までどのワーカーも動けない。
+    clearInterval(heartbeat);
     deps.store.releaseLease(goalId, deps.owner);
   }
 }
 
 /**
- * Actor が編集したファイルを検査し、違反があれば Decision を差し替える。
+ * 作業ツリーの状態を検査し、違反があれば Decision を差し替える。
  *
  * 満たすべき性質:
- * - ACT を実行していないティックでは何もしない。検査する対象が無い
+ * - 検査の入力は git が観測した変更を主にする。`Run.artifacts` は Actor の
+ *   自己申告で、Bash 経由の書き込みが1件も現れない（design.md §10-6）。
+ *   自己申告だけに載せている限り、`echo >` で制御ループを書き換えても素通りする
+ * - **ACT を実行していないティックでも検査する。** 違反した編集は worktree に
+ *   残したまま（人間が判断できるように）なので、次のティックが保護パスに触れずに
+ *   終われば、その worktree ごと push されてしまう。違反は1ティックの出来事ではなく、
+ *   worktree が汚れているあいだ続く状態として扱う
+ * - **worktree の外は本体リポジトリ側の git で見る。** worktree の中で git を
+ *   回しても、`git worktree add` で分けた本体側の作業ツリーは観測できない。
+ *   `Run.artifacts` も Bash 経由の書き込みを拾わないので、
+ *   `bash -c 'echo > ../../src/controller/index.ts'` はどちらの入力にも
+ *   現れなかった。隔離が守るはずの当のファイルが検査から漏れていた
+ * - 本体側は ACT 前の状態との差だけを数える。自己ホストなので人間の編集中の
+ *   ファイルが最初から汚れている。それを違反にすると関門が毎回鳴る
+ * - artifacts も併せて渡す。SDK が申告するパスは worktree の外を指すこともある
+ * - 検査できなかったら ESCALATE(guard_unavailable)。「触っていない」と
+ *   「確かめられなかった」を混ぜない（design.md §3.1）
  * - 違反があれば ESCALATE(protected_path_touched) にする。判断したのは
  *   LLM ではないので decidedBy は "guard"（design.md §7）
  * - worktree の中身は触らない。差分を残しておかないと人間が判断できない
  * - 元の rationale を残す。何をしようとしていたのかが読めなくなる
  */
-function guardedDecision(
+async function guardedDecision(
   goal: Goal,
   decision: Decision,
   run: Run | null,
+  repoBefore: RepoBaseline,
   deps: ControllerDeps,
-): Decision {
-  if (run === null || run.artifacts.length === 0) {
+): Promise<Decision> {
+  // act と同じ規則で worktree の場所を決める。ここがずれると、
+  // 隔離の中の編集を「外に出た」と読んでしまう。
+  const worktreeName = worktreeNameFor(goal.goal.id);
+  const worktreePath =
+    deps.worktreeRoot === undefined
+      ? (run?.worktree ?? worktreeName)
+      : join(deps.worktreeRoot, worktreeName);
+
+  const escalate = (reason: "protected_path_touched" | "guard_unavailable", detail: string) => ({
+    decidedAt: deps.now().toISOString(),
+    action: { type: "ESCALATE", reason } as const,
+    rationale: `${detail}（元の判断: ${decision.rationale}）`,
+    decidedBy: "guard" as const,
+  });
+
+  let changed: readonly string[];
+  try {
+    changed = await deps.worktree.changedPaths(worktreeName, goal.repository.default_branch);
+  } catch (error) {
+    return escalate(
+      "guard_unavailable",
+      `保護パスを検査できなかったので停止する: ${errorMessage(error)}`,
+    );
+  }
+
+  if ("error" in repoBefore) {
+    return escalate(
+      "guard_unavailable",
+      `本体リポジトリ側の状態を控えられなかったので停止する: ${repoBefore.error}`,
+    );
+  }
+
+  let escaped: readonly string[];
+  try {
+    const after = await deps.worktree.repoDirtyState();
+    // 中身の指紋で比べる。パスの集合だけだと、人間が編集中のファイルを
+    // Actor が上書きしたときに前後で同じパスが並び、差がゼロになる。
+    //
+    // **この差分の取り方に残る穴（design.md §10-6 の (c) (d)）:**
+    // - ベースラインは ACT 直前のティック内スナップショットなので、1回の改変を
+    //   人間が掃除しないまま次のティックへ進むと、その内容がベースラインに入って
+    //   鳴り止む。指紋で比べているので同じファイルをもう一度書き換えれば再び鳴るが、
+    //   改変された controller のソースはディスクに残ったままになる
+    // - ACT は分単位なので、その間に人間が repoRoot を編集すると差分に載る。
+    //   worktree の外なので protected_path_touched になる。安全側だが誤検知
+    //
+    // この2つは逆向きで、検知を永続化するか、編集を Actor プロセスに紐付けないと
+    // 同時には解けない。MVP では両方残している。
+    escaped = [...after]
+      .filter(([path, digest]) => repoBefore.state.get(path) !== digest)
+      .map(([path]) => path);
+  } catch (error) {
+    return escalate(
+      "guard_unavailable",
+      `本体リポジトリ側を検査できなかったので停止する: ${errorMessage(error)}`,
+    );
+  }
+
+  const inspected = [...(run?.artifacts ?? []), ...changed, ...escaped];
+  if (inspected.length === 0) {
     return decision;
   }
 
-  const violations = findViolations(
-    run.artifacts,
-    // act と同じ規則で worktree の場所を決める。ここがずれると、
-    // 隔離の中の編集を「外に出た」と読んでしまう。
-    deps.worktreeRoot === undefined ? run.worktree : join(deps.worktreeRoot, run.worktree),
-    goal.policies.protected_paths,
-  );
+  const violations = findViolations(inspected, worktreePath, goal.policies.protected_paths);
   if (violations.length === 0) {
     return decision;
   }
 
-  return {
-    decidedAt: deps.now().toISOString(),
-    action: { type: "ESCALATE", reason: "protected_path_touched" },
-    rationale: `制御ループ自体に触れたので停止する: ${describeViolations(violations)}（元の判断: ${decision.rationale}）`,
-    decidedBy: "guard",
-  };
+  return escalate(
+    "protected_path_touched",
+    `制御ループ自体に触れたので停止する: ${describeViolations(violations)}`,
+  );
+}
+
+/**
+ * ACT 前の本体リポジトリの汚れ。
+ *
+ * 控えられなかったことも値として持つ。ここで例外にすると、git が読めない環境で
+ * ティックそのものが落ちる。落とすのではなく guard_unavailable として
+ * 人間に渡すほうが、「確かめられなかった」を握り潰さずに済む（design.md §3.1）。
+ */
+type RepoBaseline = { state: ReadonlyMap<string, string> } | { error: string };
+
+async function repoBaseline(deps: ControllerDeps): Promise<RepoBaseline> {
+  try {
+    return { state: await deps.worktree.repoDirtyState() };
+  } catch (error) {
+    return { error: errorMessage(error) };
+  }
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 /**
@@ -305,9 +424,10 @@ function usageOf(state: GoalState, goal: Goal, deps: ControllerDeps): BudgetUsag
     consecutiveFailures += 1;
   }
 
-  const activatedAt = state.activatedAt === null ? null : Date.parse(state.activatedAt);
-  const elapsedSeconds =
-    activatedAt === null ? 0 : Math.max(0, Math.floor((deps.now().getTime() - activatedAt) / 1000));
+  // 解釈できない activated_at を 0 秒として扱うと、max_wall_clock だけが
+  // 黙って無効化される（NaN との比較は常に false になる）。停止条件が消えるより、
+  // 人間を呼ぶ側に倒す。decide の durationSeconds が上限を読めなかったときと同じ扱い。
+  const elapsedSeconds = elapsedSecondsSince(state.activatedAt, deps.now());
 
   // 直近まで同じ観測が続いていた回数。今回のティックは含まない。
   // 含めると、DECIDE が「今回は変わった」を判定できなくなる。
@@ -327,15 +447,21 @@ function usageOf(state: GoalState, goal: Goal, deps: ControllerDeps): BudgetUsag
 }
 
 /**
- * 観測値のダイジェスト。design.md §4.5 の `Decision.observed_digest` に入る。
+ * ACTIVE になってからの経過秒数。max_wall_clock の判定に使う。
  *
- * キー順に正規化してから取る。Fact の並びは観測の順序で決まるので、
- * そのまま食わせると同じ状態でも別のダイジェストになる。
+ * 解釈できない値は Infinity にして上限側へ倒す。0 にすると、activated_at が
+ * 壊れた Goal だけ経過時間の上限が黙って効かなくなる。
+ * ダイジェストの計算はここには無い。`src/domain/digest.ts` が正で、
+ * ループ検知が使う値と記録する値を1箇所に保つ。
  */
-function digestOf(facts: readonly Fact[]): string {
-  const normalized = [...facts]
-    .map((f) => `${f.key}=${JSON.stringify(f.value ?? null)}@${f.confidence}`)
-    .sort()
-    .join("\n");
-  return createHash("sha256").update(normalized).digest("hex");
+export function elapsedSecondsSince(activatedAt: string | null, now: Date): number {
+  if (activatedAt === null) {
+    // まだ ACTIVE になっていない。経過時間はゼロで正しい。
+    return 0;
+  }
+  const parsed = Date.parse(activatedAt);
+  if (Number.isNaN(parsed)) {
+    return Number.POSITIVE_INFINITY;
+  }
+  return Math.max(0, Math.floor((now.getTime() - parsed) / 1000));
 }

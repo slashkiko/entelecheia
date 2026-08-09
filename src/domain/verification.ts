@@ -43,6 +43,8 @@ export type Verification = z.infer<typeof verificationSchema>;
  *   INFERRED な `criteria.<id>.passed` は passed にも failed にもしない
  * - Fact も unresolved も無い criteria は `unresolved` にする。
  *   結論が出なかったことを「合格」にも「不合格」にも畳まない
+ * - 同じ criterion に前ティックの Fact と今ティックの unresolved が両方あるなら、
+ *   unresolved を採る。今ティックで確かめられなかったことのほうが新しい
  */
 export function toVerifications(
   criteria: readonly AcceptanceCriterion[],
@@ -55,6 +57,25 @@ export function toVerifications(
 
   return criteria.map((criterion) => {
     const key = criterionFactKey(criterion.id);
+
+    // unresolved を Fact より先に見る。reconcile は前ティックの Fact を土台に
+    // 今ティックの観測を重ねるので、今ティックで検証できなかった criterion にも
+    // 前ティックの `passed: true` が残っている。Fact を先に引いていたころは、
+    // それを今ティックの結果として 🟢 passed と表示していた。
+    // 完了判定は decide の unresolved チェックが守っているので COMPLETED には
+    // ならないが、人間が読む索引が「確かめられなかった」を「合格」に畳んでいた。
+    const entry = unresolvedByKey.get(key);
+    if (entry !== undefined) {
+      return {
+        criterionId: criterion.id,
+        result: "unresolved",
+        reason: entry.reason,
+        evidence: null,
+        detail: entry.detail,
+        verifiedAt,
+      };
+    }
+
     const fact = verifiedFacts.get(key);
     if (fact !== undefined) {
       const evidence: Evidence = fact.evidence;
@@ -64,18 +85,6 @@ export function toVerifications(
         reason: null,
         evidence,
         detail: evidence.detail,
-        verifiedAt,
-      };
-    }
-
-    const entry = unresolvedByKey.get(key);
-    if (entry !== undefined) {
-      return {
-        criterionId: criterion.id,
-        result: "unresolved",
-        reason: entry.reason,
-        evidence: null,
-        detail: entry.detail,
         verifiedAt,
       };
     }

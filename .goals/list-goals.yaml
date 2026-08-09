@@ -140,8 +140,24 @@ policies:
     - secret_access
     - external_send
   protected_paths:
+    # 制御ループ本体と、Goal の宣言部。
     - src/controller/**
     - .goals/**
+    # 関門そのものと、Agent の許可・拒否ツールを決めるファイル。
+    - src/domain/protected-paths.ts
+    - src/adapters/claude.ts
+    # 検証系。ここを書き換えられると Agent が自分の criteria を通せる。
+    # tests/** は入れない（理由は guard-the-controller.yaml に書いた）。
+    - mise.toml
+    - mise-tasks/**
+    - vitest.config.ts
+    - biome.json
+    - tsconfig*.json
+    - .github/**
+    # 依存の追加は人間が通す。この Goal の constraints にも
+    # 「依存パッケージを増やさない」と書いてある。
+    - package.json
+    - pnpm-lock.yaml
 
 budget:
   max_actor_runs: 8

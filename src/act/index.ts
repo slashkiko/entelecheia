@@ -20,6 +20,34 @@ export interface WorktreePort {
    * ティックをまたいで同じ作業ツリーを使い続けるため、作り直しにはしない。
    */
   ensure(name: string, baseBranch: string): Promise<Worktree>;
+  /**
+   * その worktree で実際に変わったパスを、worktree からの相対で返す。
+   * 作業ツリーがまだ無ければ空配列。
+   *
+   * 保護パスの検査（design.md §7 / §10-6）が読む。`Run.artifacts` は Actor の
+   * 自己申告で、Bash 経由の書き込みが現れないため、検査の入力としては足りない。
+   * commit 済みと未 commit の両方を含める。
+   */
+  changedPaths(name: string, baseBranch: string): Promise<string[]>;
+  /**
+   * 本体リポジトリ側で汚れているパスと、その中身の指紋を返す。
+   * 鍵は**絶対パス**で、worktree 配下は含めない。
+   *
+   * `changedPaths` は worktree の中で git を回すので、worktree の外に出た書き込みを
+   * 1件も観測できない。`Run.artifacts` も SDK の Edit / Write しか拾わないため、
+   * Actor が `bash -c 'echo > ../../src/controller/index.ts'` と書けば、
+   * どちらの入力にも現れなかった。隔離が守るはずの当のファイルが、隔離の
+   * 検査から漏れていたことになる。
+   *
+   * 絶対パスで返すのは、`findViolations` が worktree からの相対に直したときに
+   * `..` で始まり、`escaped_worktree` として分類されるようにするため。
+   * 指紋を併せて返すのは、controller が ACT の前後を比べるため。パスの集合だけ
+   * だと、人間が編集中のファイルを Actor が上書きしても差がゼロになる。
+   *
+   * これでも repoRoot の外（`~/.zshrc` など）は見えない。git で観測できる範囲が
+   * 上限で、そこは design.md §10-6 に残す。
+   */
+  repoDirtyState(): Promise<Map<string, string>>;
 }
 
 export interface ActorInvocation {
@@ -242,8 +270,11 @@ async function runActor(
  *
  * 試行ごとに変えない。ティックをまたいで同じ作業ツリーに差分を積み上げ、
  * それがそのまま PR になるため。
+ *
+ * controller も保護パスの検査で同じ作業ツリーを指す必要があるので export する。
+ * 規則を2箇所に書くと、検査が別の作業ツリーを見ていても誰も気づけない。
  */
-function worktreeNameFor(goalId: string): string {
+export function worktreeNameFor(goalId: string): string {
   return goalId;
 }
 

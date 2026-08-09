@@ -3,7 +3,7 @@
 このリポジトリの単一の設計ソース。新しく参加するとき（あるいは新しいセッションを開くとき）は、
 まずこれを読めば足りるように書いてある。
 
-最終更新: 2026-08-09
+最終更新: 2026-08-09（MVP レビューの指摘を反映）
 
 ---
 
@@ -149,9 +149,11 @@ reconcile は「今の状態を見て差分を埋める」冪等な関数で、
 LLM を呼ぶのは DECIDE のうち Gap が残っている経路だけで、そこを Actor 層経由にすれば
 依存も認証も1系統で済む。出力は必ず Zod で検証し、通らなければ受け取らない（最大2回リトライ）。
 
-ASSESS は Fact だけを読む純関数で、LLM を呼ばない。DECIDE も、完了判定・停止条件・
-待ちの判定は **guard**（LLM を呼ばずに決める純ロジック。`src/decide/`）が持つ。
-LLM に委ねるのは Gap の埋め方だけになる。
+ASSESS は Fact だけを読む純関数で、LLM を呼ばない。DECIDE も、完了判定と停止条件は
+**guard**（LLM を呼ばずに決める純ロジック。`src/decide/`）が持つ。
+待ちは両方にまたがる。Gap が無いのに unresolved が残る場合の `WAIT` は guard が決め、
+Gap が残る場合の `WAIT`（レビュー待ちなど）は LLM も選べる。ただし
+**いつまで寝るかは常に guard が決める**（§10-3）。LLM に委ねるのは Gap の埋め方だけになる。
 
 Agent SDK は Claude Code の OAuth をそのまま使うため Claude Max のサブスクリプション内で動く。
 一方、Messages API に切り出した部分だけは API キーの従量課金になる。
@@ -279,8 +281,16 @@ Goal のライフサイクル
   BLOCKED(reason: budget_exhausted)         予算・回数・時間の上限に到達
 ```
 
+`AWAITING_CRITERIA_APPROVAL` は MVP では実装しない。§3.2 のとおり、Goal YAML の
+レビューがそのまま承認ゲートを担うので、`ent start` は `DRAFT` から `ACTIVE` に直行する。
+型には残してあるが、この値を書き込むコードは無い。
+
 ESCALATE は reconcile が選ぶ行動、BLOCKED は Goal の状態。
 ESCALATE の結果として Goal は BLOCKED か WAITING_HUMAN に遷移する。
+
+**終端状態からは戻さない。** `nextStatus` と `tick` に加えて、`ent start` も
+終端の Goal を ACTIVE に戻さない。COMPLETED を後から取り消せると、
+§9 の完了判定そのものが意味を失う。やり直すなら DB の状態を明示的に戻す。
 
 Claude Max には5時間ローリングの使用量上限と週次上限がある。
 何時間も走る controller はいずれ必ず当たるので、クラッシュではなく
@@ -326,19 +336,36 @@ Run を作らない LLM 呼び出しが生まれ、そのトークンを §7 の
 `Verification` 行と `criteria.<id>.passed` の Fact は同じ結果の二重表現になるが、
 前者が criteria 単位の索引、後者が ASSESS に渡る観測値という役割分担にする。
 
+**この2つは同じ criterion について違う結論を出すことがあり、それは意図どおり。**
+reconcile は前ティックの Fact を土台に今ティックの観測を重ねるので、今ティックで
+検証できなかった criterion にも前ティックの `passed: true` が残る。ASSESS が答えるのは
+「VERIFIED な根拠で満たされているか」なので、そこは Gap にしない（そうしないと、
+GitHub が一時的に落ちただけで直したはずの Gap が復活する）。`Verification` が答えるのは
+「このティックで何が起きたか」なので、`unresolved` を Fact より先に見る。
+役割が違うので判定を1つの関数に畳まない。畳むと、どちらかの意味が失われる。
+
 **`Decision` を必ず残す。** L5 の改善レイヤーは後回しにするが、
 そこに食わせる履歴の形式だけは最初から確定させておく。
 
 `Goal` の `lease_owner` / `lease_until` が「1 Goal につき reconcile は同時に1つ」を担保する。
 行ロックではなく期限付きの所有権にすることで、プロセスがクラッシュしても自動で解放される。
 
+**ティックが走っているあいだは期限を延長し続ける。** ACT は Claude Code の実行なので
+分単位でかかる（§9 の実測では、1ティック目に 1,341,349 tokens を消費している）。
+`leaseSeconds` は 300 なので、延長しないと ACT の途中で期限が切れる。cron から回す構成
+（§3.6）では、そこで別プロセスが lease を奪い、同じ worktree（名前は `goal.id` 固定）で
+2つの ACT が並行する。稀な競合ではなく、実運用の既定の挙動になっていた。
+
 ```sql
 UPDATE goals
    SET lease_owner = :worker_id,
        lease_until = :now_plus_5min
  WHERE id = :goal_id
-   AND (lease_until IS NULL OR lease_until < :now);
--- 更新行数が 0 なら他のワーカーが処理中。今回のティックはスキップ
+   AND (lease_owner IS NULL OR lease_owner = :worker_id
+        OR lease_until IS NULL OR lease_until < :now);
+-- 更新行数が 0 なら他のワーカーが lease を持っている。今回のティックはスキップ。
+-- 自分が持っているなら期限の延長になる。取得と延長を同じ1文にしておくと、
+-- 「延長したつもりで別のワーカーの lease を上書きする」経路が生まれない
 ```
 
 ### 4.6 ファイル配置
@@ -347,7 +374,7 @@ UPDATE goals
 .goals/<slug>.yaml            人間が編集。Git 管理。宣言部のみ
 .goals/.state/goals.db        SQLite。機械のみが書く。gitignore
 .goals/.state/runs/<run-id>/  Agent の生ログ・diff。DB にはパスだけ持つ
-.goals/.state/worktrees/<slug>/ Actor が編集する作業ツリー
+.goals/.state/worktrees/<slug>/ Actor が編集する worktree
 ```
 
 人間が編集する宣言部と、機械が書き換える実行時状態を混ぜない。
@@ -445,7 +472,7 @@ Phase 3 も GitHub 単独の自己ホストなので、そこでは検証され�
 | Actor 実行 | `@anthropic-ai/claude-agent-sdk` | Claude Code のライブラリ版。`claude -p` の exec と違い権限制御・hooks・セッション管理を API で扱える。Max の OAuth をそのまま使う |
 | スキーマ | Zod | Agent 出力の検証ゲートと YAML バリデーションを同一定義で兼ねる |
 | YAML | `yaml`（eemeli） | コメント保持のラウンドトリップ編集。機械が書き戻すなら必須 |
-| DB | `node:sqlite`（Node 標準） | 同期 API でコードが素直。Node 22.5 以降の標準で、`mise.toml` が Node 24 を固定しているため常に使える。better-sqlite3 + Drizzle の採用予定を取り下げた（下記） |
+| DB | `node:sqlite`（Node 標準） | 同期 API でコードが素直。Node 22.13 以降はフラグなしで使える（22.5 で導入、それ以前は無い）。`mise.toml` が Node 24 を固定し、`engines` も `>=24` にしてあるため常に使える。better-sqlite3 + Drizzle の採用予定を取り下げた（下記） |
 | CLI | `node:util` の `parseArgs`（Node 標準） | サブコマンドが4つなので依存を足す価値が出ない。10 を超えたら citty か oclif に寄せる |
 | プロセス実行 | `node:child_process`（Node 標準） | 検証コマンドと git を叩くだけなので標準で足りる。ストリーム制御が要るようになったら execa に移す |
 | GitHub | `@octokit/rest` + plugin-throttling/retry | ETag でポーリングのレート制限を節約 |
@@ -480,7 +507,9 @@ Agent SDK は `src/cli.ts` が `query` を注入する1点だけが外に出る�
 
 `node:sqlite` は標準とはいえ better-sqlite3 ほど枯れていない。API が変わった場合の
 移行先は better-sqlite3 で、`Store` インターフェースの内側に閉じているので
-実装だけ差し替えれば済む。
+実装だけ差し替えれば済む。なお `node:sqlite` は Node 22.5 から入り、22.13 までは
+フラグが要る。`package.json` の `engines` は `>=24` にしてある（`>=22` と書いていたころは、
+engines のチェックを通ったうえで起動時にクラッシュする範囲があった）。
 
 ### タスクランナー
 
@@ -519,12 +548,57 @@ DECIDE の LLM 呼び出しは `LlmCall.tokens` に残す（§4.5）。あとか
 
 その他の制御。
 
+- **LLM は「いつまで寝るか」も決めない。** 行動の種類だけを閉じても、`WAIT` の
+  `resume_after` に遠い未来を返されれば Goal を無期限に止められる。LLM が返した
+  `resume_after` は採らない。埋めてよいのは、使用量上限のリセット時刻を Port から
+  受け取ったときだけになる（§10-3 / §10-5）
+- 経過時間の上限は、`activated_at` を解釈できなければ「上限に到達した」側に倒す。
+  0 秒として扱うと NaN との比較が常に false になり、`max_wall_clock` だけが
+  黙って無効化される。停止条件が消えるより人間を呼ぶほうがよい
 - 同一 Task の再試行上限。達したら別 Actor か Replan、それも尽きたら ESCALATE
 - 観測が N 回連続で変わらなければ ESCALATE（ループ検知）。N は `budget.max_unchanged_reconciles`。
   判定の材料は Gap ではなく `Decision.observed_digest`（§10-2）
 - 人間承認を必須にする操作: main への直接 push、force push、merge、デプロイ、
   シークレット操作、外部への送信
-- 自己ホスト時の追加: `src/controller/**` と `.goals/**` への変更、worktree 隔離の強制
+- 自己ホスト時の追加: `policies.protected_paths` に挙げたパスへの変更、worktree 隔離の強制
+
+`protected_paths` に何を並べるかは、**「Agent がそこを書き換えたら他の統制を全部外せるか」**
+で決める。制御ループ本体（`src/controller/**`）と Goal の宣言部（`.goals/**`）だけでは足りない。
+
+- 関門そのもの（`src/domain/protected-paths.ts`）と、Agent の許可・拒否ツールを決める
+  ファイル（`src/adapters/claude.ts`）。ここが開いていると、照合を常に false にするか
+  拒否リストを空にするだけで残りが全部外れる
+- 検証系（`mise.toml` / `mise-tasks/**` / `vitest.config.ts` / `biome.json` /
+  `tsconfig*.json` / `.github/**`）。VERIFY は worktree で criteria のコマンドを
+  流すので（§10-9）、ここを書き換えられると Agent が自分の Acceptance Criteria を
+  通せる。そのとき生まれる Fact は VERIFIED になり、§3.1 の
+  「外部から検証可能な一次情報のみ」が成立しなくなる
+- 依存（`package.json` / `pnpm-lock.yaml`）。理由は検証系とは別で、
+  サプライチェーンの判断を Agent に委ねないため。このリポジトリは baseline が
+  依存を固定する規約を持っており（mise の `minimum_release_age`、pinact、renovate）、
+  そこだけ Agent が素通りできる形にはしない
+- `tests/**` は入れない。criteria を「確かめる仕組み」と「確かめる中身」は別で、
+  後者まで凍らせると新しいテストを1本足すたびに ESCALATE する
+- `src/**` 全体も入れない。Agent が実装するのはまさにそこで、丸ごと保護すると
+  このツールが仕事をできなくなる
+
+**トークンは Agent に渡さない。** Bash を許している以上、`printenv` も
+`echo $GITHUB_TOKEN` も実行できる。どちらも `secret_access` の拒否パターン
+（`gh secret` / `gh auth token`）に一致しないので、拒否リストでは塞げない。
+Agent SDK の `env` は「マージではなく置き換え」なので、`process.env` から
+`GITHUB_TOKEN` / `GH_TOKEN` を落として渡す。push と PR は controller だけが行うので、
+Actor 側にトークンが要る場面はそもそも無い。
+
+**git を argv 配列で叩く。** 外部コマンドをテンプレート文字列で組み立てると、
+引数のどれか1つでも controller の制御下に無ければシェルインジェクションになる。
+`gitBranch.push` はブランチ名を worktree から読むが、worktree の中身は Actor が
+書き換えられ、git は `;` や `$()` をブランチ名に許す。Actor が
+`evil;touch${IFS}PWNED` という名前のブランチを1本作るだけで、controller の
+プロセス上で任意コマンドが走った。ファイルを1つも書かないので、保護パスの検査にも
+`Run.artifacts` にも `disallowedTools` にもかからない。
+シェルを通してよいのは Goal YAML の `setup` と `verification.run` だけにする。
+この2つは「任意のシェルコマンドを流す」ことが宣言された機能なので、
+シェルであること自体が仕様にあたる。
 
 ---
 
@@ -606,7 +680,9 @@ ACT の実行と write-ahead は reconcile の外側に置ける。reconcile が
 3本目で分かったのは、**時刻をどの層が作るかを決めておく必要がある**ことだった。
 Store が `new Date()` を呼ぶと、`now` を注入されて動く `tick()` と時間軸が分かれる。
 実際、経過時間が数時間ずれて予算超過と判定された。Store は時刻を作らず引数で受け取る。
-例外は lease の期限判定で、これはプロセスの生死を測るものなので実時計でよい。
+lease の期限判定だけを実時計の例外にしていたが、そこも引数で受け取る形に揃えた。
+例外を1つ残すと、その1つだけテストから再現できない（実際、期限切れの lease を奪う経路が
+そうなっていた）。実運用では `deps.now()` が実時計を返すので、挙動は変わらない。
 
 4本目で分かったのは、**外部 SDK の挙動は型定義からもドキュメントからも決まらない**
 ことだった。使用量上限の判別（§10-3）は型 → ドキュメント → issue → 実装の順に読んで初めて確定した。
@@ -652,16 +728,23 @@ Actor の commit が remote に届いていなかった。この誤りは2本目
 
 - worktree 隔離を必ず使う。controller 本体を動かしているコードと Agent が編集するコードを
   物理的に分ける
-- `src/controller/**` と `.goals/**` への変更は human approval を必須にし、
-  制御ループ自体を Agent に書き換えさせない
+- 制御ループ自体を Agent に書き換えさせない。対象は `src/controller/**` と `.goals/**`
+  だけでは足りず、関門そのものと検証系まで含める（選び方は §7）
+- controller が持つ資格情報を Agent に渡さず、外部コマンドを argv 配列で叩く（同じく §7）
 
-後者は `policies.protected_paths` として宣言し、controller が ACT の外側で
-`Run.artifacts` を検査する。Agent 側の `disallowedTools` は残したまま二重にする。
+1つ目は `policies.protected_paths` として宣言し、controller が ACT の外側で
+worktree の変更を検査する。Agent 側の `disallowedTools` は残したまま二重にする。
 片方は Agent の設定、もう片方は controller の判定で、破れ方が違う。
 
 実際に「`src/controller/index.ts` にコメントを1行足す」と指示したところ、Agent は
 worktree 内でそれを実行し、controller が検知して `WAITING_HUMAN` で止めた。
 **Agent 側の設定だけでは止まらない**ことが実地で確認できた。
+
+ただしこの時点の検査は `Run.artifacts` を読んでいて、Bash 経由の書き込みを
+1件も見ていなかった。いまは git が観測した変更を主にする（§10-6）。
+**「Agent が書いた」ことの根拠を Agent 自身の申告に置かない。**
+その git も、当初は worktree の中でしか回していなかった。隔離は「どこに置くか」の話で
+しかなく、「何を観測できるか」の境界とは別に引く必要がある。
 
 ---
 
@@ -673,6 +756,12 @@ Goal の記述と承認を除いて、以下を人手の介入なしで確認で
 Phase 2 で付けた4項目のうち「実装」は成立していなかったので、worktree 隔離を直したうえで
 Phase 3 で取り直した（§8）。
 自己ホストが通れば他の GitHub リポジトリでも通るが、逆は言えない。
+
+**9項目は「controller が最後まで回るか」だけを問う。** 「Agent が制御ループを
+書き換えられないか」「承認を偽装できないか」は1項目も入っていない。完了後に
+レビューを1周かけ、そこで見つかった穴は §7・§10-4・§10-6 に反映した。
+自律実行させる以上、収束の確認と統制の確認は別に立てる必要がある。
+完了条件そのものを増やすかどうかは、他のリポジトリで回すときに決める。
 
 - [x] **Goal の登録** — このツール自身への機能追加を `.goals/*.yaml` に書き、Zod 検証を通して `ent start` で ACTIVE になる
 - [x] **実装** — reconcile ループが Claude Code を worktree 上で起動し、実装が行われる
@@ -725,7 +814,9 @@ cache_read / output）の合計を持つ。単価が違うので、合計1つか
 
 ## 10. 未決事項
 
-設計上の大きな未確定は残っていない。以下は MVP 完了後に、実運用で必要になった順に埋める。
+MVP を止める未確定は残っていない。ただし、他のリポジトリで回す前に決める必要があるものが
+2つある（8 の Goal YAML の移行方針と、9 の検証コマンドの実行権限）。
+以下は実運用で必要になった順に埋める。
 
 1. ~~**Goal YAML のスキーマ詳細**~~ — Phase 0 を1周して確定した。`src/domain/goal.ts` を参照。
    Phase 0 版からの差分は、`repository` と `setup` を足し、`verification` を
@@ -749,12 +840,31 @@ cache_read / output）の合計を持つ。単価が違うので、合計1つか
    DECIDE の guard が `WAIT(usage_limit, resumeAfter)` を返す。
    なおこれらはドキュメントに記載が無く、根拠は Claude Code の実装読解にある。
    SDK が変われば黙って壊れるので、Port を触るときに読み直す
-4. ~~**人間の承認をどの signal で検知するか**~~ — Phase 3 の2本目で確定した。
+4. ~~**人間の承認をどの signal で検知するか**~~ — Phase 3 の2本目で確定し、
+   MVP レビューで**認可**を足した。誰が書いたかを見ていなかったので、公開リポジトリでは
+   通りすがりの1行で `type: human` の criterion が VERIFIED になった。
+   §9 の完了判定は人間の承認を根拠にしているので、ここが開いていると完了判定が成立しない。
+   どちらの経路も `author_association` が `OWNER` / `MEMBER` / `COLLABORATOR` のときだけ
+   承認として数える。`CONTRIBUTOR`（過去にマージされた PR がある）は書き込み権限とは
+   別物なので含めない。関係が読めなければ承認しない側に倒す。
+   変更要求のほうは権限を問わず止める側に数える。承認を厳しくするのと拒否を厳しくするのは
+   別の話で、倒す向きが逆になる。
+   あわせて、**controller 自身の進捗コメントを承認として読まない**。`rationale` には
+   LLM が決めた `intent` がそのまま載るので、そこに定型文を書かせれば controller の
+   トークンで投稿されたコメントの中に承認の1行が成立する。Agent に `gh pr comment` を
+   禁じて塞いだ経路を controller が迂回する形だった。進捗コメントには HTML コメントの
+   目印を入れて除外し、`rationale` の改行も潰して二重にする。
+   以下は signal そのものの定義で、Phase 3 の2本目から変わっていない。
    signal は2つあり、どちらか一方でも成立すれば承認とみなす。
    GitHub のレビュー承認（他人が Approve を押す。仕事で使うときの本来の経路）と、
    PR コメントの定型文 `/ent approve <criterion-id>`。§4.3 が言うのは
    「`review_decision` *だけ* には頼れない」で、経路そのものが誤りではない。
-   1人で開発しているあいだ成立しないだけになる。
+   **1人で開発しているあいだ成立しないのはレビュー承認の側だけで、コメントの定型文は
+   1人でも成立する。** レビュー承認は作成者自身の Approve を数えない（GitHub 自体も
+   自分の PR の Approve を許さない）が、コメントの側は作成者を除外していない。
+   `GITHUB_TOKEN` は開発者自身のトークンなので、そこで作成者を除いてしまうと
+   `/ent approve` の経路そのものが消える。自分のリポジトリなら
+   `author_association` は `OWNER` になるので、そのまま承認として数える。
    レビュー承認は PR 全体に対するものなので `type: human` の criteria すべてを満たす。
    作成者自身の Approve は数えない。変更要求が最新として残っていれば、どちらの経路でも
    承認しない。定型文は行全体で照合する。引用やコード例の中の同じ文字列を承認と読むと、
@@ -763,13 +873,79 @@ cache_read / output）の合計を持つ。単価が違うので、合計1つか
    判定し、過ぎるまで何もせずに return する。lease も取らない。取ると、寝ているだけの
    Goal が他のワーカーを塞ぐ。解釈できない値は「起きてよい」と読む。壊れた値のせいで
    Goal が永久に止まる方が、1ティック早く起きるより悪い
-6. ~~**`require_human_approval` を誰が止めるか**~~ — Phase 3 の4本目で確定した。
-   controller が ACT の外側で `Run.artifacts` を検査し、worktree の外に出た編集と
-   保護パスへの編集を見つけたら `ESCALATE(protected_path_touched)` にする。
-   Agent 側の `disallowedTools` は残して二重にする（理由は §8 の自己ホスト節）。
-   ただし検査できるのは
-   `Run.artifacts`（Edit / Write / NotebookEdit が触ったパス）だけで、
-   Bash 経由の書き込みは artifacts に現れない。**そこは依然として素通りする**
+6. ~~**`require_human_approval` を誰が止めるか**~~ — Phase 3 の4本目で確定し、
+   MVP レビューで**検査の入力**を入れ替えた。
+   controller が ACT の外側で検査し、worktree の外に出た編集と保護パスへの編集を
+   見つけたら `ESCALATE(protected_path_touched)` にする。Agent 側の `disallowedTools` は
+   残して二重にする（理由は §8 の自己ホスト節）。
+   当初の検査対象は `Run.artifacts`（Edit / Write / NotebookEdit が触ったパス）だけだった。
+   Bash の `tool_use` は `file_path` を持たないので、`echo >` や `sed -i` で書いたファイルは
+   **原理的に artifacts へ現れない**。「Bash 経由なら外にも書ける」ことを
+   前提に置きながら、それを原理的に捕捉できないデータ源の上に検査を建てていた。
+   いまは **git が観測した変更**（`status --porcelain -uall` と base からの
+   `diff --name-only`）を主にする。自己申告ではなく「書けた結果」を見るのが、
+   Bash を許したまま取れる唯一の検査点になる。
+   **worktree の外も git で見る。** worktree の中で git を回しても、
+   `git worktree add` で分けた本体側の作業ツリーは観測できない。`Run.artifacts` も
+   Bash を拾わないので、`bash -c 'echo > ../../src/controller/index.ts'` は
+   どちらの入力にも現れなかった。隔離が守るはずの当のファイルが、隔離の検査から
+   漏れていたことになる。本体リポジトリ側でも `status --porcelain -uall` を回し、
+   絶対パスで返して `escaped_worktree` に落とす。
+   本体側は ACT の前後の差だけを違反として数える。自己ホストでは人間の編集中の
+   ファイルが最初から汚れているので、それを違反にすると関門が毎ティック鳴る。
+   比較はパスの集合ではなく**中身の指紋**で行う。パス名だけで比べていると、人間が
+   編集中のファイルを Actor が上書きしたときに前後で同じパスが並び、差が消える。
+   Actor は `git -C ../.. status` で汚れているファイルを読めるので、
+   パス名だけで比べていれば、どこを上書きすれば検知されないかを Actor が選べた。
+   **commit 済みの差分は、base が解決できなければ握り潰さず throw する。**
+   以前は `catch {}` で「変更なし」に畳んでいたが、Actor は
+   `git update-ref -d refs/heads/main` を実行できた。違反を commit してから
+   base の ref を消せば、未 commit の変更は無く diff は fatal になり、
+   検査は空を返す。`origin/main` は残るので push だけ通り、違反が通常の変更として
+   PR に流れた。ローカルの base が無ければ `origin/<base>` に落とし、
+   どちらも解決できなければ `guard_unavailable` に倒す。
+   あわせて、ref を操作する Bash 呼び出し（`git update-ref` / `git symbolic-ref` /
+   `git branch -d|-D|--delete` / `git worktree`）は Goal の設定によらず常に拒否する。
+   検査の入力そのものを Actor に選ばせない。`git worktree` は読み取りの `list` ごと
+   拒否する。サブコマンドを列挙する形だと、書ける形を1つ書き落とした時点で穴になる。
+   違反の種別（`escaped_worktree` / `protected_path`）と ESCALATE の理由は別の層で、
+   種別がどちらでも理由は `protected_path_touched` になる。
+   検査できなかったら `ESCALATE(guard_unavailable)`。「触っていない」と
+   「確かめられなかった」を混ぜない（§3.1）。関門が動いていない状態で先へ進めるのは、
+   関門が無いのと同じになる。
+   **検査はティックごとに行う。** 違反した編集は worktree に残す（人間が判断できるように）
+   ので、そのティックの Run だけを見ていると、次のティックが保護パスに触れずに終わった
+   時点で汚れた worktree ごと push される。違反は1ティックの出来事ではなく、
+   worktree が汚れているあいだ続く状態として扱う。
+   照合はシンボリックリンクを実体へ解決してから行い、大文字小文字は区別しない。
+   macOS も Windows も既定でパスの大小を区別しないので、`src/Controller/index.ts` と
+   書けば同じファイルに届くのに glob には一致しない、という抜け道ができる。
+   **関門が止めたティックは push も PR 作成も行わない。** 違反を含む worktree が
+   remote に出た時点で、通常の変更として流れる余地が生まれる。
+   そのうえで、**PR が既にあるなら、観測が前ティックと同じでもコメントを書く。**
+   ダイジェストは Fact だけから作るので Decision を含まない。Actor が worktree の
+   外だけを書いたティックは観測が1文字も変わらないので、黙って飛ばすと隔離が
+   破れたことが PR に一度も出ないまま `WAITING_HUMAN` になる。
+   PR がまだ無いうちに違反したティックでは、PR を作らないので通知も残らない。
+   その場合に人間へ届くのは `ent show` と Decision の履歴だけになる。
+   **残る穴を5つ書いておく。**
+   (a) repoRoot の外（`~/.zshrc` や `~/.claude/**`）は git で観測できないので見えない。
+   (b) gitignore されたパスも見えない。`--ignored` を付ければ出るが、
+   controller 自身が `.goals/.state/**` に毎ティック書くので、自分の書き込みが
+   毎回違反として並ぶ。DB を直接書き換えられる経路がここに残る。
+   (c) 本体側の違反は、同じファイルが次のティックまで**そのまま**なら、
+   その内容がベースラインに入るので鳴り止む。指紋で比べているので、同じファイルを
+   もう一度書き換えれば再び鳴る。鳴り止むのは「1回の改変を放置した場合」に限る。
+   それでも、止まった Goal を人間が掃除しないまま回し続ければ、改変された
+   controller のソースはディスクに残る。
+   (d) ACT 中に人間が repoRoot を編集すると差分に載り、`protected_path_touched`
+   として止まる。安全側だが誤検知になる。
+   (e) 本体側は未 commit の汚れしか見ない。worktree 側は commit 済みの差分まで
+   追うが、本体側のブランチは controller が動かさないので `status` だけにしてある。
+   `git -C ../.. commit` や `git -C ../.. stash` は拒否リストに無いので、
+   本体側で書いてから commit されると、汚れの集合から消えて検査の外に出る。
+   (c) と (d) は逆向きのトレードオフで、どちらも検知を永続化するか
+   Actor プロセスと編集を紐付けないと同時には解けない。MVP では両方残す
 7. **Notion / Slack を足す時期** — 実環境ができてから
 8. ~~**`require_human_approval` にパス条件をどう載せるか**~~ — Phase 3 の4本目で確定した。
    enum には載せず、`policies.protected_paths`（glob の配列）を別に持つ。
@@ -778,11 +954,22 @@ cache_read / output）の合計を持つ。単価が違うので、合計1つか
    **Goal YAML のスキーマ変更の移行方針は未決のまま。** Phase 3 で2回
    （`budget.max_unchanged_reconciles` と `policies.protected_paths`）変更し、
    どちらも既存 YAML 8〜9本を手で書き直した。`version: 1` は literal で固定したままで、
-   Goal が増えたときに同じやり方は続けられない
+   Goal が増えたときに同じやり方は続けられない。
+   **同じ問題は宣言の値にもある。** レビューで `protected_paths` を広げたとき、
+   書き直したのは自己ホストで実際に回す2本だけで、完了済みの9本は `[]` のまま残した。
+   再実行しない Goal に手を入れても差分が増えるだけだが、「どの Goal がどこまで
+   守られているか」は YAML を1本ずつ読まないと分からない。既定値をどこに置くかは
+   まだ決めていない
 9. **VERIFY をどこで流すか** — Phase 3 の5本目で `repoRoot` から Goal 専用の worktree に
    変えたが、規則が「worktree があればそちら」という暗黙のものになっている。
    Goal YAML から指定できる方がよいかは決めていない。1ティック目は worktree が
-   無いので `repoRoot` を見る、という非対称も残る
+   無いので `repoRoot` を見る、という非対称も残る。
+   **より大きな未決は、検証コマンドを controller の権限で実行していること。**
+   worktree で `mise run test` を流すということは、worktree の `mise.toml` が
+   何を実行するかを決める、ということでもある。検証系を `protected_paths` に入れて
+   （§7）Agent に書き換えさせないようにしたが、これは「書き換えを検知して止める」
+   統制であって、実行そのものの隔離ではない。本筋はネットワーク遮断・トークン非注入の
+   サンドボックスで流すことで、MVP の範囲には入れていない
 10. **トークンから金額をどう出すか** — 記録しているのは4種類の合計だけで、正確な
     金額は出ない（§9 の実測を参照）。内訳は生ログにあるので、§7 の「従量課金だったら
     いくらだったか」を出すには、そこから読む口が要る
