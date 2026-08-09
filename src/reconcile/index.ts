@@ -1,6 +1,7 @@
 import { type AssessDeps, assess } from "../assess/index.js";
 import { type BudgetUsage, type DecideDeps, decide } from "../decide/index.js";
 import type { Decision } from "../domain/action.js";
+import { digestOf } from "../domain/digest.js";
 import type { Fact, Unresolved } from "../domain/fact.js";
 import type { Assessment } from "../domain/gap.js";
 import type { Goal } from "../domain/goal.js";
@@ -23,6 +24,11 @@ export interface ReconcileResult {
   facts: Fact[];
   unresolved: Unresolved[];
   assessment: Assessment;
+  /**
+   * 観測値のダイジェスト（design.md §4.5 の `Decision.observed_digest`）。
+   * DECIDE がループ検知に使うので、呼び出し側ではなくここで作る。
+   */
+  observedDigest: string;
   decision: Decision;
 }
 
@@ -61,13 +67,23 @@ export async function reconcile(
   const unresolved: Unresolved[] = [...observed.unobserved, ...verified.unverified];
 
   const assessment = assess({ criteria, facts, unresolved }, deps);
+  // ループ検知（§7 の max_unchanged_reconciles）が今ティックの観測と
+  // 直近の連続を突き合わせる。DECIDE に渡す値なのでここで作る。
+  const observedDigest = digestOf(facts);
   const decision = await decide(
-    { criteria, assessment, unresolved, budget: target.goal.budget, usage: target.usage },
+    {
+      criteria,
+      assessment,
+      unresolved,
+      observedDigest,
+      budget: target.goal.budget,
+      usage: target.usage,
+    },
     deps,
   );
 
   // 待ちは Decision として返し、次のティックに任せる。ここで sleep しない（design.md §3.6）。
-  return { facts, unresolved, assessment, decision };
+  return { facts, unresolved, assessment, observedDigest, decision };
 }
 
 /** 同じキーは後から来た方を採る。キーごとに1件だけ残す */

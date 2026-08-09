@@ -99,6 +99,11 @@ export interface Store {
    * 「前のティックから状態が変わったか」を、Fact を読み直さずに判定する。
    */
   latestDigest(goalId: string): string | null;
+  /**
+   * 末尾から数えて、同じ観測ダイジェストが何回連続しているか。
+   * ループ検知（design.md §7 の `max_unchanged_reconciles`）が読む。
+   */
+  countTrailingDigest(goalId: string, digest: string): number;
 
   /**
    * LlmPort を1回呼んだ記録。Run とは別に持つ（design.md §7）。
@@ -376,6 +381,23 @@ export function openStore(path: string): Store {
         .prepare("SELECT observed_digest FROM decisions WHERE goal_id = ? ORDER BY id DESC LIMIT 1")
         .get(goalId) as { observed_digest: string } | undefined;
       return row?.observed_digest ?? null;
+    },
+
+    countTrailingDigest(goalId, digest) {
+      // 末尾から数える。間に別の観測が挟まれば連続は切れる。
+      // 全件を数えると、過去に同じ状態を通ったぶんまで足してしまう。
+      const rows = db
+        .prepare("SELECT observed_digest FROM decisions WHERE goal_id = ? ORDER BY id DESC")
+        .all(goalId) as unknown as { observed_digest: string }[];
+
+      let count = 0;
+      for (const row of rows) {
+        if (row.observed_digest !== digest) {
+          break;
+        }
+        count += 1;
+      }
+      return count;
     },
 
     recordLlmCall(goalId, call) {

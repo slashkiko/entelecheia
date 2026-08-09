@@ -68,25 +68,43 @@ export function claudeActor(options: ClaudeOptions): ActorPort {
       // 当たった実行の手がかりが「例外のメッセージだけ」になるのを避ける。
       const log: string[] = [];
 
-      const outcome = await consumeAndLog(options, logRef, log, ACTOR_PROMPT(invocation.intent), {
-        // controller 本体のコードと Agent が編集するコードを物理的に分ける（§7）。
-        cwd: invocation.worktree.path,
-        abortController: aborter,
-        // 使ってよいツールを列挙し、それ以外は拒否する。
-        // acceptEdits はファイル操作しか自動承認しないので、mise run test の
-        // ような Bash 呼び出しが canUseTool に落ちる。コールバックを渡していない
-        // controller では、そこで止まって何も実行できない。
-        allowedTools: [...ACTOR_TOOLS],
-        permissionMode: "dontAsk",
-        // merge や force push を Agent に実行させない（§7）。
-        // 拒否ルールは許可ルールより先に評価され、bypassPermissions を含む
-        // どのモードでも効く。allowedTools に Bash があっても抜けない。
-        disallowedTools: disallowedToolsFor(invocation.deniedOperations),
-        // ホストの ~/.claude や repo の .claude を読み込ませない。
-        // 省略すると user / project / local がすべて読まれ、controller が
-        // 与えた拒否リスト以外の設定が Agent の挙動に混ざる。
-        settingSources: [],
+      const partial = (): ActorResult => ({
+        exitCode: 1,
+        logRef,
+        tokens: 0,
+        artifacts: [],
       });
+
+      let outcome: Outcome;
+      try {
+        outcome = await consumeAndLog(options, logRef, log, ACTOR_PROMPT(invocation.intent), {
+          // controller 本体のコードと Agent が編集するコードを物理的に分ける（§7）。
+          cwd: invocation.worktree.path,
+          abortController: aborter,
+          // 使ってよいツールを列挙し、それ以外は拒否する。
+          // acceptEdits はファイル操作しか自動承認しないので、mise run test の
+          // ような Bash 呼び出しが canUseTool に落ちる。コールバックを渡していない
+          // controller では、そこで止まって何も実行できない。
+          allowedTools: [...ACTOR_TOOLS],
+          permissionMode: "dontAsk",
+          // merge や force push を Agent に実行させない（§7）。
+          // 拒否ルールは許可ルールより先に評価され、bypassPermissions を含む
+          // どのモードでも効く。allowedTools に Bash があっても抜けない。
+          disallowedTools: disallowedToolsFor(invocation.deniedOperations),
+          // ホストの ~/.claude や repo の .claude を読み込ませない。
+          // 省略すると user / project / local がすべて読まれ、controller が
+          // 与えた拒否リスト以外の設定が Agent の挙動に混ざる。
+          settingSources: [],
+        });
+      } catch (error) {
+        // 中断されたなら throw で返さない。act が catch すると logRef を落とすので、
+        // 実際に SIGTERM を送ったとき「31KB のログがファイルにあるのに Run からは
+        // 辿れない」状態になった。中断は失敗ではなく、そこまでの結果が残る。
+        if (invocation.signal.aborted) {
+          return partial();
+        }
+        throw error;
+      }
 
       return {
         // result が来ないまま終わったのは、途中で切れたということ。

@@ -31,6 +31,7 @@ const GOAL: Goal = {
     max_reconciles: 20,
     max_wall_clock: "2h",
     max_consecutive_failures: 3,
+    max_unchanged_reconciles: 3,
   },
 };
 

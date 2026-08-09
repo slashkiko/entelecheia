@@ -172,3 +172,4 @@ budget:
   max_reconciles: 30
   max_wall_clock: 4h
   max_consecutive_failures: 3
+  max_unchanged_reconciles: 3

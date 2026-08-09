@@ -255,3 +255,41 @@ describe("claudeLlm", () => {
     await expect(claudeLlm(deps(sink)).chooseAction("...")).rejects.toBeInstanceOf(PortError);
   });
 });
+
+describe("claudeActor と中断", () => {
+  it("中断されたら throw せず logRef を持って返る", async () => {
+    // act が catch すると logRef を落とす。実際に SIGTERM を送ったとき、
+    // 31KB のログがファイルにあるのに Run からは辿れない状態になった。
+    const aborter = new AbortController();
+    const sink = recorded([]);
+    const failing: AgentQuery = () =>
+      (async function* () {
+        aborter.abort();
+        yield { type: "assistant", message: { content: [] } };
+        throw new Error("Claude Code process aborted by user");
+      })();
+
+    const result = await claudeActor({ ...deps(sink), query: failing }).run({
+      ...INVOCATION,
+      signal: aborter.signal,
+    });
+
+    expect(result.exitCode).toBe(1);
+    expect(result.logRef).toBe("/tmp/entelecheia/runs/42/log.jsonl");
+    expect(sink.logs).toHaveLength(1);
+  });
+
+  it("中断されていなければ throw をそのまま伝える", async () => {
+    // 中断でない失敗を握ると、Actor が落ちたことが Run に残らない。
+    const sink = recorded([]);
+    const failing: AgentQuery = () =>
+      (async function* () {
+        yield { type: "assistant", message: { content: [] } };
+        throw new Error("spawn ENOENT");
+      })();
+
+    await expect(claudeActor({ ...deps(sink), query: failing }).run(INVOCATION)).rejects.toThrow(
+      "spawn ENOENT",
+    );
+  });
+});

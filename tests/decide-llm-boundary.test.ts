@@ -23,6 +23,7 @@ const BUDGET: Budget = {
   max_reconciles: 20,
   max_wall_clock: "2h",
   max_consecutive_failures: 3,
+  max_unchanged_reconciles: 3,
 };
 
 const CRITERIA: AcceptanceCriterion[] = [
@@ -36,8 +37,15 @@ function target(): DecideTarget {
     criteria: CRITERIA,
     assessment: { assessedAt: NOW.toISOString(), gaps: [UNMET], satisfied: false },
     unresolved: [],
+    observedDigest: "digest-1",
     budget: BUDGET,
-    usage: { actorRuns: 0, reconciles: 1, consecutiveFailures: 0, elapsedSeconds: 60 },
+    usage: {
+      actorRuns: 0,
+      reconciles: 1,
+      consecutiveFailures: 0,
+      elapsedSeconds: 60,
+      trailingDigest: { digest: null, count: 0 },
+    },
   };
 }
 

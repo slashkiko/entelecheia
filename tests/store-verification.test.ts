@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import type { Decision } from "../src/domain/action.js";
 import type { Goal } from "../src/domain/goal.js";
 import type { LlmCall } from "../src/domain/llm-call.js";
 import type { Verification } from "../src/domain/verification.js";
@@ -38,6 +39,7 @@ const GOAL: Goal = {
     max_reconciles: 20,
     max_wall_clock: "2h",
     max_consecutive_failures: 3,
+    max_unchanged_reconciles: 3,
   },
 };
 
@@ -147,5 +149,53 @@ describe("Store と LLM 呼び出し", () => {
     store.recordLlmCall(GOAL.goal.id, { ...CALL, tokens: 2 });
 
     expect(store.listLlmCalls(GOAL.goal.id).map((c) => c.tokens)).toEqual([1, 2]);
+  });
+});
+
+describe("Store と観測ダイジェストの連続", () => {
+  let store: Store;
+
+  beforeEach(() => {
+    store = openStore(":memory:");
+    store.upsertGoal(GOAL);
+  });
+
+  afterEach(() => {
+    store.close();
+  });
+
+  const decision = (rationale: string): Decision => ({
+    decidedAt: AT,
+    action: { type: "VERIFY" },
+    rationale,
+    decidedBy: "guard",
+  });
+
+  it("末尾から数える", () => {
+    // 間に別の観測が挟まれば連続は切れる。全件を数えると、
+    // 過去に同じ状態を通ったぶんまで足してしまう。
+    store.saveDecision(GOAL.goal.id, "a", decision("1"));
+    store.saveDecision(GOAL.goal.id, "b", decision("2"));
+    store.saveDecision(GOAL.goal.id, "a", decision("3"));
+    store.saveDecision(GOAL.goal.id, "a", decision("4"));
+
+    expect(store.countTrailingDigest(GOAL.goal.id, "a")).toBe(2);
+  });
+
+  it("末尾と違うダイジェストは 0", () => {
+    store.saveDecision(GOAL.goal.id, "a", decision("1"));
+
+    expect(store.countTrailingDigest(GOAL.goal.id, "b")).toBe(0);
+  });
+
+  it("1件も無ければ 0", () => {
+    expect(store.countTrailingDigest(GOAL.goal.id, "a")).toBe(0);
+  });
+
+  it("latestDigest は直近の1件を返す", () => {
+    store.saveDecision(GOAL.goal.id, "a", decision("1"));
+    store.saveDecision(GOAL.goal.id, "b", decision("2"));
+
+    expect(store.latestDigest(GOAL.goal.id)).toBe("b");
   });
 });

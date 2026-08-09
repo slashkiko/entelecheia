@@ -109,6 +109,17 @@ export const budgetSchema = z.strictObject({
   max_reconciles: z.number().int().positive(),
   max_wall_clock: durationSchema,
   max_consecutive_failures: z.number().int().positive(),
+  /**
+   * 観測が変わらないまま回した回数の上限。到達したら ESCALATE(loop_detected)。
+   *
+   * design.md §7 の「同じギャップが N 回連続で解消されなければ ESCALATE」がこれで、
+   * §10-2 が未決として残していた N にあたる。ここが無いと、Gap を埋められない
+   * まま同じ判断を繰り返す Goal を止める手段が予算の総量しか無くなる。
+   *
+   * 他の4項目と同じく必須にしてある。任意にして既定値をコード側に置くと、
+   * YAML を読んだだけでは停止条件が分からなくなる。
+   */
+  max_unchanged_reconciles: z.number().int().positive(),
   /** 任意。API キー経由の実行にのみ適用され、Claude Max の OAuth 実行は対象外 */
   usd: z.number().positive().optional(),
 });
