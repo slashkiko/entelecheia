@@ -155,8 +155,27 @@ export function claudeLlm(options: ClaudeOptions): LlmPort {
         throw error;
       }
 
-      const tokens = outcome.result?.tokens ?? 0;
-      const text = outcome.result?.text ?? "";
+      // 呼び直しても直らない失敗を、そうと分かる形で返す。decide の askLlm() は
+      // PortError(unavailable) を見て即 ESCALATE する（design.md §3.5）。
+      // ここで素の Error を投げると isUnavailable の経路に乗らず、未ログインの
+      // ようなその場で直らない失敗にも MAX_LLM_RETRIES 回を使い切ってしまう。
+      // 1回の呼び出しは Claude Code のフルセッションなので、ティック内の再試行は高くつく。
+      const result = outcome.result;
+      if (result === null || !result.ok) {
+        // consume は成功しているのでトークン数は分かっている。0 で記録すると
+        // design.md §7 の会計が実際より小さく出る。
+        options.onCall?.({
+          purpose: "decide",
+          tokens: result?.tokens ?? 0,
+          logRef,
+          ok: false,
+          calledAt,
+        });
+        throw new PortError("unavailable", unavailableMessage(result));
+      }
+
+      const tokens = result.tokens;
+      const text = result.text;
       try {
         // 壊れた出力を握って空オブジェクトを返すと、decide が
         // 「検証に落ちた」と「呼べなかった」を区別できなくなる。
@@ -169,6 +188,22 @@ export function claudeLlm(options: ClaudeOptions): LlmPort {
       }
     },
   };
+}
+
+/**
+ * 採用できない result を人間が読める1行にする。
+ *
+ * subtype からは一時的か恒久的かを判別できないので推測しない。代わりに subtype と
+ * 本文をそのまま載せ、`decisions.rationale` だけを見て何が起きたか分かるようにする。
+ * 「Not logged in · Please run /login」がここに出るのが本来の目的になる。
+ */
+function unavailableMessage(result: Outcome["result"]): string {
+  if (result === null) {
+    // 途中で切れたのに空の出力として扱うと、壊れた出力と区別できなくなる。
+    return "LlmPort が result を返さないままストリームが終わった";
+  }
+  const body = result.text.trim();
+  return `LlmPort がエラー result を返した（${result.subtype}）: ${body === "" ? "本文なし" : body}`;
 }
 
 /** 生ログの置き場所を決める id。`decide-2026-08-09T04-40-56-280Z-1` の形になる */
@@ -205,7 +240,8 @@ async function consumeAndLog(
 }
 
 interface Outcome {
-  result: { ok: boolean; text: string; tokens: number } | null;
+  /** subtype は失敗の説明にだけ使う。一時的か恒久的かの判別材料にはしない */
+  result: { ok: boolean; subtype: string; text: string; tokens: number } | null;
   artifacts: string[];
   log: string[];
 }
@@ -255,6 +291,7 @@ async function consume(
     if (parsed.success) {
       result = {
         ok: parsed.data.subtype === "success" && parsed.data.is_error !== true,
+        subtype: parsed.data.subtype,
         text: parsed.data.result ?? "",
         tokens: tokensOf(parsed.data.usage),
       };

@@ -56,7 +56,13 @@ export async function reconcile(
   const observed = await observe(target.observe, deps);
   // 前ティックの Fact を土台にし、今ティックの観測で上書きする。
   // 古い観測で ASSESS すると、直したはずの Gap が残り続ける。
-  const observedFacts = mergeFacts(target.carriedFacts, observed.facts);
+  //
+  // 上書きは同じキーが来たときしか起きないので、土台に載せる前に
+  // 陳腐化した分を落としておく。詳細は expireStaleFacts のコメント。
+  const observedFacts = mergeFacts(
+    expireStaleFacts(target.carriedFacts, observed.facts),
+    observed.facts,
+  );
 
   // VERIFY。type: fact の criteria は観測結果を参照するので OBSERVE の後に回す。
   const verified = await verify({ setup: target.goal.setup, criteria, facts: observedFacts }, deps);
@@ -84,6 +90,44 @@ export async function reconcile(
 
   // 待ちは Decision として返し、次のティックに任せる。ここで sleep しない（design.md §3.6）。
   return { facts, unresolved, assessment, observedDigest, decision };
+}
+
+/** PR の head sha。CI の Fact がどのコミットのものかは、これでしか分からない */
+const HEAD_SHA_KEY = "github.pr.head_sha";
+
+/** head sha に紐づく観測。sha が変われば、前ティックの値は今の値ではない */
+const CI_KEY_PREFIX = "github.ci.";
+
+/**
+ * 陳腐化した観測を引き継がない。
+ *
+ * CI が実行中のあいだ observe は `github.ci.conclusion` の Fact を作らない
+ * （conclusion が null なので未観測扱い）。上書きは同じキーが来たときしか
+ * 起きないので、前のコミットで観測した `conclusion=success` が head_sha の
+ * 変わったあとも生き残る。ティックの順序は reconcile → act なので、Actor が
+ * push した次のティックでは「head_sha は新しいのに conclusion は古い success」
+ * という状態が必ず一度できる。そこで `type: fact` の criterion が古い evidence で
+ * passed になり、新しいコミットの CI を待たずに COMPLETE が出る。
+ *
+ * 「捏造した観測を作らない」（design.md §3.1）を守るなら、古い観測を今の観測として
+ * 使うこの経路も塞ぐ。CI の Fact は head sha に紐づくので、head_sha が違う値で
+ * 観測できたときだけ、引き継いだ `github.ci.*` を落とす。
+ *
+ * 落とす条件を「違う値で観測できた」に限るのは、確かめられなかったことを
+ * 「変わった」と読まないため。PR の Port が落ちたティックで CI の結論まで捨てると、
+ * 観測の失敗が既に確かめた事実を消すことになる。
+ *
+ * 今ティックの観測が作った Fact は落とさない。落とすのは引き継いだ分だけになる。
+ */
+function expireStaleFacts(carried: readonly Fact[], observed: readonly Fact[]): Fact[] {
+  const before = carried.find((f) => f.key === HEAD_SHA_KEY);
+  const now = observed.find((f) => f.key === HEAD_SHA_KEY);
+  // 片方でも観測できていないなら「変わった」とは言えない。確かめた事実を残す。
+  if (before === undefined || now === undefined || before.value === now.value) {
+    return [...carried];
+  }
+
+  return carried.filter((fact) => !fact.key.startsWith(CI_KEY_PREFIX));
 }
 
 /** 同じキーは後から来た方を採る。キーごとに1件だけ残す */
