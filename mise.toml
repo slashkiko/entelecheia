@@ -25,6 +25,10 @@ zizmor .
 betterleaks git .
 """
 
+[tasks.build]
+description = "Build the ent CLI into dist/"
+run = "pnpm exec tsc -p tsconfig.build.json"
+
 [tasks.typecheck]
 description = "Type-check the TypeScript sources"
 run = "pnpm exec tsc --noEmit"
