@@ -20,11 +20,15 @@ ent agent-context
 ## 1周の手順
 
 ```
+ent doctor                  # 回す前の前提が揃っているかを読み取り専用で調べる
 ent start <slug>            # .goals/<slug>.yaml を登録して ACTIVE にする
 ent run <slug>              # 1ティックだけ回して終了する
 ent get <slug>              # 宣言部と実行時状態をまとめて読む
 ent list                    # 登録済みの Goal を一覧する
 ```
+
+`ent doctor` は書き込みを一切しない。前提が欠けたまま `ent run` を叩くと、
+1ティック分のトークンを使ってから失敗が分かる。先に叩くと安い。
 
 `ent run` は**1ティックで必ず終了する**。常駐しないし、完了まで待つフラグも無い。
 収束させるには `ent run` を繰り返し叩く（cron から回す形を想定している）。

@@ -22,6 +22,7 @@ run = """
 pinact run -fix=false -verify-comment -min-age 7
 actionlint
 zizmor .
+shellcheck mise-tasks/*
 betterleaks git .
 """
 
@@ -43,4 +44,7 @@ run = "pnpm exec vitest run"
 
 [tasks.verify]
 description = "Everything a Goal's Acceptance Criteria may depend on"
-depends = ["typecheck", "lint", "test"]
+# build を入れるのは、typecheck が通ることと dist/cli.js が出来ることが別だから。
+# tsconfig.json は noEmit で tests/** を含み、bin の実体を作るのは
+# tsconfig.build.json（rootDir: src）の側になる。
+depends = ["typecheck", "lint", "build", "test"]
