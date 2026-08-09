@@ -6,6 +6,7 @@ import type { Fact } from "../domain/fact.js";
 import type { Goal } from "../domain/goal.js";
 import { type GoalStatus, isTerminal, nextStatus } from "../domain/goal-state.js";
 import type { Run } from "../domain/run.js";
+import { toVerifications } from "../domain/verification.js";
 import { type ReconcileDeps, reconcile } from "../reconcile/index.js";
 import type { GoalState, Store } from "../store/index.js";
 
@@ -91,11 +92,19 @@ export async function tick(goal: Goal, deps: ControllerDeps): Promise<TickResult
     );
 
     // Fact と「結論が出なかった対象」を組で書く。片方だけ書くと §3.1 が DB 層で再発する。
+    const observedAt = deps.now().toISOString();
     deps.store.saveSnapshot(goalId, {
-      observedAt: deps.now().toISOString(),
+      observedAt,
       facts: result.facts,
       unresolved: result.unresolved,
     });
+    // criteria 単位の索引（design.md §4.5 の Verification）。同じ結果を facts と
+    // unresolved から導くだけで、検証をもう一度回さない。二重に検証すると、
+    // 同じティックの中で結果が食い違う余地が生まれる。
+    deps.store.saveVerifications(
+      goalId,
+      toVerifications(goal.acceptance_criteria, result.facts, result.unresolved, observedAt),
+    );
     deps.store.saveDecision(goalId, digestOf(result.facts), result.decision);
 
     const run = await maybeAct(goal, result.decision, deps);

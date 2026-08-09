@@ -46,6 +46,27 @@ export function isUsageLimit(error: unknown): error is PortError {
   return candidate.name === "PortError" && candidate.kind === "usage_limit";
 }
 
+/**
+ * 待っても直るとは限らない失敗かどうか。
+ *
+ * 未ログイン、モデル名の誤り、認証切れはここに来る。呼び直しても同じ結果になるので、
+ * 再試行の回数を消費させない。実際、初めて ent run を全周させたとき
+ * 「Not logged in」を3回とも呼び直して同じ失敗を繰り返した。
+ *
+ * 一時的な 502 や 429 もこの kind に入るので、次のティックでは再試行される。
+ * 抑止するのは1ティックの中での呼び直しだけになる。
+ */
+export function isUnavailable(error: unknown): error is PortError {
+  if (error instanceof PortError) {
+    return error.kind === "unavailable";
+  }
+  if (typeof error !== "object" || error === null) {
+    return false;
+  }
+  const candidate = error as { name?: unknown; kind?: unknown };
+  return candidate.name === "PortError" && candidate.kind === "unavailable";
+}
+
 /** usage_limit なら resumeAfter を取り出す。持っていなければ null */
 export function resumeAfterOf(error: unknown): string | null {
   if (!isUsageLimit(error)) {

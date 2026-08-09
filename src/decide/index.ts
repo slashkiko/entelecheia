@@ -3,7 +3,7 @@ import type { Unresolved } from "../domain/fact.js";
 import { criterionFactKey } from "../domain/fact-keys.js";
 import type { Assessment } from "../domain/gap.js";
 import type { AcceptanceCriterion, Budget } from "../domain/goal.js";
-import { isUsageLimit, resumeAfterOf } from "../domain/port-error.js";
+import { isUnavailable, isUsageLimit, resumeAfterOf } from "../domain/port-error.js";
 
 /**
  * これまでに使った分。Goal の budget と突き合わせて上限判定に使う。
@@ -187,14 +187,24 @@ function describeUnresolved(unresolved: readonly Unresolved[]): string {
 }
 
 /**
- * LLM が選んではいけない行動を弾く。
+ * LLM が選んでよい行動。ここに無いものは受け取らない。
  *
- * COMPLETE を除くのは design.md §3.1 の「完了判定は VERIFIED のみで行う」を
- * 推論で迂回させないため。ここに来るのは Gap が残っている状態だけなので、
- * COMPLETE は定義上ありえない。guard 側の判定と二重にしておく。
+ * COMPLETE と ESCALATE を除くのは、収束と停止の判定を推論で迂回させないため。
+ * COMPLETE は design.md §3.1 の「完了判定は VERIFIED のみで行う」、
+ * ESCALATE は §7 の「暴走の停止条件を LLM の判断に依存させない」にあたる。
+ *
+ * ESCALATE を最初から閉じていなかったのは、`llmActionSchema` が COMPLETE だけを
+ * 弾いていたため。実際に全周させたところ、reconcile の2回目で LLM が
+ * `ESCALATE(loop_detected)` を返し、ループしていないのに採用された。
+ * `budget_exhausted` も同じ口から入る。どちらも guard が持つべき判断になる。
+ *
+ * guard 側から `loop_detected` を出す実装はまだ無い（design.md §10-2）。
+ * ここで閉じるのは LLM 側の口だけで、§10-2 は未決のまま残る。
  */
-const llmActionSchema = actionSchema.refine((action) => action.type !== "COMPLETE", {
-  message: "COMPLETE は guard が決める。Gap が残っている状態では選べない",
+const LLM_ACTIONS = new Set(["ACT", "VERIFY", "WAIT", "REPLAN"]);
+
+const llmActionSchema = actionSchema.refine((action) => LLM_ACTIONS.has(action.type), {
+  message: `LLM が選べるのは ${[...LLM_ACTIONS].join(" / ")} だけ。COMPLETE と ESCALATE は guard が決める`,
 });
 
 /**
@@ -221,6 +231,16 @@ async function askLlm(
           decidedAt,
           action: { type: "WAIT", reason: "usage_limit", resumeAfter: resumeAfterOf(error) },
           rationale: `LlmPort が使用量上限に達した: ${errorMessage(error)}`,
+          decidedBy: "guard",
+        };
+      }
+      // Port 自身が失敗したなら、呼び直しても同じ結果になる。未ログイン・
+      // 認証切れ・モデル名の誤りはここに来る。再試行の回数を消費させない。
+      if (isUnavailable(error)) {
+        return {
+          decidedAt,
+          action: { type: "ESCALATE", reason: "invalid_decision" },
+          rationale: `LlmPort が呼べなかった。呼び直しても直らないので再試行しない: ${errorMessage(error)}`,
           decidedBy: "guard",
         };
       }
@@ -275,9 +295,9 @@ function buildPrompt(target: DecideTarget, failures: readonly string[]): string 
       '- {"type":"VERIFY"} — 検証していない criteria を確かめる。kind が unknown の Gap に使う',
       '- {"type":"WAIT","reason":"review_pending|ci_running|usage_limit|observation_failed","resumeAfter":null}',
       '- {"type":"REPLAN"} — いまの進め方では Gap が埋まらない',
-      '- {"type":"ESCALATE","reason":"loop_detected"} — 同じ Gap が解消されないまま繰り返している',
       "",
-      "COMPLETE は選べない。完了判定は VERIFIED な Fact だけで controller が行う。",
+      "COMPLETE と ESCALATE は選べない。完了判定と停止条件は controller が決める。",
+      "人間を待つべきだと判断したら WAIT(review_pending) を選ぶ。",
       "JSON オブジェクトだけを返す。",
     ].join("\n"),
   ];

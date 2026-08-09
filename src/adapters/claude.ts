@@ -1,10 +1,11 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import type { Options } from "@anthropic-ai/claude-agent-sdk";
+import type { EffortLevel, Options } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
 import type { ActorPort, ActorResult } from "../act/index.js";
 import type { LlmPort } from "../decide/index.js";
 import type { ApprovalGate } from "../domain/goal.js";
+import type { LlmCall } from "../domain/llm-call.js";
 import { PortError } from "../domain/port-error.js";
 
 /**
@@ -29,6 +30,24 @@ export interface ClaudeOptions {
   runsDir: string;
   /** ログをファイルに書く口。テストから差し替える */
   writeLog?: (path: string, contents: string) => Promise<void>;
+  /**
+   * 使うモデル。省略すると Claude Code の既定に従う。
+   *
+   * 起動のたびに使用量を消費するので、controller 側から選べる口が要る（design.md §7）。
+   * 安い試走と本番の実行で同じコードを使い分けられるようにしてある。
+   */
+  model?: string | undefined;
+  /** 思考の深さ。省略すると Claude Code の既定に従う */
+  effort?: EffortLevel | undefined;
+  /** テスト時に固定するための時刻ソース。省略すると実時計を使う */
+  now?: (() => Date) | undefined;
+  /**
+   * LlmPort を1回呼ぶたびに通知する。トークンと生ログのパスを controller に渡す。
+   *
+   * DECIDE は Actor を起動しないので Run が作られず、design.md §7 が求める
+   * トークンの記録先が無い。呼んだ直後に通知して、その場で永続化させる。
+   */
+  onCall?: ((call: LlmCall) => void) | undefined;
 }
 
 export function claudeActor(options: ClaudeOptions): ActorPort {
@@ -43,7 +62,13 @@ export function claudeActor(options: ClaudeOptions): ActorPort {
       }
       invocation.signal.addEventListener("abort", () => aborter.abort(), { once: true });
 
-      const outcome = await consume(options, ACTOR_PROMPT(invocation.intent), {
+      // design.md §4.6 の .goals/.state/runs/<run-id>/ に合わせる。
+      const logRef = join(options.runsDir, invocation.runId, "log.jsonl");
+      // consume が途中で throw しても、そこまでのログは残す。使用量上限に
+      // 当たった実行の手がかりが「例外のメッセージだけ」になるのを避ける。
+      const log: string[] = [];
+
+      const outcome = await consumeAndLog(options, logRef, log, ACTOR_PROMPT(invocation.intent), {
         // controller 本体のコードと Agent が編集するコードを物理的に分ける（§7）。
         cwd: invocation.worktree.path,
         abortController: aborter,
@@ -63,10 +88,6 @@ export function claudeActor(options: ClaudeOptions): ActorPort {
         settingSources: [],
       });
 
-      // design.md §4.6 の .goals/.state/runs/<run-id>/ に合わせる。
-      const logRef = join(options.runsDir, invocation.runId, "log.jsonl");
-      await (options.writeLog ?? writeLogToFile)(logRef, `${outcome.log.join("\n")}\n`);
-
       return {
         // result が来ないまま終わったのは、途中で切れたということ。
         // 成功にすると捏造した成功になる。
@@ -80,21 +101,80 @@ export function claudeActor(options: ClaudeOptions): ActorPort {
 }
 
 export function claudeLlm(options: ClaudeOptions): LlmPort {
+  const now = options.now ?? ((): Date => new Date());
+  // 同じティックの中で何度も呼ばれる。時刻だけだと同じ秒に重なるので連番を足す。
+  let sequence = 0;
+
   return {
     async chooseAction(prompt) {
-      const outcome = await consume(options, `${prompt}\n\n${JSON_ONLY}`, {
-        // DECIDE は判断だけで、副作用は ACT が持つ。ファイルを触らせない。
-        allowedTools: [],
-        permissionMode: "default",
-        settingSources: [],
-      });
+      sequence += 1;
+      const calledAt = now().toISOString();
+      // Actor の生ログと同じ場所に、同じ粒度で置く（design.md §4.6）。
+      const logRef = join(options.runsDir, callIdOf(calledAt, sequence), "log.jsonl");
+      const log: string[] = [];
 
+      let outcome: Outcome;
+      try {
+        outcome = await consumeAndLog(options, logRef, log, `${prompt}\n\n${JSON_ONLY}`, {
+          // DECIDE は判断だけで、副作用は ACT が持つ。ファイルを触らせない。
+          allowedTools: [],
+          permissionMode: "default",
+          settingSources: [],
+        });
+      } catch (error) {
+        // 失敗した呼び出しもトークンは消費している。記録しないと §7 の
+        // 「従量課金だったらいくらだったか」が実際より小さく出る。
+        options.onCall?.({ purpose: "decide", tokens: 0, logRef, ok: false, calledAt });
+        throw error;
+      }
+
+      const tokens = outcome.result?.tokens ?? 0;
       const text = outcome.result?.text ?? "";
-      // 壊れた出力を握って空オブジェクトを返すと、decide が
-      // 「検証に落ちた」と「呼べなかった」を区別できなくなる。
-      return parseJson(text);
+      try {
+        // 壊れた出力を握って空オブジェクトを返すと、decide が
+        // 「検証に落ちた」と「呼べなかった」を区別できなくなる。
+        const parsed = parseJson(text);
+        options.onCall?.({ purpose: "decide", tokens, logRef, ok: true, calledAt });
+        return parsed;
+      } catch (error) {
+        options.onCall?.({ purpose: "decide", tokens, logRef, ok: false, calledAt });
+        throw error;
+      }
     },
   };
+}
+
+/** 生ログの置き場所を決める id。`decide-2026-08-09T04-40-56-280Z-1` の形になる */
+function callIdOf(calledAt: string, sequence: number): string {
+  return `decide-${calledAt.replace(/[:.]/g, "-")}-${sequence}`;
+}
+
+/**
+ * query() を読み切り、その過程のログを必ずファイルに残す。
+ *
+ * 途中で throw されてもログを書く。使用量上限や未ログインで落ちた実行こそ
+ * 手がかりが要るのに、そこだけログが消えるのでは §4.6 を満たさない。
+ */
+async function consumeAndLog(
+  options: ClaudeOptions,
+  logRef: string,
+  log: string[],
+  prompt: string,
+  queryOptions: Options,
+): Promise<Outcome> {
+  const write = async (): Promise<void> => {
+    await (options.writeLog ?? writeLogToFile)(logRef, `${log.join("\n")}\n`);
+  };
+
+  try {
+    const outcome = await consume(options, prompt, queryOptions, log);
+    await write();
+    return outcome;
+  } catch (error) {
+    // ログを書けなくても、元の失敗の方を伝える。
+    await write().catch(() => undefined);
+    throw error;
+  }
 }
 
 interface Outcome {
@@ -113,8 +193,8 @@ async function consume(
   options: ClaudeOptions,
   prompt: string,
   queryOptions: Options,
+  log: string[],
 ): Promise<Outcome> {
-  const log: string[] = [];
   const artifacts: string[] = [];
   let result: Outcome["result"] = null;
 
@@ -122,7 +202,17 @@ async function consume(
   // 使用量上限と一時的な 429 を区別できないので、こちらを根拠にする。
   let lastStatus: string | null = null;
 
-  for await (const message of options.query({ prompt, options: queryOptions })) {
+  // model と effort は呼び出し側の指定が無ければ渡さない。undefined を明示的に
+  // 載せると、SDK 側の「省略時は既定に従う」判定に引っかかる形になりうる。
+  const merged: Options = { ...queryOptions };
+  if (options.model !== undefined) {
+    merged.model = options.model;
+  }
+  if (options.effort !== undefined) {
+    merged.effort = options.effort;
+  }
+
+  for await (const message of options.query({ prompt, options: merged })) {
     log.push(JSON.stringify(message));
     lastStatus = throwIfUsageLimit(message, lastStatus);
 
@@ -132,11 +222,10 @@ async function consume(
 
     const parsed = resultSchema.safeParse(message);
     if (parsed.success) {
-      const usage = parsed.data.usage;
       result = {
         ok: parsed.data.subtype === "success" && parsed.data.is_error !== true,
         text: parsed.data.result ?? "",
-        tokens: (usage?.input_tokens ?? 0) + (usage?.output_tokens ?? 0),
+        tokens: tokensOf(parsed.data.usage),
       };
     }
   }
@@ -203,6 +292,30 @@ function resumeAfterFrom(resetsAt: number | undefined): string | null {
   const date = new Date(millis);
   // 解釈できない値を捏造した時刻にしない。分からないなら分からないまま返す。
   return Number.isNaN(date.getTime()) ? null : date.toISOString();
+}
+
+/**
+ * 実際に処理したトークン数。
+ *
+ * `input_tokens` と `output_tokens` だけを足すと、実測では 16 になった。
+ * 同じ応答の `cache_creation_input_tokens` は 6620、`cache_read_input_tokens` は
+ * 25023 で、キャッシュに載った分がそこに移っている。§7 の「あとから単価をかければ
+ * 従量課金だったらいくらだったかを出せる」は、この2つを落とすと成立しない。
+ *
+ * ただし4つは単価が違う（キャッシュ書き込みは高く、読み出しは安い）ので、
+ * 合計1つから正確な金額は出ない。内訳は生ログに残っているので、
+ * 厳密に出したくなったらそちらを読む。DB が持つのは規模の指標にとどめる。
+ */
+function tokensOf(usage: z.infer<typeof usageSchema> | undefined): number {
+  if (usage === undefined) {
+    return 0;
+  }
+  return (
+    (usage.input_tokens ?? 0) +
+    (usage.cache_creation_input_tokens ?? 0) +
+    (usage.cache_read_input_tokens ?? 0) +
+    (usage.output_tokens ?? 0)
+  );
 }
 
 /** Agent が書き換えたファイル。Run の artifacts に残す */
@@ -329,12 +442,19 @@ const toolUseSchema = z.object({
   input: z.object({ file_path: z.string().optional() }).optional(),
 });
 
+const usageSchema = z.object({
+  input_tokens: z.number().optional(),
+  /** プロンプトキャッシュに書き込んだ分。単価は input より高い */
+  cache_creation_input_tokens: z.number().optional(),
+  /** キャッシュから読んだ分。単価は input より安いが、量は最も大きくなりやすい */
+  cache_read_input_tokens: z.number().optional(),
+  output_tokens: z.number().optional(),
+});
+
 const resultSchema = z.object({
   type: z.literal("result"),
   subtype: z.string(),
   is_error: z.boolean().optional(),
   result: z.string().optional(),
-  usage: z
-    .object({ input_tokens: z.number().optional(), output_tokens: z.number().optional() })
-    .optional(),
+  usage: usageSchema.optional(),
 });
