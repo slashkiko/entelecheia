@@ -116,12 +116,22 @@ describe("応答の形が違うとき", () => {
   });
 });
 
-describe("shape_mismatch の待ち理由", () => {
-  it("観測できていない扱いにする。CI 待ちに化けさせない", async () => {
+describe("shape_mismatch の倒し方", () => {
+  it("CI 待ちに化けさせない。待たずに止める", async () => {
     // 恒久的なスキーマ不一致が ci_running を名乗ると、人間には「CI を待っている」
     // ように見えて原因に辿り着けない。しかも Gap ゼロの WAIT はループ検知より
     // 手前で return するので、予算に当たるまでそのラベルで回り続ける。
     // reason を足した意味がここで消える。
+    //
+    // ここは元々 WAIT(observation_failed) を固定していた。ci_running に化けない
+    // ことは押さえていたが、「予算に当たるまで回り続ける」ほうは WAIT のままだと
+    // 直らない——上のコメントが自分で書いている不具合が、ラベルを変えただけで
+    // 残っていた。tests/shape-mismatch-stops.test.ts がその先を仕様にしたので、
+    // ここも同じ結論に寄せる。ESCALATE は WAIT より強く、この it が守りたかった
+    // 「一時的な障害として再試行させない」をそのまま満たす。
+    //
+    // 届かなかった失敗（port_failed）が WAIT(observation_failed) のままである
+    // ことは、tests/shape-mismatch-stops.test.ts が別に固定している。
     const decision = await decide(
       {
         criteria: [
@@ -161,6 +171,10 @@ describe("shape_mismatch の待ち理由", () => {
       },
     );
 
-    expect(decision.action).toMatchObject({ type: "WAIT", reason: "observation_failed" });
+    expect(decision.action).toEqual({ type: "ESCALATE", reason: "shape_mismatch" });
+    // 停止条件なので LLM には渡さない。上の chooseAction は呼ばれれば throw する。
+    expect(decision.decidedBy).toBe("guard");
+    // ci_running を名乗らない。そもそも待ちに落ちない。
+    expect(decision.action.type).not.toBe("WAIT");
   });
 });
