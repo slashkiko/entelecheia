@@ -22,6 +22,16 @@ export interface ReconcileTarget {
 export interface ReconcileResult {
   /** このティックで観測・検証した結果を含む Fact 集合 */
   facts: Fact[];
+  /**
+   * **このティックの OBSERVE だけが作った Fact。** 引き継ぎも検証結果も含まない。
+   *
+   * `facts` は前ティックの Fact を土台にして今ティックの観測で上書きしたものなので、
+   * Port が落ちたティックには前ティックの値が VERIFIED のまま残る（陳腐化して
+   * 落ちるのは `github.ci.*` だけ）。「今この瞬間そうなっている」を根拠に止める
+   * 関門がそこを読むと、「確かめられなかった」が「そうなっている」に化ける
+   * （design.md §3.1）。今の観測に限りたい読み手のために別に返す。
+   */
+  observedFacts: Fact[];
   unresolved: Unresolved[];
   assessment: Assessment;
   /**
@@ -89,7 +99,14 @@ export async function reconcile(
   );
 
   // 待ちは Decision として返し、次のティックに任せる。ここで sleep しない（design.md §3.6）。
-  return { facts, unresolved, assessment, observedDigest, decision };
+  return {
+    facts,
+    observedFacts: [...observed.facts],
+    unresolved,
+    assessment,
+    observedDigest,
+    decision,
+  };
 }
 
 /** PR の head sha。CI の Fact がどのコミットのものかは、これでしか分からない */

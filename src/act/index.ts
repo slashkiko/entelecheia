@@ -278,6 +278,18 @@ export function worktreeNameFor(goalId: string): string {
   return goalId;
 }
 
+/**
+ * worktree が checkout するブランチ名。worktree の名前から決まる。
+ *
+ * 規則の正はここ1箇所にする。WorktreePort の実装（`gitWorktree`）も、
+ * 「今の観測がその worktree のものか」を見る controller も、同じ関数を通す。
+ * 2箇所に書くと、観測しているのが別の作業ツリーでも誰も気づけない
+ * （`worktreeNameFor` を export しているのと同じ理由）。
+ */
+export function worktreeBranchFor(worktreeName: string): string {
+  return `entelecheia/${worktreeName}`;
+}
+
 /** signal を渡されなかった呼び出しに使う。中断されることはない */
 const NEVER_ABORTED: AbortSignal = new AbortController().signal;
 

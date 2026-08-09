@@ -1,5 +1,11 @@
 import { join } from "node:path";
-import { type ActDeps, act, type RunRecorderPort, worktreeNameFor } from "../act/index.js";
+import {
+  type ActDeps,
+  act,
+  type RunRecorderPort,
+  worktreeBranchFor,
+  worktreeNameFor,
+} from "../act/index.js";
 import type { BudgetUsage } from "../decide/index.js";
 import type { Action, Decision } from "../domain/action.js";
 import type { Fact, Unresolved } from "../domain/fact.js";
@@ -223,7 +229,11 @@ export async function tick(goal: Goal, deps: ControllerDeps): Promise<TickResult
 
     // 未 commit の変更を残したまま「機械側の番は終わった」と言い切らせない
     // （design.md §10-11）。差し替えはここまでで、書き込むのは下の1行のまま。
-    const decided = uncommittedDecision(goal, guarded, result.facts, deps);
+    //
+    // 渡すのは今ティックの観測が作った Fact だけにする。merge 済みの result.facts には
+    // 前ティックの local.* が残るので、観測に失敗したティックを「汚れている」と
+    // 読んでしまう（design.md §3.1）。
+    const decided = uncommittedDecision(goal, guarded, result.observedFacts, deps);
 
     // Decision は1ティックに1行だけ書く。以前は先に result.decision を書き、
     // 差し替えたときにもう1行足していたので、保護パス違反のティックだけ
@@ -416,10 +426,7 @@ async function guardedDecision(
   // act と同じ規則で worktree の場所を決める。ここがずれると、
   // 隔離の中の編集を「外に出た」と読んでしまう。
   const worktreeName = worktreeNameFor(goal.goal.id);
-  const worktreePath =
-    deps.worktreeRoot === undefined
-      ? (run?.worktree ?? worktreeName)
-      : join(deps.worktreeRoot, worktreeName);
+  const worktreePath = worktreePathFor(goal, run, deps);
 
   const escalate = (reason: "protected_path_touched" | "guard_unavailable", detail: string) => ({
     decidedAt: deps.now().toISOString(),
@@ -488,6 +495,19 @@ async function guardedDecision(
 }
 
 /**
+ * Goal 専用の worktree の場所。act と同じ規則で決める。
+ *
+ * WorktreePort は名前からパスを決めるが、その規則を controller は知らない。
+ * `worktreeRoot` を渡されていなければ、走った Run が控えた場所に落とす。
+ */
+function worktreePathFor(goal: Goal, run: Run | null, deps: ControllerDeps): string {
+  const worktreeName = worktreeNameFor(goal.goal.id);
+  return deps.worktreeRoot === undefined
+    ? (run?.worktree ?? worktreeName)
+    : join(deps.worktreeRoot, worktreeName);
+}
+
+/**
  * 未 commit の変更を残したまま「機械側の番は終わった」と言い切らせない。
  *
  * push は commit 済みの差分しか送らない（`git push -u origin HEAD:<branch>`）のに、
@@ -509,17 +529,30 @@ async function guardedDecision(
  *   無く、`local.*` は controller 自身のリポジトリを観測する（`src/cli.ts` の
  *   `verifyRoot`）。自己ホストでは人間の編集で汚れているのが普通なので、そこを
  *   Actor の書き残しと読むと、どの Goal も最初のティックから進まなくなる
- * - 材料は VERIFIED な `local.dirty` に限る。観測できなかったティックを
- *   「汚れている」と読むと、捏造した違反で人間を呼ぶことになる（design.md §3.1）。
+ * - **worktree を観測した dirty だけを見る。** 「Run が1件でもあれば worktree を
+ *   観測している」は代理にならない。`act` は `worktree.ensure` より先に
+ *   Run(starting) を書く（write-ahead）ので、worktree を作れずに失敗した Run が
+ *   1本あるだけでその前提は破れ、`verifyRoot` は controller 自身のリポジトリに
+ *   落ちたままになる。どこを観測した値かは、同じ観測が作る `local.branch` で分かる。
+ *   worktree が checkout するブランチ名の規則は `worktreeBranchFor` が正
+ * - **材料は今ティックの観測が作った Fact に限る。** reconcile は前ティックの Fact を
+ *   土台にして今ティックの観測で上書きするので、`LocalRepoPort` が落ちたティックには
+ *   前ティックの `local.dirty` が VERIFIED のまま残る（陳腐化して落ちるのは
+ *   `github.ci.*` だけ）。それを今の観測として読むと、「確かめられなかった」が
+ *   「汚れている」に化け、捏造した違反で人間を呼ぶことになる（design.md §3.1）。
  *   逆に「確かめられなかった」を「綺麗」とも読まない——そのティックは Fact が
  *   欠けるので、そもそも criteria が揃わず COMPLETE には届かない
  * - 判断したのは LLM ではないので decidedBy は "guard"（design.md §7）
+ * - **止めた理由と、進めるために何をすればよいかを rationale に書く。** ここが
+ *   `ent show`（`decision.rationale`）にも PR の進捗コメントにもそのまま出る
+ *   唯一の説明になる。「止まった」しか読めない関門は、人間から見れば
+ *   原因不明の停止と区別がつかない
  * - 元の rationale を残す。何をしようとしていたのかが読めなくなる
  */
 function uncommittedDecision(
   goal: Goal,
   decision: Decision,
-  facts: readonly Fact[],
+  observedFacts: readonly Fact[],
   deps: ControllerDeps,
 ): Decision {
   if (!claimsNothingLeft(decision)) {
@@ -533,20 +566,44 @@ function uncommittedDecision(
     return decision;
   }
 
-  const dirty = facts.find((fact) => fact.key === "local.dirty");
-  if (dirty === undefined || dirty.confidence !== "VERIFIED" || dirty.value !== true) {
+  // 今ティックの観測が worktree を見ていなければ、その dirty は Actor の
+  // 書き残しではない。controller 自身のリポジトリの汚れで人間を呼ばない。
+  const worktreeBranch = worktreeBranchFor(worktreeNameFor(goal.goal.id));
+  if (!observedValue(observedFacts, "local.branch", worktreeBranch)) {
     return decision;
   }
 
+  if (!observedValue(observedFacts, "local.dirty", true)) {
+    return decision;
+  }
+
+  const worktreePath = worktreePathFor(goal, null, deps);
   return {
     decidedAt: deps.now().toISOString(),
     action: { type: "ESCALATE", reason: "uncommitted_changes" },
     rationale:
-      "Actor が書いた変更が worktree に未 commit のまま残っている。" +
-      `commit されていない差分は push されないので、${describeClaim(decision.action)} ` +
-      `remote には実装が1行も出ないまま止まる（元の判断: ${decision.rationale}）`,
+      `Actor が書いた変更が worktree（${worktreePath}、ブランチ ${worktreeBranch}）に` +
+      "未 commit のまま残っている。commit されていない差分は push されないので、" +
+      `${describeClaim(decision.action)} remote には実装が1行も出ないまま止まる。` +
+      `進めるには、\`git -C ${worktreePath} status\` で差分を確かめたうえで、` +
+      `残すなら commit し（\`git -C ${worktreePath} add -A && git -C ${worktreePath} commit\`）、` +
+      `捨てるなら元に戻して（\`git -C ${worktreePath} checkout -- .\`）から、` +
+      `この Goal をもう一度回す（\`ent run ${goal.goal.id}\`）` +
+      `（元の判断: ${decision.rationale}）`,
     decidedBy: "guard",
   };
+}
+
+/**
+ * 今ティックの観測が、そのキーをその値で確かめたか。
+ *
+ * Fact が無い（観測できなかった）を false に畳んでよいのは、呼び出し側が
+ * 「確かめられたときだけ止める」側に倒しているため。確かめられなかったティックは
+ * Fact が欠けるので criteria も揃わず、止めるべき COMPLETE には届かない。
+ */
+function observedValue(facts: readonly Fact[], key: string, value: unknown): boolean {
+  const fact = facts.find((f) => f.key === key);
+  return fact !== undefined && fact.confidence === "VERIFIED" && fact.value === value;
 }
 
 /**

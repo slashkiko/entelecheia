@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { promisify } from "node:util";
-import type { Worktree, WorktreePort } from "../act/index.js";
+import { type Worktree, type WorktreePort, worktreeBranchFor } from "../act/index.js";
 import type { LocalRepoPort } from "../observe/index.js";
 import type { BranchPort, PushResult } from "../publish/index.js";
 import type { ApprovalPort, CommandResult, CommandRunnerPort } from "../verify/index.js";
@@ -106,7 +106,8 @@ export function gitWorktree(repoRoot: string, root: string): WorktreePort {
   return {
     async ensure(name, baseBranch): Promise<Worktree> {
       const path = pathOf(name);
-      const branch = `entelecheia/${name}`;
+      // 規則は act/index.ts が正。controller の関門も同じ関数を通す。
+      const branch = worktreeBranchFor(name);
       // 既にある作業ツリーは作り直さない。作り直すと前ティックの差分が消える。
       // `worktree list` の出力は realpath なので、パスの表記が揺れても
       // 取りこぼさないようにディレクトリの実在も見る。
