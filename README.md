@@ -165,6 +165,7 @@ ent agent-context                  # CLI の構造を機械可読な JSON で出
 ```
 
 `--json` は出力を JSON にする（`run` / `get` / `list` は既定で JSON。`start` だけが平文）。
+`doctor` と `agent-context` は常に JSON で、`--json` は受け取らない。
 `--limit <n>` は `get` / `list` の件数を絞る。既定でも上限で切り、切れたときだけ
 絞り込み方が stderr に出る。エージェント向けの手順は `.claude/skills/ent/SKILL.md` に置いてある。
 
