@@ -511,7 +511,12 @@ async function guardedDecision(
 
   let escaped: readonly string[];
   try {
-    const after = await deps.worktree.repoDirtyState();
+    // before 側（repoBaseline）と同じ観測を取る。片側だけ git の汚れに絞ると、
+    // git に見えない書き込み（.git/hooks・core.hooksPath・状態 DB）は
+    // baseline にしか現れず、下の filter が after 側のエントリしか見ないので
+    // 指紋がどう変わっても escaped に入らない。観測を足したのに関門が一度も
+    // 鳴らない、という形になる。前後で同じものを見ること。
+    const after = await observedRepoState(deps);
     // 中身の指紋で比べる。パスの集合だけだと、人間が編集中のファイルを
     // Actor が上書きしたときに前後で同じパスが並び、差がゼロになる。
     //
@@ -525,9 +530,10 @@ async function guardedDecision(
     //
     // この2つは逆向きで、検知を永続化するか、編集を Actor プロセスに紐付けないと
     // 同時には解けない。MVP では両方残している。
-    escaped = [...after]
-      .filter(([path, digest]) => repoBefore.state.get(path) !== digest)
-      .map(([path]) => path);
+    // 前後どちらかにしか無いパスも変化として数える。after 側だけを走査すると、
+    // 消された hook（before にあって after に無い）が差分に出ない。
+    const paths = new Set([...repoBefore.state.keys(), ...after.keys()]);
+    escaped = [...paths].filter((path) => repoBefore.state.get(path) !== after.get(path));
   } catch (error) {
     return escalate(
       "guard_unavailable",

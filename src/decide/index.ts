@@ -182,7 +182,15 @@ function unchangedReconciles(target: DecideTarget): number {
  * 状態を取り違えるため。GitHub が落ちているだけかもしれない。
  */
 function waitReason(target: DecideTarget): WaitReason {
-  if (target.unresolved.some((u) => u.reason === "port_failed")) {
+  // 観測が成立していない理由は、届かなかった（port_failed）と
+  // 届いたが読めなかった（shape_mismatch）の2つある。どちらも「観測できて
+  // いない」ので、承認待ちや CI 待ちより先に倒す。
+  //
+  // shape_mismatch を落とすと ci_running に化ける。恒久的なスキーマ不一致が
+  // 「CI 実行待ち」を名乗り、Gap ゼロの WAIT はループ検知より手前で return する
+  // ので、予算に当たるまでそのラベルで回り続ける。reason を足した意味が消える。
+  const unobservable = new Set(["port_failed", "shape_mismatch"]);
+  if (target.unresolved.some((u) => unobservable.has(u.reason))) {
     return "observation_failed";
   }
 
