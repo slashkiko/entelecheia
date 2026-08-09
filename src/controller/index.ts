@@ -2,12 +2,12 @@ import { join } from "node:path";
 import { type ActDeps, act, type RunRecorderPort, worktreeNameFor } from "../act/index.js";
 import type { BudgetUsage } from "../decide/index.js";
 import type { Action, Decision } from "../domain/action.js";
-import type { Fact } from "../domain/fact.js";
+import type { Fact, Unresolved } from "../domain/fact.js";
 import type { Goal } from "../domain/goal.js";
 import { type GoalStatus, isTerminal, nextStatus } from "../domain/goal-state.js";
 import { describeViolations, findViolations } from "../domain/protected-paths.js";
 import type { Run } from "../domain/run.js";
-import { toVerifications } from "../domain/verification.js";
+import { toVerifications, type Verification } from "../domain/verification.js";
 import { type PublishDeps, publish } from "../publish/index.js";
 import { type ReconcileDeps, reconcile } from "../reconcile/index.js";
 import type { GoalState, Store } from "../store/index.js";
@@ -39,6 +39,14 @@ export interface ControllerDeps
    * 絶対パスを返す実装では「外に出た」と読んでしまう。実運用では必ず渡す。
    */
   worktreeRoot?: string | undefined;
+  /**
+   * 次のティックで何が起きるかを、起こす前に見るだけにする（`ent run <slug> --dry-run`）。
+   *
+   * OBSERVE / VERIFY / ASSESS / DECIDE は本当に回す。模擬すると「配管が繋がって
+   * いるか」を確かめる用途に使えなくなる。飛ばすのは副作用の側だけで、
+   * ACT・publish・永続化・lease・orphan Run の回収がそれにあたる。
+   */
+  dryRun?: boolean | undefined;
 }
 
 export interface TickResult {
@@ -58,6 +66,24 @@ export interface TickResult {
   run: Run | null;
   /** ティック後の Goal の状態 */
   status: GoalStatus;
+  /** dry-run で回した場合だけ true。通常のティックでは入らない */
+  dryRun?: boolean;
+  /**
+   * 書いていたら移っていた状態。dry-run のときだけ入る。
+   *
+   * 状態を動かさないので、動かしていたらどうなったかを別に返す。
+   */
+  wouldTransitionTo?: GoalStatus;
+  /**
+   * 観測と検証の結果。dry-run のときだけ入る。
+   *
+   * DB に残さないので、ここで返さなければ読む手段が無い。
+   */
+  observed?: {
+    facts: readonly Fact[];
+    unresolved: readonly Unresolved[];
+    verifications: readonly Verification[];
+  };
 }
 
 /**
@@ -101,6 +127,12 @@ export async function tick(goal: Goal, deps: ControllerDeps): Promise<TickResult
   const sleeping = sleepingUntil(state.resumeAfter, deps.now());
   if (sleeping !== null) {
     return idle(state.status, `resume_after まで寝ている: ${sleeping}`);
+  }
+
+  // 見るだけのティック。ここから下（lease・回収・永続化・ACT・publish）は
+  // すべて書く側なので、分岐は lease を取る前に置く。
+  if (deps.dryRun === true) {
+    return await preview(goal, state, deps);
   }
 
   const leaseUntil = (): Date => new Date(deps.now().getTime() + deps.leaseSeconds * 1000);
@@ -234,6 +266,117 @@ export async function tick(goal: Goal, deps: ControllerDeps): Promise<TickResult
     // 例外で抜けても解放する。残すと lease の期限までどのワーカーも動けない。
     clearInterval(heartbeat);
     deps.store.releaseLease(goalId, deps.owner);
+  }
+}
+
+/**
+ * 見るだけのティック（`ent run <slug> --dry-run`）。
+ *
+ * 満たすべき性質:
+ * - OBSERVE / VERIFY / ASSESS / DECIDE は本当に回す。観測を模擬すると、
+ *   「配管が繋がっているか」を確かめるという dry-run の用途そのものが消える。
+ *   LLM の呼び出し記録（recordLlmCall）も残す。トークンは実際に消費するので、
+ *   記録を落とすと使用量が合わなくなる（design.md §7）
+ * - 書かない。snapshot / verifications / decision / status のどれも残さない。
+ *   残すと、見ただけのティックが次の判断材料（ダイジェストの連続やループ検知）を汚す
+ * - lease を取らない。書かないので他のワーカーを塞ぐ理由が無い。実行中の Goal に
+ *   対しても「次に何をするつもりか」は読めた方がよいので、lease の有無で弾かない
+ * - ACT も publish も orphan Run の回収もしない
+ * - 保護パスの検査は通常のティックと同じに通す。ここだけ結果が変わると、
+ *   dry-run が「次に何が起きるか」を映さなくなる。検査そのものは触っていない
+ * - 書いていたらどの状態に移っていたかを返す。状態は動かさないので、
+ *   nextStatus の結果を wouldTransitionTo として別に返す
+ * - GitHub の読み口が生きているかを確かめる（reachableCode）。dry-run は
+ *   「配管が繋がっているか」を見るためのものなので、observe が触らなかった
+ *   Port をそのままにすると用を成さない
+ */
+async function preview(goal: Goal, state: GoalState, deps: ControllerDeps): Promise<TickResult> {
+  const goalId = goal.goal.id;
+  const carriedFacts = deps.store.latestSnapshot(goalId)?.facts ?? [];
+  const result = await reconcile(
+    {
+      goal,
+      observe: { prNumber: state.prNumber, issueNumber: state.issueNumber },
+      carriedFacts,
+      usage: usageOf(state, goal, deps),
+    },
+    deps,
+  );
+
+  // 書かないだけで、criteria 単位の索引は通常のティックと同じ入力から作る。
+  const verifications = toVerifications(
+    goal.acceptance_criteria,
+    result.facts,
+    result.unresolved,
+    deps.now().toISOString(),
+  );
+
+  // 読めなかった口を出力にだけ足す。DECIDE には渡さない（渡すと、dry-run が
+  // 見せる判断が本当のティックの判断と別物になる）。
+  const probe = await reachableCode(state, deps);
+  const unresolved = probe === null ? result.unresolved : [...result.unresolved, probe];
+
+  // ACT を実行していないので、本体リポジトリ側の差分はこのティックには無い。
+  // それでも検査を通すのは、前のティックが残した違反が worktree に残っている
+  // 場合に、次のティックが ESCALATE になることまで含めて見せるため。
+  const guarded = await guardedDecision(
+    goal,
+    result.decision,
+    null,
+    await repoBaseline(deps),
+    deps,
+  );
+
+  return {
+    ran: false,
+    skipped: null,
+    reclaimed: 0,
+    decision: guarded,
+    run: null,
+    status: state.status,
+    dryRun: true,
+    wouldTransitionTo: nextStatus(state.status, guarded.action),
+    observed: {
+      facts: result.facts,
+      unresolved,
+      verifications,
+    },
+  };
+}
+
+/**
+ * 存在しない PR 番号。GitHub の PR は 1 から振られるので、これで引けば必ず 404 になる。
+ * 404 は「読めたが対象が無い」で、Port は null を返す（src/adapters/github.ts）。
+ */
+const PROBE_PR_NUMBER = 0;
+
+/**
+ * GitHub の読み口が生きているかを確かめる。dry-run のときだけ通る。
+ *
+ * PR がまだ無い Goal では、observe は CodeProviderPort を1度も呼ばない。すると
+ * GITHUB_TOKEN の未設定も API の障害も観測結果に現れず、「PR がまだ無い」と
+ * 「GitHub が読めない」が同じ見た目になる。dry-run は起こす前に配管を確かめる
+ * ためのものなので、ここだけ明示的に1回叩く。
+ *
+ * 叩くのは存在しない番号にして、返ってきた値は使わない。実在の PR を読むと、
+ * 観測対象を指定していないのに Fact があるように見える。ここに残すのは
+ * 「読めなかった」という事実だけにする（design.md §3.1）。
+ *
+ * 既に PR を観測しているなら、observe が同じ口を通っているので叩き直さない。
+ */
+async function reachableCode(state: GoalState, deps: ControllerDeps): Promise<Unresolved | null> {
+  if (state.prNumber !== null) {
+    return null;
+  }
+  try {
+    await deps.code.getPullRequest(PROBE_PR_NUMBER);
+    return null;
+  } catch (error) {
+    return {
+      key: "github",
+      reason: "port_failed",
+      detail: `CodeProviderPort を読めなかった: ${errorMessage(error)}`,
+    };
   }
 }
 

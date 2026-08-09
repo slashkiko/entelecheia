@@ -39,30 +39,62 @@ import type { ApprovalPort } from "./verify/index.js";
  * （理由は `.goals/persist-and-resume.yaml` の ac-6）。
  */
 
+/**
+ * 出力の既定の上限（gist 2.5）。`--limit` で上げ下げできる。
+ *
+ * 上限が無いと、Goal が増えるほど1回の出力がエージェントのコンテキストを食う。
+ * 切り捨てたときは絞り込み方を stderr に出すので、足りないことには気づける。
+ */
+export const DEFAULT_LIMIT = 50;
+
 export const USAGE = `ent — Declare the end state; the controller converges to it.
 
-  ent start <slug>   Goal を登録して ACTIVE にする
-  ent run <slug>     1ティック回して終了する（--once は既定）
-                     --pr <n> / --issue <n> で観測対象を指定する
-  ent show <slug>    宣言部と実行時状態をまとめて表示する
-  ent list           登録済みの Goal を一覧する
-  ent doctor         回す前の前提が揃っているかを読み取り専用で調べる
+  ent start <slug>     Goal を登録して ACTIVE にする
+  ent run <slug>       1ティック回して終了する（--once は既定）
+                       --pr <n> / --issue <n> で観測対象を指定する
+                       --dry-run で、書かずに次のティックの中身だけを見る
+  ent get <slug>       宣言部と実行時状態をまとめて表示する
+  ent list             登録済みの Goal を一覧する
+  ent doctor           回す前の前提が揃っているかを読み取り専用で調べる
+  ent agent-context    CLI の構造を機械可読な JSON で出す
+
+  --json               出力を JSON にする（run / get / list は既定で JSON）
+  --limit <n>          出力の件数を絞る（get / list。既定は ${String(DEFAULT_LIMIT)}）
 `;
+
+/** エージェントが叩けるサブコマンド。エラーはこの集合をそのまま並べる（gist 2.3） */
+const SUBCOMMANDS = ["start", "run", "get", "list", "doctor", "agent-context"] as const;
+type Subcommand = (typeof SUBCOMMANDS)[number];
 
 export type Command =
   /** Goal を登録して ACTIVE にする */
-  | { kind: "start"; slug: string }
+  | { kind: "start"; slug: string; json?: true }
   /**
    * 1ティック回して終了する。--once は既定で、常駐する形は用意しない。
    *
    * prNumber / issueNumber は「指定があった場合だけ」入る。未指定と「明示的に
    * 対象なし」を区別するため、null ではなく未設定にしてある。未指定なら前回の値を保つ。
+   *
+   * dryRun / json も同じく指定があったときだけ入る。必ず持たせると、
+   * 既存のテストが仕様として固定した解釈（`{ kind: "run", slug }`）が壊れる。
    */
-  | { kind: "run"; slug: string; prNumber?: number; issueNumber?: number }
-  /** 宣言部と実行時状態をマージして1枚で出す */
-  | { kind: "show"; slug: string }
+  | {
+      kind: "run";
+      slug: string;
+      prNumber?: number;
+      issueNumber?: number;
+      dryRun?: true;
+      json?: true;
+    }
+  /**
+   * 宣言部と実行時状態をマージして1枚で出す。
+   *
+   * 打つのは `ent get <slug>`。判別タグは show のまま変えない。エージェントが
+   * 揃えたいのはサブコマンド名であって、内部の識別子ではない。
+   */
+  | { kind: "show"; slug: string; limit?: number; json?: true }
   /** 登録済みの Goal を一覧する。slug は取らない */
-  | { kind: "list" }
+  | { kind: "list"; limit?: number; json?: true }
   /**
    * 回す前の前提を調べる。slug は取らず、副作用も持たない。
    *
@@ -70,6 +102,8 @@ export type Command =
    * 特定の Goal を指す必要が無い。
    */
   | { kind: "doctor" }
+  /** CLI の構造を機械可読な JSON で出す（gist 3.2 Layer 2）。slug は取らない */
+  | { kind: "agent-context" }
   | { kind: "help" }
   | { kind: "error"; message: string };
 
@@ -87,50 +121,67 @@ export function parseCommand(argv: readonly string[]): Command {
   if (sub === undefined || sub === "help" || sub === "--help" || sub === "-h") {
     return { kind: "help" };
   }
-  if (sub !== "start" && sub !== "run" && sub !== "show" && sub !== "list" && sub !== "doctor") {
+  if (sub === "show") {
+    // 別名としても残さない。同じ操作に2つ名前があると、どちらが正かを
+    // 確かめる分だけ無駄が出る（gist 3.1）。打ち直す先はここで示す。
+    return { kind: "error", message: "show は get に変わった: ent get <slug>" };
+  }
+  if (!isSubcommand(sub)) {
     // 黙って無視すると、打ち間違いが「何も起きなかった」に見える。
-    return { kind: "error", message: `不明なサブコマンド: ${sub}` };
+    // 推測させても無駄な再試行になるので、有効値をその場で全部並べる（gist 2.3）。
+    return {
+      kind: "error",
+      message: `不明なサブコマンド: ${sub}（使えるのは ${SUBCOMMANDS.join(" / ")}）`,
+    };
   }
 
   try {
     const { positionals, values } = parseArgs({
       args: [...rest],
       allowPositionals: true,
-      // --once は既定の挙動を明示するだけで、受け取っても何も変えない。
-      // 常駐する形は用意しない（design.md §3.6）。
-      //
-      // --pr / --issue は観測対象。Goal YAML は宣言部だけを持つので置き場が無く、
-      // controller が PR を作れるようになるまでは人間が渡す（次の Goal で自動化する）。
-      options:
-        sub === "run"
-          ? {
-              once: { type: "boolean" },
-              pr: { type: "string" },
-              issue: { type: "string" },
-            }
-          : {},
+      options: optionsFor(sub),
       strict: true,
     });
 
-    if (sub === "list" || sub === "doctor") {
-      // どちらも slug を取らない。余分な引数は打ち間違いとして error にする。
+    const json = values.json === true ? ({ json: true } as const) : {};
+
+    // slug を取らないサブコマンド。余分な引数は打ち間違いとして error にする。
+    if (sub === "list" || sub === "doctor" || sub === "agent-context") {
       if (positionals.length > 0) {
         return { kind: "error", message: `引数が多い: ${positionals.join(" ")}` };
       }
-      return sub === "list" ? { kind: "list" } : { kind: "doctor" };
+      if (sub === "agent-context") {
+        return { kind: "agent-context" };
+      }
+      if (sub === "doctor") {
+        return { kind: "doctor" };
+      }
+      const limit = positiveInteger(values.limit, "--limit");
+      if (typeof limit === "string") {
+        return { kind: "error", message: limit };
+      }
+      return { kind: "list", ...(limit === undefined ? {} : { limit }), ...json };
     }
 
     const slug = positionals[0];
     if (slug === undefined) {
-      // どの Goal を回すかは既定値で埋められない。
-      return { kind: "error", message: `${sub} には Goal の slug が要る` };
+      // どの Goal を回すかは既定値で埋められない。打ち直せる形を添える（gist 2.3）。
+      return { kind: "error", message: `${sub} には Goal の slug が要る: ent ${sub} <slug>` };
     }
     if (positionals.length > 1) {
       return { kind: "error", message: `引数が多い: ${positionals.join(" ")}` };
     }
 
-    if (sub !== "run") {
-      return { kind: sub, slug };
+    if (sub === "start") {
+      return { kind: "start", slug, ...json };
+    }
+
+    if (sub === "get") {
+      const limit = positiveInteger(values.limit, "--limit");
+      if (typeof limit === "string") {
+        return { kind: "error", message: limit };
+      }
+      return { kind: "show", slug, ...(limit === undefined ? {} : { limit }), ...json };
     }
 
     const prNumber = positiveInteger(values.pr, "--pr");
@@ -147,11 +198,53 @@ export function parseCommand(argv: readonly string[]): Command {
       slug,
       ...(prNumber === undefined ? {} : { prNumber }),
       ...(issueNumber === undefined ? {} : { issueNumber }),
+      ...(values["dry-run"] === true ? ({ dryRun: true } as const) : {}),
+      ...json,
     };
   } catch (error) {
     return { kind: "error", message: error instanceof Error ? error.message : String(error) };
   }
 }
+
+function isSubcommand(value: string): value is Subcommand {
+  return (SUBCOMMANDS as readonly string[]).includes(value);
+}
+
+/**
+ * サブコマンドごとに受け取るオプション。
+ *
+ * JSON 出力の指定は `--json` ひとつにする。`--format=json` や `--output json` は
+ * 増やさない。表記が複数あると、どれが効くかを確かめる分だけ無駄が出る（gist 2.2 / 3.1）。
+ *
+ * --once は既定の挙動を明示するだけで、受け取っても何も変えない。
+ * 常駐する形は用意しない（design.md §3.6）。
+ *
+ * --pr / --issue は観測対象。Goal YAML は宣言部だけを持つので置き場が無く、
+ * controller が PR を作れるようになるまでは人間が渡す。
+ */
+function optionsFor(sub: Subcommand): ParseArgsOptions {
+  switch (sub) {
+    case "start":
+      return { json: { type: "boolean" } };
+    case "run":
+      return {
+        json: { type: "boolean" },
+        once: { type: "boolean" },
+        "dry-run": { type: "boolean" },
+        pr: { type: "string" },
+        issue: { type: "string" },
+      };
+    case "get":
+    case "list":
+      return { json: { type: "boolean" }, limit: { type: "string" } };
+    case "doctor":
+    case "agent-context":
+      // どちらも調べた結果を出すだけ。常に JSON で、絞る対象も無い。
+      return {};
+  }
+}
+
+type ParseArgsOptions = Record<string, { type: "boolean" | "string" }>;
 
 /**
  * PR / Issue 番号を読む。指定が無ければ undefined、読めなければエラー文字列を返す。
@@ -187,6 +280,11 @@ export async function main(argv: readonly string[]): Promise<number> {
     process.stderr.write(`${command.message}\n\n${USAGE}`);
     return 2;
   }
+  if (command.kind === "agent-context") {
+    // CLI の構造を出すだけなので、Goal も DB も読まない。
+    process.stdout.write(`${JSON.stringify(agentContextPayload(), null, 2)}\n`);
+    return 0;
+  }
 
   const repoRoot = process.cwd();
   const stateDir = join(repoRoot, ".goals", ".state");
@@ -205,7 +303,9 @@ export async function main(argv: readonly string[]): Promise<number> {
     // list は slug を取らない。Goal YAML を読まずに DB だけ見る。
     const store = openStore(join(stateDir, "goals.db"));
     try {
-      process.stdout.write(`${JSON.stringify(listPayload(store), null, 2)}\n`);
+      const items = listPayload(store, { limit: command.limit });
+      process.stdout.write(`${JSON.stringify(items, null, 2)}\n`);
+      writeTruncationHint(items.length, store.listGoals().length);
       return 0;
     } finally {
       store.close();
@@ -233,12 +333,19 @@ export async function main(argv: readonly string[]): Promise<number> {
 
       const now = new Date().toISOString();
       store.setStatus(goal.goal.id, "ACTIVE", null, now);
-      process.stdout.write(`${goal.goal.id}: ACTIVE\n`);
+      // --json を渡さないときの出力は変えない。cron と既存の呼び出しが読んでいる。
+      process.stdout.write(
+        command.json === true
+          ? `${JSON.stringify({ id: goal.goal.id, status: "ACTIVE" }, null, 2)}\n`
+          : `${goal.goal.id}: ACTIVE\n`,
+      );
       return 0;
     }
 
     if (command.kind === "show") {
-      process.stdout.write(`${JSON.stringify(showPayload(goal, store), null, 2)}\n`);
+      const payload = showPayload(goal, store, { limit: command.limit });
+      process.stdout.write(`${JSON.stringify(payload, null, 2)}\n`);
+      writeTruncationHint(payload.runs.length, store.listRuns(goal.goal.id).length);
       return 0;
     }
 
@@ -264,6 +371,8 @@ export async function main(argv: readonly string[]): Promise<number> {
       owner: `${hostname()}:${process.pid}`,
       leaseSeconds: 300,
       signal: aborter.signal,
+      // 何が起きるかを、起こす前に見るだけにする。ACT と publish と永続化を飛ばす。
+      dryRun: command.dryRun === true,
       code: codeProvider(goal),
       writer: codeWriter(goal),
       branch: gitBranch(join(stateDir, "worktrees")),
@@ -316,9 +425,16 @@ export interface ShowPayload {
   llm: { calls: number; tokens: number };
 }
 
-export function showPayload(goal: Goal, store: Store): ShowPayload {
+/** 出力を絞る指定。指定が無ければ DEFAULT_LIMIT で切る（gist 2.5） */
+export interface LimitOptions {
+  limit?: number | undefined;
+}
+
+export function showPayload(goal: Goal, store: Store, options: LimitOptions = {}): ShowPayload {
   const decisions = store.listDecisions(goal.goal.id);
   const calls = store.listLlmCalls(goal.goal.id);
+  const runs = store.listRuns(goal.goal.id);
+  const limit = options.limit ?? DEFAULT_LIMIT;
 
   return {
     goal: goal.goal,
@@ -326,7 +442,9 @@ export function showPayload(goal: Goal, store: Store): ShowPayload {
     snapshot: store.latestSnapshot(goal.goal.id),
     verifications: store.latestVerifications(goal.goal.id),
     decision: decisions.at(-1) ?? null,
-    runs: store.listRuns(goal.goal.id),
+    // 落とすなら古い方から落とす。直近の失敗を追うために読むものなので、
+    // 新しい方を残す（listRuns は古い順に返す）。
+    runs: runs.length <= limit ? runs : runs.slice(-limit),
     llm: {
       calls: calls.length,
       tokens: calls.reduce((total, call) => total + call.tokens, 0),
@@ -340,8 +458,120 @@ export function showPayload(goal: Goal, store: Store): ShowPayload {
  * cron から回す構成では、どの Goal が ACTIVE でどれが WAITING_HUMAN かを
  * まとめて見る手段が要る。Goal ごとに ent show を叩く手間を無くす。
  */
-export function listPayload(store: Store): GoalListItem[] {
-  return store.listGoals();
+export function listPayload(store: Store, options: LimitOptions = {}): GoalListItem[] {
+  const goals = store.listGoals();
+  const limit = options.limit ?? DEFAULT_LIMIT;
+  return goals.length <= limit ? goals : goals.slice(0, limit);
+}
+
+/**
+ * 切り捨てが起きたときだけ、絞り込み方を返す。全部出たなら null。
+ *
+ * 「全部出た」と「途中で切れた」が同じ見た目だと、読む側は足りない分に気づけない。
+ * 逆に毎回出すと、切れていないときまでノイズになる（gist 2.5）。
+ *
+ * 返す文面は stderr に出す。stdout に混ぜると JSON が壊れる（gist 4.3）。
+ */
+export function truncationHint(shown: number, total: number, flag: string): string | null {
+  if (total <= shown) {
+    return null;
+  }
+  return `${total} 件のうち ${shown} 件だけ出した。全部読むなら ${flag} <n> で上限を上げる`;
+}
+
+/**
+ * `ent agent-context` が出すもの（gist 3.2 Layer 2）。
+ *
+ * 散文の --help から「何が叩けるか」を推測させないための、機械可読な CLI の構造。
+ * 読ませる前提のものなので短く保つ。長い説明文はそのままコンテキストを食う。
+ */
+export interface AgentContext {
+  /** 増えたのか壊れたのかを読む側が区別できるように版を持たせる */
+  schemaVersion: number;
+  commands: {
+    name: string;
+    /**
+     * 同じサブコマンドを指す、いま実際に叩ける別名。
+     *
+     * 通らなくなった名前はここに載せない。ここを読んで組み立てたコマンドが
+     * 通らないなら、Layer 2 は --help より当てにならないものになる。
+     * 打ち直す先は、不明なサブコマンドのエラーが有効値を並べることで伝わる。
+     */
+    aliases?: string[];
+    summary: string;
+    args: { name: string; required: boolean; type: string }[];
+    flags: { name: string; type: string; summary: string }[];
+  }[];
+  env: { name: string; required: boolean; summary: string }[];
+  exitCodes: { code: number; meaning: string }[];
+}
+
+const JSON_FLAG = { name: "--json", type: "boolean", summary: "JSON で出す" } as const;
+const LIMIT_FLAG = {
+  name: "--limit",
+  type: "integer",
+  summary: `出力の件数（既定 ${String(DEFAULT_LIMIT)}）`,
+} as const;
+
+export function agentContextPayload(): AgentContext {
+  const slug = { name: "slug", required: true, type: "string" } as const;
+
+  return {
+    schemaVersion: 1,
+    commands: [
+      {
+        name: "start",
+        summary: "Goal を登録して ACTIVE にする",
+        args: [slug],
+        flags: [JSON_FLAG],
+      },
+      {
+        name: "run",
+        summary: "1ティックだけ回して終了する。常駐しないので繰り返し叩く",
+        args: [slug],
+        flags: [
+          JSON_FLAG,
+          { name: "--dry-run", type: "boolean", summary: "書かずに次のティックの中身を見る" },
+          { name: "--pr", type: "integer", summary: "観測する PR 番号" },
+          { name: "--issue", type: "integer", summary: "観測する Issue 番号" },
+        ],
+      },
+      {
+        name: "get",
+        summary: "宣言部と実行時状態をまとめて出す",
+        args: [slug],
+        flags: [JSON_FLAG, LIMIT_FLAG],
+      },
+      {
+        name: "list",
+        summary: "登録済みの Goal を一覧する",
+        args: [],
+        flags: [JSON_FLAG, LIMIT_FLAG],
+      },
+      {
+        name: "doctor",
+        summary: "回す前の前提が揃っているかを読み取り専用で調べる",
+        args: [],
+        flags: [],
+      },
+      {
+        name: "agent-context",
+        summary: "この構造そのものを出す",
+        args: [],
+        flags: [],
+      },
+    ],
+    env: [
+      { name: "GITHUB_TOKEN", required: false, summary: "無いと GitHub の観測が unresolved" },
+      { name: "ENT_MODEL", required: false, summary: "DECIDE のモデル" },
+      { name: "ENT_EFFORT", required: false, summary: "low / medium / high / xhigh / max" },
+    ],
+    exitCodes: [
+      { code: 0, meaning: "成功。ティックが最後まで回った" },
+      { code: 1, meaning: "実行時エラー。詳細は stderr" },
+      { code: 2, meaning: "引数が不正。stderr に有効値が出る" },
+    ],
+  };
 }
 
 /**
@@ -574,7 +804,28 @@ function summarize(result: TickResult): unknown {
     action: result.decision?.action ?? null,
     rationale: result.decision?.rationale ?? null,
     run: result.run === null ? null : { id: result.run.id, status: result.run.status },
+    // dry-run は DB に残さないので、ここで出さなければ読む手段が無い。
+    // 通常のティックでは増やさない。既存の呼び出しが読んでいる形を変えない。
+    ...(result.dryRun === true
+      ? {
+          dryRun: true,
+          wouldTransitionTo: result.wouldTransitionTo ?? null,
+          observed: result.observed ?? null,
+        }
+      : {}),
   };
+}
+
+/**
+ * 切り捨てが起きたときだけ、絞り込み方を stderr に出す。
+ *
+ * stdout は JSON 専用にする。診断を混ぜると、そのまま jq に渡せなくなる（gist 4.3）。
+ */
+function writeTruncationHint(shown: number, total: number): void {
+  const hint = truncationHint(shown, total, "--limit");
+  if (hint !== null) {
+    process.stderr.write(`${hint}\n`);
+  }
 }
 
 /**

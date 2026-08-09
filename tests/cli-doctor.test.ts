@@ -48,7 +48,7 @@ describe("parseCommand と doctor", () => {
 
   it("既存のサブコマンドを壊さない", () => {
     expect(parseCommand(["list"])).toEqual({ kind: "list" });
-    expect(parseCommand(["show", "sample-goal"])).toEqual({ kind: "show", slug: "sample-goal" });
+    expect(parseCommand(["get", "sample-goal"])).toEqual({ kind: "show", slug: "sample-goal" });
   });
 });
 
@@ -109,7 +109,7 @@ describe("doctorPayload", () => {
     expect(report.exitCode).toBe(0);
   });
 
-  it("JSON にできる形で返す。ent show と同じく機械可読を保つ", async () => {
+  it("JSON にできる形で返す。ent get と同じく機械可読を保つ", async () => {
     const report = await doctorPayload(probes());
 
     expect(JSON.parse(JSON.stringify(report))).toEqual(report);
