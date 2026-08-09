@@ -145,9 +145,15 @@ ent start <slug>                   # Goal を登録して ACTIVE にする
 ent run <slug>                     # 1ティック回して終了する
 ent run <slug> --pr <n>            # 観測対象の PR を指定する（controller が立てた分は自動）
 ent run <slug> --issue <n>         # 観測対象の Issue を指定する
-ent show <slug>                    # 宣言部と実行時状態をまとめて表示する
+ent run <slug> --dry-run           # 書かずに、次のティックの中身だけを見る
+ent get <slug>                     # 宣言部と実行時状態をまとめて表示する
 ent list                           # 登録済みの Goal を一覧する
+ent agent-context                  # CLI の構造を機械可読な JSON で出す
 ```
+
+`--json` は出力を JSON にする（`run` / `get` / `list` は既定で JSON。`start` だけが平文）。
+`--limit <n>` は `get` / `list` の件数を絞る。既定でも上限で切り、切れたときだけ
+絞り込み方が stderr に出る。エージェント向けの手順は `SKILL.md` に置いてある。
 
 `ENT_MODEL` と `ENT_EFFORT` で Actor と LLM のモデルを上書きできる。
 1ティックごとに使用量を消費するので、試走は安いモデルで回せる。
@@ -194,7 +200,8 @@ src/controller/           1ティックの外側。lease → 回収 → reconcil
 src/adapters/local.ts     node:child_process で書ける Port（コマンド実行、git、worktree）
 src/adapters/github.ts    CodeProviderPort。@octokit/rest + ETag
 src/adapters/claude.ts    ActorPort と LlmPort。Claude Agent SDK
-src/cli.ts                ent コマンド
+src/cli.ts                ent コマンド。引数の解釈と agent-context もここ
+SKILL.md                  エージェントが手順として読むもの。叩く順と、人の承認で止まる場所
 tests/                    Acceptance Criteria の実体と、実 git / 実 SQLite を叩く統合テスト
 ```
 
