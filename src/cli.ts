@@ -22,7 +22,13 @@ import type { Run } from "./domain/run.js";
 import type { Verification } from "./domain/verification.js";
 import type { CodeProviderPort } from "./observe/index.js";
 import type { CodeWriterPort } from "./publish/index.js";
-import { type GoalState, openStore, type Snapshot, type Store } from "./store/index.js";
+import {
+  type GoalListItem,
+  type GoalState,
+  openStore,
+  type Snapshot,
+  type Store,
+} from "./store/index.js";
 import type { ApprovalPort } from "./verify/index.js";
 
 /**
@@ -38,6 +44,7 @@ export const USAGE = `ent — Declare the end state; the controller converges to
   ent run <slug>     1ティック回して終了する（--once は既定）
                      --pr <n> / --issue <n> で観測対象を指定する
   ent show <slug>    宣言部と実行時状態をまとめて表示する
+  ent list           登録済みの Goal を一覧する
 `;
 
 export type Command =
@@ -52,6 +59,8 @@ export type Command =
   | { kind: "run"; slug: string; prNumber?: number; issueNumber?: number }
   /** 宣言部と実行時状態をマージして1枚で出す */
   | { kind: "show"; slug: string }
+  /** 登録済みの Goal を一覧する。slug は取らない */
+  | { kind: "list" }
   | { kind: "help" }
   | { kind: "error"; message: string };
 
@@ -69,7 +78,7 @@ export function parseCommand(argv: readonly string[]): Command {
   if (sub === undefined || sub === "help" || sub === "--help" || sub === "-h") {
     return { kind: "help" };
   }
-  if (sub !== "start" && sub !== "run" && sub !== "show") {
+  if (sub !== "start" && sub !== "run" && sub !== "show" && sub !== "list") {
     // 黙って無視すると、打ち間違いが「何も起きなかった」に見える。
     return { kind: "error", message: `不明なサブコマンド: ${sub}` };
   }
@@ -93,6 +102,14 @@ export function parseCommand(argv: readonly string[]): Command {
           : {},
       strict: true,
     });
+
+    if (sub === "list") {
+      // list は slug を取らない。余分な引数は打ち間違いとして error にする。
+      if (positionals.length > 0) {
+        return { kind: "error", message: `引数が多い: ${positionals.join(" ")}` };
+      }
+      return { kind: "list" };
+    }
 
     const slug = positionals[0];
     if (slug === undefined) {
@@ -165,6 +182,17 @@ export async function main(argv: readonly string[]): Promise<number> {
   const repoRoot = process.cwd();
   const stateDir = join(repoRoot, ".goals", ".state");
   mkdirSync(join(stateDir, "worktrees"), { recursive: true });
+
+  if (command.kind === "list") {
+    // list は slug を取らない。Goal YAML を読まずに DB だけ見る。
+    const store = openStore(join(stateDir, "goals.db"));
+    try {
+      process.stdout.write(`${JSON.stringify(listPayload(store), null, 2)}\n`);
+      return 0;
+    } finally {
+      store.close();
+    }
+  }
 
   const goal = loadGoalFile(join(repoRoot, ".goals", `${command.slug}.yaml`));
   const store = openStore(join(stateDir, "goals.db"));
@@ -274,6 +302,16 @@ export function showPayload(goal: Goal, store: Store): ShowPayload {
       tokens: calls.reduce((total, call) => total + call.tokens, 0),
     },
   };
+}
+
+/**
+ * `ent list` が出すもの。Store.listGoals をそのまま JSON にできる形で返す。
+ *
+ * cron から回す構成では、どの Goal が ACTIVE でどれが WAITING_HUMAN かを
+ * まとめて見る手段が要る。Goal ごとに ent show を叩く手間を無くす。
+ */
+export function listPayload(store: Store): GoalListItem[] {
+  return store.listGoals();
 }
 
 function summarize(result: TickResult): unknown {
