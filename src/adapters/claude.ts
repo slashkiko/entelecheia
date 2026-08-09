@@ -168,8 +168,11 @@ function throwIfUsageLimit(message: unknown): void {
  *
  * SDK の型は `resetsAt?: number` で単位を書いていない。同じ SDK の init
  * メッセージ側は `resets_at: string`（ISO）で、こちらだけ数値になっている。
- * 秒とミリ秒のどちらで来ても壊れないよう、桁で判定する。
- * 2001-09-09 を境に、それより小さければ秒とみなす。
+ *
+ * anthropics/claude-code#50518 に実際の値が載っていて、そこでは
+ * `{"status":"allowed","resetsAt":1729281600,"rateLimitType":"five_hour"}` と
+ * 10桁、つまり秒だった。ただし型に単位が無い以上、将来ミリ秒に変わっても
+ * 壊れないよう桁で判定する。2001-09-09 より小さければ秒とみなす。
  */
 function resumeAfterFrom(resetsAt: number | undefined): string | null {
   if (resetsAt === undefined) {
