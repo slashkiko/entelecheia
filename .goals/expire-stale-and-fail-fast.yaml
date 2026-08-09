@@ -1,0 +1,226 @@
+version: 1
+
+goal:
+  id: expire-stale-and-fail-fast
+  name: 古い観測を今の観測として使わず、直らない失敗は1ティックで見切る
+  desired_state: |
+    MVP 完了後の1本目。entelecheia に関する Claude Code のセッション記録6本
+    （Phase 0 / Phase 1 / Phase 2 / Phase 3 / MVP レビュー / 本セッション）を
+    掘り返して見つけた穴を塞ぐ。どれも回した記録には残っていて、
+    テストが緑のまま素通りしていたものになる。
+
+    4つある。1つ目が完了判定の正しさに効き、残る3つは1ティックあたりの
+    浪費と、気づけなさに効く。
+
+    1. 陳腐化した観測を引き継がない — src/reconcile/
+      reconcile は前ティックの Fact を土台にして今ティックの観測で上書きするが、
+      上書きは同じキーが来たときしか起きない。CI が実行中のあいだ observe は
+      github.ci.conclusion の Fact を作らない（conclusion が null なので
+      未観測扱い）ので、前のコミットで観測した conclusion=success が
+      head_sha の変わったあとも生き残る。
+
+      ティックの順序は reconcile → act なので、Actor が push した次のティックでは
+      「head_sha は新しいのに conclusion は古い success」という状態が必ず一度できる。
+      このとき type: fact の criterion は古い evidence で passed になり、
+      新しいコミットの CI を待たずに COMPLETE が出る。
+
+      「捏造した観測を作らない」（design.md §3.1）を守るなら、古い観測を
+      今の観測として使うこの経路も塞ぐ。github.pr.head_sha が今ティックで
+      違う値として観測できたときだけ、引き継いだ github.ci.* を落とす。
+
+      落とす条件を「違う値で観測できた」に限るのは、確かめられなかったことを
+      「変わった」と読まないため。PR の Port が落ちたティックで CI の結論まで
+      捨てると、観測の失敗が既に確かめた事実を消すことになる。
+
+      仕様は tests/reconcile-stale-facts.test.ts にある。
+
+    2. 呼び直しても直らない失敗を、そうと分かる形で返す — src/adapters/claude.ts
+      decide の askLlm() は PortError(unavailable) を見て即 ESCALATE する。
+      src/domain/port-error.ts のコメントも「未ログイン、モデル名の誤り、
+      認証切れはここに来る」と書いている。ところが claudeLlm は consume() が
+      組み立てた result.ok を一度も見ておらず、エラー result の本文を
+      そのまま parseJson() に渡して素の Error を投げるだけになっている。
+      そのため isUnavailable の経路に乗らず、再試行の回数を使い切る。
+
+      Phase 3 で初めて全周させたとき、Not logged in を3回とも呼び直した。
+      1回の呼び出しは Claude Code のフルセッションで、実測3万トークンを超える。
+
+      result が来なかった場合と result.ok が false の場合を
+      PortError("unavailable") にする。subtype と本文をメッセージに載せて、
+      あとから rationale だけで何が起きたか読めるようにする。
+
+      ActorPort（claudeActor）は変えない。あちらは ok を exitCode 1 に落とし、
+      それが Run の failed として consecutiveFailures の予算会計に流れる
+      別の失敗モデルを既に持っている。
+
+      仕様は tests/claude-llm-error.test.ts にある。
+
+    3. DECIDE のプロンプトに同じ本文を2回入れない — src/decide/
+      type: human の criterion が pending のとき、verify は prompt 全文を
+      Unresolved.detail に積む。assess の unknownDetail() はそれを Gap の
+      detail に丸ごと埋め込むので、## Gap と ## 結論が出ていない対象 の
+      両方に同じ全文が入る。実際のティックでは数十行の確認事項が2回並んでいた。
+
+      単純に片方を消すと情報が落ちる。criterion に紐づく unresolved は必ず
+      対応する Gap があるが、観測レベルの unresolved（github.ci の port_failed）は
+      Gap に現れず、そのセクションにしか出ない。落としてよいのは前者の detail だけになる。
+
+      末尾の指示行も二重になっている。buildPrompt() が
+      「JSON オブジェクトだけを返す。」で終わり、claudeLlm がさらに
+      「JSON オブジェクトだけを返す。前置きも説明も付けない。」を足す。
+      出力形式の強制はトランスポートの責務なので adapter 側に一本化する。
+
+      仕様は tests/decide-prompt.test.ts にある。
+
+    4. 前提が揃っているかを、消費する前に読める — src/cli.ts
+      6セッションを通して同じ形の摩擦が繰り返し起きた。入れ子の Claude Code が
+      未ログインで LLM 呼び出しが全滅した。GITHUB_TOKEN が無いまま回して
+      github.ci.conclusion が永久に unobserved になり、ac-5 が埋まらなかった。
+      どれも記録には残っていて、気づけないだけだった。
+
+      ent doctor を足す。副作用のない読み取り専用のサブコマンドで、
+      出力は JSON にする。ent show / ent list と同じく機械可読を保つ。
+
+      ent run の入口では落とさない。トークンが無くてもローカルの観測・
+      検証コマンド・Actor の実行は進められるので、入口で殺すと進められるものまで止まる。
+
+      正直に作る。決定的に検査できるのは GITHUB_TOKEN の有無・Goal YAML の
+      読み込み・state ディレクトリの書き込み可否の3つで、Claude のログイン状態は
+      トークンを消費せずには確かめられない。それを ok と偽らず unknown として出す。
+      unknown だけでは終了コードを 1 にしない。確かめられなかったことを
+      不合格として扱うと、doctor が常に赤くなって読まれなくなる。
+
+      仕様は tests/cli-doctor.test.ts にある。
+
+    テストは4本とも書いてある。着手時点では30件中17件が落ちる。
+    仕様はそちらが正で、この YAML の記述と食い違ったらテストに合わせる。
+
+repository:
+  provider: github
+  owner: slashkiko
+  name: entelecheia
+  default_branch: main
+
+setup:
+  - pnpm install --frozen-lockfile
+
+acceptance_criteria:
+  - id: ac-1
+    description: 新しい4本のテストが通り、既存の345件も落ちない（着手時点では17件落ちている）
+    verification: { type: command, run: mise run test }
+
+  - id: ac-2
+    description: 型チェックが通る（ent doctor の型が増えても既存の Command が崩れていない）
+    verification: { type: command, run: mise run typecheck }
+
+  - id: ac-3
+    description: lint と format が通る
+    verification: { type: command, run: mise run lint }
+
+  - id: ac-4
+    description: サプライチェーンと workflow のチェックが通る（baseline 由来）
+    verification: { type: command, run: mise run check }
+
+  - id: ac-5
+    description: 変更を載せた PR の CI が成功している
+    verification: { type: fact, key: github.ci.conclusion, equals: success }
+
+  - id: ac-6
+    description: 4件の直し方と、境界の引き方が妥当か、人間が確認する
+    verification:
+      type: human
+      prompt: |
+        セッション記録6本から拾った4件を1本の Goal にまとめました。
+        判断してほしいのは4点です。
+
+        1. 陳腐化の失効を reconcile に置いたこと。observe は「conclusion が
+           null なら Fact を作らない」を守っており、古い値が残るのは
+           引き継ぎ側の問題だと判断しました。失効の条件を
+           「head_sha を違う値で観測できたとき」に限ったことも含めて妥当か
+        2. result.ok が false のときを一律 PortError(unavailable) にしたこと。
+           subtype からは一時的か恒久的かを判別できないので推測しませんでした。
+           一時的な失敗まで即 ESCALATE になりますが、抑止されるのは1ティックの
+           中での呼び直しだけで、次のティックでは再試行されます
+        3. プロンプトから消したのは criterion に紐づく unresolved の detail だけで、
+           観測レベルの unresolved は全文を残したこと。Gap 側に一本化する判断が
+           妥当か。あわせて出力形式の指示を adapter 側に寄せたこと
+        4. ent doctor で Claude のログイン状態を unknown として出したこと。
+           確かめられないものを ok と偽らない方針ですが、
+           「結局いちばん知りたいものが unknown」でも役に立つか
+
+        あわせて次を報告します。今回スコープに入れなかったもの3件と、その理由。
+        トークンの予算（BudgetUsage の組み立てが src/controller/ にあり、
+        Actor だけでは配線を閉じられない）、controller に残る死んだ
+        digestOf の複製、PR が存在しないという観測結果が記録されないこと。
+
+context:
+  background: |
+    MVP は完了している。この Goal は Phase 4 ではなく、MVP 完了後に
+    「回した記録から分かること」を拾って埋める1本になる。
+
+    材料は entelecheia に関する Claude Code のセッション記録6本。
+    Phase 3 の総括が書いたとおり、この時期に見つかった断線はどれも
+    テストでは緑だった。今回の4件も同じ性質を持つ。1件目は
+    「テストは Port を注入するので、引き継ぎと観測の合わせ目が試されない」、
+    2件目は「設計意図がコメントにあるのに、その経路に乗る実装が無い」にあたる。
+
+    並行して別のレビューが Critical / High の指摘に対応中で、
+    src/act/ と src/adapters/github.ts と src/adapters/local.ts と
+    src/controller/ と src/domain/action.ts と src/publish/ を触っている。
+    衝突を避けるため、この Goal ではそれらに手を入れない。
+
+  constraints:
+    - tests/reconcile-stale-facts.test.ts と tests/claude-llm-error.test.ts と
+      tests/decide-prompt.test.ts と tests/cli-doctor.test.ts は仕様なので変更しない。
+      通らないなら実装側を直す
+    - 既存の tests/ も弱めない。345件はそのまま通す
+    - src/controller/** と .goals/** は触らない（policies.protected_paths）
+    - src/act/** と src/adapters/github.ts と src/adapters/local.ts と
+      src/domain/action.ts と src/publish/** は触らない。別のレビュー対応が
+      同じファイルを編集中で、衝突すると両方の変更が読めなくなる
+    - src/domain/goal.ts は触らない。Goal YAML のスキーマは変えない。
+      スキーマを変えると既存の YAML 11本を書き直すことになり、
+      それは .goals/** の編集にあたって保護パスに引っかかる
+    - src/observe/ の「conclusion が null なら Fact にしない」を変えない。
+      未観測を Fact にすると、直す対象が「引き継ぎ」から「捏造」に変わる
+    - 失効の判定に新しい永続化を足さない。carriedFacts と今ティックの観測だけで決める
+    - ent run / ent start / ent show / ent list の既存の挙動を変えない。
+      doctor は足すだけにする
+    - ent doctor は読み取り専用にする。設定を書き換えたり、直したりしない
+    - 依存パッケージを増やさない
+    - docs/ は変更しない。design.md の追従は Goal が通ってから人間が別に行う
+    - mise run check（サプライチェーン検査）を壊さない
+    - PR の作成とコメントの投稿はしない。controller が行う
+
+  references:
+    - title: 設計ドキュメント
+      path: docs/design.md
+    - title: 引き継ぎの現状
+      path: src/reconcile/index.ts
+    - title: LlmPort の現状
+      path: src/adapters/claude.ts
+    - title: プロンプトの現状
+      path: src/decide/index.ts
+    - title: CLI の現状
+      path: src/cli.ts
+    - title: 直近の自己ホスト1周（進め方の見本）
+      path: .goals/list-goals.yaml
+
+policies:
+  require_human_approval:
+    - merge
+    - force_push
+    - push_to_default_branch
+    - deploy
+    - secret_access
+    - external_send
+  protected_paths:
+    - src/controller/**
+    - .goals/**
+
+budget:
+  max_actor_runs: 10
+  max_reconciles: 20
+  max_wall_clock: 4h
+  max_consecutive_failures: 3
+  max_unchanged_reconciles: 4
