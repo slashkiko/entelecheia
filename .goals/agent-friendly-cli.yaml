@@ -1,0 +1,247 @@
+version: 1
+
+goal:
+  id: agent-friendly-cli
+  name: ent がエージェント向け CLI のベースラインに従う
+  desired_state: |
+    `ent` を叩くのは人間だけではない。cron から回す構成では出力を読むのも
+    次の一手を決めるのもエージェントで、いまの CLI はそれを前提に作っていない。
+
+    参照するのは context.background に挙げた「エージェント向け CLI ツール
+    設計・開発ベストプラクティス集」で、そこで Blocker / Friction に分類される
+    条件を満たす。入れないものと理由は context.constraints に書いた。
+
+    どう作るかは Actor が決める。以下は「何が満たされていればよいか」を書く。
+
+    1. JSON 出力の指定を --json ひとつにする（2.2 / 3.1）
+
+      start / run / get / list が --json を受け取る。表記は --json だけにし、
+      --format=json や --output json は増やさない。
+
+      いま JSON を出しているのは show / list / run で、start だけが
+      `<id>: ACTIVE` という平文を出す。--json を渡したときはこれも
+      JSON にする。--json を渡さないときの出力と終了コードは変えない。
+
+      Command 型に json を必ず持たせると、既存のテストが仕様として固定した
+      解釈（`parseCommand(["list"])` が `{ kind: "list" }` になる）が壊れる。
+      --pr / --issue と同じく、指定があったときだけ入る形にする。
+
+    2. 取得の動詞を get だけにする（3.1）
+
+      `ent show <slug>` を `ent get <slug>` に改名する。別名としても残さない。
+      同じ操作に2つ名前があると、どちらが正かを確かめる分だけ無駄が出る。
+      エージェントは CLI をまたいだ共通の語彙を学習しているので、
+      揃える先は get になる。
+
+      判別タグは `kind: "show"`、関数名も `showPayload` のまま変えない。
+      揃えるのはエージェントが触る表面（サブコマンド名とフラグ名）だけにする。
+      内部の識別子まで追うと、変更の範囲が用も無く広がる。
+
+      `show` を打った場合は「不明なサブコマンド」のエラーになる。3 の要件で
+      有効値が並ぶので、打ち直す先はそこから読める。
+
+      呼んでいる側も直す。tests/cli.test.ts・tests/cli-list.test.ts・
+      tests/cli-main.test.ts・README.md・docs/design.md にある `ent show` が対象。
+      これは仕様変更の反映であって、テストを弱めることではない。
+
+    3. エラーに有効値と例を載せる（2.3）
+
+      知らないサブコマンドを渡されたら、受け付けられる値を全て並べる。
+      slug が無ければ `ent run <slug>` の形を添える。読めない値を渡されたら、
+      渡された値そのものを添える（--pr が既にこの形になっている）。
+
+    4. 出力に上限を持たせる（2.5）
+
+      list と get が --limit を受け取り、指定が無くても既定の上限で切る。
+      get の --limit は runs に効かせ、落とすなら古い方から落とす。
+      直近の失敗を追うために読むものなので、新しい方を残す。
+
+      切り捨てが起きたときだけ、絞り込み方を stderr に出す。
+      「全部出た」と「途中で切れた」が同じ見た目だと、足りない分に気づけない。
+
+      ヒットしたのが上限以下なら何も出さない。
+
+    5. `ent agent-context` を足す（3.2 Layer 2）
+
+      CLI の構造を機械可読な JSON で出すサブコマンドを足す。slug は取らない。
+      散文の --help から「何が叩けるか」を推測させないためのもので、
+      スキーマの版・サブコマンド・引数・フラグの型・環境変数・終了コードを含める。
+
+      読ませる前提のものなので短く保つ。長い説明文はコンテキストを食う。
+
+    6. `SKILL.md` を足す（3.2 Layer 3 / 4.1）
+
+      リポジトリ直下に置く。最初に叩くコマンド、出力の絞り方、
+      人の承認が要るところ（PR への `/ent approve <criterion-id>`）、
+      常駐しないので `ent run` を繰り返す形になることを書く。
+
+      README と重複させない。README は人間が読む導入で、SKILL.md は
+      エージェントが手順として読むもの。
+
+    7. `ent run <slug> --dry-run` を足す（2.4）
+
+      次のティックで何が起きるかを、起こす前に見せる。
+      OBSERVE / VERIFY / ASSESS / DECIDE までは本当に回し、
+      ACT と publish と永続化だけを飛ばす。観測を模擬すると
+      「配管が繋がっているか」を確かめる用途に使えなくなる。
+
+      飛ばすもの: Actor の起動、PR の作成と進捗コメント、
+      snapshot / verifications / decision / status の書き込み、
+      lease の取得、orphan Run の回収。
+
+      残すもの: LLM の呼び出し記録（recordLlmCall）。トークンは実際に
+      消費するので、記録を落とすと使用量が合わなくなる（design.md §7）。
+
+      出力には、決まった action と rationale、ACT なら Actor に渡す intent、
+      観測した facts と unresolved、criteria ごとの verification、
+      そして「書いていたらどの状態に移っていたか」を含める。
+      DB に残らないので、ここで返さなければ読む手段が無い。
+
+      これは src/controller/ に手を入れる。本 Goal に限って
+      policies.protected_paths から `src/controller/**` を外してある。
+      足すのは dry-run の分岐だけで、通常のティックの振る舞いは変えない。
+
+    テストは tests/cli-agent-friendly.test.ts・tests/cli-agent-context.test.ts・
+    tests/controller-dry-run.test.ts に書いてある。着手時点ではすべて落ちる。
+    仕様はそちらが正で、この YAML の記述と食い違ったらテストに合わせる。
+
+repository:
+  provider: github
+  owner: slashkiko
+  name: entelecheia
+  default_branch: main
+
+setup:
+  - pnpm install --frozen-lockfile
+
+acceptance_criteria:
+  - id: ac-1
+    description: 新しい3本のテストが通り、既存のテストも通ったままになる（着手時点では落ちている）
+    verification: { type: command, run: mise run test }
+
+  - id: ac-2
+    description: 型チェックが通る
+    verification: { type: command, run: mise run typecheck }
+
+  - id: ac-3
+    description: lint と format が通る
+    verification: { type: command, run: mise run lint }
+
+  - id: ac-4
+    description: サプライチェーンと workflow のチェックが通る（baseline 由来）
+    verification: { type: command, run: mise run check }
+
+  - id: ac-5
+    description: 変更を載せた PR の CI が成功している
+    verification: { type: fact, key: github.ci.conclusion, equals: success }
+
+  - id: ac-6
+    description: 実際にエージェントが使える形になったか、人間が確認する
+    verification:
+      type: human
+      prompt: |
+        この Goal が満たしたいのは「テストが通ること」ではなく
+        「エージェントが ent を迷わず叩けること」です。テストは後者の
+        代理でしかないので、次を実際に叩いて確認してください。
+
+        1. `ent agent-context` の JSON だけを読んで、start から run までの
+           手順が組み立てられるか。--help に戻る必要が無いか
+        2. `ent list --limit 1` と `ent get <slug> --limit 1` が実際に切れ、
+           切れたときだけヒントが stderr に出るか。stdout に混ざっていないか
+        3. `ent run <slug> --dry-run` が、次に何をするつもりかを読める形で
+           出すか。叩いたあとに ent get を見て、DB が動いていないか
+        4. SKILL.md だけを渡されたエージェントが、承認待ちで止まったことを
+           失敗と読まずに済むか
+
+        あわせて、本 Goal に限って `src/controller/**` の保護を外している
+        （design.md §7 の自己ホストの安全装置）ので、差分を読んでください。
+
+        - dry-run の分岐だけが足されているか。通常のティックの経路が
+          変わっていないか
+        - 保護パスの検査そのもの（src/domain/protected-paths.ts と
+          controller の guardedDecision）が弱められていないか
+
+context:
+  background: |
+    出典は次の gist で、4本の記事からエージェント向け CLI の作法を抽出したもの。
+
+      https://gist.github.com/snaga/f16cd52c20096dfd54769f5978182a75
+
+    深刻度を Blocker（実行そのものが不可能）/ Friction（実行はできるが
+    効率と信頼性が落ちる）/ Optimization（より速く安全にする）の3段に分けている。
+
+    いまの ent は Blocker には当たっていない。対話プロンプトはどこにも無く、
+    show / list / run は JSON を出し、診断は stderr に分けてあり、
+    Actor の生ログは `.goals/.state/runs/` へ逃がしてある（gist 4.3）。
+    冪等性（2.4）も start の upsert と run の lease + write-ahead で満たしている。
+
+    残っているのは Friction にあたるもの——JSON 出力の指定が無い、
+    取得の動詞が show、エラーが有効値を並べない、出力に上限が無い——と、
+    イントロスペクションの Layer 2 / 3 が無いこと。ここに 2.4 の --dry-run を
+    足して1本にまとめた。
+
+  constraints:
+    - テストから実際の GitHub と Claude API を叩かない
+    - tests/cli-agent-friendly.test.ts・tests/cli-agent-context.test.ts・
+      tests/controller-dry-run.test.ts は仕様なので変更しない。
+      通らないなら実装側を直す
+    - 既存の tests/ を弱めない。show から get への改名にあたる箇所は直してよいが、
+      直すのは呼び方だけで、確かめている性質は減らさない
+    - tests/controller*.test.ts は通ったままにする。dry-run の分岐を足すだけで、
+      通常のティックの振る舞いを変えない
+    - 保護パスの検査そのものを弱めない。src/domain/protected-paths.ts と
+      controller の guardedDecision は、本 Goal で外したのは適用対象であって
+      仕組みではない
+    - .goals/** は触らない（policies.protected_paths）
+    - --json と --dry-run を渡さないときの出力と終了コードを変えない。
+      cron と既存の検証コマンドがいまの形を読んでいる
+    - --wait（gist 3.3）は入れない。どのティックも有限時間で return する
+      （design.md §3.6）と衝突する。CLI 側でポーリングを回すと常駐に戻る
+    - プロファイル（gist 3.4）・--deliver と feedback（gist 3.5）は入れない。
+      単一リポジトリの controller には過剰で、モデルの上書きは ENT_MODEL /
+      ENT_EFFORT で足りている
+    - 単独バイナリ化と PATH への配置（gist 4.2）は入れない。npm へ未公開で、
+      配布の話は CLI の作法とは別の課題になる
+    - docs/design.md の「3. 中核の設計判断」を勝手に変えない
+    - 依存パッケージを増やさない。引数の解釈は node:util の parseArgs のまま
+    - mise run check（サプライチェーン検査）を壊さない
+    - README.md の `ent を動かす` と `ディレクトリ` を、足したものに合わせて直す
+    - PR の作成とコメントの投稿はしない。controller が行う
+
+  references:
+    - title: CLI の現状
+      path: src/cli.ts
+    - title: 1ティックの外側。dry-run が分岐する場所
+      path: src/controller/index.ts
+    - title: 仕様（フラグ・エラー・出力の上限）
+      path: tests/cli-agent-friendly.test.ts
+    - title: 仕様（agent-context と SKILL.md）
+      path: tests/cli-agent-context.test.ts
+    - title: 仕様（--dry-run）
+      path: tests/controller-dry-run.test.ts
+    - title: Store の現状
+      path: src/store/index.ts
+    - title: 設計ドキュメント
+      path: docs/design.md
+    - title: 人間向けの導入
+      path: README.md
+
+policies:
+  require_human_approval:
+    - merge
+    - force_push
+    - push_to_default_branch
+    - deploy
+    - secret_access
+    - external_send
+  protected_paths:
+    # 本 Goal は dry-run を足すので src/controller/** を外してある。
+    # 外したのは適用対象であって、検査の仕組みではない（constraints を参照）。
+    - .goals/**
+
+budget:
+  max_actor_runs: 16
+  max_reconciles: 30
+  max_wall_clock: 6h
+  max_consecutive_failures: 3
+  max_unchanged_reconciles: 4
