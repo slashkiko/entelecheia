@@ -1,0 +1,160 @@
+version: 1
+
+goal:
+  id: connect-github-and-claude
+  name: Port を実装して実際の GitHub と Claude Code に繋ぐ
+  desired_state: |
+    ここまでの3本で controller 側は全部書けているが、外部に繋がっていない。
+    CodeProviderPort / ActorPort / LlmPort は呼ばれたら throw する形になっていて、
+    ent run は検証コマンドを流したあと ESCALATE(invalid_decision) で止まる。
+    これを繋いで Phase 2 を完了させる。
+
+    CodeProviderPort — src/adapters/github.ts
+      octokit で getPullRequest / getLatestCiRun / getIssue を実装する。
+      返す形（PullRequestSnapshot / CiRunSnapshot / IssueSnapshot）は変えない。
+
+      対象が無ければ null を返し、取得に失敗したら throw する。この2つを混ぜると
+      observe が unobserved に積めない（design.md §3.1）。
+
+      ETag による conditional request を使う（§3.4）。304 が返ったら前回の値を
+      そのまま返し、レート制限を消費しない。
+
+      evidence.source に GET /repos/{owner}/{repo}/pulls/12 の形で残す。
+      Goal YAML の repository を初めて読む場所になる。
+
+    ActorPort と LlmPort — src/adapters/claude.ts
+      Claude Agent SDK の query() で実装する。design.md §3.5 のとおり
+      ASSESS も DECIDE も Actor 層経由に寄せ、依存を1系統にする。
+
+      ActorPort は worktree.path を cwd にし、signal で kill でき、
+      tokens を必ず記録する。生ログは runs/<run-id>/ に書き、logRef には
+      パスだけ返す（§4.6）。deniedOperations は disallowedTools に落とす。
+
+      LlmPort は JSON だけを返させ、結果をそのまま返す。Zod 検証は decide が持つ。
+
+    使用量上限の検出 — src/domain/port-error.ts
+      design.md §10-3。Agent SDK の型を読んで実測した結果、次の2つで判別できる。
+
+        rate_limit_event メッセージの rate_limit_info.status === "rejected"
+        assistant メッセージの error === "rate_limit"
+
+      前者は resetsAt（unix ミリ秒）を持つので、そこから resumeAfter を作れる。
+
+      これを Port から controller へ運ぶために PortError を足す。kind は
+      usage_limit と unavailable の2値で、usage_limit だけ resumeAfter を持つ。
+
+      decide は LlmPort が PortError(usage_limit) を投げたときだけ
+      WAIT(usage_limit, resumeAfter) を guard で返す。これで §4.4 の
+      WAITING_EXTERNAL(usage_limit) へ到達する経路が実装に入る。
+      それ以外の throw はこれまでどおり ESCALATE(invalid_decision)。
+
+    CLI への配線 — src/cli.ts
+      unavailable() / unavailableActor() / unavailableLlm() を実装に差し替える。
+      認証は環境変数から取る。トークンが無ければ throw する Port のままにして、
+      unobserved に落ちるようにする。捏造した観測を返さない。
+
+repository:
+  provider: github
+  owner: slashkiko
+  name: entelecheia
+  default_branch: main
+
+setup:
+  - pnpm install --frozen-lockfile
+
+acceptance_criteria:
+  - id: ac-1
+    description: adapters と port-error と decide の全テストが通る（着手時点では落ちているのが正しい）
+    verification: { type: command, run: mise run test }
+
+  - id: ac-2
+    description: 型チェックが通る（Port の戻り値の形が崩れていない）
+    verification: { type: command, run: mise run typecheck }
+
+  - id: ac-3
+    description: lint と format が通る
+    verification: { type: command, run: mise run lint }
+
+  - id: ac-4
+    description: サプライチェーンと workflow のチェックが通る（依存を2系統増やすので実質的な検証になる）
+    verification: { type: command, run: mise run check }
+
+  - id: ac-5
+    description: 変更を載せた PR の CI が成功している
+    verification: { type: fact, key: github.ci.conclusion, equals: success }
+
+  - id: ac-6
+    description: 使用量上限の検出方法と、そのために足した PortError の形が妥当か、人間が確認する
+    verification:
+      type: human
+      prompt: |
+        design.md §10-3 は「Agent SDK が返すエラーの形状を実測する必要がある」
+        として未決のままでした。Agent SDK の型定義を読んだ結果、次の2つで
+        判別できることが分かりました。
+
+          rate_limit_event メッセージの rate_limit_info.status === "rejected"
+            → resetsAt（unix ミリ秒）から resumeAfter を作れる
+          assistant メッセージの error === "rate_limit"
+            → 時刻は分からないので resumeAfter は null
+
+        これを Port から controller へ運ぶために src/domain/port-error.ts を
+        足し、decide に「PortError(usage_limit) だけは WAIT(usage_limit) を
+        guard で返す」という分岐を入れました。
+
+        確認してほしいのは3点です。
+
+        1. PortError の kind を usage_limit と unavailable の2値にしたこと。
+           Unresolved.reason（port_failed / pending）と別の軸を足したので、
+           増やしすぎでないか
+        2. decide に分岐を足したこと。1本目の Goal で「guard は3つ」と
+           決めたところに4つ目が入る。§4.4 に到達経路の無い状態を残すより
+           よいと判断したが、guard を広げすぎていないか
+        3. ActorPort が同じ上限に当たったときは Run を failed にするだけで、
+           Goal の状態には効かない。act の結果から状態を決める口が無いため。
+           ここを残したままでよいか
+
+context:
+  background: |
+    Phase 2 の4本目で最後。1本目で reconcile が Decision を返し、2本目で ACT が
+    Actor を worktree 上で走らせ、3本目で状態が SQLite に残るところまで動いた。
+    どれも Port を注入される前提で書いてあり、その Port の実装が無い。
+
+    本 Goal で Phase 2 が完了し、controller が OBSERVE / ASSESS / DECIDE / ACT /
+    VERIFY を実際の GitHub と Claude Code に対して回すようになる。
+
+    ここまでの3本は依存を増やさずに書けたが、本 Goal は増える。
+    octokit（GitHub）と Claude Agent SDK（Actor と LLM）の2系統で、
+    どちらも design.md §6 が最初から挙げているもの。
+
+  constraints:
+    - テストから実際の GitHub と Claude API を叩かない。octokit は fetch を、Agent SDK は query を注入する
+    - 対象が無ければ null、取得に失敗したら throw。この2つを混ぜない
+    - 生ログを DB に入れない。ファイルに書いてパスだけ持つ
+    - 捏造した観測を返さない。トークンが無いなら throw して unobserved に落とす
+    - tests/ 配下は仕様なので変更しない。通らないなら実装側を直す
+    - src/reconcile/ src/assess/ src/act/ src/store/ src/controller/ は変更しない
+    - src/decide/ の変更は PortError の分岐だけに閉じる。既存の guard の判定順を変えない
+    - src/domain/goal.ts と src/domain/fact-keys.ts は確定済み
+    - docs/design.md の「3. 中核の設計判断」を勝手に変えない
+    - 依存は octokit と Claude Agent SDK の2系統まで。それ以外を足すなら理由を説明する
+
+  references:
+    - title: 設計ドキュメント
+      path: docs/design.md
+    - title: Phase 2 の3本目
+      path: .goals/persist-and-resume.yaml
+
+policies:
+  require_human_approval:
+    - merge
+    - force_push
+    - push_to_default_branch
+    - deploy
+    - secret_access
+    - external_send
+
+budget:
+  max_actor_runs: 15
+  max_reconciles: 30
+  max_wall_clock: 4h
+  max_consecutive_failures: 3
