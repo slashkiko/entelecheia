@@ -1,0 +1,151 @@
+version: 1
+
+goal:
+  id: list-goals
+  name: 登録した Goal を一覧できる
+  desired_state: |
+    Phase 3 の5本目。**この Goal は controller に実装させる。**
+
+    人間がやるのはここまで。Goal YAML を書き、Acceptance Criteria を Vitest として
+    書き、`ent start` を叩く。そこから先は `ent run` を繰り返すだけで、
+    実装・検証・PR 作成・通知・承認待ちまで進むことを確かめる。
+    Phase 0 の手動リコンサイルと同じ手順を、controller が回す。
+
+    したがって desired_state は「何を作るか」だけを書く。どう作るかは
+    Actor が決める。
+
+    ent list — src/cli.ts / src/store/
+      登録済みの Goal を一覧する4つ目のサブコマンドを足す。slug は取らない。
+
+        ent list
+
+      cron から回す構成では、どの Goal が ACTIVE でどれが WAITING_HUMAN かを
+      まとめて見る手段が要る。いまは Goal ごとに ent show を叩くしかない。
+
+      出力は JSON の配列にする。ent show と同じく機械可読を保つ。
+      1件ごとに次を含める。
+
+        id
+        name
+        status
+        reconciles
+        prNumber
+        resumeAfter
+
+      並びは id の昇順にする。登録順だと、どこに何があるか読むたびに変わる。
+      1件も登録されていなければ空配列を返す。
+
+      Store には listGoals() を足す。GoalState を全件返す形でよいが、
+      name は goals テーブルにあって GoalState に無いので、そこは足す。
+
+    テストは tests/cli-list.test.ts と tests/store-list.test.ts に書いてある。
+    着手時点では両方落ちる。仕様はそちらが正で、YAML の記述と食い違ったら
+    テストに合わせる。
+
+repository:
+  provider: github
+  owner: slashkiko
+  name: entelecheia
+  default_branch: main
+
+setup:
+  - pnpm install --frozen-lockfile
+
+acceptance_criteria:
+  - id: ac-1
+    description: cli-list と store-list のテストが通る（着手時点では落ちている）
+    verification: { type: command, run: mise run test }
+
+  - id: ac-2
+    description: 型チェックが通る
+    verification: { type: command, run: mise run typecheck }
+
+  - id: ac-3
+    description: lint と format が通る
+    verification: { type: command, run: mise run lint }
+
+  - id: ac-4
+    description: サプライチェーンと workflow のチェックが通る（baseline 由来）
+    verification: { type: command, run: mise run check }
+
+  - id: ac-5
+    description: 変更を載せた PR の CI が成功している
+    verification: { type: fact, key: github.ci.conclusion, equals: success }
+
+  - id: ac-6
+    description: controller が人手を介さずにここまで進めたか、人間が確認する
+    verification:
+      type: human
+      prompt: |
+        この Goal は Phase 3 の総仕上げで、機能そのものより「controller が
+        自力でここまで進めたか」を確認するものです。
+
+        人間がやったのは3つだけのはずです。
+
+          Goal YAML を書いた
+          Acceptance Criteria を Vitest として書いた
+          ent start を叩き、ent run を繰り返した
+
+        次を確認してください。
+
+        1. Actor が worktree の中だけで実装したか。保護パス
+           （src/controller/** と .goals/**）に触れていないか
+        2. PR が controller によって立ち、進捗がコメントに積まれているか
+        3. Run ごとに生ログとトークンが残っているか
+        4. 何ティックで収束したか。ent show の Decision の履歴が読めるか
+
+        あわせて、MVP 完了後に何が検証されていないかを報告します。
+        design.md §5 は Notion / Slack と複数 Actor の並列を外しているので、
+        「Adapter を差し替えられる」という価値提案は GitHub 単独の
+        自己ホストでは検証されません。
+
+context:
+  background: |
+    Phase 3 の5本目で最後。1〜4本目で design.md §9 の9項目にチェックが付いた。
+    ただし通しで1周させたことがなく、これまでは Goal ごとに人間が ent run を
+    叩き、PR も人間が立ててきた。
+
+    本 Goal は controller に実装させる。人間は Goal と仕様（テスト）を書くだけで、
+    ACT から PR 作成・通知までを controller が回す。これが通れば MVP 完了になる。
+
+    機能そのものは小さくてよい。検証したいのはループであって機能ではない。
+
+  constraints:
+    - テストから実際の GitHub と Claude API を叩かない
+    - tests/cli-list.test.ts と tests/store-list.test.ts は仕様なので変更しない。
+      通らないなら実装側を直す
+    - 既存の tests/ も弱めない
+    - src/controller/** と .goals/** は触らない（policies.protected_paths）
+    - 新しいサブコマンドを足すだけで、既存の start / run / show の挙動を変えない
+    - 出力は JSON にする。ent show と同じく機械可読を保つ
+    - docs/design.md の「3. 中核の設計判断」を勝手に変えない
+    - 依存パッケージを増やさない
+    - mise run check（サプライチェーン検査）を壊さない
+    - PR の作成とコメントの投稿はしない。controller が行う
+
+  references:
+    - title: 設計ドキュメント
+      path: docs/design.md
+    - title: CLI の現状
+      path: src/cli.ts
+    - title: Store の現状
+      path: src/store/index.ts
+
+policies:
+  require_human_approval:
+    - merge
+    - force_push
+    - push_to_default_branch
+    - deploy
+    - secret_access
+    - external_send
+  protected_paths:
+    - src/controller/**
+    - .goals/**
+
+budget:
+  max_actor_runs: 8
+  max_reconciles: 15
+  max_wall_clock: 2h
+  max_consecutive_failures: 3
+  max_unchanged_reconciles: 4
