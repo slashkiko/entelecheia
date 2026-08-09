@@ -63,14 +63,17 @@ export const MAX_LLM_RETRIES = 2;
  * 次に取る行動を1つ選ぶ。
  *
  * 満たすべき性質:
- * - 次の4つは LLM を呼ばずに決める（decidedBy: "guard"）
- *     予算・回数・時間の上限に到達      → ESCALATE(budget_exhausted)
- *     Gap が無く unresolved も無い      → COMPLETE
- *     Gap は無いが unresolved がある    → WAIT
- *     観測が変わらないまま N 回続いた    → ESCALATE(loop_detected)
+ * - 次の5つは LLM を呼ばずに決める（decidedBy: "guard"）
+ *     予算・回数・時間の上限に到達         → ESCALATE(budget_exhausted)
+ *     読めなかった観測が1件でもある         → ESCALATE(shape_mismatch)
+ *     Gap が無く unresolved も無い         → COMPLETE
+ *     Gap は無いが unresolved がある       → WAIT
+ *     観測が変わらないまま N 回続いた       → ESCALATE(loop_detected)
  *   COMPLETE を LLM に決めさせないのは、§3.1「完了判定は VERIFIED のみ」を
  *   推論で迂回させないため。予算超過とループ検知も、暴走の停止条件を LLM に依存させない
  * - guard の判定順は上のとおり。予算超過は他のどの状態よりも優先する。
+ *   shape_mismatch は Gap の有無より先に置く。形が読めていないあいだの観測を
+ *   根拠に Actor を起動すると、根拠の無い intent に予算を使う。
  *   ループ検知は Gap が無い場合より後に置く。空回りしていても、満たしているなら完了でよい
  * - WAIT の reason は unresolved と criteria から決める
  *     port_failed が1件でもある                  → observation_failed
@@ -101,7 +104,26 @@ export async function decide(target: DecideTarget, deps: DecideDeps): Promise<De
     );
   }
 
-  // 2. Gap が無い場合。完了判定は VERIFIED な Fact のみで行う（design.md §3.1）ため、
+  // 2. 届いたが読めなかった観測がある。待っても直らないので、待たずに人間を呼ぶ。
+  //    停止条件なので LLM には決めさせない（design.md §7）。
+  //
+  //    Gap の有無より先に置く。形が読めていないあいだの観測を根拠に Actor を
+  //    起動すると、根拠の無い intent に予算を使う。予算の枯渇より後に置くのは、
+  //    どの理由より先に止まるのが予算だから（既存の guard の順序を変えない）。
+  //
+  //    port_failed は巻き込まない。届かなかった失敗は待てば直りうるので、
+  //    これまでどおり下の WAIT(observation_failed) に落とす。混在していれば
+  //    1件でも「待っても直らない」がある側を採る。
+  const mismatched = target.unresolved.filter((u) => u.reason === "shape_mismatch");
+  if (mismatched.length > 0) {
+    return guard(
+      { type: "ESCALATE", reason: "shape_mismatch" },
+      // 何が読めなかったかを残す。人間が直す先は detail からしか読めない。
+      `届いたが読めなかった観測が ${mismatched.length} 件ある。待っても直らないので停止する: ${describeUnresolved(mismatched)}`,
+    );
+  }
+
+  // 3. Gap が無い場合。完了判定は VERIFIED な Fact のみで行う（design.md §3.1）ため、
   //    COMPLETE と WAIT の選び分けは LLM に委ねない。
   //    satisfied ではなく gaps を見るのは、両者がずれた入力を渡されても
   //    「Gap が残っているのに完了」を作らないため。
@@ -120,7 +142,7 @@ export async function decide(target: DecideTarget, deps: DecideDeps): Promise<De
     );
   }
 
-  // 3. 空回りの検知（design.md §7 / §10-2）。Gap が無い場合より後に置く。
+  // 4. 空回りの検知（design.md §7 / §10-2）。Gap が無い場合より後に置く。
   //    空回りしていても、満たしているなら完了でよい。
   //    停止条件なので LLM には決めさせない。判断するのは guard だけ。
   const unchanged = unchangedReconciles(target);
@@ -131,7 +153,7 @@ export async function decide(target: DecideTarget, deps: DecideDeps): Promise<De
     );
   }
 
-  // 4. Gap がある。どう埋めるかは状況依存なので LlmPort に委ねる。
+  // 5. Gap がある。どう埋めるかは状況依存なので LlmPort に委ねる。
   return await askLlm(target, deps, decidedAt);
 }
 
@@ -186,9 +208,11 @@ function waitReason(target: DecideTarget): WaitReason {
   // 届いたが読めなかった（shape_mismatch）の2つある。どちらも「観測できて
   // いない」ので、承認待ちや CI 待ちより先に倒す。
   //
-  // shape_mismatch を落とすと ci_running に化ける。恒久的なスキーマ不一致が
-  // 「CI 実行待ち」を名乗り、Gap ゼロの WAIT はループ検知より手前で return する
-  // ので、予算に当たるまでそのラベルで回り続ける。reason を足した意味が消える。
+  // shape_mismatch は上の guard が ESCALATE で先に止めるので、実際にはここへ
+  // 来ない。それでも集合に残してあるのは、落とすと ci_running に化けるため。
+  // 恒久的なスキーマ不一致が「CI 実行待ち」を名乗り、Gap ゼロの WAIT はループ
+  // 検知より手前で return するので、予算に当たるまでそのラベルで回り続ける。
+  // 判定順を動かしたときに、その壊れ方へ静かに戻らないようにしておく。
   const unobservable = new Set(["port_failed", "shape_mismatch"]);
   if (target.unresolved.some((u) => unobservable.has(u.reason))) {
     return "observation_failed";

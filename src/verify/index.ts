@@ -8,6 +8,7 @@ import {
 } from "../domain/fact.js";
 import { criterionFactKey } from "../domain/fact-keys.js";
 import type { AcceptanceCriterion } from "../domain/goal.js";
+import { isShapeMismatch } from "../domain/port-error.js";
 
 /**
  * Verify が依存する外部世界。observe と同じく、実装ではなくインターフェースとして切る。
@@ -190,9 +191,16 @@ async function judge(
           },
         };
       } catch (error) {
+        // 届いたが読めなかった（shape_mismatch）と、届かなかった（port_failed）を
+        // 分ける。observe は例外の種類から作り分けているのに、ここが畳んでいると
+        // 承認の経路だけ分類が届かず、guard も止められない。
+        //
+        // 恒久的な不一致だけを shape_mismatch にする。`unavailable` と素の Error は
+        // port_failed のまま——区別できない失敗を恒久扱いにすると、待てば直る
+        // 障害で人間を呼ぶことになる。
         return {
           resolved: false,
-          reason: "port_failed",
+          reason: isShapeMismatch(error) ? "shape_mismatch" : "port_failed",
           detail: `${source}: ${errorMessage(error)}`,
         };
       }
