@@ -57,7 +57,7 @@ describe("parseCommand と list", () => {
   });
 
   it("既存のサブコマンドを壊さない", () => {
-    expect(parseCommand(["show", "sample-goal"])).toEqual({ kind: "show", slug: "sample-goal" });
+    expect(parseCommand(["get", "sample-goal"])).toEqual({ kind: "show", slug: "sample-goal" });
     expect(parseCommand(["run", "sample-goal"])).toEqual({ kind: "run", slug: "sample-goal" });
   });
 });

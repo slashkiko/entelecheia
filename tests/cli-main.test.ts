@@ -130,10 +130,10 @@ describe("ent の一周", () => {
     });
   });
 
-  it("show が宣言部と実行時状態をまとめて出す", async () => {
+  it("get が宣言部と実行時状態をまとめて出す", async () => {
     await main(["start", "smoke-goal"]);
     await main(["run", "smoke-goal"]);
-    expect(await main(["show", "smoke-goal"])).toBe(0);
+    expect(await main(["get", "smoke-goal"])).toBe(0);
 
     const payload = lastJson() as {
       goal: { id: string };

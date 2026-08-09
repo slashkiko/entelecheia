@@ -24,8 +24,9 @@ describe("parseCommand", () => {
     });
   });
 
-  it("show は slug を取る", () => {
-    expect(parseCommand(["show", "assess-and-decide"])).toEqual({
+  it("get は slug を取る", () => {
+    // 打つのは get。判別タグは show のまま変えない（gist 3.1）。
+    expect(parseCommand(["get", "assess-and-decide"])).toEqual({
       kind: "show",
       slug: "assess-and-decide",
     });
