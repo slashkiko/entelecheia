@@ -1,6 +1,6 @@
 ---
 name: ent
-description: ent CLI で Goal を収束させるときの手順。agent-context での構造の把握、doctor での前提の確認、start / run / get / list の1周、--dry-run での事前確認、--limit での出力の絞り方、終了コードの読み方、WAITING_HUMAN や ESCALATE で人の承認や介入を待つところを扱う。
+description: ent CLI で Goal を収束させるときの手順。agent-context での構造の把握、doctor での前提の確認、start / run / get / list の1周、--dry-run での事前確認、abandon で追わなくなった Goal を終端にするところ、--limit での出力の絞り方、終了コードの読み方、WAITING_HUMAN や ESCALATE で人の承認や介入を待つところを扱う。
 ---
 
 # ent を回す
@@ -27,7 +27,7 @@ ent get <slug>              # 宣言部と実行時状態をまとめて読む
 ent list                    # 登録済みの Goal を一覧する
 ```
 
-追わなくなった Goal から降りるときだけ、もう1つある。
+追わなくなった Goal から降りるときだけ、もう1つサブコマンドがある。
 
 ```
 ent abandon <slug> --reason "なぜ追わないのか"
@@ -38,14 +38,16 @@ ent abandon <slug> --reason "なぜ追わないのか"
 
 **対になる `ent complete` は無い。** 完了判定は VERIFIED な Fact だけで行う（§3.1）ので、
 criteria が赤いまま「完了した」と書ける口は用意していない。ループの外で desired state が
-満たされた場合——人間が手で PR をマージした、など——に使うのが `abandon` になる。
+満たされた場合（人間が手で PR をマージした、など）に使うのが `abandon` だ。
 「終わった」ではなく「もう追わない」を記録する。
 
-落とせない場合は終了コード 1 で、何も書かずに止まる。
+落とせない状態なら、終了コード 1 で何も書かずに止まる。
 
 - 既に終端（`COMPLETED` / `FAILED` / `ABANDONED`）。終端は塗り替えない
-- `lease_owner` が埋まっている。別のプロセスが回している最中に横から落とさない
+- `state.leaseOwner` が埋まっている。別のプロセスが回している最中に横から落とさない
 - `ent start` を挟んでいない。降りる先の状態が無い
+
+`--reason` を付け忘れた場合だけは 2 になる。argv を直せば通るので、1 とは倒す向きが違う。
 
 `ent doctor` は書き込みを一切しない。state ディレクトリも作らない。
 
@@ -83,7 +85,8 @@ status も書かない。次のティックが何を観測し、どの criteria 
 
 ## 出力の絞り方
 
-`run` / `get` / `list` は既定で JSON を出す。`start` は `--json` を付けたときだけ JSON になる。
+`run` / `get` / `list` は既定で JSON を出す。`start` と `abandon` は `--json` を付けたときだけ
+JSON になる。
 `doctor` と `agent-context` は常に JSON で、`--json` も `--limit` も受け取らない。
 付けると終了コード 2 になる。
 
@@ -93,7 +96,7 @@ ent get <slug> --limit 5    # runs の件数。落ちるのは古い方から
 ```
 
 `--limit` の既定は 50。切り捨てたときだけ、絞り込み方が **stderr** に出る。
-`run` / `get` / `list` の stdout は JSON だけなので、そのまま `jq` に渡してよい。
+`run` / `get` / `list`（と `abandon --json`）の stdout は JSON だけなので、そのまま `jq` に渡してよい。
 
 ## 人の承認で止まるところ
 

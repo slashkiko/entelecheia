@@ -88,7 +88,7 @@ controller は承認待ちで止まった。人間が待っているのは実装
 `local.dirty` だけで、観測に失敗したティックや worktree がまだ無いティックでは
 止まらない。役割ごとに worktree が分かれた（design.md §4.2）あとも、突き合わせるのは
 **実装役のブランチ**に固定してある。検証コマンドと `local.*` を観測する先が
-そちらだからで、レビュー役の作業ツリーの汚れを実装の書き残しと読まない。止めた理由と次の一手は `ent show` と PR のコメントの両方に出す。
+そちらだからで、レビュー役の作業ツリーの汚れを実装の書き残しと読まない。止めた理由と次の一手は `ent get` と PR のコメントの両方に出す。
 
 MVP 完了後のレビューでも、同じ形の穴が残っていた。Port を注入するテストは
 `src/adapters/local.ts`（実際の git とシェル）と `src/cli.ts` の `main()` を1行も通らず、
@@ -167,7 +167,8 @@ ent doctor                         # 回す前の前提が揃っているかを�
 ent agent-context                  # CLI の構造を機械可読な JSON で出す
 ```
 
-`--json` は出力を JSON にする（`run` / `get` / `list` は既定で JSON。`start` だけが平文）。
+`--json` は出力を JSON にする（`run` / `get` / `list` は既定で JSON。`start` と `abandon` は
+`--json` を付けたときだけ JSON になる）。
 `doctor` と `agent-context` は常に JSON で、`--json` は受け取らない。
 `--limit <n>` は `get` / `list` の件数を絞る。既定でも上限で切り、切れたときだけ
 絞り込み方が stderr に出る。エージェント向けの手順は `.claude/skills/ent/SKILL.md` に置いてある。
