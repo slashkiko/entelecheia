@@ -125,7 +125,7 @@ setup:
 
 acceptance_criteria:
   - id: ac-1
-    description: controller-uncommitted の5本が通り、既存のテストも通ったままになる（着手時点では2本落ちている）
+    description: controller-uncommitted の8本が通り、既存のテストも通ったままになる（着手時点では落ちている）
     verification: { type: command, run: mise run test }
 
   - id: ac-2
