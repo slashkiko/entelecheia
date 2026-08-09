@@ -233,8 +233,8 @@ function describeUnresolved(unresolved: readonly Unresolved[]): string {
  * `ESCALATE(loop_detected)` を返し、ループしていないのに採用された。
  * `budget_exhausted` も同じ口から入る。どちらも guard が持つべき判断になる。
  *
- * guard 側から `loop_detected` を出す実装はまだ無い（design.md §10-2）。
- * ここで閉じるのは LLM 側の口だけで、§10-2 は未決のまま残る。
+ * guard 側から `loop_detected` を出す実装は下の `unchangedReconciles()` にある。
+ * ここで閉じるのは LLM 側の口で、実際に停止させるのは guard になる（design.md §10-2）。
  */
 const LLM_ACTIONS = new Set(["ACT", "VERIFY", "WAIT", "REPLAN"]);
 

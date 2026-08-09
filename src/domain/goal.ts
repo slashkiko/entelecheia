@@ -112,8 +112,9 @@ export const budgetSchema = z.strictObject({
   /**
    * 観測が変わらないまま回した回数の上限。到達したら ESCALATE(loop_detected)。
    *
-   * design.md §7 の「同じギャップが N 回連続で解消されなければ ESCALATE」がこれで、
-   * §10-2 が未決として残していた N にあたる。ここが無いと、Gap を埋められない
+   * design.md §7 の「観測が N 回連続で変わらなければ ESCALATE」がこれで、
+   * §10-2 が未決として残していた N にあたる。判定の材料は Gap ではなく
+   * `Decision.observed_digest` になっている。ここが無いと、Gap を埋められない
    * まま同じ判断を繰り返す Goal を止める手段が予算の総量しか無くなる。
    *
    * 他の4項目と同じく必須にしてある。任意にして既定値をコード側に置くと、

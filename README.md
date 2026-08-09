@@ -13,11 +13,9 @@
 
 ## 設計の要点
 
-「実装」列は Phase 2 を完了した時点の状態を示す。controller は OBSERVE / ASSESS /
-DECIDE / ACT / VERIFY を回し、GitHub の**観測**と Claude Code の起動は実際に走る。
-PR の作成とコメント投稿（書き込み側）はまだ無い。
-「済」はコードとして揃っていることを意味し、実環境で1周通したこととは別になる。
-design.md §9 の完了条件9項目のうち、確認できたのは4つ。残りは Phase 3 で埋める。
+「実装」列は Phase 3 を完了した時点の状態を示す。controller は OBSERVE / ASSESS /
+DECIDE / ACT / VERIFY を回し、PR を自分で立てて進捗をコメントに積み、人間の承認を
+検知して COMPLETED まで進む。design.md §9 の完了条件9項目はすべて確認した。**MVP は完了している。**
 
 | 原則 | 内容 | 実装 |
 |---|---|---|
@@ -28,9 +26,13 @@ design.md §9 の完了条件9項目のうち、確認できたのは4つ。残�
 | 宣言と収束の分離 | 人間が書くのは Desired State と Acceptance Criteria。タスク分解も Actor 選択も controller が決める | 済 |
 | write-ahead | 副作用の前に意図を DB へ書く。任意の瞬間に kill されても次ティックで回収できる | 済 |
 
-完了判定と暴走の停止条件は LLM に決めさせない。DECIDE が選ぶ行動のうち `COMPLETE`、
-`ESCALATE(budget_exhausted)`、そして待ちの判定（`WAIT`）は純ロジック（guard）が決め、
-Gap の埋め方だけを LLM に委ねる。この境界は `src/decide/` にある。
+完了判定と暴走の停止条件は LLM に決めさせない。LLM が選べるのは
+`ACT` / `VERIFY` / `WAIT` / `REPLAN` の4つだけで、`COMPLETE` と `ESCALATE` は
+純ロジック（guard）が決める。Gap の埋め方だけを LLM に委ねる。この境界は `src/decide/` にある。
+
+自己ホストの安全装置として、`policies.protected_paths` に書いたパス（`src/controller/**` と
+`.goals/**`）を Agent が編集したら、controller が ACT の外側で検知して止める。
+Agent 側の拒否ルールとは別に、controller 自身の関門を持つ。
 
 Goal の状態（ACTIVE / COMPLETED など）は `.goals/.state/goals.db` が持つ。
 行動の `COMPLETE` と Goal の状態 `COMPLETED` は別のもので、前者が選ばれた結果として後者になる。
@@ -38,17 +40,23 @@ Goal の状態（ACTIVE / COMPLETED など）は `.goals/.state/goals.db` が持
 
 ## 現在地とロードマップ
 
-**Phase 2 完了。** Phase 0（`.goals/observe-returns-facts.yaml`）と
-Phase 1（`.goals/automate-observe-and-verify.yaml`）は完了し、Goal YAML のスキーマが
-`src/domain/goal.ts` に、観測キーのレジストリが `src/domain/fact-keys.ts` に確定した。
+**Phase 3 完了。MVP 完了。** Phase 0 から Phase 3 まで、Goal は合わせて11本。
+Goal YAML のスキーマは `src/domain/goal.ts`、観測キーのレジストリは
+`src/domain/fact-keys.ts` にある。
 
-Phase 2 は ASSESS / DECIDE / ACT と永続化と CLI、および GitHub と Actor に繋ぐ Port の実装を
-含み、1つの Goal には大きすぎるので4本に割ってあった。**4本とも完了している。**
-`ent run <slug>` が1ティックを回し、実際の GitHub を観測して状態を SQLite に残す。
+Phase 3 は自己ホストで、5本に割った。1本目で1ティックの記録が読めるようになり、
+2本目で PR の作成・通知・承認の検知が入り、3本目で待機と暴走の制御が入り、
+4本目で自己ホストの安全装置が入った。**5本目は controller に実装させた。**
 
-次は Phase 3 の自己ホスト。このリポジトリ自身を対象に `ent run` を回し、
-design.md §9 の完了条件のうち残る5項目（PR と通知、完了判定、いつでも殺せる、
-上限で寝て起きる、暴走しない）を埋める。
+人間がやったのは Goal YAML と Acceptance Criteria を書き、`ent start` してから
+`ent run` を繰り返しただけで、controller が Actor を worktree で走らせ、PR を立て、
+進捗をコメントに積み、承認待ちで止まった。
+
+**実際に回すまで、配管は繋がっていると見なせない。** Phase 3 で見つかった断線は
+どれもテストでは通っていた。`git branch --format` の引用符不足で worktree の作成が
+Phase 2 からずっと失敗していたこと、VERIFY が worktree ではなく controller 自身の
+リポジトリでコマンドを流していたこと、PR がある間 push しなくなっていたこと。
+最後のものは、それを仕様として固定したテストが緑のままだった。
 
 Phase 1 と Phase 2 の1本目は、どちらも6本の Acceptance Criteria のうちコマンドで検証する4本を
 通しただけでは COMPLETED にならなかった。Phase 1 で残ったのは CI の結果（`type: fact`）と、
@@ -67,6 +75,10 @@ CI の結果と、guard と LLM の境界が妥当かの確認（`type: human`�
 | 1 | OBSERVE / VERIFY | ASSESS / DECIDE / ACT と、全段階の起動 |
 | 2 | OBSERVE / ASSESS / DECIDE / ACT / VERIFY | Goal を書く、承認する |
 | 3 | Phase 2 と同じ範囲を、このリポジトリ自身に対して回す（自己ホスト） | Goal を書く、承認する |
+
+Phase 3 を完了した時点で、1ティックの内側にも外側にも人間の判断は入らない。
+残るのは Goal を書くことと、PR に `/ent approve <criterion-id>` と書くこと（あるいは
+GitHub のレビューで Approve を押すこと）の2つになる。
 
 ## セットアップ
 
@@ -98,8 +110,13 @@ alias ent="node $(pwd)/dist/cli.js"
 
 ent start <slug>                   # Goal を登録して ACTIVE にする
 ent run <slug>                     # 1ティック回して終了する
+ent run <slug> --pr <n>            # 観測対象の PR を指定する（controller が立てた分は自動）
 ent show <slug>                    # 宣言部と実行時状態をまとめて表示する
+ent list                           # 登録済みの Goal を一覧する
 ```
+
+`ENT_MODEL` と `ENT_EFFORT` で Actor と LLM のモデルを上書きできる。
+1ティックごとに使用量を消費するので、試走は安いモデルで回せる。
 
 `package.json` の `bin` に `ent` を登録してあるが、npm へ公開していないので
 いまは alias か `node dist/cli.js` で呼ぶ。
@@ -126,12 +143,17 @@ src/domain/action.ts      DECIDE が選ぶ Action と Decision の型
 src/domain/run.ts         Actor の実行記録の型
 src/domain/goal-state.ts  Goal のライフサイクルと、Action から次の状態を決める遷移
 src/domain/port-error.ts  Port の失敗の種別（usage_limit / unavailable）
+src/domain/verification.ts criteria 単位の検証結果。§9 の完了判定が読む索引
+src/domain/digest.ts      観測値のダイジェスト。ループ検知の材料になる
+src/domain/protected-paths.ts 保護パスの検査。制御ループ自体への編集を止める
+src/domain/llm-call.ts    LlmPort を1回呼んだ記録。Run を作らない分のトークン
 src/observe/              Observe と、依存する Port の定義
 src/verify/               Verify と、依存する Port の定義
 src/assess/               Assess。Acceptance Criteria と Fact を突き合わせて Gap を出す
 src/decide/               Decide と LlmPort の定義。guard と LLM の境界はここにある
 src/act/                  Act。Actor を worktree 上で走らせる。write-ahead はここ
 src/reconcile/            OBSERVE → VERIFY → ASSESS → DECIDE を1ティックにまとめる
+src/publish/              PR の確保と進捗コメント。CodeWriterPort と BranchPort の定義
 src/store/                SQLite（node:sqlite）。lease、スナップショット、Run、Decision
 src/controller/           1ティックの外側。lease → 回収 → reconcile → 永続化 → ACT → 遷移
 src/adapters/local.ts     node:child_process で書ける Port（コマンド実行、git、worktree）
