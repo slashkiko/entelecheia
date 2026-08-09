@@ -101,8 +101,23 @@ export const approvalGateSchema = z.enum([
 ]);
 export type ApprovalGate = z.infer<typeof approvalGateSchema>;
 
+/**
+ * 使える単位と、その秒数。
+ *
+ * 正規表現をここから組み立てる。以前は `/^(\d+)([smh])$/` を手で書き、
+ * 変換側が `switch` の `default` で時間に落としていた。単位を1つ足す——
+ * この関数のコメント自身が例に挙げている `d` の追加——をすると、
+ * 正規表現は通るのに変換が `default` に落ちて `2d` が 7200 秒になる。
+ * 24分の1で、しかもどこにもエラーが出ない。この値は `max_wall_clock` で、
+ * 壁時計の停止条件が1日早く発火して Goal が `budget_exhausted` になる。
+ *
+ * 表を1つにして、未知の単位は `undefined` として `null` に倒す。
+ * 単位を足すときはここだけを触ればよく、触り忘れる側が無くなる。
+ */
+const DURATION_UNITS = { s: 1, m: 60, h: 3600 } as const;
+
 /** `30s` / `10m` / `6h` 形式。controller が待機と打ち切りの判定に使う */
-const DURATION = /^(\d+)([smh])$/;
+const DURATION = new RegExp(`^(\\d+)([${Object.keys(DURATION_UNITS).join("")}])$`);
 const durationSchema = z.string().regex(DURATION, "duration は 30s / 10m / 6h の形式で書く");
 
 /**
@@ -117,15 +132,13 @@ export function durationSeconds(duration: string): number | null {
     return null;
   }
 
-  const amount = Number(matched[1]);
-  switch (matched[2]) {
-    case "s":
-      return amount;
-    case "m":
-      return amount * 60;
-    default:
-      return amount * 3600;
+  const unit = matched[2] as keyof typeof DURATION_UNITS | undefined;
+  const factor = unit === undefined ? undefined : DURATION_UNITS[unit];
+  if (factor === undefined) {
+    return null;
   }
+
+  return Number(matched[1]) * factor;
 }
 
 export const budgetSchema = z.strictObject({

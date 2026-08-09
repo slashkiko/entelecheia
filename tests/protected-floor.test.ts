@@ -31,7 +31,6 @@ const MINIMAL = {
     },
   ],
   context: { background: "背景", constraints: [] },
-  policies: { require_human_approval: ["merge"], protected_paths: [] },
   budget: {
     max_actor_runs: 1,
     max_reconciles: 1,
@@ -39,11 +38,23 @@ const MINIMAL = {
     max_consecutive_failures: 1,
     max_unchanged_reconciles: 1,
   },
-} as const;
+};
+
+/**
+ * YAML を parse した直後の形を作る。スキーマに通す前なので型は付けない。
+ * `declared` を省くと `protected_paths` のキーごと無い YAML になる。
+ */
+function source(declared?: string[]): Record<string, unknown> {
+  const policies: Record<string, unknown> = { require_human_approval: ["merge"] };
+  if (declared !== undefined) {
+    policies.protected_paths = declared;
+  }
+  return { ...structuredClone(MINIMAL), policies };
+}
 
 describe("保護パスの下限", () => {
   it("protected_paths を空で宣言しても下限が入る", () => {
-    const goal = goalSchema.parse(structuredClone(MINIMAL));
+    const goal = goalSchema.parse(source([]));
 
     for (const path of PROTECTED_PATH_FLOOR) {
       expect(goal.policies.protected_paths).toContain(path);
@@ -51,13 +62,7 @@ describe("保護パスの下限", () => {
   });
 
   it("protected_paths のキーごと省いても下限が入る", () => {
-    const source = structuredClone(MINIMAL) as {
-      policies: { require_human_approval: string[]; protected_paths?: string[] };
-    };
-    source.policies.protected_paths = undefined;
-    delete source.policies.protected_paths;
-
-    const goal = goalSchema.parse(source);
+    const goal = goalSchema.parse(source());
 
     for (const path of PROTECTED_PATH_FLOOR) {
       expect(goal.policies.protected_paths).toContain(path);
@@ -65,12 +70,7 @@ describe("保護パスの下限", () => {
   });
 
   it("Goal が宣言した分は消えない", () => {
-    const source = structuredClone(MINIMAL) as {
-      policies: { require_human_approval: string[]; protected_paths: string[] };
-    };
-    source.policies.protected_paths = ["docs/**"];
-
-    const goal = goalSchema.parse(source);
+    const goal = goalSchema.parse(source(["docs/**"]));
 
     expect(goal.policies.protected_paths).toContain("docs/**");
     expect(goal.policies.protected_paths).toContain("src/controller/**");

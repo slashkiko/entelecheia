@@ -219,6 +219,7 @@ export function githubCodeWriter(options: GitHubOptions): CodeWriterPort {
 export function githubApproval(options: GitHubOptions & { prNumber: number | null }): ApprovalPort {
   const octokit = client(options);
   const prNumber = options.prNumber;
+  const hasWriteAccess = writeAccessChecker(octokit, options);
 
   // 1ティックで criteria の数だけ呼ばれる。同じ PR を何度も引かない。
   let cached: Promise<{ reviews: Review[]; comments: Comment[]; author: string | null }> | null =
@@ -275,6 +276,10 @@ export function githubApproval(options: GitHubOptions & { prNumber: number | nul
         if (review.state !== "APPROVED" || login === author || !permitted(review)) {
           continue;
         }
+        // 関係だけでは足りない。実際に書き込めるかを権限 API で確かめる。
+        if (!(await hasWriteAccess(login))) {
+          continue;
+        }
         return { approvedBy: login, approvedAt: review.submitted_at ?? "" };
       }
 
@@ -288,10 +293,11 @@ export function githubApproval(options: GitHubOptions & { prNumber: number | nul
         if (!permitted(comment) || !approves(comment.body, criterionId)) {
           continue;
         }
-        return {
-          approvedBy: comment.user?.login ?? "unknown",
-          approvedAt: comment.created_at,
-        };
+        const login = comment.user?.login ?? "";
+        if (!(await hasWriteAccess(login))) {
+          continue;
+        }
+        return { approvedBy: login, approvedAt: comment.created_at };
       }
       return null;
     },
@@ -312,9 +318,74 @@ export function githubApproval(options: GitHubOptions & { prNumber: number | nul
  */
 const APPROVER_ASSOCIATIONS = new Set(["OWNER", "MEMBER", "COLLABORATOR"]);
 
-/** 承認を出してよい相手か。関係が読めなければ承認しない側に倒す */
+/**
+ * 前段のふるい。関係が読めなければ承認しない側に倒す。
+ *
+ * これだけでは足りない。README は「`type: human` の承認は、リポジトリに
+ * 書き込み権限がある人のものだけを数える」と書いているが、`MEMBER` は
+ * 所有 org のメンバー全員を指し、リポジトリ単位の権限を一切含意しない。
+ * `COLLABORATOR` も read / triage で招かれた相手を含む。つまりこの集合は
+ * 「書き込み権限がある」より広く、org に人がいるほど広がる。
+ *
+ * そこで2段構えにする。ここは API を1回も叩かずに落とせる相手を落とす前段で、
+ * 実際の判定は `writeAccessChecker` が権限 API で行う。
+ */
 function permitted(actor: { author_association?: string | null | undefined }): boolean {
   return actor.author_association != null && APPROVER_ASSOCIATIONS.has(actor.author_association);
+}
+
+/**
+ * 書き込み権限として数える値。GitHub の permission API が返す語をそのまま使う。
+ *
+ * `pull`（read）と `triage` は入れない。どちらもコードを変えられないので、
+ * 「実装が完了した」という判断の根拠にならない。
+ */
+const WRITE_PERMISSIONS = new Set(["push", "maintain", "admin", "write"]);
+
+const permissionSchema = z.object({ permission: z.string().nullish() });
+
+/**
+ * その login が実際にリポジトリへ書き込めるかを、権限 API で確かめる。
+ *
+ * 落ちたときは承認しない側に倒す。ここで「確かめられなかった」を「権限がある」と
+ * 読むと、GitHub が一時的に落ちているあいだだけ誰でも承認できる窓が開く。
+ * 完了判定の根拠なので、確かめられない承認は数えない（design.md §3.1）。
+ */
+function writeAccessChecker(
+  octokit: Octokit,
+  options: GitHubOptions,
+): (login: string) => Promise<boolean> {
+  // 1ティックで criteria の数だけ呼ばれる。同じ人を何度も引かない。
+  const cache = new Map<string, Promise<boolean>>();
+
+  return (login) => {
+    if (login === "") {
+      return Promise.resolve(false);
+    }
+    const cached = cache.get(login);
+    if (cached !== undefined) {
+      return cached;
+    }
+
+    const pending = (async () => {
+      try {
+        const raw = await request(
+          octokit,
+          "GET /repos/{owner}/{repo}/collaborators/{username}/permission",
+          options,
+          { username: login },
+        );
+        const permission = permissionSchema.parse(raw).permission;
+        return permission != null && WRITE_PERMISSIONS.has(permission);
+      } catch {
+        // 404（コラボレーターでない）も PortError になる。どちらも承認しない。
+        return false;
+      }
+    })();
+
+    cache.set(login, pending);
+    return pending;
+  };
 }
 
 /**

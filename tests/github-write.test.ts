@@ -123,6 +123,15 @@ describe("githubApproval", () => {
     reviews?: unknown[];
     comments?: unknown[];
     prNumber?: number | null;
+    /**
+     * login ごとのリポジトリ権限。GET /repos/{owner}/{repo}/collaborators/{u}/permission
+     * が返す値をそのまま書く。省略した login は admin として扱う。
+     *
+     * author_association だけでは書き込み権限と等価にならない（MEMBER は org の
+     * メンバー全員、COLLABORATOR は read/triage も含む）ので、承認は権限 API でも
+     * 確かめる。ここはその応答にあたる。
+     */
+    permissions?: Record<string, string>;
   }
 
   const approvalPort = (fixture: Fixture) =>
@@ -135,6 +144,10 @@ describe("githubApproval", () => {
         }
         if (url.includes("/comments")) {
           return { body: fixture.comments ?? [] };
+        }
+        if (url.includes("/permission")) {
+          const login = decodeURIComponent(url.split("/collaborators/")[1]?.split("/")[0] ?? "");
+          return { body: { permission: fixture.permissions?.[login] ?? "admin" } };
         }
         return { body: { user: { login: fixture.author ?? "pr-author" } } };
       }).fetch,
@@ -241,6 +254,60 @@ describe("githubApproval", () => {
       for (const association of ["MEMBER", "COLLABORATOR"]) {
         const approval = await approvalPort({
           comments: [comment("/ent approve ac-6", "teammate", association)],
+        }).getApproval("ac-6");
+
+        expect(approval?.approvedBy).toBe("teammate");
+      }
+    });
+
+    it("書き込み権限が無ければ、MEMBER でも COLLABORATOR でも承認にしない", async () => {
+      // README は「type: human の承認は、リポジトリに書き込み権限がある人の
+      // ものだけを数える」と書いている。author_association はそれと等価でない。
+      // MEMBER は所有 org のメンバー全員を指し、リポジトリ単位の権限を含意しない。
+      // COLLABORATOR は read / triage で招かれた相手も含む。公開リポジトリや
+      // 人数のいる org では、コードを1行も変えられない相手が §9 の完了判定を
+      // 通せることになる。
+      for (const association of ["MEMBER", "COLLABORATOR"]) {
+        for (const permission of ["read", "pull", "triage"]) {
+          const approval = await approvalPort({
+            comments: [comment("/ent approve ac-6", "outsider", association)],
+            permissions: { outsider: permission },
+          }).getApproval("ac-6");
+
+          expect(approval).toBeNull();
+        }
+      }
+    });
+
+    it("権限が読めなければ承認にしない", async () => {
+      // 確かめられなかったことを「権限がある」と読むと、GitHub が落ちている
+      // あいだだけ誰でも承認できる窓が開く（design.md §3.1）。
+      const approval = await githubApproval({
+        ...BASE,
+        prNumber: 11,
+        fetch: fakeFetch((url) => {
+          if (url.includes("/reviews")) {
+            return { body: [] };
+          }
+          if (url.includes("/comments")) {
+            return { body: [comment("/ent approve ac-6", "teammate", "MEMBER")] };
+          }
+          if (url.includes("/permission")) {
+            return { status: 500, body: { message: "boom" } };
+          }
+          return { body: { user: { login: "pr-author" } } };
+        }).fetch,
+      }).getApproval("ac-6");
+
+      expect(approval).toBeNull();
+    });
+
+    it("書き込み権限があれば承認として読む", async () => {
+      // 上の2本が「常に null」で通っていないことを示す。
+      for (const permission of ["push", "maintain", "admin"]) {
+        const approval = await approvalPort({
+          comments: [comment("/ent approve ac-6", "teammate", "MEMBER")],
+          permissions: { teammate: permission },
         }).getApproval("ac-6");
 
         expect(approval?.approvedBy).toBe("teammate");
