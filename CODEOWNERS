@@ -6,3 +6,19 @@
 /baseline-version.toml @slashkiko
 /renovate.json @slashkiko
 /mise-tasks/ @slashkiko
+
+# 自己ホストでは Agent が src/ と tests/ を書く。docs/security-baseline.md の
+# 「Review | CODEOWNERS and protected main branch」は、その差分にレビューが
+# 要ることを含意しているので、制御ループ本体と関門・検証系をここでも押さえる。
+/src/controller/ @slashkiko
+/src/domain/protected-paths.ts @slashkiko
+/src/domain/goal.ts @slashkiko
+/src/adapters/claude.ts @slashkiko
+/src/adapters/local.ts @slashkiko
+/.goals/ @slashkiko
+/biome.json @slashkiko
+/tsconfig.json @slashkiko
+/tsconfig.build.json @slashkiko
+/vitest.config.ts @slashkiko
+/package.json @slashkiko
+/pnpm-lock.yaml @slashkiko

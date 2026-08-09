@@ -8,6 +8,14 @@ import type { ApprovalGate } from "../domain/goal.js";
 import type { LlmCall } from "../domain/llm-call.js";
 import { PortError } from "../domain/port-error.js";
 import type { ActorRole } from "../domain/run.js";
+import { WITHHELD_ENV, withheldEnv } from "../domain/withheld-env.js";
+
+/**
+ * 除去リストの置き場所は domain に移した。VERIFY 側（src/adapters/local.ts）も
+ * 同じものを見る必要があるため。ここから再輸出しているのは、既存の呼び出し元と
+ * テストが `adapters/claude` を参照しているのを壊さないため。
+ */
+export { WITHHELD_ENV };
 
 /**
  * Claude Code 向けの ActorPort と LlmPort。Claude Agent SDK の query() を使う。
@@ -73,7 +81,6 @@ export function claudeActor(options: ClaudeOptions): ActorPort {
       const logRef = join(options.runsDir, invocation.runId, "log.jsonl");
       // consume が途中で throw しても、そこまでのログは残す。使用量上限に
       // 当たった実行の手がかりが「例外のメッセージだけ」になるのを避ける。
-      const log: string[] = [];
 
       const partial = (): ActorResult => ({
         exitCode: 1,
@@ -88,7 +95,7 @@ export function claudeActor(options: ClaudeOptions): ActorPort {
 
       let outcome: Outcome;
       try {
-        outcome = await consumeAndLog(options, logRef, log, PROMPT_FOR[role](invocation.intent), {
+        outcome = await consumeAndLog(options, logRef, PROMPT_FOR[role](invocation.intent), {
           // controller 本体のコードと Agent が編集するコードを物理的に分ける（§7）。
           cwd: invocation.worktree.path,
           abortController: aborter,
@@ -142,11 +149,10 @@ export function claudeLlm(options: ClaudeOptions): LlmPort {
       const calledAt = now().toISOString();
       // Actor の生ログと同じ場所に、同じ粒度で置く（design.md §4.6）。
       const logRef = join(options.runsDir, callIdOf(calledAt, sequence), "log.jsonl");
-      const log: string[] = [];
 
       let outcome: Outcome;
       try {
-        outcome = await consumeAndLog(options, logRef, log, `${prompt}\n\n${JSON_ONLY}`, {
+        outcome = await consumeAndLog(options, logRef, `${prompt}\n\n${JSON_ONLY}`, {
           // DECIDE は判断だけで、副作用は ACT が持つ。ファイルを触らせない。
           allowedTools: [],
           permissionMode: "default",
@@ -225,10 +231,15 @@ function callIdOf(calledAt: string, sequence: number): string {
 async function consumeAndLog(
   options: ClaudeOptions,
   logRef: string,
-  log: string[],
   prompt: string,
   queryOptions: Options,
 ): Promise<Outcome> {
+  // ログの器はここが持つ。以前は2つの呼び出し元がそれぞれ空の配列を作って
+  // 渡していたが、どちらも渡したあと一度も読まなかった。Outcome.log として
+  // 返してもいたが、その口を読む呼び出し元も無かった。書く側と読む側が
+  // 同じ関数の中に閉じるので、外に出す理由が無い。
+  const log: string[] = [];
+
   const write = async (): Promise<void> => {
     await (options.writeLog ?? writeLogToFile)(logRef, `${log.join("\n")}\n`);
   };
@@ -248,7 +259,6 @@ interface Outcome {
   /** subtype は失敗の説明にだけ使う。一時的か恒久的かの判別材料にはしない */
   result: { ok: boolean; subtype: string; text: string; tokens: number } | null;
   artifacts: string[];
-  log: string[];
 }
 
 /**
@@ -303,7 +313,7 @@ async function consume(
     }
   }
 
-  return { result, artifacts, log };
+  return { result, artifacts };
 }
 
 /**
@@ -449,32 +459,6 @@ function disallowedToolsIn(role: ActorRole, gates: readonly ApprovalGate[]): str
   return tools;
 }
 
-/**
- * Agent に渡さない環境変数。
- *
- * SDK の `env` は「マージではなく置き換え」なので、`process.env` を広げてから落とす。
- * Bash を許している以上、`printenv` も `echo $GITHUB_TOKEN` も実行できる。
- * どちらも `secret_access` の拒否パターン（`gh secret` / `gh auth token`）に
- * 一致しないので、拒否リストでは塞げない。push と PR は controller だけが行う
- * 設計なので、Actor 側にトークンが要る場面がそもそも無い。
- */
-export const WITHHELD_ENV = [
-  "GITHUB_TOKEN",
-  "GH_TOKEN",
-  "GH_ENTERPRISE_TOKEN",
-  "GITHUB_ENTERPRISE_TOKEN",
-] as const;
-
-function withheldEnv(source: Record<string, string | undefined>): Record<string, string> {
-  const env: Record<string, string> = {};
-  for (const [key, value] of Object.entries(source)) {
-    if (value !== undefined && !WITHHELD_ENV.includes(key as (typeof WITHHELD_ENV)[number])) {
-      env[key] = value;
-    }
-  }
-  return env;
-}
-
 /** どの役割にも要る、読むためのツール。これが無ければコードを読めない */
 const READ_TOOLS = ["Read", "Glob", "Grep"] as const;
 
@@ -569,6 +553,14 @@ const ALWAYS_DENIED = [
   "Bash(git branch -d *)",
   "Bash(git branch --delete *)",
   "Bash(git worktree *)",
+  // hooks の差し替えを拒否する。`core.hooksPath` を1回設定するだけで、
+  // hooks のファイルを1つも触らずに、push のたびに走るスクリプト群を
+  // まるごと別のディレクトリへ移せる。controller 側は `repoDirtyState` の
+  // 相方（`outOfSightState`）で設定値の変化を検知するが、そちらは ACT の
+  // あとに鳴る。Agent 側でも塞いでおく。
+  "Bash(git config core.hooksPath *)",
+  "Bash(git config --local core.hooksPath *)",
+  "Bash(git config --global core.hooksPath *)",
 ] as const;
 
 /**

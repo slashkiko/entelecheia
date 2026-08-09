@@ -1,4 +1,5 @@
 import type { Decision } from "../domain/action.js";
+import { errorMessage } from "../domain/error-message.js";
 import type { Goal } from "../domain/goal.js";
 import type { Run } from "../domain/run.js";
 import type { Verification } from "../domain/verification.js";
@@ -108,7 +109,7 @@ export async function publish(target: PublishTarget, deps: PublishDeps): Promise
     created = ensured.created;
   } catch (error) {
     // PR を作れなくても観測と判断は済んでいる。ティック全体は落とさない。
-    return nothing(`PR を確保できなかった: ${message(error)}`);
+    return nothing(`PR を確保できなかった: ${errorMessage(error)}`);
   }
 
   if (prNumber === null) {
@@ -138,7 +139,7 @@ export async function publish(target: PublishTarget, deps: PublishDeps): Promise
       prNumber,
       created,
       commented: false,
-      skipped: `コメントできなかった: ${message(error)}`,
+      skipped: `コメントできなかった: ${errorMessage(error)}`,
     };
   }
 }
@@ -328,8 +329,4 @@ function flatten(text: string): string {
 function oneLine(text: string): string {
   const collapsed = flatten(text).replace(/\|/g, "\\|");
   return collapsed.length > 120 ? `${collapsed.slice(0, 117)}...` : collapsed;
-}
-
-function message(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }

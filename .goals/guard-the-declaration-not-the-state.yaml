@@ -1,0 +1,243 @@
+version: 1
+
+goal:
+  id: guard-the-declaration-not-the-state
+  name: 関門が守るのは宣言部であって、実行時状態ではない
+  desired_state: |
+    `.goals/**` という保護パターンは、Goal の宣言部——人間が書く `.goals/*.yaml`——を
+    守るために書かれている。ところがこのパターンは、worktree の中の
+    `.goals/.state/**` にも一致する。Agent が自分の作業ツリーに一時ファイルを
+    1つ置いただけで `ESCALATE(protected_path_touched)` になり、Goal が
+    WAITING_HUMAN で止まる。
+
+    実際に起きた。`validate-what-crosses-the-boundary` の1ティック目で、Actor が
+    `<worktree>/.goals/.state/tmp-readcheck/read.ts` を作って消した。関門は
+    `Run.artifacts`（Agent の自己申告）に残っていたそのパスを拾って停止した。
+    Actor は4件の実装を書き切っていて、制御ループにも宣言部にも触れていない。
+
+    **止まった時点で、そのファイルはもう存在しない。** `protected_path_touched` は
+    「人間が片付けるのを待っている」停止（SKILL.md）なのに、片付けるものが無い。
+    人間にできるのは「無視して回し直す」ことだけで、それを繰り返すうちに
+    関門が鳴っても誰も読まなくなる。`src/domain/protected-paths.ts` 自身が
+    「判定できないものは違反にしない。捏造した違反で人間を呼ぶと、関門そのものが
+    信用されなくなる」と書いている。**同じ理由が、この誤検知にも当てはまる。**
+
+    どう作るかは Actor が決める。以下は「何が満たされていればよいか」を書く。
+
+    1. worktree の中の `.goals/.state/` の下は、保護パスの照合から外す
+
+      `findViolations` が、worktree からの相対パスが `.goals/.state/` の下に
+      入るものを違反にしない。`.goals/**` を指定している Goal でも鳴らない。
+
+      外してよい根拠は3つある。
+
+      - `.goals/.state/` は controller が書く実行時状態で、gitignore 済み。
+        design.md §4.6 が「宣言部だけを Git 管理する」として分けている当のもの。
+        人間が編集するものではないので、Agent の編集を人間の編集と
+        取り違える余地も無い
+      - worktree の中の `.goals/.state/` は、**本体の state dir ですらない**。
+        goals.db も Run の生ログも本体リポジトリ側にあり、worktree の中の
+        同名のパスは Agent が作った空きスペースにすぎない
+      - 本体側の state dir への書き込みは worktree の外なので、
+        `escaped_worktree` として**先に**捕まる。`findViolations` は脱出の判定を
+        保護パスの照合より前に行う。除外を足してもこの順序は変わらない
+
+    2. 外すのは `.goals/.state/` の下だけにする
+
+      パス境界で判定する。前方一致にすると `.goals/.stateful.yaml` のように
+      名前を寄せるだけで宣言部を編集できる。`.goals/.state.yaml`（ファイル）と
+      `.goals/state/`（ドット無し）も保護のままにする。
+
+      除外の基点は worktree の直下にある `.goals/.state/` だけにする。
+      `src/controller/.goals/.state/x.ts` のような、別の保護パターンに一致する
+      場所まで通さない。
+
+      `.goals/` 直下と、`.goals/` の他のサブディレクトリは、これまでどおり保護する。
+
+    3. Goal YAML から関門を弱められるようにはしない
+
+      除外は `src/domain/protected-paths.ts` の側に置く。否定パターン
+      （`!.goals/.state/**` のような書き方）を glob に足して Goal YAML に
+      書かせる案は採らない。関門を緩める書き方が宣言部から使えるようになると、
+      「保護パスを列挙する」という宣言の読み方が変わる。いま増やしたいのは
+      表現力ではなく、誤検知が1つ消えることだけになる。
+
+    4. なぜ Goal 側で `.goals/*.yaml` と書き換えないか
+
+      各 Goal の `protected_paths` を `.goals/**` から `.goals/*.yaml` に
+      書き換えれば、この Goal 単体の症状は消える。採らない理由は2つある。
+
+      - 15本の Goal YAML すべてに同じ書き換えが要り、以降に書く Goal でも
+        書き忘れうる。関門の誤検知を、宣言の書き方の申し送りに変えてしまう
+      - `.goals/**` は本体リポジトリ側の `.goals/.state/` を守る意味も持つ。
+        `.goals/*.yaml` にすると、そちらの保護が消える
+
+      直すのは、パターンの書き方ではなく照合の側になる。
+
+    テストは tests/protected-paths-state-dir.test.ts に書いてある。
+    着手時点で 6 件が落ちる（残り 11 件は、弱めてはいけない性質を固定するもので
+    最初から緑）。仕様はそちらが正で、この YAML の記述と食い違ったらテストに合わせる。
+
+    既存の tests/protected-paths.test.ts は通ったままにする。あちらが確かめている
+    性質（脱出の優先、ディレクトリ自身への一致、ドットを正規表現として読まないこと）は
+    どれも、この変更で変わらない。
+
+repository:
+  provider: github
+  owner: slashkiko
+  name: entelecheia
+  default_branch: main
+
+setup:
+  - pnpm install --frozen-lockfile
+
+acceptance_criteria:
+  - id: ac-1
+    description: 新しいテストが通り、既存のテストも通ったままになる（着手時点では 6 件が落ちている）
+    verification: { type: command, run: mise run test }
+
+  - id: ac-2
+    description: 型チェックが通る
+    verification: { type: command, run: mise run typecheck }
+
+  - id: ac-3
+    description: lint と format が通る
+    verification: { type: command, run: mise run lint }
+
+  - id: ac-4
+    description: サプライチェーンと workflow のチェックが通る（baseline 由来）
+    verification: { type: command, run: mise run check }
+
+  - id: ac-5
+    description: 変更を載せた PR の CI が成功している
+    verification: { type: fact, key: github.ci.conclusion, equals: success }
+
+  - id: ac-6
+    description: 関門が弱まっていないか、人間が差分を読んで確認する
+    verification:
+      type: human
+      prompt: |
+        この Goal は関門そのものを緩める方向に触ります。テストが緑になったことは
+        「緩めすぎていない」の証明にはならないので、差分を読んでください。
+        本 Goal に限って `src/domain/protected-paths.ts` の保護を外してあります。
+
+        1. 除外の範囲
+
+           - 外れているのが worktree からの相対で `.goals/.state/` の下だけか。
+             `.goals/` の下を丸ごと開けていないか
+           - パス境界で判定しているか。`.goals/.stateful.yaml` や
+             `.goals/.state.yaml` が保護のまま残っているか
+           - `src/controller/.goals/.state/` のような、他の保護パターンに
+             一致する場所まで通していないか
+
+        2. 弱めていないもの
+
+           - `escaped_worktree` の判定が、保護パスの照合より先のままか。
+             本体リポジトリ側の `.goals/.state/goals.db` への書き込みが
+             これまでどおり止まるか
+           - symlink を実体へ解決してから照合する処理が残っているか。
+             worktree の中に `.goals/.state -> ../../../src/controller` を
+             置いて抜けられないか
+           - 大文字小文字を区別しない照合が残っているか
+
+        3. 入口を増やしていないか
+
+           - 除外が `src/domain/protected-paths.ts` の中に閉じているか。
+             Goal YAML から否定パターンを書けるようにしていないか
+           - `findViolations` の引数が増えていないか。呼び出し側
+             （controller の `guardedDecision`）から挙動を変えられる形に
+             なっていないか
+
+        4. 実際に回して確かめる
+
+           - `validate-what-crosses-the-boundary` を `ent run` で回し、
+             同じ一時ファイルで止まらなくなったか
+           - `.goals/*.yaml` を worktree の中で編集させれば、これまでどおり
+             `ESCALATE(protected_path_touched)` になるか
+
+context:
+  background: |
+    関門の入力は3つある（`src/controller/index.ts` の `guardedDecision`）。
+    `Run.artifacts`（Agent の自己申告）、`changedPaths`（worktree と base の差分）、
+    そして本体リポジトリ側の差分。今回拾ったのは1つ目で、Agent が「触った」と
+    申告したパスにあたる。
+
+    artifacts を入力に含めるのは正しい。PR #19 が書いているとおり、git だけでは
+    Bash 経由の書き込みを取りこぼす。問題は入力の側ではなく、
+    `.goals/**` というパターンが宣言部と実行時状態の両方に一致することにある。
+
+    design.md §4.6 は `.goals/*.yaml`（人間が編集・Git 管理）と
+    `.goals/.state/`（controller が書く・gitignore）を明確に分けている。
+    関門のパターンだけが、その分離を写していない。
+
+    §10-6 が残す穴（ベースラインが次ティックで塗り替わる、ACT 中の人間の編集を
+    拾う）とは別の話になる。あちらは検知の取りこぼしと誤検知で、こちらは
+    パターンと保護対象のずれになる。
+
+  constraints:
+    - 保護パスの検査そのものを弱めない。外すのは `.goals/.state/` の下だけで、
+      それ以外の判定（脱出の優先、symlink の解決、大文字小文字を区別しない照合、
+      ディレクトリ自身への一致）は変えない
+    - tests/protected-paths-state-dir.test.ts は仕様なので変更しない。
+      通らないなら実装側を直す
+    - tests/protected-paths.test.ts と tests/controller-guard.test.ts を弱めない。
+      通ったままにする
+    - 除外を Goal YAML から書けるようにしない。否定パターンを glob に足さない
+    - 関門の入口を増やさない。`findViolations` のシグネチャを変えず、
+      呼び出し側から挙動を切り替える引数も足さない
+    - 制御ループ本体（src/controller/**）は触らない。この Goal が直すのは
+      照合の側で、入力の集め方ではない
+    - 他の Goal の `.goals/*.yaml` を書き換えない。パターンの書き方ではなく
+      照合を直す（desired_state の 4 を参照）
+    - 依存パッケージを増やさない。glob の照合は自前のまま
+    - docs/design.md の「3. 中核の設計判断」を勝手に変えない
+    - mise run check（サプライチェーン検査）を壊さない
+    - PR の作成とコメントの投稿はしない。controller が行う
+
+  references:
+    - title: 直す対象。glob の照合と違反の判定
+      path: src/domain/protected-paths.ts
+    - title: 仕様
+      path: tests/protected-paths-state-dir.test.ts
+    - title: 弱めてはいけない既存の性質
+      path: tests/protected-paths.test.ts
+    - title: 関門の入力を集めている場所（触らない）
+      path: src/controller/index.ts
+    - title: 実際に止まった Goal
+      path: .goals/validate-what-crosses-the-boundary.yaml
+    - title: 設計ドキュメント
+      path: docs/design.md
+
+policies:
+  require_human_approval:
+    - merge
+    - force_push
+    - push_to_default_branch
+    - deploy
+    - secret_access
+    - external_send
+  protected_paths:
+    # 本 Goal は関門そのものを直すので、src/domain/protected-paths.ts を
+    # 外してある。外したのは適用対象であって、検査の仕組みではない
+    # （constraints と ac-6 を参照）。
+    - src/controller/**
+    - .goals/**
+    # Agent の許可・拒否ツールを決めるファイル。
+    - src/adapters/claude.ts
+    # 検証系。ここを書き換えられると Agent が自分の criteria を通せる。
+    - mise.toml
+    - mise-tasks/**
+    - vitest.config.ts
+    - biome.json
+    - tsconfig*.json
+    - .github/**
+    # 依存の追加は人間が通す。
+    - package.json
+    - pnpm-lock.yaml
+
+budget:
+  max_actor_runs: 8
+  max_reconciles: 20
+  max_wall_clock: 3h
+  max_consecutive_failures: 3
+  max_unchanged_reconciles: 4

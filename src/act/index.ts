@@ -1,4 +1,5 @@
 import type { Decision } from "../domain/action.js";
+import { errorMessage } from "../domain/error-message.js";
 import type { ApprovalGate, Goal } from "../domain/goal.js";
 import {
   type ActorKind,
@@ -55,6 +56,45 @@ export interface WorktreePort {
    * 上限で、そこは design.md §10-6 に残す。
    */
   repoDirtyState(): Promise<Map<string, string>>;
+  /**
+   * git が観測しない場所の指紋。`.git/hooks/**`、`core.hooksPath`、状態 DB。
+   *
+   * `repoDirtyState` と分けるのは、あちらが「git が見える汚れ」を意味するため。
+   * こちらは git の観測手段では原理的に出てこないものを、別の手段で見る。
+   * 実装が用意していなければ controller は検査を飛ばす（省略可）。
+   */
+  outOfSightState?(): Promise<Map<string, string>>;
+}
+
+/**
+ * DECIDE が決めた intent に、Goal の宣言部の制約を足す。
+ *
+ * `src/domain/goal.ts` は `context.constraints` を「ACT にそのまま渡る自由記述」と
+ * 宣言しているが、長らく `goal.context` を読むコードがどこにも無く、Actor には
+ * 1行も届いていなかった。
+ *
+ * 届かないことが効くのは `tests/**` の扱いになる。`guard-the-controller.yaml` は
+ * 「criteria を確かめる仕組みと確かめる中身は別で、後者まで凍らせると新しい
+ * テストを1本足すたびに ESCALATE する」という理由で `tests/**` を
+ * `protected_paths` から意図的に外し、代わりに各 Goal の constraints へ
+ * 「このテストは仕様なので変更しない」と書いてきた。その行が届かないので、
+ * criteria が `mise run test` の Actor は仕様テストを書き換えて通せた。
+ * そうして出来た `criteria.<id>.passed` は VERIFIED になり、§3.1 が成立しない。
+ *
+ * 足す先を intent にしてあるのは、Actor 側のプロンプト組み立てを触らずに済むため。
+ * `ActorInvocation.intent` は「そのまま Actor へのプロンプトになる」と決めてある
+ * ので、ここで足せば Port の実装がどれでも届く。
+ *
+ * 制約が無ければ intent をそのまま返す。空の見出しを足さない。
+ */
+export function withConstraints(intent: string, goal: Goal): string {
+  const constraints = goal.context.constraints;
+  if (constraints.length === 0) {
+    return intent;
+  }
+
+  const lines = constraints.map((constraint) => `- ${constraint}`).join("\n");
+  return `${intent}\n\n## 守る制約（Goal の宣言部より）\n\n${lines}`;
 }
 
 export interface ActorInvocation {
@@ -63,7 +103,10 @@ export interface ActorInvocation {
    * write-ahead で先に採番済みなので、Actor を起動する時点で必ず決まっている。
    */
   runId: string;
-  /** DECIDE が決めた intent。そのまま Actor へのプロンプトになる */
+  /**
+   * DECIDE が決めた intent に Goal の制約を足したもの。そのまま Actor への
+   * プロンプトになる。組み立ては `withConstraints` が持つ。
+   */
   intent: string;
   /**
    * どの役割として起動するか（design.md §4.2）。
@@ -252,7 +295,7 @@ async function runActor(
   try {
     const result = await deps.actor.run({
       runId,
-      intent,
+      intent: withConstraints(intent, goal),
       // 使ってよいツールは Actor 側が role から決める（design.md §4.2）。
       role,
       worktree,
@@ -335,7 +378,3 @@ export function worktreeBranchFor(worktreeName: string): string {
 
 /** signal を渡されなかった呼び出しに使う。中断されることはない */
 const NEVER_ABORTED: AbortSignal = new AbortController().signal;
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}

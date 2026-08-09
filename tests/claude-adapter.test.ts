@@ -127,6 +127,12 @@ describe("claudeActor", () => {
       "Bash(git branch -d *)",
       "Bash(git branch --delete *)",
       "Bash(git worktree *)",
+      // hooks の差し替えも常に拒否する。core.hooksPath を1回設定するだけで、
+      // hooks のファイルを1つも触らずに、push のたびに走るスクリプト群を
+      // まるごと別のディレクトリへ移せる。
+      "Bash(git config core.hooksPath *)",
+      "Bash(git config --local core.hooksPath *)",
+      "Bash(git config --global core.hooksPath *)",
       "Bash(git merge)",
       "Bash(git merge *)",
       "Bash(gh pr merge *)",

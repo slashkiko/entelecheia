@@ -59,10 +59,16 @@ export const unresolvedSchema = z.object({
   /** 結論が出れば入るはずだった観測キー */
   key: z.string().min(1),
   /**
-   * port_failed — Port が throw した。外部が落ちている可能性がある
-   * pending     — 手続きとしてまだ結論が出ていない。人間の承認待ち、参照先 Fact の不在など
+   * port_failed    — Port が throw した。外部が落ちている可能性がある
+   * shape_mismatch — 応答は返ったが、こちらのスキーマで解釈できなかった
+   * pending        — 手続きとしてまだ結論が出ていない。人間の承認待ち、参照先 Fact の不在など
+   *
+   * shape_mismatch を port_failed と分ける理由は待ち方が違うこと。前者は待っても
+   * 直らない（相手のフィールドが変わったか、こちらのスキーマが厳しすぎる）ので、
+   * 一時的な障害として再試行し続けると `max_unchanged_reconciles` に当たるまで
+   * 同じ観測を繰り返す。人間には「GitHub が不安定」に見えて、原因に辿り着けない。
    */
-  reason: z.enum(["port_failed", "pending"]),
+  reason: z.enum(["port_failed", "shape_mismatch", "pending"]),
   /** どの呼び出しが、なぜ結論に至らなかったか */
   detail: z.string(),
 });

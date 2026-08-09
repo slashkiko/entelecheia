@@ -14,9 +14,10 @@ import {
   localRepo,
   pendingApproval,
 } from "./adapters/local.js";
-import { type TickResult, tick } from "./controller/index.js";
+import { type ControllerDeps, type TickResult, tick } from "./controller/index.js";
 import type { Decision } from "./domain/action.js";
-import type { Goal } from "./domain/goal.js";
+import { errorMessage } from "./domain/error-message.js";
+import { type Goal, SLUG } from "./domain/goal.js";
 import { loadGoalFile } from "./domain/goal-loader.js";
 import { isTerminal } from "./domain/goal-state.js";
 import { PortError } from "./domain/port-error.js";
@@ -46,9 +47,9 @@ import type { ApprovalPort } from "./verify/index.js";
  * 上限が無いと、Goal が増えるほど1回の出力がエージェントのコンテキストを食う。
  * 切り捨てたときは絞り込み方を stderr に出すので、足りないことには気づける。
  */
-export const DEFAULT_LIMIT = 50;
+const DEFAULT_LIMIT = 50;
 
-export const USAGE = `ent — Declare the end state; the controller converges to it.
+const USAGE = `ent — Declare the end state; the controller converges to it.
 
   ent start <slug>     Goal を登録して ACTIVE にする
   ent run <slug>       1ティック回して終了する（--once は既定）
@@ -172,6 +173,16 @@ export function parseCommand(argv: readonly string[]): Command {
     if (positionals.length > 1) {
       return { kind: "error", message: `引数が多い: ${positionals.join(" ")}` };
     }
+    if (!SLUG.test(slug)) {
+      // slug はそのまま `.goals/<slug>.yaml` のパスになる。`../` を通すと
+      // ツリーの外の Goal を読めてしまい、その `setup` と `verification.run` が
+      // controller の権限でシェルに流れる。id 一致の検査はファイル名しか見ず、
+      // ディレクトリを縛らないので、そこでは止まらない。
+      return {
+        kind: "error",
+        message: `slug の形が不正: ${slug}（kebab-case のみ。パス区切りは使えない）`,
+      };
+    }
 
     if (sub === "start") {
       return { kind: "start", slug, ...json };
@@ -203,7 +214,7 @@ export function parseCommand(argv: readonly string[]): Command {
       ...json,
     };
   } catch (error) {
-    return { kind: "error", message: error instanceof Error ? error.message : String(error) };
+    return { kind: "error", message: errorMessage(error) };
   }
 }
 
@@ -271,7 +282,24 @@ function positiveInteger(value: unknown, flag: string): number | string | undefi
  * observe がそれを握って unobserved に落とすので、ティック自体は最後まで回り、
  * 状態が DB に残る。捏造した観測は作らない。
  */
+/**
+ * CLI の入口。終了コードの契約はここで閉じる。
+ *
+ * 以前は throw がそのまま呼び出し元へ抜け、1 を返していたのはモジュール末尾の
+ * エントリだった。`agent-context` が「終了コードはこれが正」と宣言しているのに、
+ * `main()` を呼ぶ側からは 1 を観測できず、テストも書けなかった。実際
+ * 「Goal YAML が無い」は 1 と文書化されているのに、`main()` は throw していた。
+ */
 export async function main(argv: readonly string[]): Promise<number> {
+  try {
+    return await runCommand(argv);
+  } catch (error) {
+    process.stderr.write(`${errorMessage(error)}\n`);
+    return 1;
+  }
+}
+
+async function runCommand(argv: readonly string[]): Promise<number> {
   const command = parseCommand(argv);
   if (command.kind === "help") {
     process.stdout.write(USAGE);
@@ -298,6 +326,13 @@ export async function main(argv: readonly string[]): Promise<number> {
     return report.exitCode;
   }
 
+  // --dry-run は覗くだけ。state ディレクトリを作るのも DB を作るのも書き込みなので、
+  // ここより前に返す。SKILL.md は「Actor の起動と PR への書き込みは起きない。
+  // snapshot / verifications / decision / status も書かない」と書いている。
+  if (command.kind === "run" && command.dryRun === true) {
+    return previewOnly(command, repoRoot, stateDir);
+  }
+
   mkdirSync(join(stateDir, "worktrees"), { recursive: true });
 
   if (command.kind === "list") {
@@ -317,6 +352,21 @@ export async function main(argv: readonly string[]): Promise<number> {
   const store = openStore(join(stateDir, "goals.db"));
 
   try {
+    // run は登録済みの Goal だけを進める。upsert より先に見る。
+    //
+    // design.md は「Goal YAML のレビューがそのまま承認ゲートを担うので、
+    // ent start は DRAFT から ACTIVE に直行する」と書いている。ここで先に
+    // upsert していたので tick 側の「Goal が登録されていない」は本番で到達せず、
+    // start を挟まない run が Actor を起動して予算を使い、1ティックで
+    // DRAFT から COMPLETED まで進めた。唯一の承認ゲートが飛ばせていた。
+    if (command.kind === "run" && store.getState(goal.goal.id) === null) {
+      process.stderr.write(
+        `${goal.goal.id} は登録されていない。先に ent start ${goal.goal.id} を叩くこと\n`,
+      );
+      process.stdout.write(`${JSON.stringify(summarize(draftIdle()), null, 2)}\n`);
+      return 0;
+    }
+
     store.upsertGoal(goal);
 
     if (command.kind === "start") {
@@ -329,7 +379,11 @@ export async function main(argv: readonly string[]): Promise<number> {
           `${goal.goal.id} は ${current.status} なので start できない。` +
             "やり直すなら .goals/.state/goals.db の状態を明示的に戻すこと\n",
         );
-        return 2;
+        // 2 ではなく 1 を返す。2 は「引数が不正」で、SKILL.md はそこに
+        // 「stderr に有効値が並ぶ」と書いている。argv は妥当で打ち直せる値も
+        // 無いので、2 を返すとエージェントが argv を変えて無限に再試行する。
+        // 実行できない状態は 1 にあたる。
+        return 1;
       }
 
       const now = new Date().toISOString();
@@ -368,32 +422,9 @@ export async function main(argv: readonly string[]): Promise<number> {
     process.on("SIGINT", stop);
 
     const result = await tick(goal, {
+      ...tickPorts(goal, store, repoRoot, stateDir),
       store,
-      owner: `${hostname()}:${process.pid}`,
-      leaseSeconds: 300,
       signal: aborter.signal,
-      // 何が起きるかを、起こす前に見るだけにする。ACT と publish と永続化を飛ばす。
-      dryRun: command.dryRun === true,
-      code: codeProvider(goal),
-      writer: codeWriter(goal),
-      branch: gitBranch(join(stateDir, "worktrees")),
-      local: localRepo(verifyRoot(stateDir, goal)),
-      command: commandRunner(verifyRoot(stateDir, goal)),
-      // 承認はレビュー承認と PR コメントの定型文の2つで検知する（design.md §10-4）。
-      // PR がまだ無い Goal では常に未承認になる。捏造した承認を作らない。
-      approval: approval(goal, store.getState(goal.goal.id)?.prNumber ?? null),
-      worktree: gitWorktree(repoRoot, join(stateDir, "worktrees")),
-      worktreeRoot: join(stateDir, "worktrees"),
-      actor: claudeActor(claudeOptions(stateDir)),
-      llm: claudeLlm({
-        ...claudeOptions(stateDir),
-        // 呼んだ直後に書く。ティックの最後にまとめて書くと、途中で kill された
-        // ぶんのトークンが消える（design.md §7）。
-        onCall: (call) => {
-          store.recordLlmCall(goal.goal.id, call);
-        },
-      }),
-      now: () => new Date(),
     });
 
     process.stdout.write(`${JSON.stringify(summarize(result), null, 2)}\n`);
@@ -404,7 +435,109 @@ export async function main(argv: readonly string[]): Promise<number> {
 }
 
 /**
- * `ent show` が出すもの。宣言部と実行時状態をマージして1枚にする（design.md §4.6）。
+ * ティックに渡す Port 一式。
+ *
+ * 通常のティックと `--dry-run` の両方から呼ぶ。以前は呼び出し側それぞれが
+ * 同じ組み立てを書いていて、片方にだけ Port を足すと dry-run が本番と違う
+ * 配管を見ることになった。dry-run の用途が「配管が繋がっているか」なので、
+ * そこがずれると道具の意味が無くなる。
+ */
+function tickPorts(
+  goal: Goal,
+  store: Store,
+  repoRoot: string,
+  stateDir: string,
+): Omit<ControllerDeps, "store"> {
+  const worktrees = join(stateDir, "worktrees");
+  return {
+    owner: `${hostname()}:${process.pid}`,
+    leaseSeconds: 300,
+    code: codeProvider(goal),
+    writer: codeWriter(goal),
+    branch: gitBranch(worktrees),
+    local: localRepo(verifyRoot(stateDir, goal)),
+    command: commandRunner(verifyRoot(stateDir, goal)),
+    // 承認はレビュー承認と PR コメントの定型文の2つで検知する（design.md §10-4）。
+    // PR がまだ無い Goal では常に未承認になる。捏造した承認を作らない。
+    approval: approval(goal, store.getState(goal.goal.id)?.prNumber ?? null),
+    worktree: gitWorktree(repoRoot, worktrees),
+    worktreeRoot: worktrees,
+    actor: claudeActor(claudeOptions(stateDir)),
+    llm: claudeLlm({
+      ...claudeOptions(stateDir),
+      // 呼んだ直後に書く。ティックの最後にまとめて書くと、途中で kill された
+      // ぶんのトークンが消える（design.md §7）。
+      onCall: (call) => {
+        store.recordLlmCall(goal.goal.id, call);
+      },
+    }),
+    now: () => new Date(),
+  };
+}
+
+/**
+ * 登録されていない Goal に対して返すティック結果。
+ *
+ * `tick()` が state を読めなかったときに返すものと同じ形にする。DB を作らずに
+ * 同じことを言う必要があるので、ここで組み立てる。
+ */
+function draftIdle(): TickResult {
+  return {
+    ran: false,
+    skipped: "Goal が登録されていない",
+    reclaimed: 0,
+    decision: null,
+    run: null,
+    status: "DRAFT",
+  };
+}
+
+/**
+ * `ent run <slug> --dry-run` の本体。何も書かずに次のティックの中身だけを出す。
+ *
+ * 通常の経路と分けてあるのは、書き込みが tick() より前に3つあったため。
+ * state ディレクトリの作成・DB を開くこと（無ければ作られる）・upsertGoal と
+ * setObserveTarget がそれにあたる。とくに setObserveTarget は、覗いたつもりの
+ * `--dry-run --pr 42` が観測先を恒久的に差し替え、次の本番ティックが違う PR を
+ * 見る状態を作っていた。`--pr` / `--issue` は永続化せず、この1回にだけ効かせる。
+ */
+async function previewOnly(
+  command: Extract<Command, { kind: "run" }>,
+  repoRoot: string,
+  stateDir: string,
+): Promise<number> {
+  const goal = loadGoalFile(join(repoRoot, ".goals", `${command.slug}.yaml`));
+  const dbPath = join(stateDir, "goals.db");
+
+  if (!existsSync(dbPath)) {
+    // DB を開くと作られる。作るのも書き込みなので、その前に返す。
+    process.stdout.write(
+      `${JSON.stringify(summarize({ ...draftIdle(), dryRun: true }), null, 2)}\n`,
+    );
+    return 0;
+  }
+
+  const store = openStore(dbPath);
+  try {
+    const result = await tick(goal, {
+      ...tickPorts(goal, store, repoRoot, stateDir),
+      store,
+      dryRun: true,
+      observeOverride: {
+        ...(command.prNumber === undefined ? {} : { prNumber: command.prNumber }),
+        ...(command.issueNumber === undefined ? {} : { issueNumber: command.issueNumber }),
+      },
+    });
+
+    process.stdout.write(`${JSON.stringify(summarize(result), null, 2)}\n`);
+    return 0;
+  } finally {
+    store.close();
+  }
+}
+
+/**
+ * `ent get` が出すもの。宣言部と実行時状態をマージして1枚にする（design.md §4.6）。
  *
  * 初めて ent run を全周させたとき、失敗の理由を追うのに SQLite を直接叩くことに
  * なった。goals の行だけでは、何を観測して何を確かめられなかったのかが読めない。
@@ -457,7 +590,7 @@ export function showPayload(goal: Goal, store: Store, options: LimitOptions = {}
  * `ent list` が出すもの。Store.listGoals をそのまま JSON にできる形で返す。
  *
  * cron から回す構成では、どの Goal が ACTIVE でどれが WAITING_HUMAN かを
- * まとめて見る手段が要る。Goal ごとに ent show を叩く手間を無くす。
+ * まとめて見る手段が要る。Goal ごとに ent get を叩く手間を無くす。
  */
 export function listPayload(store: Store, options: LimitOptions = {}): GoalListItem[] {
   const goals = store.listGoals();
@@ -568,8 +701,12 @@ export function agentContextPayload(): AgentContext {
       { name: "ENT_EFFORT", required: false, summary: "low / medium / high / xhigh / max" },
     ],
     exitCodes: [
-      { code: 0, meaning: "成功。ティックが最後まで回った" },
-      { code: 1, meaning: "実行時エラー。詳細は stderr" },
+      { code: 0, meaning: "成功。ティックが最後まで回った（doctor では failed が1件も無い）" },
+      {
+        code: 1,
+        meaning:
+          "実行時エラー、または実行できない状態。詳細は stderr（doctor では stdout の JSON）",
+      },
       { code: 2, meaning: "引数が不正。stderr に有効値が出る" },
     ],
   };
@@ -633,7 +770,7 @@ export interface DoctorProbes {
  * unknown だけでは終了コードを 1 にしない。確かめられなかったことを不合格として
  * 扱うと、doctor が常に赤くなって読まれなくなる。
  *
- * 出力は JSON にする。ent show / ent list と同じく機械可読を保つ。
+ * 出力は JSON にする。ent get / ent list と同じく機械可読を保つ。
  */
 export async function doctorPayload(probes: DoctorProbes): Promise<DoctorReport> {
   const checks: DoctorCheck[] = [
@@ -790,10 +927,6 @@ function isWritable(dir: string): boolean {
   }
 }
 
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
-
 function summarize(result: TickResult): unknown {
   return {
     ran: result.ran,
@@ -836,19 +969,37 @@ function writeTruncationHint(shown: number, total: number): void {
  * （design.md §3.1）。
  */
 function codeProvider(goal: Goal): CodeProviderPort {
+  return withGithub(goal, githubCodeProvider, () => {
+    const fail = offline();
+    return { getPullRequest: fail, getLatestCiRun: fail, getIssue: fail };
+  });
+}
+
+/**
+ * トークンがあれば実装を、無ければ代わりを返す。
+ *
+ * 同じ判定が3箇所にあった。トークンが無いときの `PortError` の文言と kind も
+ * 2箇所に書き写されていて、`ent doctor` の助言がそれと一致していることが
+ * 前提になっている。ずれると、doctor が「トークンを入れろ」と言っているのに
+ * Port は別の理由を名乗る、という状態になる。
+ */
+function withGithub<T>(
+  goal: Goal,
+  make: (options: { owner: string; repo: string; token: string }) => T,
+  offlineValue: () => T,
+): T {
   const token = githubToken();
   if (token === null) {
-    const fail = async (): Promise<never> => {
-      throw new PortError("unavailable", "GITHUB_TOKEN が設定されていない");
-    };
-    return { getPullRequest: fail, getLatestCiRun: fail, getIssue: fail };
+    return offlineValue();
   }
+  return make({ owner: goal.repository.owner, repo: goal.repository.name, token });
+}
 
-  return githubCodeProvider({
-    owner: goal.repository.owner,
-    repo: goal.repository.name,
-    token,
-  });
+/** トークンが無いときに呼ばれたら throw する口 */
+function offline(): () => Promise<never> {
+  return async (): Promise<never> => {
+    throw new PortError("unavailable", "GITHUB_TOKEN が設定されていない");
+  };
 }
 
 /**
@@ -858,18 +1009,9 @@ function codeProvider(goal: Goal): CodeProviderPort {
  * skipped の理由に変えるので、通知に失敗してもティックは最後まで回る。
  */
 function codeWriter(goal: Goal): CodeWriterPort {
-  const token = githubToken();
-  if (token === null) {
-    const fail = async (): Promise<never> => {
-      throw new PortError("unavailable", "GITHUB_TOKEN が設定されていない");
-    };
+  return withGithub(goal, githubCodeWriter, () => {
+    const fail = offline();
     return { findPullRequest: fail, createPullRequest: fail, addComment: fail };
-  }
-
-  return githubCodeWriter({
-    owner: goal.repository.owner,
-    repo: goal.repository.name,
-    token,
   });
 }
 
@@ -880,17 +1022,10 @@ function codeWriter(goal: Goal): CodeWriterPort {
  * 「確かめられなかった」を「承認された」と読まないため（design.md §3.1）。
  */
 function approval(goal: Goal, prNumber: number | null): ApprovalPort {
-  const token = githubToken();
-  if (token === null || prNumber === null) {
+  if (prNumber === null) {
     return pendingApproval();
   }
-
-  return githubApproval({
-    owner: goal.repository.owner,
-    repo: goal.repository.name,
-    token,
-    prNumber,
-  });
+  return withGithub(goal, (options) => githubApproval({ ...options, prNumber }), pendingApproval);
 }
 
 /**
@@ -960,15 +1095,39 @@ function effortFrom(value: string | undefined): EffortLevel | undefined {
   return raw as EffortLevel;
 }
 
-const EFFORT_LEVELS: readonly EffortLevel[] = ["low", "medium", "high", "xhigh", "max"];
+/**
+ * SDK の `EffortLevel` の全値。
+ *
+ * `readonly EffortLevel[]` と書くと片方向しか守れない。SDK からメンバーが
+ * **消えた**ときは型エラーになるが、**増えた**ときは足りない配列もそのまま
+ * 代入でき、妥当な値を「不正」として弾く。この関数の JSDoc は「知らない値を
+ * 黙って捨てると気づけないので throw する」と書いているので、弾く側の
+ * 取りこぼしも同じだけ困る。下の検査で増えた側も落ちるようにする。
+ */
+const EFFORT_LEVELS = [
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max",
+] as const satisfies readonly EffortLevel[];
+
+/**
+ * EFFORT_LEVELS に足りない値があればビルドが落ちる。
+ *
+ * `never[]` への代入は「余りが無い」ときだけ通る。SDK に値が増えるとここで
+ * 余りが出て、代入できなくなる。
+ */
+const _effortLevelsAreExhaustive: never[] = [] as Exclude<
+  EffortLevel,
+  (typeof EFFORT_LEVELS)[number]
+>[];
+void _effortLevelsAreExhaustive;
 
 if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  main(process.argv.slice(2))
-    .then((code) => {
-      process.exitCode = code;
-    })
-    .catch((error: unknown) => {
-      process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
-      process.exitCode = 1;
-    });
+  // main() が終了コードの契約を閉じているので、ここでは受け取るだけにする。
+  // reject しないことは main() 側の try/catch が保証している。
+  void main(process.argv.slice(2)).then((code) => {
+    process.exitCode = code;
+  });
 }

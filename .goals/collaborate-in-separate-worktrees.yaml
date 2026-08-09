@@ -2,11 +2,16 @@ version: 1
 
 goal:
   id: collaborate-in-separate-worktrees
-  name: 役割の違う Agent が、別々の worktree で協働できる
+  name: 役割の違う Agent が別々の worktree で協働し、レビュー役がレビューを行える
   desired_state: |
-    1つの Goal の中で、役割の違う Actor がそれぞれ自分の worktree を持って動ける。
-    レビュー役を足すのは次の Goal（.goals/review-agent-reviews.yaml）で、
-    ここで作るのはその土台にあたる配管だけになる。
+    1つの Goal の中で、役割の違う Actor がそれぞれ自分の worktree を持って動く。
+    そのうえで、レビュー役が実際にレビューを行える。
+
+    **当初は2本の Goal に割っていたが、1本に戻した。** 分けた理由は「レビュー役に
+    自分の作業ツリーが無いと、読んでいる最中に実装側が書き換わる」だったが、
+    それは実装の順序の話であって、Goal を分ける理由としては弱かった。分けたまま
+    進めると、あちらの仕様6本が作業ツリーに居るあいだ CI が赤いままになり、
+    こちらは ac-5（CI 成功）に永久に届かない。1ティック目でそうなった。
 
     いまは `worktreeNameFor` が goal.id だけから名前を決めるので、1つの Goal が
     持てる作業ツリーは1つしかない。役割を足しても両者が同じ作業ツリーを共有し、
@@ -70,12 +75,70 @@ goal:
       「複数 Actor の並列実行」は据え置き）。lease の取得と延長、write-ahead、
       orphan の回収、状態遷移の順序は変えない。
 
-    テストは tests/worktree-roles.test.ts に12本ある。着手時点ではそのうち7本が
-    落ちている。仕様はそちらが正で、この YAML の記述と食い違ったらテストに合わせる。
+    ここまでが配管で、以下がレビュー役そのものになる。
 
-    **`mise run test` の全体は、着手時点で 519 件中 13 件落ちている。** 差の6本は
-    別 Goal `review-agent-reviews` の仕様（tests/review-actor.test.ts）で、
-    本 Goal では実装しない。担当分はファイル名で切り分ける。
+    7. レビュー役は読めるが書けない
+
+      読み取りのツール（Read / Glob / Grep）は持ち、編集のツール
+      （Edit / Write / NotebookEdit）は持たない。許可リストから外すだけでなく
+      拒否リストにも入れる。拒否ルールは許可ルールより先に評価され、どの
+      permissionMode でも効くので、二重にしておく。Bash はテストを流すのに要る
+      ので残す。
+
+      **指示ではなく権限で分ける。** intent は LLM が生成するもので、「書いた」
+      ことは確かめられても「従った」ことは確かめられない（design.md §3.2）。
+      「レビューして」と頼むだけでは、Agent が従わなければ実装を書き換えられる。
+
+      `policies.require_human_approval` から来る拒否は role によらずそのまま
+      効かせる。レビュー役だからといって merge や force push を許さない。
+
+    8. 実装役の権限を弱めない
+
+      役割を足すついでに実装役の許可・拒否が緩めば、隔離そのものが後退する。
+      実装役は編集のツールを持ったままで、`ALWAYS_DENIED`（`git worktree` や
+      `git branch -D` など、検査の入力を Agent に選ばせないための拒否）も
+      残ったままにする。
+
+    9. レビュー役は実装役と別のプロンプトで起動する
+
+      同じ intent でも、読む側と書く側では求めるものが違う。権限だけ分けて
+      プロンプトが同じだと、レビュー役は編集を試みて拒否され続ける。
+
+    10. レビューの結論が Fact として残る
+
+      観測キーに `review.verdict` と `review.reviewed_sha` を足す。前者が
+      レビューの結論で、後者がどの commit を読んだか。「通った」だけでは
+      いつの時点のコードのレビューか分からず、実装が進んだあとの Fact を
+      そのまま完了判定に使うことになる。
+
+      これで controller 側に足すものは無い。Goal YAML が
+      `verification: { type: fact, key: review.verdict, equals: approved }`
+      と書けば、既存の機構がそのまま働く。VERIFIED な Fact だけが完了判定に
+      使われ（design.md §3.1）、approved でない限り Gap が残る。
+      **guard に「レビューを通れ」という条件を足さない。** 完了判定の境界
+      （design.md §7）を動かさずに済む形を選ぶ。
+
+      捏造しない。レビューを回していないティックで approved を作らない。
+      確かめられなければ Fact を作らず、理由を付けて unobserved に残す。
+      どの Port がこの Fact を作るかは決めてよいが、選んだら
+      `src/domain/fact-keys.ts` のレジストリで、どの Port のどのメソッドが
+      返すキーなのかが読めるようにする。
+
+    11. レビュー役をいつ起動するかは、この Goal の範囲外
+
+      揃えるのは「起動できる」「結論が Fact になる」の2つまでにする。
+      DECIDE がレビューを選ぶ条件や、実装 → レビュー → 修正の往復をどう回すかは、
+      この2つが動いてから別に決める。先に往復まで決めると、レビューが1度も
+      回っていない状態で停止条件を設計することになる。
+
+    仕様は2ファイルある。どちらも仕様が正で、この YAML の記述と食い違ったら
+    テストに合わせる。
+
+      tests/worktree-roles.test.ts   12本（1〜6 に対応）
+      tests/review-actor.test.ts     12本（7〜10 に対応）
+
+    着手時点では 519 件中 13 件が落ちていた。1ティック目で worktree-roles の
+    7本が緑になり、残るのは review-actor の6本になる。
 
 repository:
   provider: github
@@ -89,13 +152,15 @@ setup:
 acceptance_criteria:
   - id: ac-1
     description: >-
-      worktree-roles の12本が通り、既存のテストも通ったままになる。
-      着手時点で落ちているのは worktree-roles の7本（全体では 519 件中 13 件で、
-      差の6本は別 Goal review-agent-reviews の担当分）
+      worktree-roles と review-actor の24本が通り、既存のテストも通ったままになる。
+      着手時点では 519 件中 13 件が落ちていた。1ティック目で worktree-roles の
+      7本が緑になったので、残るのは review-actor の6本
+    # 全件で見る。ac-5 の CI も同じものを流すので、ここを絞ると
+    # 「ac-1 は緑だが CI は赤」という状態が作れてしまう。
     verification: { type: command, run: mise run test }
 
   - id: ac-2
-    description: 型チェックが通る（着手時点では落ちている。ActorRole と role の口がまだ無い）
+    description: 型チェックが通る（1ティック目で通るようになった。壊さずに保つ）
     verification: { type: command, run: mise run typecheck }
 
   - id: ac-3
@@ -133,13 +198,43 @@ acceptance_criteria:
         5. 保護パスの検査そのもの（src/domain/protected-paths.ts と
            controller の guardedDecision）が弱められていないか
 
+        レビュー役については、`src/adapters/claude.ts` を保護パスから外して
+        あります。Agent の許可・拒否を決めるファイルなので、差分を読んで
+        次も確認してください。
+
+        6. 実装役の許可・拒否が変わっていないか。`ALWAYS_DENIED`（`git worktree`
+           や `git branch -D` など）が残っているか。`disallowedToolsFor` が
+           `policies.require_human_approval` を role によらず落とし続けているか
+        7. レビュー役の編集ツールが、許可リストから外れているだけでなく
+           拒否リストにも入っているか。許可リストから外すだけだと、設定の
+           読み込み順や既定値が変わったときに素通りしえます
+        8. controller の資格情報を Agent に渡さない仕組み（WITHHELD_ENV と
+           settingSources: []）が残っているか
+        9. `review.verdict` を作る経路が、レビューを回していないティックで
+           approved を作らないか。確かめられなかったときに Fact を作らず
+           unobserved に残しているか（design.md §3.1）
+        10. `src/domain/fact-keys.ts` に足したキーが、どの Port のどのメソッドが
+            返すものか、レジストリのコメントから読めるか
+
+        テストは Port を差し替えているので、実際の Claude Code がツール制限に
+        従うかまでは確かめていません。本 Goal は「レビュー役をいつ起動するか」
+        を範囲外にしており、role: review の ACT を出す経路がまだないので、
+        実際に走らせて確かめるのは起動の条件を決める次の Goal に回します。
+
 context:
   background: |
-    「複数のエージェントが別 worktree で協働できる」を、この Goal と
-    .goals/review-agent-reviews.yaml の2本に割った。1本目が worktree と Run を
-    role 単位にする配管で、2本目がレビュー役そのものになる。この順にしたのは、
-    レビュー役に自分の作業ツリーが無いと、読んでいる最中に実装側が書き換わり、
-    レビューの対象が定まらないため。
+    「複数のエージェントが別 worktree で協働できる」と「レビュー役がレビューを
+    行える」を、当初は2本の Goal に割っていた。1ティック目のあと1本に戻している。
+
+    分けた理由は「レビュー役に自分の作業ツリーが無いと、読んでいる最中に実装側が
+    書き換わり、レビューの対象が定まらない」だった。これは実装の順序として正しい
+    （配管が先、レビュー役が後）が、Goal を分ける理由にはならない。同じ Actor が
+    同じ作業ツリーで順に進めればよく、順序は仕様テストが押さえる。
+
+    分けたまま進めると詰まる。2本の仕様を同じ commit で入れたので、あちらの6本は
+    最初から作業ツリーに居る。CI は `mise run verify` を全件流すため、あちらが
+    実装されるまで PR の CI は赤いままで、こちらは ac-5（CI 成功）に永久に届かない。
+    ac-1 は `--exclude` で逃がせたが、CI は逃がせなかった。1ティック目でそうなった。
 
     協働の形は「同時」ではなく「交代」にしてある。controller は1ティックで
     1つの Decision を書き、1体の Actor を起動する設計で（design.md §3.6）、
@@ -147,19 +242,31 @@ context:
     ティックをまたいで役割が入れ替われば、実装 → レビュー → 修正の往復は
     成立する。並列化はそれが回ってから別に判断する。
 
-    `src/controller/**` を protected_paths から外してある。外したのは適用対象で
-    あって検査の仕組みではない（constraints を参照）。未 commit の関門と
-    保護パスの検査がどちらも `worktreeNameFor` を呼んでいるので、第2引数を
-    必須にすると controller に手が入る。
+    `src/controller/**` と `src/adapters/claude.ts` を protected_paths から
+    外してある。外したのは適用対象であって検査の仕組みではない（constraints を
+    参照）。前者は、未 commit の関門と保護パスの検査がどちらも `worktreeNameFor` を
+    呼んでいるので、第2引数を必須にすると手が入るため。後者は、role ごとに
+    使ってよいツールを分けるには、あのファイルを書き換えるしかないため。
+
+    後者のほうが危ない。Agent の許可・拒否を決めている当のファイルなので、
+    ac-6 の 6〜8 で実装役の権限が弱まっていないかを人間に見てもらう。
 
   constraints:
-    - tests/worktree-roles.test.ts は仕様なので、assert とシナリオを変えない。
-      通らないなら実装側を直す。新しい口を足して既存のフィクスチャが型として
-      足りなくなった場合に限り、フィクスチャへの追記はしてよい
+    - tests/worktree-roles.test.ts と tests/review-actor.test.ts は仕様なので、
+      assert とシナリオを変えない。通らないなら実装側を直す。新しい口を足して
+      既存のフィクスチャが型として足りなくなった場合に限り、フィクスチャへの
+      追記はしてよい
     - 既存の tests/ を弱めない。とくに tests/controller*.test.ts と
-      tests/act.test.ts は通ったままにする
-    - 別 Goal `review-agent-reviews` の仕様（tests/review-actor.test.ts）は
-      本 Goal では実装しない。落ちているテストの担当分はファイル名で切り分ける
+      tests/act.test.ts と tests/claude-adapter.test.ts は通ったままにする
+    - 実装役の許可・拒否を弱めない。ALWAYS_DENIED を削らない。
+      disallowedToolsFor が require_human_approval を落とす経路を role で分岐させない
+    - "controller の資格情報を Agent に渡さない仕組み（WITHHELD_ENV、
+      settingSources: []）を外さない"
+    - src/decide/** は変更しない。レビューをいつ起動するかと完了判定の境界は
+      本 Goal の範囲外（desired_state の 11）
+    - src/domain/fact-keys.ts に足すのは review.verdict と review.reviewed_sha の
+      2つだけにする。既存のキーを消さない、名前を変えない
+    - 確かめられなかったことを Fact の不在に畳まない。理由を付けて unobserved に残す
     - 検証コマンドとローカル観測の実行先（src/cli.ts の verifyRoot）を
       implement の作業ツリーから動かさない。repoRoot にも review 側にも移さない
     - 保護パスの検査そのものを弱めない。src/domain/protected-paths.ts と
@@ -177,21 +284,25 @@ context:
     - 依存パッケージを増やさない
     - mise run check（サプライチェーン検査）を壊さない
     - docs/design.md と README.md を、足したものに合わせて直す。design.md §4.2 の
-      ActorRole と §5 の「複数 Actor の並列実行」の扱い、§10-11 の未 commit の
-      関門が読むブランチが対象になる
+      ActorRole、§4.3 の観測キーの表、§5 の MVP のスコープと「複数 Actor の
+      並列実行」の扱い、§10-11 の未 commit の関門が読むブランチが対象になる
     - PR の作成とコメントの投稿はしない。controller が行う
 
   references:
     - title: 仕様（role ごとの worktree）
       path: tests/worktree-roles.test.ts
+    - title: 仕様（レビュー役の権限と、結論の Fact 化）
+      path: tests/review-actor.test.ts
     - title: worktree の名前とブランチの規則
       path: src/act/index.ts
+    - title: Agent の許可・拒否ツールを決めている場所
+      path: src/adapters/claude.ts
+    - title: 観測キーのレジストリ
+      path: src/domain/fact-keys.ts
     - title: 保護パスの検査と未 commit の関門
       path: src/controller/index.ts
     - title: 検証と観測の実行先を決めている verifyRoot
       path: src/cli.ts
-    - title: 次の Goal（レビュー役そのもの）
-      path: .goals/review-agent-reviews.yaml
     - title: 設計ドキュメント
       path: docs/design.md
 
@@ -204,13 +315,14 @@ policies:
     - secret_access
     - external_send
   protected_paths:
-    # 本 Goal は worktreeNameFor の第2引数を必須にするので、その呼び出し側である
-    # src/controller/** を外してある。外したのは適用対象であって、検査の仕組みでは
-    # ない（constraints を参照）。
+    # src/controller/** と src/adapters/claude.ts を外してある。前者は
+    # worktreeNameFor の呼び出し側だから、後者は role ごとにツールを分ける先だから。
+    # 外したのは適用対象であって、検査の仕組みではない（constraints を参照）。
     - .goals/**
-    # 関門そのものと、Agent の許可・拒否ツールを決めるファイル。
+    # 関門そのもの。
     - src/domain/protected-paths.ts
-    - src/adapters/claude.ts
+    # レビューをいつ起動するかと、完了判定の境界。本 Goal の範囲外。
+    - src/decide/**
     # 検証系。ここを書き換えられると Agent が自分の criteria を通せる。
     - mise.toml
     - mise-tasks/**
@@ -223,8 +335,11 @@ policies:
     - pnpm-lock.yaml
 
 budget:
-  max_actor_runs: 10
-  max_reconciles: 20
-  max_wall_clock: 3h
+  # 2本ぶんを1本に統合したので広げた。3h は ACTIVE にした時刻からの経過で数える
+  # ので、ac-6（人間の確認）を待つ時間が入らなかった。1ティック目の時点で
+  # 残り1時間を切っていた。
+  max_actor_runs: 14
+  max_reconciles: 30
+  max_wall_clock: 24h
   max_consecutive_failures: 3
   max_unchanged_reconciles: 4

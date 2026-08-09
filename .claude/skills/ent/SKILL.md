@@ -1,6 +1,6 @@
 ---
 name: ent
-description: ent CLI で Goal を収束させるときの手順。agent-context での構造の把握、start / run / get / list の1周、--dry-run での事前確認、--limit での出力の絞り方、終了コードの読み方、WAITING_HUMAN や ESCALATE で人の承認や介入を待つところを扱う。
+description: ent CLI で Goal を収束させるときの手順。agent-context での構造の把握、doctor での前提の確認、start / run / get / list の1周、--dry-run での事前確認、--limit での出力の絞り方、終了コードの読み方、WAITING_HUMAN や ESCALATE で人の承認や介入を待つところを扱う。
 ---
 
 # ent を回す
@@ -20,11 +20,25 @@ ent agent-context
 ## 1周の手順
 
 ```
+ent doctor                  # 回す前の前提が揃っているかを読み取り専用で調べる
 ent start <slug>            # .goals/<slug>.yaml を登録して ACTIVE にする
 ent run <slug>              # 1ティックだけ回して終了する
 ent get <slug>              # 宣言部と実行時状態をまとめて読む
 ent list                    # 登録済みの Goal を一覧する
 ```
+
+`ent doctor` は書き込みを一切しない。state ディレクトリも作らない。
+
+前提が欠けていても `ent run` は入口で落ちない。トークンが無くてもローカルの観測・
+検証コマンド・Actor の実行は進むので、入口で殺すと進められるものまで止まるため。
+その代わり、`GITHUB_TOKEN` が無いまま回すと `github.ci.conclusion` のような
+`type: fact` の criteria が永久に unobserved のまま埋まらない。回り続けるので
+気づけない。doctor は何が欠けているかをその場で出す。
+
+終了コードだけは他のサブコマンドと意味が違う。0 は「failed が1件も無い」で、
+1 は「failed が1件以上」を指す。実行時エラーではない。unknown は数えない。
+Claude のログイン状態はトークンを消費せずに確かめられないので、常に unknown で出る。
+詳細は stderr ではなく stdout の JSON の `checks[].detail` にある。
 
 `ent run` は**1ティックで必ず終了する**。常駐しないし、完了まで待つフラグも無い。
 収束させるには `ent run` を繰り返し叩く（cron から回す形を想定している）。
@@ -50,6 +64,8 @@ status も書かない。次のティックが何を観測し、どの criteria 
 ## 出力の絞り方
 
 `run` / `get` / `list` は既定で JSON を出す。`start` は `--json` を付けたときだけ JSON になる。
+`doctor` と `agent-context` は常に JSON で、`--json` も `--limit` も受け取らない。
+付けると終了コード 2 になる。
 
 ```
 ent list --limit 10
@@ -84,9 +100,13 @@ Goal の状態としては `WAITING_HUMAN` になる。承認待ちではなく�
 
 | code | 意味 |
 | --- | --- |
-| 0 | 成功。ティックが最後まで回った（`ran: false` でも 0） |
-| 1 | 実行時エラー。詳細は stderr |
+| 0 | 成功。ティックが最後まで回った（`ran: false` でも 0）。`doctor` では failed が1件も無い |
+| 1 | 実行時エラー、または実行できない状態。詳細は stderr。`doctor` では failed が1件以上で、詳細は stdout の JSON |
 | 2 | 引数が不正。stderr に有効値が並ぶ |
+
+1 と 2 を取り違えないこと。2 は「打ち直せば通る」の意味で、stderr に有効値が並ぶ。
+終端の Goal に `ent start` を掛けたときのように、argv は妥当だが実行できない状態は
+1 になる。ここを 2 にすると、argv を変えて再試行し続けることになる。
 
 `ran: false` は失敗ではない。`skipped` に理由（寝ている / 他のワーカーが処理中 / 終端）が入る。
 `--dry-run` だけは例外で、`ran: false` でも `skipped` は `null` になる。代わりに

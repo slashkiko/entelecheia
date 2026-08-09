@@ -1,0 +1,72 @@
+import { describe, expect, it } from "vitest";
+import { commandRunner } from "../src/adapters/local.js";
+import { VERIFY_WITHHELD_ENV, WITHHELD_ENV, withheldEnv } from "../src/domain/withheld-env.js";
+
+/**
+ * VERIFY が流すコマンドに、controller の資格情報を渡さないことを固定する。
+ *
+ * `verification.run` は Goal ごとに `mise run test` を指す。criteria がそれである
+ * 以上、ここで走るのは Actor が worktree に書いたテストとソースにあたる。
+ * 既定のまま `process.env` を継承すると、claude.ts が Actor 本体に対して
+ * トークンを落としているのが無意味になる。Actor は自分では受け取れない
+ * `GITHUB_TOKEN` を、VERIFY に実行させるコードを書くことで読める。
+ *
+ * `tests/**` は guard-the-controller.yaml の判断で保護対象外なので、この経路には
+ * 保護パスを1つも踏まずに乗れる。しかも関門はティックの末尾、VERIFY は先頭なので
+ * 関門は常に1ティック遅れる。ここで落とすしかない。
+ *
+ * 実際にサブプロセスを起動して `printenv` で見る。env オプションを渡している
+ * つもりで渡せていない、という壊れ方をモックでは捕まえられない。
+ */
+
+const SECRET = "sentinel-value-must-not-leak";
+
+describe("VERIFY に渡す環境変数", () => {
+  it("GITHUB_TOKEN が検証コマンドに渡らない", async () => {
+    process.env.GITHUB_TOKEN = SECRET;
+    try {
+      const runner = commandRunner(process.cwd());
+      const result = await runner.run("printenv GITHUB_TOKEN || true");
+
+      expect(result.stdout).not.toContain(SECRET);
+    } finally {
+      delete process.env.GITHUB_TOKEN;
+    }
+  });
+
+  it("Claude の資格情報も検証コマンドに渡らない", async () => {
+    // 検証コマンドが LLM を呼ぶ理由は無い。どの Goal も constraints に
+    // 「テストから実際の GitHub と Claude API を叩かない」と書いてある。
+    process.env.ANTHROPIC_API_KEY = SECRET;
+    try {
+      const runner = commandRunner(process.cwd());
+      const result = await runner.run("printenv ANTHROPIC_API_KEY || true");
+
+      expect(result.stdout).not.toContain(SECRET);
+    } finally {
+      delete process.env.ANTHROPIC_API_KEY;
+    }
+  });
+
+  it("落とさないものは渡る", async () => {
+    // 全部落とすと `mise run test` が動かない。PATH が通っていることを見る。
+    const runner = commandRunner(process.cwd());
+    const result = await runner.run("printenv PATH");
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout.trim().length).toBeGreaterThan(0);
+  });
+
+  it("VERIFY 側の除去リストは Actor 側を包含する", () => {
+    // 片方にだけ足す変更を落とす。VERIFY の方が広く落とす側。
+    for (const key of WITHHELD_ENV) {
+      expect(VERIFY_WITHHELD_ENV).toContain(key);
+    }
+  });
+
+  it("withheldEnv は値が undefined のキーも落とす", () => {
+    const env = withheldEnv({ KEEP: "a", DROP: undefined, GITHUB_TOKEN: "t" });
+
+    expect(env).toEqual({ KEEP: "a" });
+  });
+});

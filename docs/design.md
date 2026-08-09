@@ -174,11 +174,18 @@ Agent SDK は Claude Code の OAuth をそのまま使うため Claude Max の�
 次ティックで回収できる crash-only 設計にする。
 
 ```
-1. Run(status: starting) を commit          ← ここで kill されても
-2. Claude Code を起動                          次ティックが orphan として回収
-3. Run(status: completed|failed) を commit
-4. Fact / Decision を同一トランザクションで反映
+1. 観測と検証を書く（snapshot / verifications）
+2. Run(status: starting) を commit          ← ここで kill されても
+3. Claude Code を起動                          次ティックが orphan として回収
+4. Run(status: completed|failed) を commit
+5. Decision を書く
 ```
+
+4 と 5 は別のトランザクションになる。Decision は ACT のあとに関門
+（保護パス・未 commit）が差し替えうるので、ACT より前には確定できない。
+Fact も 1 の時点で確定する。ACT の途中で kill されると snapshot と
+verifications だけが残り、Decision の行が無いティックになる。次ティックは
+orphan Run の回収から始めるので、そこから回収できる。
 
 SIGTERM を受けたら走行中の Actor に伝播して kill し、Run を `interrupted` で確定し、
 lease を解放して終了する。Ctrl+C が効かない状態は作らない。
@@ -486,7 +493,6 @@ PRAGMA foreign_keys = ON;
   lease・write-ahead の前提（§3.6 / §4.5）まで変わる
 - Codex CLI の実装（`kind` の型だけ用意）
 - L5 改善レイヤー（History は貯めるだけ、学習はしない）
-- 複数 Goal の同時実行
 
 Notion と Slack を外したことで、MVP の外部依存が GitHub 1つになり、
 認証も GitHub token と Claude Code の OAuth だけで済む。

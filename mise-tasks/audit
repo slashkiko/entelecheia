@@ -3,8 +3,15 @@ set -euo pipefail
 
 mise run check
 
+# 依存木の既知の脆弱性を見る。週次の助言であって関門ではないので、
+# 落ちても後続の baseline 確認は続ける。無関係な PR を止めない。
+pnpm audit || echo "pnpm audit reported advisories; review them before the next release." >&2
+
 readonly osps_url="https://baseline.openssf.org/"
-readonly expected_version="$(awk -F '"' '/^osps_baseline[[:space:]]*=/{print $2; exit}' baseline-version.toml)"
+# declare と代入を分ける。readonly と同じ行に書くと awk の終了コードが
+# readonly のものに飲まれ、失敗を検知できない（SC2155）。
+expected_version="$(awk -F '"' '/^osps_baseline[[:space:]]*=/{print $2; exit}' baseline-version.toml)"
+readonly expected_version
 current_version="$(curl --fail --location --proto '=https' --tlsv1.2 --silent --show-error "$osps_url" | sed -nE '/Current version:/s/.*(v[0-9]+\.[0-9]+\.[0-9]+).*/\1/p' | head -n 1)"
 
 if [[ -z "$expected_version" || -z "$current_version" ]]; then

@@ -1,0 +1,346 @@
+version: 1
+
+goal:
+  id: run-goals-in-parallel
+  name: 複数の ent を同時に回せる
+  desired_state: |
+    `ent run` を複数のプロセスで同時に叩ける。別々の Goal を並べて回しても、
+    プロセスが落ちず、他のワーカーが進めている Goal の行を汚さない。
+
+    design.md §5 の「入れない」には「複数 Goal の同時実行」が並んでいる。
+    本 Goal はその1行を外しにいく。cron から `ent run` を1本ずつ回す構成で
+    MVP を終えたが、Goal が増えると1周が Goal の本数だけ伸びる。
+
+    並列で回せない理由を、実際に並べて確かめた。壊れ方は2つある。どちらも
+    「同時に叩くと壊れる」ではなく、**壊れたことが記録に残らない**形をしている。
+    どう直すかは Actor が決める。以下は何が満たされていればよいかを書く。
+
+    1. まだ WAL になっていない DB を、複数プロセスが同時に開ける（src/store/index.ts）
+
+      `openStore` は PRAGMA を1つの `exec` に並べている。順番は
+      journal_mode → synchronous → busy_timeout → foreign_keys で、
+      **busy_timeout が journal_mode より後ろにある**。journal_mode を WAL に
+      変える操作は排他ロックを要求するので、他のプロセスが握っている最中に
+      開くと、busy_timeout がまだ 0 のまま SQLITE_BUSY を受け取り、
+      待たずにその場で throw する。
+
+      `.goals/.state/` を消した状態から4プロセス同時に起動する probe を
+      3試行流した実測:
+
+        trial 1: 3/4 が `database is locked` で異常終了
+        trial 2: 2/4 が同上
+        trial 3: 0/4（この試行だけ WAL への変換が競合しなかった）
+
+      busy_timeout を journal_mode より前に置いた版では 12/12 が完走した。
+
+      落ちるのは `openStore` の中なので、ティックは1周もしない。lease も
+      スキップの記録も残らず、`ent run` が exit 1 で消えるだけになる。cron から
+      並べて回す構成では、その日の1本目だけが生き残る。
+
+      WAL に**なった後**は同時書き込みで壊れない。同じ probe を WAL 済みの DB に
+      当てると 12/12 が完走し、欠損も無かった。lease も期限付き所有権として
+      正しく効いていて、奪い合いになった試行では acquireLease が 200 回中
+      0 回しか通らないプロセスが出ている。塞ぐべきはここ1点で、並行制御そのもの
+      ではない。WAL をやめる形で通さない（design.md §4.7）。
+
+    2. ティックの途中で lease を失ったことを検知する（src/controller/index.ts）
+
+      `acquireLease` は「取れたか」を boolean で返すが、延長する側（heartbeat）は
+      その戻り値を捨てている。奪われたことを知る口がどこにも無い。
+
+      これは controller 自身のコメントが書いている状況にあたる。ACT は分単位で、
+      leaseSeconds は 300。延長が何度か落ちれば期限は切れる。切れた lease は
+      別のワーカーが奪えて、worktree の名前は goal.id 固定なので、同じ作業ツリーで
+      2つの Actor が並行する。heartbeat はその窓を狭めたが、閉じてはいない。
+
+      失った側は、そのまま snapshot・verifications・Decision・status を書き切る。
+      書き込む先は、いま別のワーカーが進めている Goal の行になる。ダイジェストの
+      連続（`countTrailingDigest`）も reconciles も、2つのプロセスの分が混ざる。
+      ループ検知と予算はそこを根拠にしているので、上限の判定が静かにずれる。
+
+      満たすべきは以下。仕様は tests/controller-lease-lost.test.ts が正。
+
+      - lease を失ったティックは、snapshot / verifications / decision / status を
+        1つも書かない。書く直前に自分が持ち主かを確かめる。heartbeat の間隔より
+        短いティックでも失いうるので、タイマーの検知だけに寄せない
+      - 失ったと分かった時点で Actor を起動しない。予算を使ってから気づいても遅い
+      - 走行中の Actor には中断を伝える。放置すると、奪ったワーカーの Actor と
+        同じ worktree を2つのプロセスが同時に書く
+      - Run の確定だけは書いてよい。Actor は実際に走ったので、starting のまま
+        残す方が悪い。ただし中断は failed ではなく interrupted にする
+      - 他人の lease を解放しない
+      - throw しない。`ran: false` と理由を返して次のティックに任せる
+      - lease を保っている限り、これまでどおり書く
+
+    3. 並べて回す手順を宣言する（README.md / docs/design.md）
+
+      1 と 2 を直しても、手順が書いていなければ「並列に回せる」とは言えない。
+      README の実行例は `ent run <slug>` を1本ずつ叩く形しか載せていない。
+
+      - README に、複数の Goal を同時に回す叩き方を足す。`ent run --all` のような
+        まとめて回す口は作らない（constraints を参照）。ワーカーを並べる側の例を書く
+      - 同じ slug を2つのプロセスに渡しても安全なこと（lease が弾く）を書く
+      - design.md §5 の「入れない」から「複数 Goal の同時実行」を外す。
+        §5 はスコープの記述なので、実装が届いた時点で直す側にあたる
+
+      検証コマンドは worktree ごとに走る。`mise run test` を同時に何本流せるかは
+      機械の資源で決まる話で、controller は関与しない。並べる本数の目安を
+      README に一言添える。
+
+    テストは tests/store-parallel-open.test.ts と
+    tests/controller-lease-lost.test.ts に書いてある。着手時点でこの2本から
+    5 件が落ちる。仕様はそちらが正で、この YAML の記述と食い違ったらテストに合わせる。
+
+repository:
+  provider: github
+  owner: slashkiko
+  name: entelecheia
+  default_branch: main
+
+setup:
+  - pnpm install --frozen-lockfile
+
+acceptance_criteria:
+  - id: ac-1
+    description: |
+      テストが通る（着手時点で落ちているのは本 Goal の 5 件。全体では
+      574 件中 51 件で、差の 46 件は別 Goal 3本の担当分。
+      context.background を参照）
+    verification: { type: command, run: mise run test }
+
+  - id: ac-2
+    description: 型チェックが通る
+    verification: { type: command, run: mise run typecheck }
+
+  - id: ac-3
+    description: lint と format が通る
+    verification: { type: command, run: mise run lint }
+
+  - id: ac-4
+    description: サプライチェーンと workflow のチェックが通る（baseline 由来）
+    verification: { type: command, run: mise run check }
+
+  - id: ac-5
+    description: 変更を載せた PR の CI が成功している
+    verification: { type: fact, key: github.ci.conclusion, equals: success }
+
+  - id: ac-6
+    description: 実際に並べて回るか、人間が確かめる
+    verification:
+      type: human
+      prompt: |
+        本 Goal は controller と store の並行まわりに手を入れます。テストが緑に
+        なっただけでは「並べて回せる」の証明にならないので、差分を読んだうえで
+        実際に並べてください。
+
+        1. 実際に2本同時に回す
+
+           先に `mise run build` を流してください。`ent` は dist/cli.js を指すので、
+           ビルドし直さないと直す前の実装を確かめることになります
+           （`mise run verify` はビルドしません）。
+
+           試すのはリポジトリの**複製**の上で行ってください。`.goals/.state/` を
+           消す手順が入るので、本物の上でやると本 Goal 自身の snapshot・decision・
+           run の履歴が消えます。
+
+           - `.goals/.state/` が無い状態から、別々の slug で `ent run` を
+             2本以上同時に起動する。`database is locked` で落ちるものが無いこと
+           - 同じ slug を2本に渡したときは、片方が
+             「他のワーカーが lease を持っている」でスキップし、exit 0 で終わること
+
+        2. store の差分（src/store/index.ts）
+
+           - journal_mode がまだ WAL のままか。同時に開けるようにする代わりに
+             WAL を落としていないか（design.md §4.7）
+           - DB のスキーマ（`SCHEMA`）を変えていないか。既存の
+             `.goals/.state/goals.db` を `ent get` でそのまま読めるか
+
+        3. controller の差分（src/controller/index.ts）
+
+           - lease を失ったティックが、snapshot / verifications / decision / status を
+             1つも書かずに返るか。書く直前に持ち主を確かめているか
+           - 中断が走行中の Actor に伝わるか。伝わらないと、奪ったワーカーの
+             Actor と同じ worktree を2つのプロセスが同時に書く
+           - 他人の lease を解放していないか。解放すると、動いている側が
+             次のティックで弾かれる
+           - lease を保っているティックの振る舞いが変わっていないか。
+             ここが厳しくなりすぎると、正常なティックが書けなくなる
+
+        4. 手順の記述
+
+           - README の叩き方を読んで、そのとおりに並べられるか
+           - design.md §5 の「入れない」から「複数 Goal の同時実行」が
+             外れているか。§3（中核の設計判断）が書き換わっていないか
+
+context:
+  background: |
+    MVP は「cron から `ent run` を1本ずつ」で終えた（design.md §3.6）。
+    Goal が増えると1周が本数だけ伸びるので、同時に回せる形にする。
+
+    並列で壊れる箇所は、当てずっぽうではなく実際に並べて絞り込んである。
+    確かめて**壊れなかった**ものも残しておく。本 Goal で触る理由が無い。
+
+    - 同じ repoRoot への `git worktree add` を4本同時: 4/4 成功
+    - 同じ repoRoot での `git status --porcelain -uall` を8本 × 5回同時:
+      失敗 0。git は index.lock を取れなければ refresh の書き戻しを諦めるだけで、
+      出力は返る
+    - WAL 済みの DB への同時書き込み（4プロセス × 200 周 × 3試行）: 失敗 0、欠損 0
+    - lease の排他: 同じ Goal を奪い合わせると、acquireLease が 200 回中 0 回しか
+      通らないプロセスが出た。期限付き所有権は意図どおり効いている
+    - Run の id は runs テーブルの rowid なので、Goal をまたいでも衝突しない。
+      Actor の生ログが混ざる経路は無い
+
+    本 Goal に入れない範囲を2つ書いておく。
+
+    - DECIDE の生ログのパス（src/adapters/claude.ts の `callIdOf`）は
+      `decide-<ISO8601>-<連番>` で、プロセスも Goal も混ざっていない。連番は
+      プロセスごとなので、2つのプロセスが同じミリ秒に DECIDE を呼ぶと同じ
+      ディレクトリに書き、`llm_calls.log_ref` が他方のログを指す。確率は低いが
+      静かに間違う形になる。ただし src/adapters/claude.ts は Agent の許可・拒否を
+      決めるファイルで、全 Goal が保護対象にしている。ここを外して直すのは割に
+      合わないので、別 Goal か人間の手で直す
+    - `repoDirtyState()` は本体リポジトリの汚れを ACT の前後で比べる。並列で
+      回すと、他のワーカーの Actor が本体側に書いた変更を自分の Actor の仕業として
+      数えうる。ただしそれは「隔離の外に書いた」という違反が既に起きている場合
+      だけで、鳴る先が1つずれるという話にとどまる。関門を緩める向きではないので
+      本 Goal では触らない
+
+    **ac-1 について。** 着手時点で `mise run test` は 574 件中 51 件落ちる。
+    本 Goal の担当はそのうち 5 件で、残る 46 件は実装が main に入っていない
+    別 Goal 3本の仕様にあたる。担当分はファイル名で切り分ける。
+
+    - validate-what-crosses-the-boundary — 33 件
+      （decide-llm-actions 4 / store-row-schema 11 / port-contract 12 /
+      github-approval-permission 6）
+    - collaborate-in-separate-worktrees — 7 件（worktree-roles）
+    - review-agent-reviews — 6 件（review-actor）
+
+    本 Goal の Actor はそれらを実装しない。したがって ac-1 は、3本が main に
+    入るまで緑にならない。届かない criteria に向けて回し続けることになるので、
+    budget は少なめに取ってある。
+
+    この状況そのものが、本 Goal を立てる理由の裏返しになっている。仕様テストを
+    Goal と一緒に main へ入れる今の書き方では、走っている Goal が増えるほど
+    どの Goal の `mise run test` も相手の未実装で赤くなる。1本ずつ順に回して
+    いる限りは「自分の分だけ落ちている」状態を作れるが、並べて回すなら
+    「main を常に緑に保つ」か「仕様テストを Goal のブランチ側に置く」かの
+    どちらかに寄せる必要がある。どちらを採るかは人間が決めることなので、
+    本 Goal では規約を変えない。
+
+    もう1つ。`collaborate-in-separate-worktrees` は `worktreeNameFor` を
+    (goal.id, role) から決める形に変え、src/controller/index.ts の呼び出し側も
+    触る。本 Goal も同じファイルに lease の確認を足すので、衝突する。
+    「worktree の名前は goal.id 固定」という本 Goal の記述は着手時点の話で、
+    あちらが先に入ったら role 付きの名前が正になる。どちらを先に main へ
+    入れるかは人間が決め、後になった方を rebase する。
+
+  constraints:
+    - tests/store-parallel-open.test.ts・tests/controller-lease-lost.test.ts と
+      tests/fixtures/hold-db-lock.mjs は仕様なので変更しない。通らないなら実装側を直す
+    - 別 Goal の仕様テスト（tests/decide-llm-actions.test.ts・
+      tests/store-row-schema.test.ts・tests/port-contract.test.ts・
+      tests/github-approval-permission.test.ts・tests/worktree-roles.test.ts・
+      tests/review-actor.test.ts）を触らない。実装も代わりに書かない。
+      ac-1 がそれで赤いままなら、無理に通さず人間に渡す
+    - 既存の tests/ を弱めない。とくに tests/controller.test.ts・
+      tests/controller-resume.test.ts・tests/controller-guard.test.ts・
+      tests/store.test.ts は通ったままにする。呼び方が変わった箇所は直してよいが、
+      確かめている性質は減らさない
+    - WAL をやめない（design.md §4.7）。同時に開けるようにする代わりに
+      「複数リーダー + 単一ライター」を捨てる形にしない
+    - DB のスキーマ（src/store/index.ts の `SCHEMA`）を変えない。migration も
+      足さない。既にある `.goals/.state/goals.db` がそのまま読めること
+    - lease の意味を変えない。期限付きの所有権のままにする（design.md §4.5）。
+      行ロックや別のロック機構に置き換えない
+    - まとめて回す口（`ent run --all`、`ent watch`、スケジューラ）を作らない。
+      本 Goal は「同時に叩いても壊れない」までにする。何本並べるかを決めるのは
+      呼び出し側で、そこを controller に持たせると常駐しない設計（§3.6）が崩れる
+    - CLI の出力と終了コードを変えない。cron と既存の検証コマンドが今の形を読んでいる
+    - 依存パッケージを増やさない
+    - 保護パスの検査（src/domain/protected-paths.ts）と Agent の拒否ルール
+      （src/adapters/claude.ts）を弱めない
+    - docs/design.md の「3. 中核の設計判断」を勝手に変えない。§5 の「入れない」から
+      「複数 Goal の同時実行」を外すのは本 Goal の範囲に含む
+    - 仕様テストの置き場所の規約（Goal と一緒に main へ入れる）を変えない。
+      background に書いたとおり、人間が決めることにする
+    - PR の作成とコメントの投稿はしない。controller が行う
+
+  references:
+    - title: PRAGMA の並びと lease の実装
+      path: src/store/index.ts
+    - title: heartbeat が戻り値を捨てている場所
+      path: src/controller/index.ts
+    - title: worktree の名前が goal.id 固定であること
+      path: src/act/index.ts
+    - title: 仕様（同時 open）
+      path: tests/store-parallel-open.test.ts
+    - title: 仕様（lease の喪失）
+      path: tests/controller-lease-lost.test.ts
+    - title: ロックを握る側の fixture
+      path: tests/fixtures/hold-db-lock.mjs
+    - title: 設計ドキュメント（§4.5 lease、§4.7 WAL、§5 スコープ）
+      path: docs/design.md
+    - title: 人間向けの実行手順
+      path: README.md
+    - title: 実装待ちの別 Goal（ac-1 が赤いままになる原因）
+      path: .goals/validate-what-crosses-the-boundary.yaml
+    - title: 実装待ちの別 Goal（worktree を役割ごとに分ける側。本 Goal と同じ配管を触る）
+      path: .goals/collaborate-in-separate-worktrees.yaml
+    - title: 実装待ちの別 Goal
+      path: .goals/review-agent-reviews.yaml
+
+policies:
+  require_human_approval:
+    - merge
+    - force_push
+    - push_to_default_branch
+    - deploy
+    - secret_access
+    - external_send
+  protected_paths:
+    # 本 Goal は lease の検知を1ティックの内側に足すので、src/controller/** を
+    # 外してある。外したのは適用対象であって、検査の仕組みではない
+    # （commit-what-the-actor-wrote.yaml と同じ理由）。
+    - .goals/**
+    # 関門そのものと、Agent の許可・拒否ツールを決めるファイル。
+    # DECIDE のログパスを直したくなっても、ここは外さない（background を参照）。
+    - src/domain/protected-paths.ts
+    - src/adapters/claude.ts
+    # 仕様として置いてあるテスト。constraints に「触らない」と書いたものを、
+    # 機械の側にも置く。tests/** ごと凍らせない理由は guard-the-controller.yaml に
+    # 書いたとおりで、ここは「新しいテストを足せなくする」ではなく
+    # 「既にある仕様を消せなくする」ために、ファイルを名指しで並べる。
+    #
+    # ac-1 は別 Goal 3本の実装が main に入るまで赤のままになる（background を参照）。
+    # 凍らせておかないと、落ちている 46 件を消すのが緑への最短経路になり、
+    # 「宣言した仕様を消して criteria を通した」が静かに成立してしまう。
+    # 本 Goal 自身の仕様2本も同じ理由で並べる。
+    - tests/decide-llm-actions.test.ts
+    - tests/store-row-schema.test.ts
+    - tests/port-contract.test.ts
+    - tests/github-approval-permission.test.ts
+    - tests/worktree-roles.test.ts
+    - tests/review-actor.test.ts
+    - tests/store-parallel-open.test.ts
+    - tests/controller-lease-lost.test.ts
+    - tests/fixtures/hold-db-lock.mjs
+    # 検証系。ここを書き換えられると Agent が自分の criteria を通せる。
+    # tests/** は入れない（理由は guard-the-controller.yaml に書いた）。
+    - mise.toml
+    - mise-tasks/**
+    - vitest.config.ts
+    - biome.json
+    - tsconfig*.json
+    - .github/**
+    # 依存の追加は人間が通す。constraints にも「依存パッケージを増やさない」と書いてある。
+    - package.json
+    - pnpm-lock.yaml
+
+budget:
+  # ac-1 は別 Goal の実装が main に入るまで緑にならない（background を参照）。
+  # 届かない criteria に向けて Actor を回し続ける形になるので、少なめに取る。
+  max_actor_runs: 6
+  max_reconciles: 24
+  max_wall_clock: 5h
+  max_consecutive_failures: 3
+  max_unchanged_reconciles: 4

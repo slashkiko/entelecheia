@@ -1,12 +1,24 @@
 import { exec, execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { promisify } from "node:util";
 import { type Worktree, type WorktreePort, worktreeBranchFor } from "../act/index.js";
+import { VERIFY_WITHHELD_ENV, withheldEnv } from "../domain/withheld-env.js";
 import type { LocalRepoPort } from "../observe/index.js";
 import type { BranchPort, PushResult } from "../publish/index.js";
 import type { ApprovalPort, CommandResult, CommandRunnerPort } from "../verify/index.js";
+
+/**
+ * 外部プロセスの上限。ここが無いと、刺さった `git push` や検証コマンドが
+ * ティックを永久に終わらせない。lease の heartbeat はティックが走る限り
+ * 延長し続けるので、cron から起動した他のワーカーも引き継げなくなる。
+ *
+ * 検証コマンド側を長く取ってあるのは、`mise run test` が実際に数分かかるため。
+ * git は数十秒かかる時点で刺さっていると見てよい。
+ */
+const COMMAND_TIMEOUT_MS = 30 * 60 * 1000;
+const GIT_TIMEOUT_MS = 5 * 60 * 1000;
 
 /**
  * ローカル環境に対する Port の実装。
@@ -37,7 +49,11 @@ const runFile = promisify(execFile);
 
 /** git を argv 配列で叩き、標準出力をそのまま返す。終了コードが 0 以外なら reject する */
 async function gitRaw(cwd: string, args: readonly string[]): Promise<string> {
-  const { stdout } = await runFile("git", [...args], { cwd, maxBuffer: 32 * 1024 * 1024 });
+  const { stdout } = await runFile("git", [...args], {
+    cwd,
+    maxBuffer: 32 * 1024 * 1024,
+    timeout: GIT_TIMEOUT_MS,
+  });
   return stdout;
 }
 
@@ -59,12 +75,31 @@ async function git(cwd: string, args: readonly string[]): Promise<string> {
  */
 const PUSHABLE_BRANCH = /^[\w./-]+$/;
 
-/** シェルコマンドを実行する。起動そのものに失敗したときだけ throw する */
+/**
+ * シェルコマンドを実行する。起動そのものに失敗したときだけ throw する。
+ *
+ * 環境変数は明示的に絞る。ここで流すのは Goal YAML の `setup` と
+ * `verification.run` で、criteria が `mise run test` である以上、実際に走るのは
+ * **Actor が worktree に書いたテストとソース**にあたる。既定のまま
+ * `process.env` を継承すると、`src/adapters/claude.ts` が Actor 本体に対して
+ * トークンを落としているのが無意味になる。Actor は自分では受け取れない
+ * `GITHUB_TOKEN` を、VERIFY に実行させるコードを書くことで読める。
+ *
+ * `tests/**` は guard-the-controller.yaml の判断で意図的に保護対象外なので、
+ * この経路には保護パスを1つも踏まずに乗れる。関門はティックの末尾にあり
+ * VERIFY はティックの先頭なので、関門は常に1ティック遅れる。ここで落とすしかない。
+ */
 export function commandRunner(cwd: string): CommandRunnerPort {
+  const env = withheldEnv(process.env, VERIFY_WITHHELD_ENV);
   return {
     async run(command): Promise<CommandResult> {
       try {
-        const { stdout, stderr } = await runShell(command, { cwd, maxBuffer: 32 * 1024 * 1024 });
+        const { stdout, stderr } = await runShell(command, {
+          cwd,
+          env,
+          maxBuffer: 32 * 1024 * 1024,
+          timeout: COMMAND_TIMEOUT_MS,
+        });
         return { exitCode: 0, stdout, stderr };
       } catch (error) {
         // 終了コードが 0 以外なら reject されるが、これは「検証できた不合格」なので
@@ -229,9 +264,96 @@ export function gitWorktree(repoRoot: string, root: string): WorktreePort {
           state.set(absolute, fingerprint(absolute));
         }
       }
+
+      return state;
+    },
+
+    /**
+     * git が観測しないが、書き換えられると controller の権限でコードが走る場所。
+     *
+     * `repoDirtyState` と分けてあるのは、あちらが「git が見える汚れ」を意味する
+     * ため。混ぜると、常に載る項目のせいで「汚れていなければ空」が成り立たなくなる。
+     *
+     * `git status` は `.git/**` を1件も出さない。`--ignored` を足せば見える類でも
+     * なく、この計測手段では原理的に出てこない。一方 linked worktree は共通の
+     * `.git/hooks` を共有し、Actor の cwd から `../../../../.git/hooks/pre-push` に
+     * 届く。push のたびに controller のプロセス・全環境変数でそれが走る。
+     * gitignore 済みの `.goals/.state/` も同じ理由で見えず、`goals.db` を直接
+     * 書けば状態を偽造できる。
+     *
+     * 検知手段は `repoDirtyState` と同じでよい。ACT の前後で指紋を比べる。
+     */
+    async outOfSightState(): Promise<Map<string, string>> {
+      const state = new Map<string, string>();
+      for (const [key, path] of await outOfSightPaths(repoRoot, root)) {
+        state.set(key, fingerprint(path));
+      }
+      // 設定値そのものも見る。hooks のファイルを1つも触らずに、実行される
+      // スクリプト群をまるごと差し替えられるため。
+      state.set(".git/config#core.hooksPath", (await hooksPathSetting(repoRoot)) ?? "unset");
       return state;
     },
   };
+}
+
+/**
+ * git の観測に出てこないが、書き換えられると controller の権限で実行される場所。
+ *
+ * 返すキーは repoRoot 相対の表示用パスにする。関門（`findViolations`）は
+ * worktree からの相対に直して glob と突き合わせるので、実体のパスをそのまま
+ * 返すと `.git` の中が `..` 扱いになって `escaped_worktree` に化ける。
+ * 何が変わったのかを人間が読める形で残す方が、分類として正しい。
+ *
+ * `core.hooksPath` も見る。hooks のファイルを1つも触らずに、設定で
+ * まるごと別のディレクトリへ差し替えられるため。
+ */
+async function outOfSightPaths(repoRoot: string, stateRoot: string): Promise<Map<string, string>> {
+  const watched = new Map<string, string>();
+
+  // hooks の実体。linked worktree でも共通の .git を指すので、
+  // git に居場所を聞く（.git がファイルのこともある）。
+  let gitDir: string;
+  try {
+    gitDir = resolve(repoRoot, await git(repoRoot, ["rev-parse", "--git-common-dir"]));
+  } catch {
+    // 聞けなければ既定の場所を見る。見に行けること自体は失敗にしない。
+    gitDir = join(repoRoot, ".git");
+  }
+
+  const hooksDir = join(gitDir, "hooks");
+  let entries: string[] = [];
+  try {
+    entries = readdirSync(hooksDir);
+  } catch {
+    // hooks ディレクトリが無いのは正常。
+  }
+  for (const name of entries) {
+    // .sample は git が最初から置くひな形で、実行されない。
+    if (name.endsWith(".sample")) {
+      continue;
+    }
+    watched.set(`.git/hooks/${name}`, join(hooksDir, name));
+  }
+
+  // 状態 DB。gitignore 済みなので git status には出ない。
+  watched.set(".goals/.state/goals.db", join(stateRoot, "..", "goals.db"));
+
+  return watched;
+}
+
+/**
+ * `core.hooksPath` の現在値。設定されていなければ null。
+ *
+ * hooks のファイルを1つも触らずに、設定だけで実行されるスクリプト群を
+ * まるごと差し替えられる。指紋の対象がファイルなので、これは別に見る。
+ */
+async function hooksPathSetting(repoRoot: string): Promise<string | null> {
+  try {
+    return await git(repoRoot, ["config", "--get", "core.hooksPath"]);
+  } catch {
+    // 未設定なら git は終了コード 1 を返す。設定されていないことは正常。
+    return null;
+  }
 }
 
 /**
