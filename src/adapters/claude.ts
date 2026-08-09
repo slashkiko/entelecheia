@@ -48,8 +48,14 @@ export function claudeActor(options: ClaudeOptions): ActorPort {
         cwd: invocation.worktree.path,
         abortController: aborter,
         // merge や force push を Agent に実行させない（§7）。
+        // 公式ドキュメントによれば、スコープ付きの拒否は bypassPermissions を
+        // 含むどのモードでも効く。permissionMode を緩めても抜けない。
         disallowedTools: disallowedToolsFor(invocation.deniedOperations),
         permissionMode: "acceptEdits",
+        // ホストの ~/.claude や repo の .claude を読み込ませない。
+        // 省略すると user / project / local がすべて読まれ、controller が
+        // 与えた拒否リスト以外の設定が Agent の挙動に混ざる。
+        settingSources: [],
       });
 
       const logRef = join(options.runsDir, `${slug(invocation.worktree.branch)}.jsonl`);
@@ -74,6 +80,7 @@ export function claudeLlm(options: ClaudeOptions): LlmPort {
         // DECIDE は判断だけで、副作用は ACT が持つ。ファイルを触らせない。
         allowedTools: [],
         permissionMode: "default",
+        settingSources: [],
       });
 
       const text = outcome.result?.text ?? "";
@@ -137,11 +144,10 @@ async function consume(
 function throwIfUsageLimit(message: unknown): void {
   const rateLimit = rateLimitSchema.safeParse(message);
   if (rateLimit.success && rateLimit.data.rate_limit_info.status === "rejected") {
-    const resetsAt = rateLimit.data.rate_limit_info.resetsAt;
     throw new PortError(
       "usage_limit",
       `使用量上限に達した（${rateLimit.data.rate_limit_info.rateLimitType ?? "unknown"}）`,
-      resetsAt === undefined ? null : new Date(resetsAt).toISOString(),
+      resumeAfterFrom(rateLimit.data.rate_limit_info.resetsAt),
     );
   }
 
@@ -150,6 +156,24 @@ function throwIfUsageLimit(message: unknown): void {
     // リセット時刻が分からないので捏造しない。指数バックオフに任せる。
     throw new PortError("usage_limit", "使用量上限に達した（assistant error）");
   }
+}
+
+/**
+ * resetsAt を ISO 文字列に直す。
+ *
+ * SDK の型は `resetsAt?: number` で単位を書いていない。同じ SDK の init
+ * メッセージ側は `resets_at: string`（ISO）で、こちらだけ数値になっている。
+ * 秒とミリ秒のどちらで来ても壊れないよう、桁で判定する。
+ * 2001-09-09 を境に、それより小さければ秒とみなす。
+ */
+function resumeAfterFrom(resetsAt: number | undefined): string | null {
+  if (resetsAt === undefined) {
+    return null;
+  }
+  const millis = resetsAt < 1e11 ? resetsAt * 1000 : resetsAt;
+  const date = new Date(millis);
+  // 解釈できない値を捏造した時刻にしない。分からないなら分からないまま返す。
+  return Number.isNaN(date.getTime()) ? null : date.toISOString();
 }
 
 /** Agent が書き換えたファイル。Run の artifacts に残す */
