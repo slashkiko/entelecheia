@@ -131,6 +131,7 @@ policies:
     - deploy
     - secret_access
     - external_send
+  protected_paths: []
 
 budget:
   max_actor_runs: 15

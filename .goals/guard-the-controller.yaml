@@ -1,0 +1,168 @@
+version: 1
+
+goal:
+  id: guard-the-controller
+  name: 制御ループ自体を Agent に書き換えさせない
+  desired_state: |
+    Phase 3 の4本目。design.md §7 の自己ホスト用の制約を実装に入れる。
+
+    自分自身を書き換えさせる以上、暴走すれば被害は自分に返ってくる。
+    §7 は2つを挙げている。worktree 隔離の強制と、
+    src/controller/** と .goals/** への変更に human approval を必須にすること。
+
+    前者は Phase 2 で入っている。act は worktree を作れなければ Actor を
+    起動しない。後者は §10-6 と §10-8 の2つの理由で入っていない。
+
+      §10-6  Agent 側の disallowedTools しか関門が無い。
+             SDK の外から同じ操作をされれば素通りする
+      §10-8  require_human_approval が閉じた enum で、パス条件を表現できない
+
+    保護パスの宣言 — src/domain/goal.ts
+      policies に protected_paths を足す。glob の配列で、既定は空。
+
+      require_human_approval の enum には載せない。あちらは「操作の種類」
+      （merge / force_push / deploy）で、パスは「対象」にあたる。
+      軸が違うものを1つの enum に混ぜると、controller 側の照合が分岐だらけになる。
+
+      確定済みのファイルなので合意を取ったうえで変更し、既存の Goal YAML にも
+      同じ項目を書き足す（§10-8 の現行方針どおり）。
+
+    controller 側の関門 — src/controller/
+      Run.artifacts には Agent が編集したファイルのパスが残っている。
+      ティックの後でこれを検査し、保護パスに一致するものがあれば
+      ESCALATE(protected_path_touched) にして WAITING_HUMAN へ落とす。
+
+      検査するのは2つ。
+
+        protected_paths の glob に一致する編集
+        worktree の外に出た編集
+
+      後者は隔離が破れたことを意味する。Agent の cwd は worktree だが、
+      Bash 経由なら外にも書ける。パスの一致より先に見る。
+
+      PR は作らない。作ると、保護パスへの変更が通常の変更として流れてしまう。
+      worktree の差分は残すので、人間が見て判断できる。controller が
+      Agent の作業を破棄することはしない。
+
+      Agent 側の disallowedTools は残す。二重にしておく。片方は Agent の
+      設定、もう片方は controller の判定で、破れ方が違う。
+
+    新しい ESCALATE の理由 — src/domain/action.ts
+      protected_path_touched を足す。budget_exhausted / loop_detected /
+      invalid_decision のどれとも意味が違う。予算でもループでも出力の不正でもなく、
+      「触ってはいけないものに触れた」になる。
+
+      LLM には選ばせない。ESCALATE はすべて guard が出す（Phase 3 の1本目）。
+
+repository:
+  provider: github
+  owner: slashkiko
+  name: entelecheia
+  default_branch: main
+
+setup:
+  - pnpm install --frozen-lockfile
+
+acceptance_criteria:
+  - id: ac-1
+    description: controller / goal / action の全テストが通る（着手時点では落ちているのが正しい）
+    verification: { type: command, run: mise run test }
+
+  - id: ac-2
+    description: 型チェックが通る（policies のスキーマと ESCALATE の union が崩れていない）
+    verification: { type: command, run: mise run typecheck }
+
+  - id: ac-3
+    description: lint と format が通る
+    verification: { type: command, run: mise run lint }
+
+  - id: ac-4
+    description: サプライチェーンと workflow のチェックが通る（baseline 由来）
+    verification: { type: command, run: mise run check }
+
+  - id: ac-5
+    description: 変更を載せた PR の CI が成功している
+    verification: { type: fact, key: github.ci.conclusion, equals: success }
+
+  - id: ac-6
+    description: 保護パスの宣言と関門の位置が妥当か、人間が確認する
+    verification:
+      type: human
+      prompt: |
+        design.md §10-8 は「require_human_approval の閉じた enum に自己ホスト用を
+        どう載せるか」を未決のまま残していました。enum には載せず、
+        policies.protected_paths という別のフィールドにしました。
+
+        判断してほしいのは4点です。
+
+        1. 別フィールドにしたこと。require_human_approval は「操作の種類」で
+           パスは「対象」なので軸が違う、という理由です。宣言が2か所に
+           分かれることになりますが、それでよいか
+        2. 検知したときに ESCALATE して PR を作らないこと。worktree の差分は
+           残すので人間が判断できますが、controller は何も戻しません。
+           汚染された worktree がそのまま残ることになります
+        3. worktree の外に出た編集を、パスの一致より先に見ること。
+           隔離が破れたことの方が重い、と判断しました
+        4. Agent 側の disallowedTools を残したこと。二重になりますが、
+           片方は Agent の設定、もう片方は controller の判定で破れ方が違います
+
+        あわせて実地の結果も報告します。保護パスに触る intent を与えて
+        Agent を走らせ、controller が止めることを確認します。
+
+context:
+  background: |
+    Phase 3 の4本目。3本目までで design.md §9 の9項目にチェックが付いた。
+    残るのは自己ホストの安全装置（本 Goal）と、実際に自己ホストで1周
+    回すこと（次の Goal）になる。
+
+    3本目で分かったことが1つある。worktree の作成が Phase 2 からずっと
+    失敗していて、ACT はどのティックでも起動していなかった。
+    §7 の「worktree 隔離を必ず使う」は、実際には一度も試されていなかった。
+
+    本 Goal で入れる関門は、その隔離が実際に効いていることを前提にする。
+    したがって隔離の検査（worktree の外に出た編集）も同時に入れる。
+
+  constraints:
+    - テストから実際の GitHub と Claude API を叩かない。Port は注入する
+    - 既存の tests/ を弱めない。新しい振る舞いには新しいテストを足す
+    - src/domain/goal.ts の変更は policies への1項目追加に閉じる。実装前に合意を取る
+    - src/domain/fact-keys.ts は変更しない
+    - src/reconcile/ と src/assess/ と src/observe/ と src/decide/ と src/act/ は変更しない。
+      関門は ACT の外側（controller）に置く。act の中に入れると、
+      Actor を起動する層と検査する層が同じになる
+    - src/publish/ の変更は「保護パスに触れた変更で PR を作らない」の1点に閉じる。
+      PR を作るかどうかの判断は publish が持っているので、controller 側から
+      止めるには run を null と偽るしかなくなる
+    - 保護パスの検査で controller が worktree を書き換えない。差分は残す
+    - Agent 側の disallowedTools を減らさない。二重の防御にする
+    - 停止条件を LLM に決めさせない。ESCALATE はすべて guard が出す
+    - docs/design.md の「3. 中核の設計判断」を勝手に変えない
+    - 依存パッケージを増やさない。glob の照合は自前で書く
+    - mise run check（サプライチェーン検査）を壊さない
+
+  references:
+    - title: 設計ドキュメント
+      path: docs/design.md
+    - title: Phase 3 の3本目
+      path: .goals/sleep-and-stop.yaml
+    - title: Phase 2 の2本目（ACT と worktree 隔離）
+      path: .goals/run-actor-in-worktree.yaml
+
+policies:
+  require_human_approval:
+    - merge
+    - force_push
+    - push_to_default_branch
+    - deploy
+    - secret_access
+    - external_send
+  protected_paths:
+    - src/controller/**
+    - .goals/**
+
+budget:
+  max_actor_runs: 15
+  max_reconciles: 30
+  max_wall_clock: 4h
+  max_consecutive_failures: 3
+  max_unchanged_reconciles: 3

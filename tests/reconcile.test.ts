@@ -29,7 +29,7 @@ const GOAL: Goal = {
     },
   ],
   context: { background: "背景", constraints: ["何かをしない"], references: [] },
-  policies: { require_human_approval: ["merge"] },
+  policies: { require_human_approval: ["merge"], protected_paths: [] },
   budget: {
     max_actor_runs: 10,
     max_reconciles: 20,
