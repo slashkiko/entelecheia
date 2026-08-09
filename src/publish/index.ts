@@ -133,32 +133,43 @@ export async function publish(target: PublishTarget, deps: PublishDeps): Promise
   }
 }
 
-/** PR を確保する。既にあればそれを使い、無ければ差分があるときだけ作る */
+/**
+ * 差分を push し、PR を確保する。
+ *
+ * **PR の有無で push を止めない。** 最初はここで `prNumber !== null` なら
+ * すぐ返していたが、それだと2ティック目以降の Actor の作業が remote に届かない。
+ * 実際に自己ホストで回したとき、PR は1ティック目の内容のまま止まり、CI は
+ * 「実装が無い」と言い続けた。Actor は毎ティック worktree に commit している。
+ */
 async function ensurePullRequest(
   target: PublishTarget,
   deps: PublishDeps,
 ): Promise<{ prNumber: number | null; created: boolean; skipped: string | null }> {
-  if (target.prNumber !== null) {
-    return { prNumber: target.prNumber, created: false, skipped: null };
-  }
-  // 制御ループ自体に触れた変更で PR を立てない（design.md §7）。立てると、
-  // 保護パスへの変更が通常の変更として流れてしまう。既に PR がある場合は
-  // 上で返しているので、コメントで知らせる経路は残る。
+  // 制御ループ自体に触れた変更は push もしない（design.md §7）。
+  // remote に出た時点で、通常の変更として流れる余地が生まれる。
   if (
     target.decision.action.type === "ESCALATE" &&
     target.decision.action.reason === "protected_path_touched"
   ) {
-    return { prNumber: null, created: false, skipped: "保護パスに触れたので PR を作らない" };
+    return {
+      prNumber: target.prNumber,
+      created: false,
+      skipped: "保護パスに触れたので push も PR 作成もしない",
+    };
   }
   if (target.run === null || target.run.status !== "completed") {
     // Actor が走っていない、あるいは失敗したティックでは push するものが無い。
-    return { prNumber: null, created: false, skipped: "完了した Run が無い" };
+    return { prNumber: target.prNumber, created: false, skipped: "完了した Run が無い" };
   }
 
   const pushed = await deps.branch.push(target.run.worktree, target.goal.repository.default_branch);
   if (!pushed.pushed) {
     // 空の PR は通知にも検証にも使えない。
-    return { prNumber: null, created: false, skipped: "base との差分が無い" };
+    return { prNumber: target.prNumber, created: false, skipped: "base との差分が無い" };
+  }
+  if (target.prNumber !== null) {
+    // push は済んだ。PR はもうあるので作らない。
+    return { prNumber: target.prNumber, created: false, skipped: null };
   }
 
   // 作る前に必ず探す。2本目を立てるとどちらが正かを決められなくなる。

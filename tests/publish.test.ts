@@ -180,13 +180,14 @@ describe("PR を確保する", () => {
     expect(s.created).toEqual([]);
   });
 
-  it("既に番号を知っていれば push も探索もしない", async () => {
+  it("既に番号を知っていれば探索も作成もしない", async () => {
+    // push はする。ここで止めていたのが誤りだった（下の「2ティック目以降の push」）。
     const s = sink();
     const result = await publish(target({ prNumber: 11 }), deps(s));
 
     expect(result.prNumber).toBe(11);
-    expect(s.pushes).toEqual([]);
     expect(s.finds).toEqual([]);
+    expect(s.created).toEqual([]);
   });
 
   it("差分が無ければ PR を作らない", async () => {
@@ -332,5 +333,42 @@ describe("保護パスに触れたとき", () => {
 
     expect(result.commented).toBe(true);
     expect(s.comments[0]?.body).toContain("protected_path_touched");
+  });
+});
+
+describe("2ティック目以降の push", () => {
+  it("PR があっても push する", async () => {
+    // ここで止めていたせいで、自己ホストで回したとき2ティック目以降の
+    // Actor の commit が remote に届かず、PR は1ティック目の内容のまま止まった。
+    const s = sink();
+    const result = await publish(target({ prNumber: 11 }), deps(s));
+
+    expect(s.pushes).toEqual([{ name: "sample-goal", base: "main" }]);
+    expect(result.prNumber).toBe(11);
+    // 既にあるので作らない。探しにも行かない。
+    expect(s.created).toEqual([]);
+    expect(s.finds).toEqual([]);
+  });
+
+  it("差分が無ければ PR があっても何も送らない", async () => {
+    const s = sink({ pushed: false });
+    const result = await publish(target({ prNumber: 11 }), deps(s));
+
+    expect(result.prNumber).toBe(11);
+    expect(s.created).toEqual([]);
+  });
+
+  it("保護パスに触れていたら push もしない", async () => {
+    // remote に出た時点で、通常の変更として流れる余地が生まれる。
+    const s = sink();
+    const blocked: Decision = {
+      decidedAt: NOW.toISOString(),
+      action: { type: "ESCALATE", reason: "protected_path_touched" },
+      rationale: "制御ループ自体に触れた",
+      decidedBy: "guard",
+    };
+    await publish(target({ prNumber: 11, decision: blocked }), deps(s));
+
+    expect(s.pushes).toEqual([]);
   });
 });

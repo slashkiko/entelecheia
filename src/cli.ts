@@ -1,4 +1,4 @@
-import { mkdirSync } from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
 import { hostname } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -237,8 +237,8 @@ export async function main(argv: readonly string[]): Promise<number> {
       code: codeProvider(goal),
       writer: codeWriter(goal),
       branch: gitBranch(join(stateDir, "worktrees")),
-      local: localRepo(repoRoot),
-      command: commandRunner(repoRoot),
+      local: localRepo(verifyRoot(stateDir, goal)),
+      command: commandRunner(verifyRoot(stateDir, goal)),
       // 承認は PR コメントの定型文で検知する（design.md §10-4）。
       // PR がまだ無い Goal では常に未承認になる。捏造した承認を作らない。
       approval: approval(goal, store.getState(goal.goal.id)?.prNumber ?? null),
@@ -390,6 +390,25 @@ function approval(goal: Goal, prNumber: number | null): ApprovalPort {
     token,
     prNumber,
   });
+}
+
+/**
+ * 検証コマンドとローカル観測を流す場所。
+ *
+ * Goal 専用の worktree があればそちらを使う。無ければ controller のリポジトリ。
+ *
+ * repoRoot 固定にしていたところ、自己ホストで回して初めて破綻した。Actor は
+ * worktree の中で実装するのに、VERIFY は controller 自身のリポジトリで
+ * `mise run test` を流す。実装しても criteria は落ちたままになり、
+ * ループが収束しない。criteria が確かめるのは「その変更」であって、
+ * controller が動いているコードではない。
+ *
+ * 1ティック目はまだ worktree が無いので repoRoot を見る。そこで観測される
+ * のは「着手前の状態」で、Gap が出るのは正しい。
+ */
+function verifyRoot(stateDir: string, goal: Goal): string {
+  const worktree = join(stateDir, "worktrees", goal.goal.id);
+  return existsSync(worktree) ? worktree : process.cwd();
 }
 
 function githubToken(): string | null {

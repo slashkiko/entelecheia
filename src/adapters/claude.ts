@@ -235,7 +235,11 @@ async function consume(
     lastStatus = throwIfUsageLimit(message, lastStatus);
 
     for (const path of editedPathsOf(message)) {
-      artifacts.push(path);
+      // 同じファイルを何度も編集するので重複する。実測では1ファイルが
+      // 6回並び、Run の artifacts が読めなくなった。
+      if (!artifacts.includes(path)) {
+        artifacts.push(path);
+      }
     }
 
     const parsed = resultSchema.safeParse(message);
