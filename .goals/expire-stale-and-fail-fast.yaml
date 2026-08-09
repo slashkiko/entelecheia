@@ -148,6 +148,22 @@ acceptance_criteria:
            確かめられないものを ok と偽らない方針ですが、
            「結局いちばん知りたいものが unknown」でも役に立つか
 
+        5. **PR #19 の反映後に増えた確認事項。** あちらは
+           `src/adapters/claude.ts` を保護パスに入れました（Agent の許可・拒否
+           ツールを決めるファイルなので）。本 Goal の2件目はそのファイルを直す
+           内容で、着手はその判断が main に入る前でした。既に commit 済みなので
+           保護に足すと ESCALATE から抜けられなくなり、この Goal でだけ外して
+           あります。差分は `claudeLlm` のエラー判定だけで、`disallowedTools` や
+           `ALWAYS_DENIED` には触れていません。それでよいか
+
+        6. **`.goals/**` を一時的に外していること。** PR #19 で関門の入力が
+           `changedPaths` になり、人間が goal ブランチに commit した Goal 宣言も
+           違反として拾われるようになりました。回避として、この Goal の宣言 1 本
+           だけを保護から外し、他の Goal YAML は個別に列挙して残しています。
+           **本 Goal が COMPLETED になったら `.goals/**` に戻します。**
+           恒久的には、guard 側を直すか、宣言を goal ブランチに載せないかの
+           どちらかを決める必要があります
+
         あわせて次を報告します。今回スコープに入れなかったもの3件と、その理由。
         トークンの予算（BudgetUsage の組み立てが src/controller/ にあり、
         Actor だけでは配線を閉じられない）、controller に残る死んだ
@@ -215,8 +231,48 @@ policies:
     - secret_access
     - external_send
   protected_paths:
+    # 制御ループ本体。
     - src/controller/**
-    - .goals/**
+    # Goal の宣言部。**この Goal でだけ `.goals/**` を使っていない。**
+    #
+    # PR #19 で関門の入力が `Run.artifacts`（Agent が編集したパス）から
+    # `changedPaths`（worktree と base の差分）に変わり、人間の commit と
+    # Agent の編集を区別できなくなった。本 Goal の宣言は Goal 5 と同じやり方で
+    # goal ブランチに commit してある（`6c28dfe` と同じ形）ので、`.goals/**` の
+    # ままだと自分の宣言を毎ティック違反として拾い、ESCALATE から抜けられない。
+    #
+    # 一時的な回避として、この Goal の宣言 1 本だけを外し、他は個別に列挙して
+    # 保護を残す。**本 Goal が COMPLETED になったら `.goals/**` に戻すこと。**
+    # 恒久的な扱いは、guard 側を直すか宣言を goal ブランチに載せないかの
+    # どちらかで決める（ac-6 で聞いている）。
+    - .goals/.state/**
+    - .goals/assess-and-decide.yaml
+    - .goals/automate-observe-and-verify.yaml
+    - .goals/connect-github-and-claude.yaml
+    - .goals/guard-the-controller.yaml
+    - .goals/list-goals.yaml
+    - .goals/observe-returns-facts.yaml
+    - .goals/open-pr-and-detect-approval.yaml
+    - .goals/persist-and-resume.yaml
+    - .goals/record-the-tick.yaml
+    - .goals/run-actor-in-worktree.yaml
+    - .goals/sleep-and-stop.yaml
+    # 以下は PR #19（MVP レビューの指摘を反映する）が他の Goal YAML に入れた分に揃える。
+    - src/domain/protected-paths.ts
+    - mise.toml
+    - mise-tasks/**
+    - vitest.config.ts
+    - biome.json
+    - tsconfig*.json
+    - .github/**
+    - package.json
+    - pnpm-lock.yaml
+    # src/adapters/claude.ts は **この Goal でだけ** 外してある。
+    # PR #19 は「Agent の許可・拒否ツールを決めるファイル」として保護に入れたが、
+    # 本 Goal の2件目がそのファイルを直す内容そのもので、着手はその判断が
+    # main に入る前だった。いま保護に足すと、既に commit 済みの変更を
+    # changedPaths が毎ティック違反として拾い、ESCALATE から抜けられなくなる。
+    # 代わりに ac-6 で人間の承認を明示的に取る。次の Goal からは保護に戻す。
 
 budget:
   max_actor_runs: 10
