@@ -17,6 +17,7 @@ import { type TickResult, tick } from "./controller/index.js";
 import type { Decision } from "./domain/action.js";
 import type { Goal } from "./domain/goal.js";
 import { loadGoalFile } from "./domain/goal-loader.js";
+import { isTerminal } from "./domain/goal-state.js";
 import { PortError } from "./domain/port-error.js";
 import type { Run } from "./domain/run.js";
 import type { Verification } from "./domain/verification.js";
@@ -201,6 +202,18 @@ export async function main(argv: readonly string[]): Promise<number> {
     store.upsertGoal(goal);
 
     if (command.kind === "start") {
+      // 終端の Goal を黙って ACTIVE に戻さない。nextStatus と tick は終端を
+      // 守るのに、この経路だけ素通りしていた。COMPLETED を後から取り消せると、
+      // §9 の完了判定そのものが意味を失う。
+      const current = store.getState(goal.goal.id);
+      if (current !== null && isTerminal(current.status)) {
+        process.stderr.write(
+          `${goal.goal.id} は ${current.status} なので start できない。` +
+            "やり直すなら .goals/.state/goals.db の状態を明示的に戻すこと\n",
+        );
+        return 2;
+      }
+
       const now = new Date().toISOString();
       store.setStatus(goal.goal.id, "ACTIVE", null, now);
       process.stdout.write(`${goal.goal.id}: ACTIVE\n`);
@@ -335,8 +348,8 @@ function summarize(result: TickResult): unknown {
  * （design.md §3.1）。
  */
 function codeProvider(goal: Goal): CodeProviderPort {
-  const token = process.env.GITHUB_TOKEN ?? process.env.GH_TOKEN;
-  if (token === undefined || token === "") {
+  const token = githubToken();
+  if (token === null) {
     const fail = async (): Promise<never> => {
       throw new PortError("unavailable", "GITHUB_TOKEN が設定されていない");
     };

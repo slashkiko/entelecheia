@@ -58,6 +58,8 @@ function deps(store: Store): ControllerDeps {
     approval: { getApproval: async () => null },
     worktree: {
       ensure: async (name) => ({ path: `/tmp/${name}`, branch: `entelecheia/${name}` }),
+      changedPaths: async () => [],
+      repoDirtyState: async () => new Map(),
     },
     actor: {
       kind: "claude-code",
@@ -154,9 +156,8 @@ describe("resume_after を読む", () => {
     expect(terminal.skipped).toContain("終端");
 
     store.setStatus(GOAL.goal.id, "ACTIVE", null);
-    // lease の期限判定だけは実時計を使う（design.md §8）。注入した NOW ではなく
-    // 現在時刻から先に置かないと、期限切れとみなされて奪われる。
-    store.acquireLease(GOAL.goal.id, "worker-b", new Date(Date.now() + 3_600_000));
+    // 期限判定も注入した時計で行う。NOW より先に置いておけば奪われない。
+    store.acquireLease(GOAL.goal.id, "worker-b", new Date(NOW.getTime() + 3_600_000), NOW);
     const leased = await tick(GOAL, deps(store));
     expect(leased.skipped).toContain("lease");
   });

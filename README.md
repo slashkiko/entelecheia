@@ -3,7 +3,7 @@
 > Declare the end state; the controller converges to it.
 
 人間はプロジェクトの完了状態（Desired State）を宣言する。controller は現在状態を観測し、
-ギャップが埋まるまでティックごとに Claude Code を起動する。
+ギャップが埋まるまでティックを回し、埋め方を決める段で Claude Code を起動する。
 
 エンテレケイア（ἐντελέχεια）はアリストテレスの用語で、「可能態が現実態に至った状態」を指す。
 このツールが Goal に対して実現しようとする状態そのものを指す言葉にあたる。CLI 名は `ent`。
@@ -13,9 +13,16 @@
 
 ## 設計の要点
 
-「実装」列は Phase 3 を完了した時点の状態を示す。controller は OBSERVE / ASSESS /
-DECIDE / ACT / VERIFY を回し、PR を自分で立てて進捗をコメントに積み、人間の承認を
-検知して COMPLETED まで進む。design.md §9 の完了条件9項目はすべて確認した。**MVP は完了している。**
+controller は OBSERVE / ASSESS / DECIDE / ACT / VERIFY を回し、PR を自分で立てて
+進捗をコメントに積み、人間の承認を検知して COMPLETED まで進む。
+本文で **Actor** と呼ぶのは controller が起動する実行主体の抽象で、いまの実装は
+Claude Code にあたる。その走っている実体を指すときは **Agent** と書く。
+design.md §9 の完了条件9項目はすべて確認した。**MVP は完了している。**
+
+完了後にレビューを1周かけ、自己ホストの安全装置とテストの穴を埋めた。§9 の完了条件は
+「controller が最後まで回るか」を問うもので、「Agent が制御ループを書き換えられないか」は
+そこに入っていない。何を直したかは後述する。下の表の「実装」列は、そのレビューを
+反映した現時点の状態を示す。
 
 | 原則 | 内容 | 実装 |
 |---|---|---|
@@ -25,14 +32,24 @@ DECIDE / ACT / VERIFY を回し、PR を自分で立てて進捗をコメント�
 | 待機はプロセスではなく状態 | reconcile はどのティックも有限時間で return する。常駐して sleep しない | 済 |
 | 宣言と収束の分離 | 人間が書くのは Desired State と Acceptance Criteria。タスク分解も Actor 選択も controller が決める | 済 |
 | write-ahead | 副作用の前に意図を DB へ書く。任意の瞬間に kill されても次ティックで回収できる | 済 |
+| 隔離は場所だけでは足りない | worktree でファイルを分けるだけでなく、Agent の出力を controller のシェルに流さない・Agent が書いたものを controller の権限で実行しない | 一部（シェルに流さない側は design.md §7 で対応済み、controller の権限で実行しない側は §10-9 が未決） |
 
 完了判定と暴走の停止条件は LLM に決めさせない。LLM が選べるのは
 `ACT` / `VERIFY` / `WAIT` / `REPLAN` の4つだけで、`COMPLETE` と `ESCALATE` は
 純ロジック（guard）が決める。Gap の埋め方だけを LLM に委ねる。この境界は `src/decide/` にある。
 
-自己ホストの安全装置として、`policies.protected_paths` に書いたパス（`src/controller/**` と
-`.goals/**`）を Agent が編集したら、controller が ACT の外側で検知して止める。
-Agent 側の拒否ルールとは別に、controller 自身の関門を持つ。
+自己ホストの安全装置として、`policies.protected_paths` に書いたパスを Agent が編集したら、
+controller が ACT の外側で検知して止める。Agent 側の拒否ルールとは別に、controller 自身の
+関門を持つ。検知の材料は Agent の自己申告ではなく git が観測した変更で、Bash 経由の
+書き込みも見える。worktree の中だけでなく、その外に出た書き込みも本体リポジトリ側の
+git で見る。ただし見えるのはリポジトリの中の変更だけで、範囲と残る穴は design.md §10-6
+に書いてある。守るのは制御ループ本体（`src/controller/**`）と Goal の宣言部
+（`.goals/**`）に加えて、**関門そのもの（Agent の拒否リストを決めるファイルを含む）と
+検証系**にあたる。選び方の基準は design.md §7 にある。
+
+controller が持つ資格情報（`GITHUB_TOKEN`）は Agent に渡さない。git は argv 配列で叩き、
+シェルを通すのは Goal YAML の `setup` と `verification.run` だけにする。
+`type: human` の承認は、リポジトリに書き込み権限がある人のものだけを数える。
 
 Goal の状態（ACTIVE / COMPLETED など）は `.goals/.state/goals.db` が持つ。
 行動の `COMPLETE` と Goal の状態 `COMPLETED` は別のもので、前者が選ばれた結果として後者になる。
@@ -50,7 +67,8 @@ Phase 3 は自己ホストで、5本に割った。1本目で1ティックの記
 
 人間がやったのは Goal YAML と Acceptance Criteria を書き、`ent start` してから
 `ent run` を繰り返しただけで、controller が Actor を worktree で走らせ、PR を立て、
-進捗をコメントに積み、承認待ちで止まった。
+進捗をコメントに積み、承認待ちで止まった（`COMPLETED` への遷移そのものは別の Goal で
+確認済み。design.md §9）。
 
 **実際に回すまで、配管は繋がっていると見なせない。** Phase 3 で見つかった断線は
 どれもテストでは通っていた。`git branch --format` の引用符不足で worktree の作成が
@@ -58,9 +76,24 @@ Phase 2 からずっと失敗していたこと、VERIFY が worktree ではな�
 リポジトリでコマンドを流していたこと、PR がある間 push しなくなっていたこと。
 最後のものは、それを仕様として固定したテストが緑のままだった。
 
+MVP 完了後のレビューでも、同じ形の穴が残っていた。Port を注入するテストは
+`src/adapters/local.ts`（実際の git とシェル）と `src/cli.ts` の `main()` を1行も通らず、
+その2つにはテストが1本も無かった。**壊しても全件が緑のまま通る変更が5件あった**（LLM に
+`COMPLETE` を許す、Agent の拒否リストを空にする、ダイジェストの正規化から `sort` を消す、
+承認 Port の失敗を「検証済み不合格」にする、lease の解放を `finally` から外す）。
+いまは実際の git と実際の SQLite に対して回す統合テストがあり、上の5件はそれぞれ
+1本のテストで固定してある。統合テストは書いたその場で1件バグを見つけた
+（`git status --porcelain` の出力を trim してパスが1文字欠ける。統合テストと同じ変更で
+入れた誤りで、それ以前のコードには無い）。
+
+**ただし ACT を通る経路は、いまの自動テストでは覆えていない。** `main()` の統合テストが
+通すのは guard が `COMPLETE` を選ぶ経路で、Actor も GitHub も呼ばない。上の3つの断線は
+どれも実際に外部（git / GitHub / Actor）を叩く側にあったので、そこは変わらず
+「実際に `ent run` を回す」でしか確かめられない。
+
 Phase 1 と Phase 2 の1本目は、どちらも6本の Acceptance Criteria のうちコマンドで検証する4本を
 通しただけでは COMPLETED にならなかった。Phase 1 で残ったのは CI の結果（`type: fact`）と、
-Port の抽象が1実装に癒着していないかの確認（`type: human`）。1本目で残ったのは
+Port の抽象が1実装に癒着していないかの確認（`type: human`）。Phase 2 の1本目で残ったのは
 CI の結果と、guard と LLM の境界が妥当かの確認（`type: human`）だった。**設計の中核ほど検証コマンドに落ちない。**
 
 下の表は、controller が回す範囲を累積で示す。各行はそのフェーズを**完了した時点**の
@@ -76,9 +109,9 @@ CI の結果と、guard と LLM の境界が妥当かの確認（`type: human`�
 | 2 | OBSERVE / ASSESS / DECIDE / ACT / VERIFY | Goal を書く、承認する |
 | 3 | Phase 2 と同じ範囲を、このリポジトリ自身に対して回す（自己ホスト） | Goal を書く、承認する |
 
-Phase 3 を完了した時点で、1ティックの内側にも外側にも人間の判断は入らない。
-残るのは Goal を書くことと、PR に `/ent approve <criterion-id>` と書くこと（あるいは
-GitHub のレビューで Approve を押すこと）の2つになる。
+Phase 3 を完了した時点で、ティックの起動にも人間の判断は要らなくなる。
+人間に残るのは Goal を書くことと、PR に `/ent approve <criterion-id>` と書くこと
+（あるいは GitHub のレビューで Approve を押すこと）の2つになる。
 
 ## セットアップ
 
@@ -111,6 +144,7 @@ alias ent="node $(pwd)/dist/cli.js"
 ent start <slug>                   # Goal を登録して ACTIVE にする
 ent run <slug>                     # 1ティック回して終了する
 ent run <slug> --pr <n>            # 観測対象の PR を指定する（controller が立てた分は自動）
+ent run <slug> --issue <n>         # 観測対象の Issue を指定する
 ent show <slug>                    # 宣言部と実行時状態をまとめて表示する
 ent list                           # 登録済みの Goal を一覧する
 ```
@@ -133,7 +167,8 @@ Actor と LLM は Claude Code の OAuth をそのまま使う。
 ```
 .goals/<slug>.yaml        人間が編集。Git 管理。宣言部のみ。slug は goal.id と一致させる
 .goals/.state/goals.db    controller が書く実行時状態。gitignore 済み
-.goals/.state/worktrees/  Actor が編集する作業ツリー。controller 本体とは物理的に分ける
+.goals/.state/worktrees/  Actor が編集する worktree。controller 本体とは物理的に分ける
+.goals/.state/runs/<run-id>/  Agent の生ログ。DB にはパスだけ持つ
 src/domain/fact.ts        Fact の型（VERIFIED / INFERRED の分離）と Unresolved
 src/domain/fact-keys.ts   観測キーのレジストリ。Goal YAML の fact 検証はここを参照する
 src/domain/goal.ts        Goal YAML の Zod スキーマ
@@ -160,7 +195,7 @@ src/adapters/local.ts     node:child_process で書ける Port（コマンド実
 src/adapters/github.ts    CodeProviderPort。@octokit/rest + ETag
 src/adapters/claude.ts    ActorPort と LlmPort。Claude Agent SDK
 src/cli.ts                ent コマンド
-tests/                    Acceptance Criteria の実体
+tests/                    Acceptance Criteria の実体と、実 git / 実 SQLite を叩く統合テスト
 ```
 
 `.goals/.state/` は `ent start` を最初に叩いたときに作られる。

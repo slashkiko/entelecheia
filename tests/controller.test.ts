@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ActorPort, WorktreePort } from "../src/act/index.js";
 import { type ControllerDeps, tick } from "../src/controller/index.js";
 import type { LlmPort } from "../src/decide/index.js";
@@ -47,6 +47,9 @@ interface Options {
   actorFails?: boolean;
   signal?: AbortSignal;
   owner?: string;
+  /** Actor が長引く状況を作る。解決するまで ACT が返らない */
+  actorGate?: Promise<void>;
+  leaseSeconds?: number;
 }
 
 function deps(options: Options = {}): ControllerDeps {
@@ -55,6 +58,8 @@ function deps(options: Options = {}): ControllerDeps {
       events.push("worktree.ensure");
       return { path: `/tmp/entelecheia/${name}`, branch: `entelecheia/${name}` };
     },
+    changedPaths: async () => [],
+    repoDirtyState: async () => new Map(),
   };
 
   const actor: ActorPort = {
@@ -64,6 +69,7 @@ function deps(options: Options = {}): ControllerDeps {
       if (options.actorFails === true) {
         throw new Error("claude が起動できない");
       }
+      await options.actorGate;
       return { exitCode: 0, logRef: "log.txt", tokens: 10, artifacts: [] };
     },
   };
@@ -73,7 +79,7 @@ function deps(options: Options = {}): ControllerDeps {
     worktree,
     actor,
     owner: options.owner ?? "worker-a",
-    leaseSeconds: 300,
+    leaseSeconds: options.leaseSeconds ?? 300,
     signal: options.signal,
     code: {
       getPullRequest: async () => {
@@ -127,8 +133,8 @@ function recorded(inner: Store): Store {
       inner.setStatus(id, status, resumeAfter);
     },
     setObserveTarget: (id, pr, issue) => inner.setObserveTarget(id, pr, issue),
-    acquireLease: (id, owner, until) => {
-      const got = inner.acquireLease(id, owner, until);
+    acquireLease: (id, owner, until, now) => {
+      const got = inner.acquireLease(id, owner, until, now);
       events.push(`store.acquireLease:${got}`);
       return got;
     },
@@ -179,7 +185,7 @@ describe("tick", () => {
   describe("lease", () => {
     it("取れなければ何もせずに return する", async () => {
       // 1 Goal につき reconcile は同時に1つ（design.md §4.5）。
-      store.acquireLease("sample-goal", "worker-b", new Date(Date.now() + 60_000));
+      store.acquireLease("sample-goal", "worker-b", new Date(NOW.getTime() + 60_000), NOW);
       const result = await tick(GOAL, deps());
 
       expect(result.ran).toBe(false);
@@ -194,8 +200,74 @@ describe("tick", () => {
       expect(store.getState("sample-goal")?.leaseOwner).toBeNull();
     });
 
-    it("途中で例外が出ても解放する", async () => {
-      // 解放されないと、以後どのワーカーも lease の期限切れまで動けない。
+    it("ティックが長引くあいだ lease を延長し続ける", async () => {
+      // ACT は Claude Code の実行なので分単位。design.md §9 の実測では
+      // 1ティック目が 1,341,349 tokens だった。延長しないと ACT の途中で
+      // 期限が切れ、cron 構成では別プロセスが同じ worktree で ACT を始める。
+      vi.useFakeTimers();
+      try {
+        let release = (): void => {};
+        const gate = new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        const promise = tick(GOAL, deps({ exitCode: 1, actorGate: gate, leaseSeconds: 300 }));
+
+        // leaseSeconds / 2 = 150 秒ごと。2回分進める。
+        await vi.advanceTimersByTimeAsync(320_000);
+        const during = events.filter((e) => e === "store.acquireLease:true").length;
+        expect(during).toBeGreaterThanOrEqual(3);
+
+        release();
+        await promise;
+
+        // ティックが終わればタイマーも止める。残すとプロセスが落ちない。
+        const after = events.filter((e) => e === "store.acquireLease:true").length;
+        await vi.advanceTimersByTimeAsync(320_000);
+        expect(events.filter((e) => e === "store.acquireLease:true").length).toBe(after);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("延長が落ちてもティックを巻き込まない", async () => {
+      // タイマーのコールバックから throw すると try/finally の外なので、
+      // clearInterval も releaseLease も走らないままプロセスが落ちる。
+      // lease は期限まで残り、どのワーカーもその Goal を進められなくなる。
+      vi.useFakeTimers();
+      try {
+        let release = (): void => {};
+        const gate = new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        const base = deps({ exitCode: 1, actorGate: gate, leaseSeconds: 300 });
+        let first = true;
+        const failing: ControllerDeps = {
+          ...base,
+          store: {
+            ...base.store,
+            acquireLease: (id, owner, until, now) => {
+              if (first) {
+                first = false;
+                return base.store.acquireLease(id, owner, until, now);
+              }
+              throw new Error("DB が読めない");
+            },
+          },
+        };
+
+        const promise = tick(GOAL, failing);
+        await vi.advanceTimersByTimeAsync(320_000);
+        release();
+
+        await expect(promise).resolves.toMatchObject({ ran: true });
+        expect(events).toContain("store.releaseLease");
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("LlmPort が落ちても解放する", async () => {
+      // decide が握って ESCALATE に変えるので、tick 自体は例外にならない。
       const llm: LlmPort = {
         chooseAction: async () => {
           throw new Error("使用量上限");
@@ -203,6 +275,24 @@ describe("tick", () => {
       };
       await tick(GOAL, deps({ exitCode: 1, llm }));
 
+      expect(store.getState("sample-goal")?.leaseOwner).toBeNull();
+    });
+
+    it("tick が例外で抜けても解放する", async () => {
+      // 解放されないと、以後どのワーカーも lease の期限切れまで動けない。
+      // LlmPort の失敗は decide が吸収するので、この経路は tick に例外を
+      // 伝播させないと通らない。releaseLease を finally から happy path へ
+      // 移す変更が緑のまま通っていたのはそのため。
+      const broken = deps();
+      const store2 = broken.store;
+      const failing: Store = {
+        ...store2,
+        saveSnapshot: () => {
+          throw new Error("DB が落ちた");
+        },
+      };
+
+      await expect(tick(GOAL, { ...broken, store: failing })).rejects.toThrow("DB が落ちた");
       expect(store.getState("sample-goal")?.leaseOwner).toBeNull();
     });
   });

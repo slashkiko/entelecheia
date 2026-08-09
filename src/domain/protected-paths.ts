@@ -1,3 +1,4 @@
+import { realpathSync } from "node:fs";
 import { isAbsolute, relative, resolve } from "node:path";
 
 /**
@@ -29,6 +30,9 @@ export interface Violation {
  *   隔離が破れたことの方が重い（§7 の「物理的に分ける」が成立していない）
  * - 保護パスは worktree からの相対パスで照合する。Actor が返すのは絶対パスなので、
  *   worktree の場所が変わってもパターンが腐らないようにする
+ * - シンボリックリンクは実体へ解決してから見る。worktree の中に
+ *   `link -> ../../src/controller` を置かれると、`..` で始まらずグロブにも
+ *   一致しないパスができ、脱出の検査と保護パスの検査を両方すり抜けた
  * - 判定できないものは違反にしない。捏造した違反で人間を呼ぶと、
  *   関門そのものが信用されなくなる
  */
@@ -37,11 +41,11 @@ export function findViolations(
   worktreePath: string,
   protectedPaths: readonly string[],
 ): Violation[] {
-  const root = resolve(worktreePath);
+  const root = realpath(resolve(worktreePath));
   const violations: Violation[] = [];
 
   for (const artifact of artifacts) {
-    const absolute = isAbsolute(artifact) ? resolve(artifact) : resolve(root, artifact);
+    const absolute = realpath(isAbsolute(artifact) ? resolve(artifact) : resolve(root, artifact));
     const inside = relative(root, absolute);
 
     // `..` で始まる、あるいは絶対パスのままなら worktree の外。
@@ -71,22 +75,42 @@ export function describeViolations(violations: readonly Violation[]): string {
 }
 
 /**
+ * 実体のパスに解決する。存在しないパス（削除された、まだ無い）はそのまま返す。
+ *
+ * 「解決できなかったから見なかったことにする」と、消してから作り直す形で
+ * 検査を抜けられる。解決できないなら元の文字列で照合を続ける。
+ */
+function realpath(path: string): string {
+  try {
+    return realpathSync(path);
+  } catch {
+    return path;
+  }
+}
+
+/**
  * glob の照合。依存を増やさないので自前で書く。
  *
  * 対応するのは `*`（区切りをまたがない）と `**`（区切りをまたぐ）と `?` の3つ。
- * `src/controller/**` と `.goals/**` を書ければ足りる（§7）。
+ * `src/controller/**` や `tsconfig*.json` のような、§7 が並べる形を書ければ足りる。
  * `{a,b}` や `[]` は使わない。使いたくなったら、そのとき依存を足すか判断する。
  *
  * 末尾が `/**` のパターンは、そのディレクトリ自身にも一致させる。
  * `src/controller/**` が `src/controller` に一致しないと、
  * ディレクトリごと置き換えられたときに素通りする。
+ *
+ * 大文字小文字は区別しない。macOS の APFS も Windows も既定で区別しないので、
+ * `src/Controller/index.ts` と書けば同じファイルに届くのに `src/controller/**`
+ * には一致しない、という抜け道ができる。区別する FS では保護が少し広くなるが、
+ * 広すぎて人間を呼ぶほうが、狭すぎて素通りするより安全側になる。
  */
 function matches(path: string, glob: string): boolean {
-  const normalized = path.split("\\").join("/");
-  if (glob.endsWith("/**") && normalized === glob.slice(0, -3)) {
+  const normalized = path.split("\\").join("/").normalize("NFC").toLowerCase();
+  const pattern = glob.normalize("NFC").toLowerCase();
+  if (pattern.endsWith("/**") && normalized === pattern.slice(0, -3)) {
     return true;
   }
-  return toRegExp(glob).test(normalized);
+  return toRegExp(pattern).test(normalized);
 }
 
 function toRegExp(glob: string): RegExp {

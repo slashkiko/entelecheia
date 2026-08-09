@@ -47,9 +47,28 @@ function goalWith(protectedPaths: string[]): Goal {
 interface Sink {
   comments: number;
   created: number;
+  pushes: number;
 }
 
-function deps(store: Store, artifacts: string[], sink: Sink): ControllerDeps {
+interface Fixture {
+  /** Actor の自己申告。Edit / Write / NotebookEdit だけがここに出る */
+  artifacts?: string[];
+  /** git が観測した変更。Bash 経由の書き込みはこちらにしか出ない */
+  changed?: string[];
+  /** changedPaths が落ちる場合 */
+  changedError?: Error;
+  /** 本体リポジトリ側の汚れ。1件目が ACT 前、2件目が ACT 後（絶対パス → 中身の指紋） */
+  repo?: [Array<[string, string]>, Array<[string, string]>];
+  /** repoDirtyState が落ちる回。0 なら ACT 前、1 なら ACT 後 */
+  repoErrorAt?: 0 | 1;
+  /** LLM が返す行動。ACT 以外にすると Actor が走らない */
+  action?: unknown;
+}
+
+function deps(store: Store, fixture: Fixture, sink: Sink): ControllerDeps {
+  const artifacts = fixture.artifacts ?? [];
+  // repoDirtyState は1ティックに2回呼ばれる。ACT 前と ACT 後で別の値を返す。
+  let repoCalls = 0;
   return {
     store,
     owner: "worker-a",
@@ -71,6 +90,20 @@ function deps(store: Store, artifacts: string[], sink: Sink): ControllerDeps {
         path: `${WORKTREE_ROOT}/${name}`,
         branch: `entelecheia/${name}`,
       }),
+      changedPaths: async () => {
+        if (fixture.changedError !== undefined) {
+          throw fixture.changedError;
+        }
+        return fixture.changed ?? [];
+      },
+      repoDirtyState: async () => {
+        const call = repoCalls;
+        repoCalls += 1;
+        if (fixture.repoErrorAt === call) {
+          throw new Error("本体リポジトリを読めない");
+        }
+        return new Map(fixture.repo?.[call === 0 ? 0 : 1] ?? []);
+      },
     },
     actor: {
       kind: "claude-code",
@@ -86,8 +119,15 @@ function deps(store: Store, artifacts: string[], sink: Sink): ControllerDeps {
         sink.comments += 1;
       },
     },
-    branch: { push: async (name) => ({ branch: `entelecheia/${name}`, pushed: true }) },
-    llm: { chooseAction: async () => ({ type: "ACT", intent: "テストを直す" }) },
+    branch: {
+      push: async (name) => {
+        sink.pushes += 1;
+        return { branch: `entelecheia/${name}`, pushed: true };
+      },
+    },
+    llm: {
+      chooseAction: async () => fixture.action ?? { type: "ACT", intent: "テストを直す" },
+    },
     now: () => NOW,
   };
 }
@@ -98,18 +138,23 @@ describe("保護パスの関門", () => {
 
   beforeEach(() => {
     store = openStore(":memory:");
-    sink = { comments: 0, created: 0 };
+    sink = { comments: 0, created: 0, pushes: 0 };
   });
 
   afterEach(() => {
     store.close();
   });
 
-  const run = async (goal: Goal, artifacts: string[]) => {
-    store.upsertGoal(goal);
-    store.setStatus(goal.goal.id, "ACTIVE", null, NOW.toISOString());
-    return tick(goal, deps(store, artifacts, sink));
+  /** 登録して1ティック回す。2ティック目以降は register を false にする */
+  const tickWith = async (goal: Goal, fixture: Fixture, register = true) => {
+    if (register) {
+      store.upsertGoal(goal);
+      store.setStatus(goal.goal.id, "ACTIVE", null, NOW.toISOString());
+    }
+    return tick(goal, deps(store, fixture, sink));
   };
+
+  const run = async (goal: Goal, artifacts: string[]) => tickWith(goal, { artifacts });
 
   it("保護パスを編集したら ESCALATE(protected_path_touched)", async () => {
     const result = await run(goalWith(["src/controller/**"]), [
@@ -182,5 +227,144 @@ describe("保護パスの関門", () => {
     const result = await run(goalWith(["src/controller/**"]), []);
 
     expect(result.decision?.action).toMatchObject({ type: "ACT" });
+  });
+
+  it("artifacts に出ない変更でも git から検知する", async () => {
+    // Bash 経由の書き込みは Edit / Write / NotebookEdit を通らないので
+    // Run.artifacts に1件も現れない（design.md §10-6）。自己申告だけを
+    // 検査していたころは、echo > で制御ループを書き換えても素通りした。
+    const result = await tickWith(goalWith(["src/controller/**"]), {
+      artifacts: [],
+      changed: ["src/controller/index.ts"],
+    });
+
+    expect(result.decision?.action).toEqual({
+      type: "ESCALATE",
+      reason: "protected_path_touched",
+    });
+    expect(sink.pushes).toBe(0);
+  });
+
+  it("ACT しないティックでも、worktree が汚れていれば止める", async () => {
+    // 違反した編集は worktree に残す（人間が判断できるように）。
+    // そのティックの Run だけを見ていると、次のティックが保護パスに
+    // 触れずに終わった時点で、汚れた worktree ごと push されてしまう。
+    const goal = goalWith(["src/controller/**"]);
+    const result = await tickWith(goal, {
+      action: { type: "VERIFY" },
+      changed: ["src/controller/index.ts"],
+    });
+
+    expect(result.run).toBeNull();
+    expect(result.decision?.action).toEqual({
+      type: "ESCALATE",
+      reason: "protected_path_touched",
+    });
+    expect(result.status).toBe("WAITING_HUMAN");
+    expect(sink.pushes).toBe(0);
+    expect(sink.created).toBe(0);
+  });
+
+  it("違反したティックの次も、worktree が汚れているあいだは止め続ける", async () => {
+    const goal = goalWith(["src/controller/**"]);
+    await tickWith(goal, { artifacts: [`${WORKTREE_ROOT}/sample-goal/src/controller/index.ts`] });
+
+    // 2ティック目の Actor は保護パスに触れないが、1ティック目の編集は残っている。
+    const second = await tickWith(
+      goal,
+      { artifacts: [], changed: ["src/controller/index.ts"] },
+      false,
+    );
+
+    expect(second.decision?.action).toMatchObject({ reason: "protected_path_touched" });
+    expect(sink.pushes).toBe(0);
+  });
+
+  it("検査できなかったら ESCALATE(guard_unavailable)。push もしない", async () => {
+    // 「触っていない」と「確かめられなかった」を混ぜない（design.md §3.1）。
+    const result = await tickWith(goalWith(["src/controller/**"]), {
+      changedError: new Error("git status が落ちた"),
+    });
+
+    expect(result.decision?.action).toEqual({ type: "ESCALATE", reason: "guard_unavailable" });
+    expect(result.decision?.decidedBy).toBe("guard");
+    expect(sink.pushes).toBe(0);
+    expect(sink.created).toBe(0);
+  });
+
+  it("worktree の外に Bash で書いても、本体リポジトリ側の git から検知する", async () => {
+    // worktree の中で git を回しても、`git worktree add` で分けた本体側の
+    // 作業ツリーは観測できない。Run.artifacts も Bash 経由の書き込みを拾わない。
+    // つまり `bash -c 'echo > ../../src/controller/index.ts'` は、
+    // artifacts にも changedPaths にも現れないまま通っていた。
+    const result = await tickWith(goalWith(["src/controller/**"]), {
+      artifacts: [],
+      changed: [],
+      repo: [[], [["/repo/src/controller/index.ts", "sha-pwned"]]],
+    });
+
+    expect(result.decision?.action).toEqual({
+      type: "ESCALATE",
+      reason: "protected_path_touched",
+    });
+    expect(result.decision?.rationale).toContain("worktree の外");
+    expect(sink.pushes).toBe(0);
+    expect(sink.created).toBe(0);
+  });
+
+  it("人間が先に汚していたファイルは違反にしない", async () => {
+    // 自己ホストなので、本体リポジトリは人間の編集中のファイルで最初から汚れている。
+    // それを違反と読むと関門が毎ティック鳴り、鳴りっぱなしの関門は誰も見なくなる。
+    const result = await tickWith(goalWith(["src/controller/**"]), {
+      repo: [
+        [["/repo/src/controller/index.ts", "sha-human"]],
+        [["/repo/src/controller/index.ts", "sha-human"]],
+      ],
+    });
+
+    expect(result.decision?.action).toMatchObject({ type: "ACT" });
+    expect(result.status).toBe("ACTIVE");
+  });
+
+  it("人間が編集中のファイルを Actor が上書きしたら検知する", async () => {
+    // パスの集合だけで比べると、前後で同じパスが並んで差がゼロになる。
+    // Actor は `git -C ../.. status` でどれが汚れているかを読めるので、
+    // 「どこを上書きすれば検知されないか」を選べる状態になっていた。
+    const result = await tickWith(goalWith(["src/controller/**"]), {
+      repo: [
+        [["/repo/src/controller/index.ts", "sha-human"]],
+        [["/repo/src/controller/index.ts", "sha-pwned"]],
+      ],
+    });
+
+    expect(result.decision?.action).toEqual({
+      type: "ESCALATE",
+      reason: "protected_path_touched",
+    });
+  });
+
+  it("ACT 前の状態を控えられなかったら ESCALATE(guard_unavailable)", async () => {
+    // 控えられていなければ「Actor が書いた分」を切り出せない。
+    const result = await tickWith(goalWith([]), { repoErrorAt: 0 });
+
+    expect(result.decision?.action).toEqual({ type: "ESCALATE", reason: "guard_unavailable" });
+    expect(sink.pushes).toBe(0);
+  });
+
+  it("ACT 後の本体リポジトリを読めなかったら ESCALATE(guard_unavailable)", async () => {
+    const result = await tickWith(goalWith([]), { repoErrorAt: 1 });
+
+    expect(result.decision?.action).toEqual({ type: "ESCALATE", reason: "guard_unavailable" });
+    expect(sink.pushes).toBe(0);
+  });
+
+  it("差し替えても Decision は1ティックに1行", async () => {
+    // 2行入ると countTrailingDigest が同じ観測を二重に数え、
+    // max_unchanged_reconciles がそのぶん早く尽きる。
+    await run(goalWith(["src/controller/**"]), [
+      `${WORKTREE_ROOT}/sample-goal/src/controller/index.ts`,
+    ]);
+
+    expect(store.listDecisions("sample-goal")).toHaveLength(1);
   });
 });

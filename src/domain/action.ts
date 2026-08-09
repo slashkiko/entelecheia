@@ -34,6 +34,13 @@ export const escalateReasonSchema = z.enum([
    * 「触ってはいけないものに触れた」なので、既存の3つとは別に立てる。
    */
   "protected_path_touched",
+  /**
+   * 保護パスの検査そのものができなかった。
+   *
+   * 「触っていない」と「確かめられなかった」を混ぜない（design.md §3.1）。
+   * 関門が動いていない状態で先へ進めるのは、関門が無いのと同じになる。
+   */
+  "guard_unavailable",
 ]);
 export type EscalateReason = z.infer<typeof escalateReasonSchema>;
 

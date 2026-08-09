@@ -102,7 +102,31 @@ export const approvalGateSchema = z.enum([
 export type ApprovalGate = z.infer<typeof approvalGateSchema>;
 
 /** `30s` / `10m` / `6h` 形式。controller が待機と打ち切りの判定に使う */
-const durationSchema = z.string().regex(/^\d+[smh]$/, "duration は 30s / 10m / 6h の形式で書く");
+const DURATION = /^(\d+)([smh])$/;
+const durationSchema = z.string().regex(DURATION, "duration は 30s / 10m / 6h の形式で書く");
+
+/**
+ * `30s` / `10m` / `6h` を秒に直す。解釈できなければ null。
+ *
+ * 形式を決めているスキーマの隣に置く。読む側（DECIDE の予算判定）に
+ * 別の正規表現があると、`d` を足すような変更が2箇所に散る。
+ */
+export function durationSeconds(duration: string): number | null {
+  const matched = DURATION.exec(duration);
+  if (matched === null) {
+    return null;
+  }
+
+  const amount = Number(matched[1]);
+  switch (matched[2]) {
+    case "s":
+      return amount;
+    case "m":
+      return amount * 60;
+    default:
+      return amount * 3600;
+  }
+}
 
 export const budgetSchema = z.strictObject({
   max_actor_runs: z.number().int().positive(),

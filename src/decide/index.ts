@@ -2,7 +2,7 @@ import { type Action, actionSchema, type Decision, type WaitReason } from "../do
 import type { Unresolved } from "../domain/fact.js";
 import { criterionFactKey } from "../domain/fact-keys.js";
 import type { Assessment } from "../domain/gap.js";
-import type { AcceptanceCriterion, Budget } from "../domain/goal.js";
+import { type AcceptanceCriterion, type Budget, durationSeconds } from "../domain/goal.js";
 import { isUnavailable, isUsageLimit, resumeAfterOf } from "../domain/port-error.js";
 
 /**
@@ -174,24 +174,6 @@ function unchangedReconciles(target: DecideTarget): number {
   return trailing.digest === target.observedDigest ? trailing.count + 1 : 1;
 }
 
-/** `30s` / `10m` / `6h` を秒に直す。goalSchema の durationSchema と同じ形式 */
-function durationSeconds(duration: string): number | null {
-  const matched = /^(\d+)([smh])$/.exec(duration);
-  if (matched === null) {
-    return null;
-  }
-
-  const amount = Number(matched[1]);
-  switch (matched[2]) {
-    case "s":
-      return amount;
-    case "m":
-      return amount * 60;
-    default:
-      return amount * 3600;
-  }
-}
-
 /**
  * 待ちの理由を決める。
  *
@@ -287,10 +269,11 @@ async function askLlm(
 
     const parsed = llmActionSchema.safeParse(raw);
     if (parsed.success) {
+      const action = withoutLlmResumeAfter(parsed.data);
       return {
         decidedAt,
-        action: parsed.data,
-        rationale: `Gap が ${target.assessment.gaps.length} 件あるので LlmPort に委ね、${describeAction(parsed.data)} を採用した`,
+        action,
+        rationale: `Gap が ${target.assessment.gaps.length} 件あるので LlmPort に委ね、${describeAction(action)} を採用した`,
         decidedBy: "llm",
       };
     }
@@ -306,6 +289,19 @@ async function askLlm(
     rationale: `LlmPort の出力を ${MAX_LLM_RETRIES + 1} 回とも採用できなかった: ${failures.join(" / ")}`,
     decidedBy: "guard",
   };
+}
+
+/**
+ * LLM が返した WAIT から resumeAfter を落とす。
+ *
+ * 「いつまで寝るか」も停止条件の一種で、遠い未来を返されれば Goal を
+ * 無期限に止められる。LLM に閉じているのが行動の種類だけで、待つ長さは
+ * 自由に決められる状態は、§7 の「停止条件を LLM の判断に依存させない」と噛み合わない。
+ * resumeAfter を埋めてよいのは、使用量上限のリセット時刻を Port から
+ * 受け取ったときだけになる（design.md §10-3 / §10-5）。
+ */
+function withoutLlmResumeAfter(action: Action): Action {
+  return action.type === "WAIT" ? { ...action, resumeAfter: null } : action;
 }
 
 function buildPrompt(target: DecideTarget, failures: readonly string[]): string {
@@ -328,10 +324,11 @@ function buildPrompt(target: DecideTarget, failures: readonly string[]): string 
       "## 選べる行動",
       '- {"type":"ACT","intent":"Actor に何をさせるか"} — 実装や修正で Gap を埋める',
       '- {"type":"VERIFY"} — 検証していない criteria を確かめる。kind が unknown の Gap に使う',
-      '- {"type":"WAIT","reason":"review_pending|ci_running|usage_limit|observation_failed","resumeAfter":null}',
+      '- {"type":"WAIT","reason":"review_pending|ci_running|usage_limit|observation_failed"}',
       '- {"type":"REPLAN"} — いまの進め方では Gap が埋まらない',
       "",
       "COMPLETE と ESCALATE は選べない。完了判定と停止条件は controller が決める。",
+      "WAIT にいつまで寝るかは書けない。起きる時刻も controller が決める。",
       "人間を待つべきだと判断したら WAIT(review_pending) を選ぶ。",
       "JSON オブジェクトだけを返す。",
     ].join("\n"),

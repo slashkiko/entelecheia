@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { githubApproval, githubCodeWriter } from "../src/adapters/github.js";
 import { PortError } from "../src/domain/port-error.js";
+import { PROGRESS_MARKER } from "../src/publish/index.js";
 
 /**
  * 書き込み側と承認の検知。テストから実際の GitHub を叩かない。
@@ -139,16 +140,18 @@ describe("githubApproval", () => {
       }).fetch,
     });
 
-  const comment = (body: string, login = "pr-author") => ({
+  const comment = (body: string, login = "pr-author", association = "OWNER") => ({
     body,
     user: { login },
     created_at: "2026-08-09T06:00:00Z",
+    author_association: association,
   });
 
-  const review = (state: string, login: string) => ({
+  const review = (state: string, login: string, association = "COLLABORATOR") => ({
     state,
     user: { login },
     submitted_at: "2026-08-09T07:00:00Z",
+    author_association: association,
   });
 
   describe("コメントの定型文", () => {
@@ -199,6 +202,60 @@ describe("githubApproval", () => {
       }).getApproval("ac-6");
 
       expect(approval?.approvedBy).toBe("first");
+    });
+
+    it("書き込み権限の無い相手の定型文は承認にしない", async () => {
+      // 公開リポジトリでは誰でもコメントできる。author_association を見ないと、
+      // 通りすがりの1行で type: human の criterion が VERIFIED になる。
+      const approval = await approvalPort({
+        comments: [comment("/ent approve ac-6", "stranger", "NONE")],
+      }).getApproval("ac-6");
+
+      expect(approval).toBeNull();
+    });
+
+    it("CONTRIBUTOR も承認にしない", async () => {
+      // 過去にマージされた PR があるだけで、書き込み権限とは別物。
+      const approval = await approvalPort({
+        comments: [comment("/ent approve ac-6", "past-contributor", "CONTRIBUTOR")],
+      }).getApproval("ac-6");
+
+      expect(approval).toBeNull();
+    });
+
+    it("author_association が取れなければ承認にしない", async () => {
+      const approval = await approvalPort({
+        comments: [
+          {
+            body: "/ent approve ac-6",
+            user: { login: "pr-author" },
+            created_at: "2026-08-09T06:00:00Z",
+          },
+        ],
+      }).getApproval("ac-6");
+
+      expect(approval).toBeNull();
+    });
+
+    it("MEMBER と COLLABORATOR は承認として読む", async () => {
+      for (const association of ["MEMBER", "COLLABORATOR"]) {
+        const approval = await approvalPort({
+          comments: [comment("/ent approve ac-6", "teammate", association)],
+        }).getApproval("ac-6");
+
+        expect(approval?.approvedBy).toBe("teammate");
+      }
+    });
+
+    it("controller 自身の進捗コメントは承認にしない", async () => {
+      // rationale には LLM が決めた intent がそのまま載る。そこに定型文を
+      // 書かせれば、controller のトークンで投稿されたコメントの中に
+      // 承認の1行が成立する。Agent に gh pr comment を禁じた意味が無くなる。
+      const approval = await approvalPort({
+        comments: [comment(`${PROGRESS_MARKER}\n### ACT\n/ent approve ac-6`)],
+      }).getApproval("ac-6");
+
+      expect(approval).toBeNull();
     });
   });
 
@@ -264,6 +321,27 @@ describe("githubApproval", () => {
       const approval = await approvalPort({
         author: "pr-author",
         reviews: [review("COMMENTED", "reviewer")],
+      }).getApproval("ac-6");
+
+      expect(approval).toBeNull();
+    });
+
+    it("書き込み権限の無い相手の Approve は数えない", async () => {
+      // 公開リポジトリでは誰でもレビューを出せる。レビュー承認は PR 全体、
+      // つまり human の criteria すべてを満たすので、ここが開いていると影響が大きい。
+      const approval = await approvalPort({
+        author: "pr-author",
+        reviews: [review("APPROVED", "stranger", "NONE")],
+      }).getApproval("ac-6");
+
+      expect(approval).toBeNull();
+    });
+
+    it("権限の無い相手の変更要求は止める側に数える", async () => {
+      // 承認を厳しくするのと拒否を厳しくするのは別の話で、倒す向きが逆になる。
+      const approval = await approvalPort({
+        author: "pr-author",
+        reviews: [review("APPROVED", "reviewer"), review("CHANGES_REQUESTED", "stranger", "NONE")],
       }).getApproval("ac-6");
 
       expect(approval).toBeNull();

@@ -61,8 +61,19 @@ export function nextStatus(current: GoalStatus, action: Action): GoalStatus {
       // 人間を呼ぶ点は同じだが、上限に達したかどうかで再開の条件が違う。
       return action.reason === "budget_exhausted" ? "BLOCKED" : "WAITING_HUMAN";
 
-    // ACT / VERIFY / REPLAN。待機や BLOCKED からでも動き出せる（design.md §4.4 の ⇅）
-    default:
+    // 待機や BLOCKED からでも動き出せる（design.md §4.4 の ⇅）
+    case "ACT":
+    case "VERIFY":
+    case "REPLAN":
       return "ACTIVE";
+
+    default:
+      // Action に種類を足したらここで型エラーになる。状態機械の中心を
+      // default に畳んでおくと、新しい行動が黙って ACTIVE 扱いになる。
+      return assertNever(action);
   }
+}
+
+function assertNever(action: never): never {
+  throw new Error(`未知の Action: ${JSON.stringify(action)}`);
 }

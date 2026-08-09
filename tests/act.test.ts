@@ -105,6 +105,8 @@ function spy(options: SpyOptions = {}): Spy {
       }
       return { path: `/tmp/entelecheia/${name}`, branch: `entelecheia/${name}` };
     },
+    changedPaths: async () => [],
+    repoDirtyState: async () => new Map(),
   };
 
   const actor: ActorPort = {

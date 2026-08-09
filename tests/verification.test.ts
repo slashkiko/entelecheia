@@ -46,6 +46,24 @@ describe("toVerifications", () => {
     });
   });
 
+  it("同じ criterion に Fact と unresolved が両方あれば unresolved を採る", () => {
+    // reconcile は前ティックの Fact を土台に今ティックの観測を重ねるので、
+    // 今ティック検証できなかった criterion にも前ティックの passed: true が残る。
+    // Fact を先に引いていたころは、それを今ティックの結果として 🟢 passed と
+    // 表示していた。人間が読む索引が「確かめられなかった」を「合格」に畳んでいた。
+    const [verification] = toVerifications(
+      [criterion("ac-1")],
+      [passedFact("ac-1", true)],
+      [pending("ac-1", "今ティックは検証できなかった")],
+      AT,
+    );
+
+    expect(verification?.result).toBe("unresolved");
+    expect(verification?.reason).toBe("pending");
+    expect(verification?.evidence).toBeNull();
+    expect(verification?.detail).toBe("今ティックは検証できなかった");
+  });
+
   it("VERIFIED な false は failed", () => {
     // 不合格も「検証できた」結果なので、unresolved には落とさない。
     const [verification] = toVerifications(

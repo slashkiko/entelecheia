@@ -75,6 +75,39 @@ function throwingLlm(error: unknown): LlmPort & { calls: number } {
 }
 
 describe("LLM が選べる行動", () => {
+  it("COMPLETE は受け取らない", async () => {
+    // 元祖の禁止項目。Gap が無いティックでは LLM を呼ばないので、
+    // 「呼ばれないこと」のテストはあった。呼ばれたうえで COMPLETE を
+    // 返してきた場合を誰も確かめていなかったので、LLM_ACTIONS に
+    // COMPLETE を足す変更が緑のまま通った。
+    const llm = spyLlm([{ type: "COMPLETE" }, { type: "ACT", intent: "直す" }]);
+    const decision = await decide(target(), { llm, now: () => NOW });
+
+    expect(decision.action).toEqual({ type: "ACT", intent: "直す" });
+    expect(llm.calls).toBe(2);
+  });
+
+  it("COMPLETE しか返さなければ ESCALATE(invalid_decision) になる", async () => {
+    // Gap が残っているのに完了させない。design.md §3.1 の完了判定は
+    // VERIFIED な Fact だけで行う。
+    const llm = spyLlm([{ type: "COMPLETE" }, { type: "COMPLETE" }, { type: "COMPLETE" }]);
+    const decision = await decide(target(), { llm, now: () => NOW });
+
+    expect(decision.action).toEqual({ type: "ESCALATE", reason: "invalid_decision" });
+    expect(decision.decidedBy).toBe("guard");
+  });
+
+  it("LLM が指定した resumeAfter は採らない", async () => {
+    // 「いつまで寝るか」も停止条件の一種で、遠い未来を返されれば
+    // Goal を無期限に止められる（design.md §7）。
+    const llm = spyLlm([
+      { type: "WAIT", reason: "ci_running", resumeAfter: "2099-01-01T00:00:00.000Z" },
+    ]);
+    const decision = await decide(target(), { llm, now: () => NOW });
+
+    expect(decision.action).toEqual({ type: "WAIT", reason: "ci_running", resumeAfter: null });
+  });
+
   it("ESCALATE(loop_detected) は受け取らない", async () => {
     const llm = spyLlm([{ type: "ESCALATE", reason: "loop_detected" }, { type: "VERIFY" }]);
     const decision = await decide(target(), { llm, now: () => NOW });
