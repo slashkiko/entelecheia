@@ -1,4 +1,4 @@
-import { accessSync, constants, existsSync, mkdirSync, readdirSync } from "node:fs";
+import { accessSync, appendFileSync, constants, existsSync, mkdirSync, readdirSync } from "node:fs";
 import { hostname } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -24,7 +24,7 @@ import { PortError } from "./domain/port-error.js";
 import type { Run } from "./domain/run.js";
 import type { Verification } from "./domain/verification.js";
 import type { CodeProviderPort } from "./observe/index.js";
-import type { CodeWriterPort } from "./publish/index.js";
+import type { CodeWriterPort, ProgressSink } from "./publish/index.js";
 import {
   type GoalListItem,
   type GoalState,
@@ -55,6 +55,7 @@ const USAGE = `ent — Declare the end state; the controller converges to it.
   ent run <slug>       1ティック回して終了する（--once は既定）
                        --pr <n> / --issue <n> で観測対象を指定する
                        --dry-run で、書かずに次のティックの中身だけを見る
+                       --report stdout|<path> で、進捗を PR に投稿せず手元に出す
   ent get <slug>       宣言部と実行時状態をまとめて表示する
   ent abandon <slug>   もう追わないと宣言して終端にする（--reason は必須）
   ent list             登録済みの Goal を一覧する
@@ -87,6 +88,8 @@ export type Command =
       prNumber?: number;
       issueNumber?: number;
       dryRun?: true;
+      /** 進捗の宛先。指定があったときだけ入る。無ければ PR コメント */
+      report?: ReportTarget;
       json?: true;
     }
   /**
@@ -122,6 +125,15 @@ export type Command =
   | { kind: "agent-context" }
   | { kind: "help" }
   | { kind: "error"; message: string };
+
+/**
+ * `--report` の宛先。
+ *
+ * `stdout` だけを予約語にして、それ以外はファイルのパスとして読む。`stdout` という
+ * 名前のファイルには書けなくなるが、`--report ./stdout` と書けば通る。逆に
+ * `--report-file` と `--report-stdout` の2つに割ると、同じ操作に名前が2つできる（gist 3.1）。
+ */
+export type ReportTarget = { kind: "stdout" } | { kind: "file"; path: string };
 
 /**
  * `ent` の引数を解釈する。
@@ -231,12 +243,29 @@ export function parseCommand(argv: readonly string[]): Command {
       return { kind: "error", message: issueNumber };
     }
 
+    const dryRun = values["dry-run"] === true;
+    const report = reportTarget(values.report);
+    if (typeof report === "string") {
+      return { kind: "error", message: report };
+    }
+    if (report !== undefined && dryRun) {
+      // dry-run は publish を通らないので、受け取っても書く先に届かない。
+      // 黙って無視すると「指定したのに何も出ない」になる（gist 2.3）。
+      return {
+        kind: "error",
+        message:
+          "--dry-run と --report は一緒に使えない。--dry-run は publish を通らないので進捗を書かない" +
+          "（criteria の結果は出力の observed.verifications に入る）",
+      };
+    }
+
     return {
       kind: "run",
       slug,
       ...(prNumber === undefined ? {} : { prNumber }),
       ...(issueNumber === undefined ? {} : { issueNumber }),
-      ...(values["dry-run"] === true ? ({ dryRun: true } as const) : {}),
+      ...(dryRun ? ({ dryRun: true } as const) : {}),
+      ...(report === undefined ? {} : { report }),
       ...json,
     };
   } catch (error) {
@@ -330,6 +359,9 @@ function optionsFor(sub: Subcommand): ParseArgsOptions {
         "dry-run": { type: "boolean" },
         pr: { type: "string" },
         issue: { type: "string" },
+        // 進捗を PR に投稿せず、手元に出す。書くのは run のティックだけなので、
+        // 他のサブコマンドには置かない（付ければ終了コード 2 になる）。
+        report: { type: "string" },
       };
     case "get":
     case "list":
@@ -362,6 +394,22 @@ function positiveInteger(value: unknown, flag: string): number | string | undefi
     return `${flag} は正の整数で指定する: ${String(value)}`;
   }
   return parsed;
+}
+
+/**
+ * `--report` の値を読む。指定が無ければ undefined、読めなければエラー文字列を返す。
+ *
+ * 空白だけを「指定しなかった」と同じに畳まない。投稿しないつもりの1回が PR に出る。
+ */
+function reportTarget(value: unknown): ReportTarget | string | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  const raw = typeof value === "string" ? value.trim() : "";
+  if (raw === "") {
+    return "--report には宛先が要る: stdout かファイルのパス";
+  }
+  return raw === "stdout" ? { kind: "stdout" } : { kind: "file", path: raw };
 }
 
 /**
@@ -517,17 +565,110 @@ async function runCommand(argv: readonly string[]): Promise<number> {
     process.on("SIGTERM", stop);
     process.on("SIGINT", stop);
 
+    // 進捗の宛先。指定が無ければ publish は従来どおり PR コメントに書く。
+    const record: ReportRecord = { body: null, error: null };
+    const report = command.report === undefined ? undefined : reportSink(command.report, record);
+
     const result = await tick(goal, {
       ...tickPorts(goal, store, repoRoot, stateDir),
       store,
       signal: aborter.signal,
+      report,
     });
 
-    process.stdout.write(`${JSON.stringify(summarize(result), null, 2)}\n`);
+    process.stdout.write(
+      `${JSON.stringify(
+        {
+          ...summarize(result),
+          ...(command.report === undefined
+            ? {}
+            : { report: reportPayload(command.report, record) }),
+        },
+        null,
+        2,
+      )}\n`,
+    );
+    if (record.error !== null) {
+      // 終了コードは変えない。通知の失敗でティックの成否を塗り替えない
+      // （design.md §9）。ただし黙らない。stdout は JSON 専用なので stderr に出す。
+      process.stderr.write(`進捗を書けなかった: ${record.error}\n`);
+    }
     return 0;
   } finally {
     store.close();
   }
+}
+
+/**
+ * 宛先に書いた結果を CLI 側で控える箱。
+ *
+ * `publish` は `PublishResult.report` に結果を載せるが、controller はそれを
+ * `TickResult` に持ち上げない（通常のティックの出力の形は変えない）。stdout に
+ * 出す本文と、書けなかった理由は、ここを通して JSON にする。
+ */
+export interface ReportRecord {
+  /** 書いた本文。宛先が stdout のときだけ JSON に載せる */
+  body: string | null;
+  /** 書けなかった理由。書けたなら null */
+  error: string | null;
+}
+
+/**
+ * 進捗の宛先を作る。`publish` はここに書くだけで、場所のことは知らない。
+ *
+ * ファイルは**追記**する。ティックごとの進捗は積み上がるもので、PR コメントも
+ * 同じく積む。上書きにすると、cron から回したときに最後の1ティックしか残らない。
+ *
+ * stdout はここでは書かない。`run` の stdout は JSON 専用（gist 4.3）なので、
+ * 素の Markdown を混ぜると `ent run | jq` が壊れる。本文を控えるだけにして、
+ * ティックが終わってから JSON の `report.body` に入れる。
+ *
+ * 書けなかったら throw する。`publish` がそれを握って結果に変えるので、
+ * 通知の失敗でティック全体は落ちない。ここで理由も控えるのは、controller が
+ * `PublishResult` を持ち上げないため。
+ *
+ * 宛先の妥当性は見ない。保護パス（`.goals/**` など）を指しても止めないが、関門は
+ * すり抜けない——ここに書くのはティックの最後で、関門が前後を比べるのはそれより
+ * 前になる。叩いたのは人間で、Agent がこのコマンドを打つ経路も無い。
+ */
+export function reportSink(target: ReportTarget, record: ReportRecord): ProgressSink {
+  return {
+    destination: target.kind === "stdout" ? "stdout" : "file",
+    write: async (body: string): Promise<void> => {
+      record.body = body;
+      if (target.kind === "stdout") {
+        return;
+      }
+      try {
+        appendFileSync(target.path, `${body}\n\n`);
+      } catch (error) {
+        record.error = errorMessage(error);
+        throw error;
+      }
+    },
+  };
+}
+
+/**
+ * `--report` を付けたときだけ JSON に足す枝。
+ *
+ * `written` を必ず持たせる。回らなかったティック（終端・寝ている・他のワーカーが
+ * 処理中）では publish を通らないので、宛先には何も書かれない。そこが読めないと、
+ * ファイルが空なのが「回らなかった」からなのか「書けなかった」からなのかが
+ * 区別できない。
+ *
+ * 本文を載せるのは stdout のときだけにする。ファイルに出したものを JSON にも
+ * 積むと、同じ本文が2箇所に出る。
+ */
+function reportPayload(target: ReportTarget, record: ReportRecord): unknown {
+  // 2つとも要る。`reportSink` は書きに行く**前**に本文を控えるので、body だけでは
+  // 「書こうとした」と「書けた」を区別できない。error だけでも足りない——回らなかった
+  // ティックでは書きに行かないので、どちらも null のまま残る。
+  const written = record.body !== null && record.error === null;
+  if (target.kind === "stdout") {
+    return { destination: "stdout", written, error: record.error, body: record.body };
+  }
+  return { destination: "file", path: target.path, written, error: record.error };
 }
 
 /**
@@ -764,6 +905,12 @@ export function agentContextPayload(): AgentContext {
           { name: "--dry-run", type: "boolean", summary: "書かずに次のティックの中身を見る" },
           { name: "--pr", type: "integer", summary: "観測する PR 番号" },
           { name: "--issue", type: "integer", summary: "観測する Issue 番号" },
+          {
+            name: "--report",
+            type: "string",
+            summary:
+              "進捗を PR に投稿せず、stdout（JSON の report.body）か指定したファイルに出す。--dry-run とは併用しない",
+          },
         ],
       },
       {
@@ -1032,7 +1179,7 @@ function isWritable(dir: string): boolean {
   }
 }
 
-function summarize(result: TickResult): unknown {
+function summarize(result: TickResult): Record<string, unknown> {
   return {
     ran: result.ran,
     // 回さなかった理由。「寝ている」「他のワーカーが処理中」「終端」は
