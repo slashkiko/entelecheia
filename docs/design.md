@@ -133,14 +133,18 @@ Merge.dev が長年苦戦している領域。最初から全プロバイダを�
 
 **どの Port にどの Adapter を挿すかを決めるのは1箇所だけにする。** その1箇所が
 `src/wiring/index.ts`（合成ルート）で、`tests/architecture.test.ts` が
-「`src/adapters/**` を import してよいのはここだけ」を機械で固定する。ここが増えると、
-テストで差し替えたつもりの Port が本番では別経路から直接入ってくる状態を作れる。
+「`src/adapters/**` と `src/store/sqlite.ts` を import してよいのはここだけ」を
+機械で固定する。ここが増えると、テストで差し替えたつもりの Port が本番では
+別経路から直接入ってくる状態を作れる。
 
 かつてその1箇所は `src/cli.ts` だった。ルールが求めているのは「実装を選ぶ場所が
 1箇所」であって「その1箇所が CLI であること」ではないのに、`cli.ts` に固定したまま
 Port を足し続けたので、引数の解釈もユースケースも出力の整形も同じファイルに集まり、
-1,779 行になった。合成ルートを別に持てば、同じ不変条件を保ったまま CLI は Adapter を
-知らずに済む。
+1,779 行になった。合成ルートを外に出したので、CLI は Adapter を知らずに済むように
+なった。いまは引数の解釈が `src/cli/parse.ts`、出力の整形が `src/cli/present.ts`、
+`agent-context` が出す CLI の構造が `src/cli/agent-context.ts`、各サブコマンドの
+中身が `src/usecase/**` に分かれていて、`src/cli.ts` に残るのはサブコマンドごとの
+手順と終了コードの契約だけになる。
 
 ### 3.4 webhook は MVP では不要
 
@@ -220,6 +224,7 @@ lease を解放して終了する。Ctrl+C が効かない状態は作らない�
 `src/controller/index.ts` がそこを名指しで import していた。内側が外側を参照する
 唯一の経路で、しかも `src/store/` は `src/adapters/` の下に無いので、
 「Adapter を import してよいのは合成ルートだけ」というテストの網にも掛からなかった。
+いまは `src/store/sqlite.ts` の import も同じテストが合成ルート1本に絞っている（§3.3）。
 Goal の実行時状態そのもの（`GoalState` / `GoalListItem`）と、1ティック分の観測
 （`Snapshot`）は保存の都合ではなく Goal の語彙なので、`src/domain/` が持つ。
 
@@ -589,7 +594,8 @@ DB と CLI のどちらも Node 24 標準で置き換えた。判断の根拠は
 
 外部依存は Port の実装側に寄せた。4本目で `@octokit/rest`（+ throttling / retry）と
 `@anthropic-ai/claude-agent-sdk` が入っている。octokit は `src/adapters/` に閉じており、
-Agent SDK は `src/cli.ts` が `query` を注入する1点だけが外に出る。
+Agent SDK は `src/wiring/index.ts`（§3.3 の合成ルート）が `query` を注入する1点だけが
+外に出る。
 
 §3.6 が触れている `ent watch` はまだ無い。常駐しない形（cron から `run` を叩く）だけを
 用意してあり、`watch` を足すかどうかは実際に cron で回してから決める。
@@ -660,18 +666,22 @@ DECIDE の LLM 呼び出しは `LlmCall.tokens` に残す（§4.5）。あとか
 下限に入れるのは**書き換えられると関門そのものが働かなくなるもの**だけで、検証系
 （`mise.toml` など）と依存（`package.json`）は入れない。あちらは Goal によっては
 正当に触る対象になりうる。下の列挙は下限と、Goal ごとに足す分の両方を含む。
+**下限の全量は `PROTECTED_PATH_FLOOR` を正とする。** 下の箇条書きは基準を説明するための
+代表例で、網羅ではない。両方に同じ一覧を持たせると、片方だけ古くなったときに
+どちらが関門の実体なのか読む側から分からなくなる。
 
 - 関門そのもの（`src/domain/protected-paths.ts`）と、Agent の許可・拒否ツールを決める
   ファイル（`src/adapters/claude.ts`）。ここが開いていると、照合を常に false にするか
   拒否リストを空にするだけで残りが全部外れる
 - **guard が読む判断規則（`src/domain/guard-rules.ts`）。** 関門が差分を取る相手
   （`guardBaseOf`）、未 commit の関門が見る述語（`claimsNothingLeft` / `observedValue`）、
-  経過時間と連続失敗の数え方がここにある。書き換えれば関門は毎ティック空の差分を見るし、
-  壁時計の停止条件も黙って無効化できる。
+  寝ている間かの判定（`sleepingUntil`）、経過時間と連続失敗の数え方がここにある。
+  書き換えれば関門は毎ティック空の差分を見るし、壁時計の停止条件も黙って無効化できる。
   もとは `src/controller/**` の中にあって下限に覆われていた。**依存を持たない規則だから
   という理由でドメインへ出すと、出した先が下限の外になる。** 下限はパスのリテラルなので、
-  リファクタで場所が動けば保護も動く。`tests/protected-floor.test.ts` が、規則がどの
-  ファイルで宣言されているかをソースから読んで、その置き場が下限にあることまで見る。
+  **リファクタで場所が動くと保護は付いてこない。** 移設のたびに下限も一緒に動かす。
+  `tests/protected-floor.test.ts` が、規則がどのファイルで宣言されているかをソースから
+  読んで、その置き場が下限にあることまで見る。
   1ファイルに集めてあるのは保護の単位と揃えるためで、語彙ごとに配ると下限に何本も
   足すことになり、しかも Goal が正当に触りうる語彙と同じファイルになる
 - 検証系（`mise.toml` / `mise-tasks/**` / `vitest.config.ts` / `biome.json` /
