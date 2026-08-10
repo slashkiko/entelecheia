@@ -3,7 +3,8 @@ import type { Decision } from "../src/domain/action.js";
 import type { Goal } from "../src/domain/goal.js";
 import type { LlmCall } from "../src/domain/llm-call.js";
 import type { Verification } from "../src/domain/verification.js";
-import { openStore, type Store } from "../src/store/index.js";
+import type { Store } from "../src/store/port.js";
+import { openStore } from "../src/store/sqlite.js";
 
 /**
  * Verification と llm_calls の永続化。

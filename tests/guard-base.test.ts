@@ -6,7 +6,8 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { type ActDeps, type ActTarget, act, type WorktreePort } from "../src/act/index.js";
 import { type ControllerDeps, tick } from "../src/controller/index.js";
 import type { Goal } from "../src/domain/goal.js";
-import { openStore, type Store } from "../src/store/index.js";
+import type { Store } from "../src/store/port.js";
+import { openStore } from "../src/store/sqlite.js";
 
 /**
  * 関門が差分を取る相手と、worktree を切る元。

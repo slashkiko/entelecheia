@@ -98,3 +98,21 @@ export type VerifyResult = z.infer<typeof verifyResultSchema>;
 export function verifiedOnly(facts: readonly Fact[]): VerifiedFact[] {
   return facts.filter((f): f is VerifiedFact => f.confidence === "VERIFIED");
 }
+
+/**
+ * 1ティック分の観測を、永続化する単位でまとめたもの。
+ *
+ * `ObserveResult` / `VerifyResult` と別に持つのは、ここが**両方を混ぜた後**の形に
+ * あたるため。OBSERVE の `unobserved` と VERIFY の `unverified` は、残す時点では
+ * どちらも「確かめられなかった対象」で区別が要らない（§3.1）。
+ *
+ * 置き場は domain にする。以前は SQLite 実装のファイルが定義していたが、これは
+ * 保存の都合ではなく Goal の語彙で、内側（controller）が外側のファイルを名指しする
+ * 唯一の経路になっていた。
+ */
+export interface Snapshot {
+  observedAt: string;
+  facts: readonly Fact[];
+  /** 観測・検証できなかった対象。DB 層で落とすと §3.1 が DB で再発する */
+  unresolved: readonly Unresolved[];
+}

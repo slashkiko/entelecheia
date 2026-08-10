@@ -11,13 +11,13 @@ import type { Action, Decision } from "../domain/action.js";
 import { errorMessage } from "../domain/error-message.js";
 import type { Fact, Unresolved } from "../domain/fact.js";
 import type { Goal } from "../domain/goal.js";
-import { type GoalStatus, isTerminal, nextStatus } from "../domain/goal-state.js";
+import { type GoalState, type GoalStatus, isTerminal, nextStatus } from "../domain/goal-state.js";
 import { describeViolations, findViolations } from "../domain/protected-paths.js";
 import { type ActorRole, DEFAULT_ACTOR_ROLE, type Run } from "../domain/run.js";
 import { toVerifications, type Verification } from "../domain/verification.js";
 import { type PublishDeps, publish } from "../publish/index.js";
 import { type ReconcileDeps, reconcile } from "../reconcile/index.js";
-import type { GoalState, Store } from "../store/index.js";
+import type { Store } from "../store/port.js";
 
 /**
  * 1ティックの外側。lease を取り、reconcile を回し、結果を書き、ACT を実行し、

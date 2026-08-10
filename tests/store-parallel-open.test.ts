@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { openStore } from "../src/store/index.js";
+import { openStore } from "../src/store/sqlite.js";
 
 /**
  * 複数の ent プロセスが同じ `goals.db` を同時に開ける、の仕様。

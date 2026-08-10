@@ -4,23 +4,20 @@
 // better-sqlite3 で、Store インターフェースの内側に閉じている（design.md §6）。
 import { DatabaseSync } from "node:sqlite";
 import { z } from "zod";
-import { actionSchema, type Decision, decisionSchema } from "../domain/action.js";
+import { actionSchema, decisionSchema } from "../domain/action.js";
 import { errorMessage } from "../domain/error-message.js";
-import { type Fact, type Unresolved, unresolvedSchema } from "../domain/fact.js";
-import type { Goal } from "../domain/goal.js";
-import { type GoalStatus, goalStatusSchema } from "../domain/goal-state.js";
-import { type LlmCall, llmCallSchema } from "../domain/llm-call.js";
+import { type Fact, unresolvedSchema } from "../domain/fact.js";
+import { goalStatusSchema } from "../domain/goal-state.js";
+import { llmCallSchema } from "../domain/llm-call.js";
 import {
   actorKindSchema,
   actorRoleSchema,
   DEFAULT_ACTOR_ROLE,
-  type Run,
-  type RunIntent,
-  type RunOutcome,
   runSchema,
   runStatusSchema,
 } from "../domain/run.js";
-import { type Verification, verificationResultSchema } from "../domain/verification.js";
+import { verificationResultSchema } from "../domain/verification.js";
+import type { Store } from "./port.js";
 
 /**
  * design.md §4.5 のテーブルを SQLite に持つ。
@@ -31,174 +28,6 @@ import { type Verification, verificationResultSchema } from "../domain/verificat
  * ファイルではなく DB にする理由は §4.7。履歴がクエリになること、クラッシュ整合性、
  * イベントの冪等性の3つで、並行制御は決め手ではない。
  */
-
-/** Goal の実行時状態。Goal YAML には現れない側 */
-export interface GoalState {
-  id: string;
-  status: GoalStatus;
-  /** lease の所有者。誰も持っていなければ null */
-  leaseOwner: string | null;
-  leaseUntil: string | null;
-  /** 使用量上限などで待つ場合の再開時刻。分からなければ null */
-  resumeAfter: string | null;
-  /** ACTIVE にした時刻。経過時間の上限判定に使う */
-  activatedAt: string | null;
-  /** これまでに回した reconcile の回数 */
-  reconciles: number;
-  /**
-   * 観測対象。Goal YAML は宣言部だけを持つので、ここが置き場になる。
-   * PR が未作成なら null。
-   */
-  prNumber: number | null;
-  issueNumber: number | null;
-  /**
-   * 人間が「もう追わない」と宣言したときの理由。ABANDONED でなければ null。
-   *
-   * status だけでは、なぜ出荷済みの Goal が放棄されているのかが読めない。
-   * ここが `sqlite3` で直接書き換えるのとの差になる（`ent abandon --reason`）。
-   */
-  abandonReason: string | null;
-  /**
-   * 関門が差分を取る相手。`ent start` を叩いた時点の repoRoot の HEAD。
-   *
-   * 関門が答えたい問いは「Actor が何を書いたか」で、PR が答えたい問いは
-   * 「リリース先との差は何か」になる。`repository.default_branch` は後者なので、
-   * 前者の基準に流用すると、**人間が呼び出し側のブランチに書いたものまで
-   * Actor の編集として並ぶ**。Goal の宣言（`.goals/*.yaml`）がまさにそれで、
-   * `.goals/**` は PROTECTED_PATH_FLOOR にあるため毎ティック
-   * `protected_path_touched` になっていた。
-   *
-   * ブランチ名ではなく sha で持つ。差分は3点表記（`base...HEAD`）なので、
-   * base が先に進むだけなら分岐点は動かない。動くのは**分岐点の commit 自体を
-   * 書き換えたとき**で、そのとき `merge-base` が消えて
-   * `ESCALATE(guard_unavailable)` になる。作業ブランチでは amend も rebase も
-   * 日常的なので、ent を回している最中に1回打つだけで関門が張れなくなる。
-   * sha で固定しておけば、その commit が生きている限り差分は取れる。
-   *
-   * 記録が無い Goal（この列より前に start した分）は null で、呼び出し側が
-   * `default_branch` に落とす。移行のために古い挙動を残してある。
-   */
-  guardBaseSha: string | null;
-}
-
-/** `ent list` / Store.listGoals が返す1件分。宣言部と実行時状態の要点だけをまとめる */
-export interface GoalListItem {
-  id: string;
-  name: string;
-  status: GoalStatus;
-  reconciles: number;
-  prNumber: number | null;
-  resumeAfter: string | null;
-}
-
-export interface Snapshot {
-  observedAt: string;
-  facts: readonly Fact[];
-  /** 観測・検証できなかった対象。DB 層で落とすと §3.1 が DB で再発する */
-  unresolved: readonly Unresolved[];
-}
-
-export interface Store {
-  /** Goal を登録する。既にあれば宣言部だけ更新し、実行時状態は触らない */
-  upsertGoal(goal: Goal): void;
-  getState(goalId: string): GoalState | null;
-  /** 登録済みの Goal を id の昇順で一覧する */
-  listGoals(): GoalListItem[];
-  /**
-   * 状態を書く。時刻は store が作らず、呼び出し側の時計から受け取る。
-   * store が `new Date()` を使うと、注入した時計で動くティックと時間軸がずれる。
-   *
-   * `activatedAt` を渡すと、ACTIVE に入る時点でだけ activated_at を埋める。
-   * 経過時間の上限（design.md §7）の起点になる。
-   */
-  setStatus(
-    goalId: string,
-    status: GoalStatus,
-    resumeAfter: string | null,
-    activatedAt?: string,
-  ): void;
-  setObserveTarget(goalId: string, prNumber: number | null, issueNumber: number | null): void;
-
-  /**
-   * 関門が差分を取る相手を記録する（`GoalState.guardBaseSha`）。
-   *
-   * 書くのは `ent start` の1回だけにする。走行中に書き換えられる口を作ると、
-   * 「Actor が何を書いたか」の基準が途中で動く。基準が動く関門は、同じ差分に
-   * 対して別の答えを返すので、止まった理由をあとから再現できない。
-   */
-  setGuardBase(goalId: string, sha: string): void;
-
-  /**
-   * 「もう追わない」を1回で書く。status を ABANDONED にし、理由を残す。
-   *
-   * `setStatus` と分けてある。ABANDONED だけは理由と対で意味を持つので、
-   * status を任意に選べる口から書けると、理由の無い ABANDONED が作れてしまう。
-   * 完了（COMPLETED）はここから書けない。完了判定は VERIFIED のみ（§3.1）。
-   *
-   * 落とせるかの判定（終端か、lease を持っていないか）は呼び出し側で行う。
-   * store は書くだけにして、断る理由を CLI と controller で二重に持たない。
-   */
-  abandon(goalId: string, reason: string): void;
-
-  /**
-   * lease を取る。取れたら true。同じ owner で呼び直せば期限を延長する。
-   * 行ロックではなく期限付きの所有権にすることで、クラッシュしても自動で解放される。
-   *
-   * 期限切れの判定に使う `now` も引数で受け取る。ここだけ store が実時計を
-   * 読んでいたので、注入した時計で動くティックと時間軸が分かれ、
-   * 「期限切れの lease を奪う」経路をテストから再現できなかった。
-   */
-  acquireLease(goalId: string, owner: string, until: Date, now: Date): boolean;
-  releaseLease(goalId: string, owner: string): void;
-
-  /** 1ティックの観測結果をまとめて書く。reconciles もここで進める */
-  saveSnapshot(goalId: string, snapshot: Snapshot): void;
-  /** 直近のスナップショット。facts は次ティックの carriedFacts になる */
-  latestSnapshot(goalId: string): Snapshot | null;
-
-  /**
-   * design.md §4.5 の Verification テーブル。criteria 単位の索引になる。
-   * facts の `criteria.<id>.passed` と二重表現になるが、§4.5 の役割分担に従う。
-   */
-  saveVerifications(goalId: string, verifications: readonly Verification[]): void;
-  /** 直近のティックの検証結果。§9 の完了判定はこれを読む */
-  latestVerifications(goalId: string): Verification[];
-
-  /** design.md §4.5 の Decision テーブル。L5 に食わせる履歴なので必ず残す */
-  saveDecision(goalId: string, observedDigest: string, decision: Decision): void;
-  /** 古い順。収束したかを見るには並びが要る */
-  listDecisions(goalId: string): Decision[];
-  /**
-   * 直近の Decision に付いた観測ダイジェスト。1件も無ければ null。
-   * 「前のティックから状態が変わったか」を、Fact を読み直さずに判定する。
-   */
-  latestDigest(goalId: string): string | null;
-  /**
-   * 末尾から数えて、同じ観測ダイジェストが何回連続しているか。
-   * ループ検知（design.md §7 の `max_unchanged_reconciles`）が読む。
-   */
-  countTrailingDigest(goalId: string, digest: string): number;
-
-  /**
-   * LlmPort を1回呼んだ記録。Run とは別に持つ（design.md §7）。
-   * 呼んだ直後に書く。まとめて後から書くと、途中で kill されたぶんが消える。
-   */
-  recordLlmCall(goalId: string, call: LlmCall): void;
-  /** 古い順。トークンの合計はここから出す */
-  listLlmCalls(goalId: string): LlmCall[];
-
-  /** 副作用の前に意図を書く（§3.6）。戻り値は Run の id */
-  startRun(goalId: string, intent: RunIntent): string;
-  finishRun(runId: string, outcome: RunOutcome): void;
-  /**
-   * starting のまま残った Run を interrupted で確定し、その件数を返す。
-   * 前のプロセスが死んだまま残った Run を回収する。
-   */
-  reclaimOrphanRuns(goalId: string, detail: string, finishedAt: string): number;
-  listRuns(goalId: string): Run[];
-
-  close(): void;
-}
 
 /**
  * SQLite を開いて Store を返す。

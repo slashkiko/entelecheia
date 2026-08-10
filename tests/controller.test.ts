@@ -3,7 +3,8 @@ import type { ActorPort, WorktreePort } from "../src/act/index.js";
 import { type ControllerDeps, tick } from "../src/controller/index.js";
 import type { LlmPort } from "../src/decide/index.js";
 import type { Goal } from "../src/domain/goal.js";
-import { openStore, type Store } from "../src/store/index.js";
+import type { Store } from "../src/store/port.js";
+import { openStore } from "../src/store/sqlite.js";
 
 const NOW = new Date("2026-08-09T05:00:00.000Z");
 

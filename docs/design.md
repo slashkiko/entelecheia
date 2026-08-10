@@ -214,6 +214,15 @@ lease を解放して終了する。Ctrl+C が効かない状態は作らない�
 `observe()` が受け取る `CodeProviderPort` のように、Provider の全体ではなく
 その段階が実際に呼ぶメソッドだけを並べる。テストで差し替える単位でもある。
 
+**実行時状態の置き場（`Store`）も同じ扱いにする。** 口は `src/store/port.ts`、
+いまの実装は SQLite（`src/store/sqlite.ts`）で、実装を選ぶのは §3.3 の合成ルート
+1箇所だけになる。かつては口の宣言そのものが SQLite 実装のファイルにあり、
+`src/controller/index.ts` がそこを名指しで import していた。内側が外側を参照する
+唯一の経路で、しかも `src/store/` は `src/adapters/` の下に無いので、
+「Adapter を import してよいのは合成ルートだけ」というテストの網にも掛からなかった。
+Goal の実行時状態そのもの（`GoalState` / `GoalListItem`）と、1ティック分の観測
+（`Snapshot`）は保存の都合ではなく Goal の語彙なので、`src/domain/` が持つ。
+
 | Provider | 論理リソース | MVP の実装 |
 |---|---|---|
 | ProjectStateProvider | `Project` / `Task` | 実装しない（インターフェースのみ） |

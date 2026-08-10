@@ -24,7 +24,8 @@ import { loadGoalFile } from "../domain/goal-loader.js";
 import { PortError } from "../domain/port-error.js";
 import type { CodeProviderPort } from "../observe/index.js";
 import type { CodeWriterPort } from "../publish/index.js";
-import type { Store } from "../store/index.js";
+import type { Store } from "../store/port.js";
+import { openStore } from "../store/sqlite.js";
 import type { ApprovalPort } from "../verify/index.js";
 
 /**
@@ -97,13 +98,19 @@ export async function repoHeadSha(repoRoot: string): Promise<string> {
 }
 
 /**
- * `.gitignore` に書く1行。実体は `src/adapters/local.ts` にあり、
- * `stateDirIgnored` が無視できているかを判定するときの基準と同じものになる。
+ * 実装を選ぶだけで、包み直す必要が無い2つ。
  *
+ * `openStore` — 実行時状態の置き場を開く。いまの実装は SQLite（`src/store/sqlite.ts`）。
+ * `Store` は使う側が所有する Port（`src/store/port.ts`）なので、どの実装を挿すかを
+ * 決めるのは Adapter と同じくここ1箇所にする。
+ *
+ * `STATE_IGNORE_LINE` — `.gitignore` に書く1行。実体は `src/adapters/local.ts` にあり、
+ * `stateDirIgnored` が「無視できているか」を判定するときの基準と同じものになる。
  * `ent init` が書く側で、この2つがずれると「書いたのに無視できていない」状態を作る。
- * cli.ts からは Adapter を直接見せず、合成ルート経由で渡す。
+ *
+ * どちらも cli.ts からは Adapter / 実装を直接見せず、合成ルート経由で渡す。
  */
-export { STATE_IGNORE_LINE };
+export { openStore, STATE_IGNORE_LINE };
 
 /**
  * 対象リポジトリの git ルート。git のワークツリーの中でなければ null。

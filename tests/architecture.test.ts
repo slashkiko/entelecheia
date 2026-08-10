@@ -73,4 +73,23 @@ describe("層の境界", () => {
 
     expect(offenders).toEqual([]);
   });
+
+  it("src/store/sqlite.ts を import するのは合成ルートだけ", () => {
+    // 永続化も Adapter と同じ扱いにする。`Store` は使う側が所有する Port
+    // （`src/store/port.ts`）で、SQLite であることは口からは見えない。
+    //
+    // このルールが無かったあいだ、`src/store/` は `src/adapters/` の下に無いために
+    // 上のルールの網から外れていた。`Store` と `GoalState` の宣言そのものが
+    // SQLite 実装のファイルにあり、`src/controller/index.ts` がそこを名指しで
+    // import していた——内側が外側を参照する唯一の経路になっていた。
+    const offenders = tsFilesUnder(SRC)
+      .filter((file) => relativeToSrc(file) !== COMPOSITION_ROOT)
+      .flatMap((file) =>
+        importsOf(file)
+          .filter((specifier) => specifier.includes("store/sqlite"))
+          .map((specifier) => `${relativeToSrc(file)} -> ${specifier}`),
+      );
+
+    expect(offenders).toEqual([]);
+  });
 });

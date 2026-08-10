@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { listPayload, parseCommand } from "../src/cli.js";
 import type { Goal } from "../src/domain/goal.js";
-import { openStore, type Store } from "../src/store/index.js";
+import type { Store } from "../src/store/port.js";
+import { openStore } from "../src/store/sqlite.js";
 
 /**
  * `ent list`。登録済みの Goal をまとめて見る4つ目のサブコマンド。

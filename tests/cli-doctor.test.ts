@@ -141,7 +141,7 @@ describe("doctorPayload", () => {
   });
 
   it("Node が 24 未満なら failed。必要なバージョンと実際のバージョンを両方書く", async () => {
-    // node:sqlite（src/store/index.ts）が Node 24 以上を要求する。足りない Node で
+    // node:sqlite（src/store/sqlite.ts）が Node 24 以上を要求する。足りない Node で
     // 叩かれると import が例外になり、ent の話だとメッセージから読み取れない。
     // 対象リポジトリ側の Node が使われる構成——shebang の /usr/bin/env node、
     // mise や nvm を効かせた shell——では必ず起きる。

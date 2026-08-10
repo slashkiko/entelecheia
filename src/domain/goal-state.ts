@@ -77,3 +77,62 @@ export function nextStatus(current: GoalStatus, action: Action): GoalStatus {
 function assertNever(action: never): never {
   throw new Error(`未知の Action: ${JSON.stringify(action)}`);
 }
+
+/** Goal の実行時状態。Goal YAML には現れない側 */
+export interface GoalState {
+  id: string;
+  status: GoalStatus;
+  /** lease の所有者。誰も持っていなければ null */
+  leaseOwner: string | null;
+  leaseUntil: string | null;
+  /** 使用量上限などで待つ場合の再開時刻。分からなければ null */
+  resumeAfter: string | null;
+  /** ACTIVE にした時刻。経過時間の上限判定に使う */
+  activatedAt: string | null;
+  /** これまでに回した reconcile の回数 */
+  reconciles: number;
+  /**
+   * 観測対象。Goal YAML は宣言部だけを持つので、ここが置き場になる。
+   * PR が未作成なら null。
+   */
+  prNumber: number | null;
+  issueNumber: number | null;
+  /**
+   * 人間が「もう追わない」と宣言したときの理由。ABANDONED でなければ null。
+   *
+   * status だけでは、なぜ出荷済みの Goal が放棄されているのかが読めない。
+   * ここが `sqlite3` で直接書き換えるのとの差になる（`ent abandon --reason`）。
+   */
+  abandonReason: string | null;
+  /**
+   * 関門が差分を取る相手。`ent start` を叩いた時点の repoRoot の HEAD。
+   *
+   * 関門が答えたい問いは「Actor が何を書いたか」で、PR が答えたい問いは
+   * 「リリース先との差は何か」になる。`repository.default_branch` は後者なので、
+   * 前者の基準に流用すると、**人間が呼び出し側のブランチに書いたものまで
+   * Actor の編集として並ぶ**。Goal の宣言（`.goals/*.yaml`）がまさにそれで、
+   * `.goals/**` は PROTECTED_PATH_FLOOR にあるため毎ティック
+   * `protected_path_touched` になっていた。
+   *
+   * ブランチ名ではなく sha で持つ。差分は3点表記（`base...HEAD`）なので、
+   * base が先に進むだけなら分岐点は動かない。動くのは**分岐点の commit 自体を
+   * 書き換えたとき**で、そのとき `merge-base` が消えて
+   * `ESCALATE(guard_unavailable)` になる。作業ブランチでは amend も rebase も
+   * 日常的なので、ent を回している最中に1回打つだけで関門が張れなくなる。
+   * sha で固定しておけば、その commit が生きている限り差分は取れる。
+   *
+   * 記録が無い Goal（この列より前に start した分）は null で、呼び出し側が
+   * `default_branch` に落とす。移行のために古い挙動を残してある。
+   */
+  guardBaseSha: string | null;
+}
+
+/** `ent list` / Store.listGoals が返す1件分。宣言部と実行時状態の要点だけをまとめる */
+export interface GoalListItem {
+  id: string;
+  name: string;
+  status: GoalStatus;
+  reconciles: number;
+  prNumber: number | null;
+  resumeAfter: string | null;
+}

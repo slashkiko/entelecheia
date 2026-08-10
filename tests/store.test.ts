@@ -3,7 +3,8 @@ import type { Decision } from "../src/domain/action.js";
 import type { Fact, Unresolved } from "../src/domain/fact.js";
 import type { Goal } from "../src/domain/goal.js";
 import type { RunIntent, RunOutcome } from "../src/domain/run.js";
-import { openStore, type Store } from "../src/store/index.js";
+import type { Store } from "../src/store/port.js";
+import { openStore } from "../src/store/sqlite.js";
 
 const NOW = new Date("2026-08-09T05:00:00.000Z");
 

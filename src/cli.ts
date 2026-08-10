@@ -14,22 +14,18 @@ import { parseArgs } from "node:util";
 import { type TickResult, tick } from "./controller/index.js";
 import type { Decision } from "./domain/action.js";
 import { errorMessage } from "./domain/error-message.js";
+import type { Snapshot } from "./domain/fact.js";
 import { type Goal, goalTemplate, SLUG, TEMPLATE_SLUG } from "./domain/goal.js";
 import { loadGoalFile } from "./domain/goal-loader.js";
-import { isTerminal } from "./domain/goal-state.js";
+import { type GoalListItem, type GoalState, isTerminal } from "./domain/goal-state.js";
 import type { Run } from "./domain/run.js";
 import type { Verification } from "./domain/verification.js";
 import type { ProgressSink } from "./publish/index.js";
-import {
-  type GoalListItem,
-  type GoalState,
-  openStore,
-  type Snapshot,
-  type Store,
-} from "./store/index.js";
+import type { Store } from "./store/port.js";
 import {
   doctorProbes,
   gitRootOf,
+  openStore,
   repoHeadSha,
   STATE_IGNORE_LINE,
   tickPorts,
@@ -1209,7 +1205,7 @@ export interface DoctorProbes {
 }
 
 /**
- * `node:sqlite`（src/store/index.ts）が要求する Node のメジャーバージョン。
+ * `node:sqlite`（src/store/sqlite.ts）が要求する Node のメジャーバージョン。
  *
  * 足りない Node で叩かれると import が例外になり、ent の話であることが
  * メッセージから読み取れない。対象リポジトリ側の Node が使われる構成——

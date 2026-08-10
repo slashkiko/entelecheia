@@ -3,7 +3,8 @@ import { showPayload } from "../src/cli.js";
 import type { Decision } from "../src/domain/action.js";
 import type { Fact } from "../src/domain/fact.js";
 import type { Goal } from "../src/domain/goal.js";
-import { openStore, type Store } from "../src/store/index.js";
+import type { Store } from "../src/store/port.js";
+import { openStore } from "../src/store/sqlite.js";
 
 /**
  * `ent show` は「宣言部と実行時状態をマージして1枚で出す」（design.md §4.6）。

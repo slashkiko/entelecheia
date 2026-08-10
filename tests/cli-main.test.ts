@@ -6,7 +6,7 @@ import { DatabaseSync } from "node:sqlite";
 import { promisify } from "node:util";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { main } from "../src/cli.js";
-import { openStore } from "../src/store/index.js";
+import { openStore } from "../src/store/sqlite.js";
 
 /**
  * `ent` を実際のリポジトリと実際の SQLite に対して一周させる。
