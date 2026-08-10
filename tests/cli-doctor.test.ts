@@ -155,6 +155,14 @@ describe("doctorPayload", () => {
     expect(report.exitCode).toBe(1);
   });
 
+  it("gitignore を確かめられなければ unknown にする", async () => {
+    // git に聞けなかったのを「無視できていない」に畳むと、doctor が常に赤くなる。
+    const report = await doctorPayload(probes({ stateIgnored: async () => null }));
+
+    expect(report.checks.find((c) => c.name === "state_ignored")?.result).toBe("unknown");
+    expect(report.exitCode).toBe(0);
+  });
+
   it(".goals/ がまだ無いときは、次に叩くものが detail から読める", async () => {
     // 「読めなかった」だけだと、壊れているのか、まだ始めていないのかが
     // 読み分けられない。対象リポジトリで最初に叩くものを名指しする。

@@ -1,5 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { goalSchema, PROTECTED_PATH_FLOOR, withProtectedPathFloor } from "../src/domain/goal.js";
+import { parse as parseYaml } from "yaml";
+import {
+  APPROVAL_GATE_FLOOR,
+  goalSchema,
+  goalTemplate,
+  PROTECTED_PATH_FLOOR,
+  TEMPLATE_SLUG,
+  withApprovalGateFloor,
+  withProtectedPathFloor,
+} from "../src/domain/goal.js";
 
 /**
  * 保護パスの下限が、どの Goal からも外せないことを固定する。
@@ -92,5 +101,99 @@ describe("保護パスの下限", () => {
     expect(PROTECTED_PATH_FLOOR).toContain("src/adapters/claude.ts");
     expect(PROTECTED_PATH_FLOOR).toContain("src/adapters/local.ts");
     expect(PROTECTED_PATH_FLOOR).toContain("src/domain/withheld-env.ts");
+  });
+});
+
+/**
+ * 承認ゲートの下限。`protected_paths` と同じ理由で、Goal から外せなくする。
+ *
+ * `require_human_approval` に書いたゲートだけが `DENIED_TOOLS`（src/adapters/claude.ts）
+ * の拒否パターンになる。**書かなければ許可される。** 既存の Goal YAML は全部が
+ * 6ゲートを列挙していたので誰も気づかなかったが、`ent init` の雛形が `merge` だけを
+ * 書いた時点で、そこから始めたリポジトリは全部それで回ることになった。
+ */
+function gated(declared?: string[]): Record<string, unknown> {
+  const policies: Record<string, unknown> = { protected_paths: [] };
+  if (declared !== undefined) {
+    policies.require_human_approval = declared;
+  }
+  return { ...structuredClone(MINIMAL), policies };
+}
+
+describe("承認ゲートの下限", () => {
+  it("require_human_approval を空で宣言しても下限が入る", () => {
+    const goal = goalSchema.parse(gated([]));
+
+    for (const gate of APPROVAL_GATE_FLOOR) {
+      expect(goal.policies.require_human_approval).toContain(gate);
+    }
+  });
+
+  it("キーごと省いても下限が入る", () => {
+    const goal = goalSchema.parse(gated());
+
+    for (const gate of APPROVAL_GATE_FLOOR) {
+      expect(goal.policies.require_human_approval).toContain(gate);
+    }
+  });
+
+  it("merge だけを書いた Goal でも、自己承認と資格情報の取り直しは塞がる", () => {
+    // `ent init` の雛形が実際にこの形だった。gh pr comment が許可されたままだと、
+    // Agent が /ent approve を投げて type: human の criteria を自分で通せる。
+    const goal = goalSchema.parse(gated(["merge"]));
+
+    expect(goal.policies.require_human_approval).toContain("external_send");
+    expect(goal.policies.require_human_approval).toContain("secret_access");
+    expect(goal.policies.require_human_approval).toContain("merge");
+  });
+
+  it("同じゲートを宣言しても重複しない", () => {
+    const merged = withApprovalGateFloor(["external_send", "external_send"]);
+
+    expect(merged.filter((gate) => gate === "external_send")).toHaveLength(1);
+  });
+
+  it("下限は関門そのものが働かなくなるものだけにする", () => {
+    // merge / force_push / push_to_default_branch / deploy は危ないが、関門は
+    // 無効化しない。Goal によっては正当に触るので、下限は最小に保つ。
+    expect([...APPROVAL_GATE_FLOOR].sort()).toEqual(["external_send", "secret_access"]);
+  });
+});
+
+/**
+ * `ent init` が置く雛形。中身が関門の一部なので、下限と同じ場所で押さえる。
+ *
+ * 雛形が緩いゲートを配れば、そこから始めたリポジトリは全部それで回る。
+ * 「スキーマとして妥当」だけでは足りない。
+ */
+describe("ent init の雛形", () => {
+  const parsed = () => goalSchema.parse(parseYaml(goalTemplate(TEMPLATE_SLUG)));
+
+  it("スキーマとして妥当で、ファイル名の slug と goal.id が揃う", () => {
+    expect(parsed().goal.id).toBe(TEMPLATE_SLUG);
+  });
+
+  it("6ゲート全部を書く", () => {
+    // 下限が混ぜるのは2つだけなので、残り4つは雛形が書かないと許可されたままになる。
+    for (const gate of [
+      "merge",
+      "force_push",
+      "push_to_default_branch",
+      "deploy",
+      "secret_access",
+      "external_send",
+    ]) {
+      expect(parsed().policies.require_human_approval).toContain(gate);
+    }
+  });
+
+  it("人間が埋める箇所に案内を置く", () => {
+    // repository を埋め忘れても ent start は通り、最初のティックで GitHub の
+    // 404 として初めて出る。「ent の話だと分かるところで止める」という doctor の
+    // 方針と、雛形だけがずれることになる。
+    const yaml = goalTemplate(TEMPLATE_SLUG);
+
+    expect(yaml).toContain("対象リポジトリに合わせて埋める");
+    expect(yaml).toContain("ファイル名の slug と一致させる");
   });
 });

@@ -212,10 +212,18 @@ ent doctor          # その場所で回せるかを読み取り専用で調べ�
 （`ent doctor` の `state_ignored`）。状態 DB と worktree と Agent の生ログが
 そこに入るので、載せると commit に混ざる。
 
-いま残っている制約が2つある。lease は `.goals/.state/goals.db` にあり gitignore
-済みなので、**端末をまたいだ排他は効かない**（2台が同じ Goal を回すと両方が PR を
-立てる）。`PROTECTED_PATH_FLOOR` は entelecheia 固有のパスを含むので、対象
-リポジトリに `src/controller/**` などがあると Agent が触った時点で違反になる。
+いま残っている制約が3つある。
+
+- lease は `.goals/.state/goals.db` にあり gitignore 済みなので、**端末をまたいだ
+  排他は効かない**（2台が同じ Goal を回すと両方が PR を立てる）
+- `PROTECTED_PATH_FLOOR` は entelecheia 固有のパスを含むので、対象リポジトリに
+  `src/controller/**` などがあると、Agent が触った時点で違反になる
+- **逆側も同じくらい重要で、他のリポジトリを回すとき下限の保護パスのうち実際に
+  効くのは `.goals/**`・`.goals/.state/**`・`.git/**` だけになる。** ent 本体の
+  コードは対象リポジトリの worktree の外にあり、controller が見るのは worktree の
+  中の変更なので、`src/controller/**` のような行は対象リポジトリでは何も指さない。
+  **関門は「その Goal の作業ツリーの中」を守るもので、ent 自身のコードを守るものでは
+  ない**（自己ホストのときだけ両方が重なる）
 
 ### 複数の Goal を同時に回す
 

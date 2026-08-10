@@ -6,10 +6,11 @@ import {
   readdirSync,
   readFileSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { agentContextPayload, main, parseCommand } from "../src/cli.js";
@@ -237,14 +238,92 @@ describe("git リポジトリでない場所で叩く", () => {
 });
 
 describe("既に Goal があるリポジトリで叩く", () => {
-  it("既存の Goal YAML を消さない", async () => {
-    // この repo のルートで叩かれても壊れないこと。
+  beforeEach(async () => {
     await makeGitRepo(repoRoot);
     mkdirSync(join(repoRoot, ".goals"), { recursive: true });
     writeFileSync(join(repoRoot, ".goals", "existing-goal.yaml"), "version: 1\n");
+  });
 
+  it("既存の Goal YAML を消さない", async () => {
+    // この repo のルートで叩かれても壊れないこと。
     await main(["init"]);
 
     expect(goalFiles()).toContain("existing-goal.yaml");
+  });
+
+  it("案内が既存の Goal を「埋めて start しろ」と名指ししない", async () => {
+    // 名前が挙がるのはアルファベット順の1本目でしかないので、終わった Goal を
+    // 名指しすることになる。ファイルは壊れないが、init の唯一の出力が
+    // 常に誤った指示になる。
+    await main(["init", "--json"]);
+
+    const report = JSON.parse(stdout.at(-1) ?? "{}") as { next: string };
+    expect(report.next).not.toContain("existing-goal");
+  });
+});
+
+describe("出力の action", () => {
+  it("既にある .gitignore へ足したときは appended と出す", async () => {
+    // created と出すと「新しく作られた」と読めて、既存ファイルを変更した事実が
+    // 出力から消える。
+    await makeGitRepo(repoRoot);
+    writeFileSync(join(repoRoot, ".gitignore"), "node_modules/\n");
+
+    await main(["init", "--json"]);
+
+    const report = JSON.parse(stdout.at(-1) ?? "{}") as {
+      entries: { path: string; action: string }[];
+    };
+    expect(report.entries.find((e) => e.path === ".gitignore")?.action).toBe("appended");
+  });
+
+  it(".gitignore が無ければ created と出す", async () => {
+    await makeGitRepo(repoRoot);
+
+    await main(["init", "--json"]);
+
+    const report = JSON.parse(stdout.at(-1) ?? "{}") as {
+      entries: { path: string; action: string }[];
+    };
+    expect(report.entries.find((e) => e.path === ".gitignore")?.action).toBe("created");
+  });
+});
+
+describe("リポジトリのルート以外で叩く", () => {
+  it("サブディレクトリなら終了コード 1 で断る", async () => {
+    // repoRoot は常に process.cwd() なので、サブディレクトリで叩くとそこが
+    // 対象リポジトリのルート扱いになり、worktree も状態 DB もそこに置かれる。
+    await makeGitRepo(repoRoot);
+    const sub = join(repoRoot, "src");
+    mkdirSync(sub, { recursive: true });
+    process.chdir(sub);
+
+    expect(await main(["init"])).toBe(1);
+    expect(existsSync(join(sub, ".goals"))).toBe(false);
+  });
+});
+
+describe("書き込み先がシンボリックリンクのとき", () => {
+  it(".gitignore がリンクなら、リンク先に書かずに 1 で断る", async () => {
+    // 信用していないリポジトリを clone して init を叩くと、リンク先
+    // （`~/.zshrc` など）に ent が書くことになる。
+    await makeGitRepo(repoRoot);
+    const outside = join(repoRoot, "..", `outside-${basename(repoRoot)}.txt`);
+    writeFileSync(outside, "元の中身\n");
+    symlinkSync(outside, join(repoRoot, ".gitignore"));
+
+    expect(await main(["init"])).toBe(1);
+    expect(readFileSync(outside, "utf8")).toBe("元の中身\n");
+    expect(existsSync(join(repoRoot, ".goals"))).toBe(false);
+  });
+
+  it(".goals がリンクなら、リンク先に書かずに 1 で断る", async () => {
+    await makeGitRepo(repoRoot);
+    const outside = join(repoRoot, "..", `outside-goals-${basename(repoRoot)}`);
+    mkdirSync(outside, { recursive: true });
+    symlinkSync(outside, join(repoRoot, ".goals"));
+
+    expect(await main(["init"])).toBe(1);
+    expect(readdirSync(outside)).toEqual([]);
   });
 });

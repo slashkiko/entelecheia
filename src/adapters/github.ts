@@ -313,7 +313,11 @@ export function githubApproval(options: GitHubOptions & { prNumber: number | nul
           continue;
         }
         const login = comment.user?.login ?? "";
-        if (!(await hasWriteAccess(login))) {
+        // 作成者自身のコメントは数えない。レビュー承認の側（1.）と揃える。
+        // `PROGRESS_MARKER` が弾くのは controller が書いたコメントだけなので、
+        // Agent が `gh pr comment` を持つ Goal では PR の作成者名義で定型文を
+        // 書けてしまう。承認ゲートの下限（`APPROVAL_GATE_FLOOR`）と二重にする。
+        if (login === author || !(await hasWriteAccess(login))) {
           continue;
         }
         return { approvedBy: login, approvedAt: comment.created_at };
