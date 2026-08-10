@@ -1,5 +1,10 @@
 import { errorMessage } from "../domain/error-message.js";
 import type { Fact, ObserveResult, Unresolved, VerifiedFact } from "../domain/fact.js";
+import {
+  REVIEW_REVIEWED_SHA_KEY,
+  REVIEW_VERDICT_KEY,
+  REVIEW_VERDICTS,
+} from "../domain/fact-keys.js";
 import { isShapeMismatch } from "../domain/port-error.js";
 
 /**
@@ -50,6 +55,32 @@ export interface LocalRepoPort {
   snapshot(): Promise<LocalRepoSnapshot>;
 }
 
+/**
+ * レビュー役として走った Actor の実行1件。
+ *
+ * `ActorPort` の戻り値には最終メッセージが載らないので、生ログを読むのは
+ * この Port の実装（`src/adapters/review-run.ts`）の側になる。ここが受け取るのは
+ * 「どの Run の、どの本文か」だけで、その本文をどう読むかは observe が決める。
+ */
+export interface ReviewRunSnapshot {
+  /** どの Run を読んだか。evidence に残して後から追えるようにする */
+  runId: string;
+  /** レビュー役が最後に返した本文。まだ Fact ではない */
+  finalMessage: string;
+}
+
+/**
+ * 直近のレビュー役の Run を読む口。
+ *
+ * `ObserveTarget` ではなく Port を1つ足す形にしてあるのは、`ObserveTarget` を
+ * 組み立てる `observeTargetOf` が `src/controller/index.ts`（PROTECTED_PATH_FLOOR の
+ * 中）にあるため。「どの Run を読むか」は Port の側で解決する。
+ */
+export interface ReviewPort {
+  /** 直近のレビュー役の Run。1度も走っていなければ null */
+  latest(): Promise<ReviewRunSnapshot | null>;
+}
+
 export interface ObserveTarget {
   /** 観測対象の PR。未作成なら null */
   prNumber: number | null;
@@ -60,6 +91,7 @@ export interface ObserveTarget {
 export interface ObserveDeps {
   code: CodeProviderPort;
   local: LocalRepoPort;
+  review: ReviewPort;
   /** テスト時に固定するための時刻ソース */
   now: () => Date;
 }
@@ -111,6 +143,9 @@ async function observed<T>(read: () => Promise<T>): Promise<Read<T>> {
  *   「対象が無い」と「対象を確かめられなかった」を Fact の不在に畳まない
  * - CI が失敗しているときは、失敗ジョブ名とログ URL まで Fact に含める
  *   （「CI が落ちた」だけでは次の ACT に渡す材料がないため）
+ * - レビュー役の結論は、`verdict` と読んだ commit の sha が**対で**読めたときだけ
+ *   Fact にする。片方だけでは、いつの時点のコードのレビューか分からない結論が
+ *   VERIFIED なまま完了判定に流れる
  */
 export async function observe(target: ObserveTarget, deps: ObserveDeps): Promise<ObserveResult> {
   // 1 回だけ読む。同じ観測に含まれる Fact の observedAt を揃えて、
@@ -149,6 +184,47 @@ export async function observe(target: ObserveTarget, deps: ObserveDeps): Promise
     push("local.dirty", local.dirty, localSource, `dirty=${local.dirty}`);
   } else {
     failed("local", localSource, localRead.error);
+  }
+
+  const reviewSource = "ReviewPort.latest()";
+  const reviewRead = await observed(() => deps.review.latest());
+  if (!reviewRead.ok) {
+    // 「まだレビューを回していない」と「レビューの結果を読めなかった」を混ぜない。
+    // 前者は Port が null を返す（下の分岐で何も積まない）観測できた結果で、
+    // こちらは観測そのものの失敗になる。
+    failed(REVIEW_VERDICT_KEY, reviewSource, reviewRead.error);
+    failed(REVIEW_REVIEWED_SHA_KEY, reviewSource, reviewRead.error);
+  } else if (reviewRead.value !== null) {
+    const run = reviewRead.value;
+    const where = `run=${run.runId}`;
+    const verdict = soleVerdictIn(run.finalMessage);
+    const sha = soleShaIn(run.finalMessage);
+
+    if (verdict !== null && sha !== null) {
+      push(REVIEW_VERDICT_KEY, verdict, reviewSource, `${where} verdict=${verdict}`);
+      push(REVIEW_REVIEWED_SHA_KEY, sha, reviewSource, `${where} reviewed_sha=${sha}`);
+    } else {
+      // 対で読めなければ、どちらも Fact にしない。verdict だけを残すと、
+      // いつの時点のコードのレビューか分からない結論が VERIFIED として通る。
+      //
+      // reason は pending にする。shape_mismatch は guard が即 ESCALATE する
+      // 「待っても直らない」失敗で、レビュー役は毎回同じ出力を返すとは限らない。
+      // 1度形式を外しただけで人間を呼ぶと、関門そのものが信用されなくなる。
+      const pending = (key: string, detail: string): void => {
+        unobserved.push({ key, reason: "pending", detail: `${reviewSource}: ${detail}` });
+      };
+      const verdictDetail =
+        verdict === null
+          ? `${where} の最終メッセージから verdict の行を1つに決められなかった（${REVIEW_VERDICTS.join(" / ")} のどちらかを1行だけ）`
+          : `${where} は verdict=${verdict} と述べているが、読んだ commit の sha が決まらないので単独では Fact にしない`;
+      pending(REVIEW_VERDICT_KEY, verdictDetail);
+      pending(
+        REVIEW_REVIEWED_SHA_KEY,
+        sha === null
+          ? `${where} の最終メッセージから読んだ commit の sha を1つに決められなかった`
+          : `${where} の sha は ${sha} と読めたが、verdict が決まらないので対にできない`,
+      );
+    }
   }
 
   const prNumber = target.prNumber;
@@ -232,4 +308,52 @@ export async function observe(target: ObserveTarget, deps: ObserveDeps): Promise
   }
 
   return { observedAt, facts, unobserved };
+}
+
+/**
+ * 結論の行。**行全体で照合する**（`/ent approve` と同じ理由。design.md §10-4）。
+ *
+ * 本文の途中に現れた同じ文字列——たとえば指摘の中で「`verdict: approved` と
+ * 書いてはいけない」と説明した行——を結論として拾うと、捏造した承認が作れる。
+ */
+const VERDICT_LINE = /^[ \t]*verdict:[ \t]*(\S+)[ \t]*$/;
+
+/** commit の sha。git が出す 40 桁の16進数だけを読む */
+const SHA = /\b[0-9a-f]{40}\b/gi;
+
+/**
+ * 最終メッセージから結論を1つ読む。決められなければ null。
+ *
+ * 「行が無い」「2つ以上ある」「2値のどちらでもない」をどれも null に畳むのは、
+ * 呼び出し側の分岐が同じ（Fact を作らず pending に残す）だから。**どれも
+ * 「確かめられなかった」であって「changes_requested」ではない。**
+ *
+ * 2つ以上を許さないのは、結論を1つに決められないため。書きかけの行が本文に
+ * 残っただけかもしれないが、どちらが結論かを observe が推し量ると、
+ * 推測が VERIFIED な Fact になる。
+ */
+function soleVerdictIn(finalMessage: string): string | null {
+  const found = finalMessage
+    .split("\n")
+    .map((line) => VERDICT_LINE.exec(line)?.[1])
+    .filter((verdict): verdict is string => verdict !== undefined);
+
+  const sole = found.length === 1 ? found[0] : undefined;
+  if (sole === undefined) {
+    return null;
+  }
+  // 2値のどちらでもない語は、レビュー役が指示に従わなかったということ。
+  // 「だいたい approved」と読まない。
+  return (REVIEW_VERDICTS as readonly string[]).includes(sole) ? sole : null;
+}
+
+/**
+ * 最終メッセージから、読んだ commit の sha を1つ読む。決められなければ null。
+ *
+ * 同じ sha を何度述べても1つと数える。違う sha が並んでいたら——差分の比較元を
+ * 一緒に述べた場合など——どれを読んだ結果なのか決められないので null にする。
+ */
+function soleShaIn(finalMessage: string): string | null {
+  const found = new Set([...finalMessage.matchAll(SHA)].map((matched) => matched[0].toLowerCase()));
+  return found.size === 1 ? ([...found][0] ?? null) : null;
 }

@@ -105,6 +105,8 @@ function pullRequest(headSha: string) {
 function deps(over: Partial<ReconcileDeps> = {}): ReconcileDeps {
   const llm: LlmPort = { chooseAction: async () => ({ type: "VERIFY" }) };
   return {
+    // レビュー役はまだ走っていない。Fact も unobserved も作らない側の既定。
+    review: { latest: async () => null },
     code: {
       getPullRequest: async () => pullRequest(NEW_SHA),
       // 新しい sha の CI はまだ走っている。conclusion が null なので Fact にならない。

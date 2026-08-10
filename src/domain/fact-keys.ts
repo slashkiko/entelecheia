@@ -51,15 +51,17 @@ export const observedFactKeySchema = z.enum([
   // そのものになる。`github.pr.review_decision` とは別物で、あちらは GitHub 上の
   // 人間（または bot）のレビュー、こちらは controller が回したレビュー役の結論。
   //
-  // **作る側はまだ居ない。** レビュー役をいつ起動するかは別 Goal
-  // （.goals/review-agent-reviews.yaml の desired_state 6）に分けてあり、
-  // `role: review` の ACT を出す経路が無い。キーを先に登録するのは、Goal YAML が
-  // `verification: { type: fact, key: review.verdict, equals: approved }` と
-  // 書けるようにするため。参照する側が既にあれば、Fact が無い間は Gap が残り、
-  // COMPLETE には届かない。それが正しい振る舞いになる（design.md §3.1）。
+  // 作る側は `ReviewPort`（`src/observe/index.ts`）になる。`role: review` で
+  // 走った Run の生ログから最終メッセージを読み、observe がそれを Fact にする。
+  // **Actor が言った文字列はまだ Fact ではない。** 形が読めなければ Fact を
+  // 作らず、理由を付けて unobserved に残す（design.md §3.1）。レビューを
+  // 回していないティックで値を捏造しないのも同じ規則で、Port が null を返す
+  // あいだは Fact も unobserved も作らない。
   //
-  // 作る側を足すときも、レビューを回していないティックで値を捏造しない。
-  // 確かめられなければ Fact を作らず、理由を付けて unobserved に残す。
+  // 参照する側は Goal YAML の
+  // `verification: { type: fact, key: review.verdict, equals: approved }` で、
+  // Fact が無い間は Gap が残るので COMPLETE には届かない。レビューを完了条件に
+  // するかどうかは criteria が決めるのであって、guard には条件を足さない。
   /** レビュー役の結論。`approved` か `changes_requested` */
   "review.verdict",
   /**
@@ -71,6 +73,27 @@ export const observedFactKeySchema = z.enum([
   "review.reviewed_sha",
 ]);
 export type ObservedFactKey = z.infer<typeof observedFactKeySchema>;
+
+/**
+ * 名前で参照する必要があるキー。
+ *
+ * OBSERVE が作り、VERIFY が突き合わせ、DECIDE が起動の可否を見る——この3つが
+ * 同じ文字列を別々に書いていると、片方の綴りを直しただけで照合が黙って
+ * 成立しなくなる。「レビュー済みの commit が HEAD と同じか」という判定は
+ * 3箇所とも同じ2つのキーを読むので、レジストリ側から名前を配る。
+ */
+export const REVIEW_VERDICT_KEY = "review.verdict" satisfies ObservedFactKey;
+export const REVIEW_REVIEWED_SHA_KEY = "review.reviewed_sha" satisfies ObservedFactKey;
+export const LOCAL_HEAD_SHA_KEY = "local.head_sha" satisfies ObservedFactKey;
+
+/**
+ * レビュー役が返してよい結論。ここに無い語は Fact にしない。
+ *
+ * `src/adapters/claude.ts` のレビュー役のプロンプトが求める2値と同じもの。
+ * あちらは Agent への指示で、こちらは観測側の受け入れ条件になる。指示に
+ * 従わなかった出力を「だいたい approved」と読むと、捏造した承認ができる。
+ */
+export const REVIEW_VERDICTS = ["approved", "changes_requested"] as const;
 
 /**
  * VERIFY が criteria の結果を書き出すキー。

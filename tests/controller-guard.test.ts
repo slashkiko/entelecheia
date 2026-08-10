@@ -77,6 +77,8 @@ function deps(store: Store, fixture: Fixture, sink: Sink): ControllerDeps {
     owner: "worker-a",
     leaseSeconds: 300,
     worktreeRoot: WORKTREE_ROOT,
+    // レビュー役はまだ走っていない。Fact も unobserved も作らない側の既定。
+    review: { latest: async () => null },
     code: {
       getPullRequest: async () => null,
       getLatestCiRun: async () => null,

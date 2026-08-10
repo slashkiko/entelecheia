@@ -329,12 +329,31 @@ Phase 0 では Port の camelCase フィールド名との対応表がどこに�
 実行そのものだからで、`github.pr.review_decision`（GitHub 上の人間または bot の
 レビュー）とは別物になる。`verdict` と対で `reviewed_sha` を置くのは、「通った」だけでは
 いつの時点のコードのレビューか分からず、実装が進んだあとの Fact をそのまま完了判定に
-使うことになるため。**作る側はまだ無い。** `role: review` の ACT を出す経路が無く、
-レビュー役をいつ起動するかは別の Goal に分けてある。キーだけ先に登録してあるのは、
-Goal YAML が `verification: { type: fact, key: review.verdict, equals: approved }` と
-書けるようにするためで、Fact が無い間は Gap が残り COMPLETE には届かない（§3.1）。
-guard に「レビューを通れ」という条件は足していない。完了判定の境界（§7）を
-動かさずに済む形を選んである。
+使うことになるため。Goal YAML が
+`verification: { type: fact, key: review.verdict, equals: approved }` と書けば、
+Fact が無い間は Gap が残り COMPLETE には届かない（§3.1）。guard に
+「レビューを通れ」という条件は足していない。完了判定の境界（§7）を動かさずに済む
+形を選んである。
+
+作る側は `ReviewPort`（`src/observe/index.ts`）になる。`role: review` で走った Run の
+生ログ（§4.6 の `runs/<run-id>/log.jsonl`）から最終メッセージを読み、observe が
+それを Fact にする。`ObserveTarget` ではなく Port を足す形にしたのは、
+`ObserveTarget` を組み立てる `observeTargetOf` が `src/controller/index.ts`
+（`PROTECTED_PATH_FLOOR` の中）にあるためで、「どの Run を読むか」は Port の側で解決する。
+**レビュー役が言った文字列は、まだ Fact ではない。** `verdict:` の行は行全体で照合し
+（§10-4 と同じ理由。本文の途中に現れた同じ文字列を結論として拾うと、捏造した承認が
+作れる）、行が無い・2つ以上ある・2値のどちらでもない・読んだ commit の sha が
+決まらないときは、どちらのキーも Fact にせず `pending` として `unobserved` に残す。
+`shape_mismatch` にはしない。あちらは guard が即 ESCALATE する「待っても直らない」失敗で、
+レビュー役は毎回同じ出力を返すとは限らない。レビュー役を1度も起動していない
+ティックでは、Fact も `unobserved` も作らない。
+
+起動する側は DECIDE のプロンプトになる。選べる行動に `role: review` の ACT を1つ足し、
+`review.reviewed_sha` が `local.head_sha` と一致しているあいだは——実装が1行も
+進んでいないということなので——その選択肢を理由付きで外す。判定を guard に足さないのは、
+レビューをいつ回すかを決定論に置くと「レビューを通れ」という条件を完了判定の手前に
+足したのと同じになるため。外したはずのレビュー役を LLM が返し続け、再試行を使い切った
+場合だけ `ESCALATE(review_not_converging)` で止める（`invalid_decision` に畳まない）。
 
 `github.pr.review_decision` は REST の `pulls/{n}` と `pulls/{n}/reviews` から導出する。
 GraphQL なら1回で取れるが、ETag による conditional request（§3.4）が効くのは REST の
