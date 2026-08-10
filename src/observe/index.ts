@@ -322,6 +322,14 @@ const VERDICT_LINE = /^[ \t]*verdict:[ \t]*(\S+)[ \t]*$/;
 const SHA = /\b[0-9a-f]{40}\b/gi;
 
 /**
+ * 読んだ commit を名指しする行。**行全体で照合する**（`VERDICT_LINE` と同じ理由）。
+ *
+ * 本文の途中に現れた `reviewed_sha: <40桁>` ——たとえば「こう書いてはいけない」と
+ * 説明した行——を名指しとして拾うと、読んでいない commit のレビューが作れる。
+ */
+const REVIEWED_SHA_LINE = /^[ \t]*reviewed_sha:[ \t]*([0-9a-f]{40})[ \t]*$/i;
+
+/**
  * 最終メッセージから結論を1つ読む。決められなければ null。
  *
  * 「行が無い」「2つ以上ある」「2値のどちらでもない」をどれも null に畳むのは、
@@ -350,10 +358,33 @@ function soleVerdictIn(finalMessage: string): string | null {
 /**
  * 最終メッセージから、読んだ commit の sha を1つ読む。決められなければ null。
  *
- * 同じ sha を何度述べても1つと数える。違う sha が並んでいたら——差分の比較元を
- * 一緒に述べた場合など——どれを読んだ結果なのか決められないので null にする。
+ * 先に `reviewed_sha:` の行を探し、無ければ本文中の sha を数える。
+ *
+ * **数えるだけの規則を単独で使わない。** レビュー役のプロンプト
+ * （`src/adapters/claude.ts`）が求めているのは「読んだ commit の sha を述べる」
+ * ことだけで、2つ目の完全な sha を書くと観測が無効になるとは言っていない。
+ * 差分の比較元を完全形で併記する、`git log` の出力を1行引用する——どれも
+ * 指示に従った書き方なのに、数えるだけの規則ではレビュー1回分が丸ごと落ちる。
+ * 触れない側（FLOOR）に暗黙の契約を負わせず、読む側で名指しを先に見る。
+ *
+ * 名指しが2つ以上あって値が食い違うときは、本文中の sha を数える側へ落とさずに
+ * null にする。「どれを読んだか」を名指しで2通り述べた出力は、数え直しても
+ * 決まらない。
+ *
+ * 名指しが無い場合の規則はこれまでどおり。同じ sha を何度述べても1つと数え、
+ * 違う sha が並んでいたら、どれを読んだ結果なのか決められないので null にする。
  */
 function soleShaIn(finalMessage: string): string | null {
+  const lines = finalMessage.split("\n");
+  const labeled = new Set(
+    lines
+      .map((line) => REVIEWED_SHA_LINE.exec(line)?.[1]?.toLowerCase())
+      .filter((sha): sha is string => sha !== undefined),
+  );
+  if (labeled.size > 0) {
+    return labeled.size === 1 ? ([...labeled][0] ?? null) : null;
+  }
+
   const found = new Set([...finalMessage.matchAll(SHA)].map((matched) => matched[0].toLowerCase()));
   return found.size === 1 ? ([...found][0] ?? null) : null;
 }

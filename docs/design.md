@@ -348,12 +348,30 @@ Fact が無い間は Gap が残り COMPLETE には届かない（§3.1）。guar
 レビュー役は毎回同じ出力を返すとは限らない。レビュー役を1度も起動していない
 ティックでは、Fact も `unobserved` も作らない。
 
+sha は `reviewed_sha:` の行を先に見て、無ければ本文中の 40 桁を数える。数えるだけの
+規則を単独で使わないのは、レビュー役のプロンプトが「読んだ commit の sha を述べる」
+としか言っておらず、差分の比較元を完全形で併記した出力——指示に従った書き方——で
+レビュー1回分が落ちるため。プロンプトのある `src/adapters/claude.ts` は
+`PROTECTED_PATH_FLOOR` の中で触れないので、暗黙の契約は読む側で吸収する。
+
 起動する側は DECIDE のプロンプトになる。選べる行動に `role: review` の ACT を1つ足し、
 `review.reviewed_sha` が `local.head_sha` と一致しているあいだは——実装が1行も
 進んでいないということなので——その選択肢を理由付きで外す。判定を guard に足さないのは、
 レビューをいつ回すかを決定論に置くと「レビューを通れ」という条件を完了判定の手前に
 足したのと同じになるため。外したはずのレビュー役を LLM が返し続け、再試行を使い切った
 場合だけ `ESCALATE(review_not_converging)` で止める（`invalid_decision` に畳まない）。
+
+**選択肢を出すのは、criteria がレビューの結論を求めている Goal だけになる。** Gap は
+LLM を動機づけるだけで起動を絞りはしないので、無条件に出すと `review.verdict` を
+1文字も書いていない Goal でもレビュー役が起動できる。予算1回分の話にとどまらない。
+レビュー役の Run が1つできると、その最終メッセージが読めなかったティックは
+`review.*` が `pending` として `unresolved` に積まれ、Gap がゼロの Goal では
+guard の3番目（§7）が WAIT を返して LLM が呼ばれない。もう一度レビューを回すという
+選択そのものができず、`latest()` は同じ Run を返し続けるので pending は自力で消えない。
+criteria に書いた Goal は verdict が欠ければ Gap が立って回復できるので、
+**書いていない Goal だけが COMPLETE に届かなくなる**という逆転になる。起動の口を
+criteria に閉じておけば、その Run が最初から存在しない。ここも guard の判定ではなく、
+LLM に見せる選択肢の範囲になる。
 
 `github.pr.review_decision` は REST の `pulls/{n}` と `pulls/{n}/reviews` から導出する。
 GraphQL なら1回で取れるが、ETag による conditional request（§3.4）が効くのは REST の
