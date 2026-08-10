@@ -353,7 +353,13 @@ src/adapters/claude.ts    ActorPort と LlmPort。Claude Agent SDK
                           role ごとの許可・拒否ツールとプロンプトもここ。編集の
                           ツールを持つのは実装役だけ（design.md §4.2）
 src/wiring/index.ts       合成ルート。どの Port にどの Adapter を挿すかを決める唯一の場所
-src/cli.ts                ent コマンド。引数の解釈と agent-context もここ
+src/usecase/init.ts       ent init。.goals/ と gitignore の行と Goal の雛形を置く
+src/usecase/doctor.ts     ent doctor。回す前の前提を、書かずに調べる
+src/usecase/inspect.ts    ent get / ent list が出す payload。読むだけ
+src/cli/parse.ts          引数の解釈。実行はしない
+src/cli/present.ts        出力の整形。stdout は JSON 専用、診断は stderr
+src/cli/agent-context.ts  ent agent-context が出す CLI の構造
+src/cli.ts                ent コマンドの入口。サブコマンドごとの手順と終了コードの契約
 .claude/skills/ent/SKILL.md  エージェントが手順として読むもの。叩く順と、人の承認で止まる場所
 AGENTS.md                 上の SKILL.md を指すだけの入口。手順は二重に書かない
 tests/                    Acceptance Criteria の実体と、実 git / 実 SQLite を叩く統合テスト

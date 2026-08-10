@@ -17,7 +17,6 @@ import {
   STATE_IGNORE_LINE,
   stateDirIgnored,
 } from "../adapters/local.js";
-import type { DoctorGoal, DoctorProbes } from "../cli.js";
 import type { ControllerDeps } from "../controller/index.js";
 import { errorMessage } from "../domain/error-message.js";
 import type { Goal } from "../domain/goal.js";
@@ -26,6 +25,8 @@ import type { CodeProviderPort } from "../observe/index.js";
 import type { CodeWriterPort } from "../publish/index.js";
 import type { Store } from "../store/port.js";
 import { openStore } from "../store/sqlite.js";
+import type { DoctorGoal, DoctorProbes } from "../usecase/doctor.js";
+import type { InitProbes } from "../usecase/init.js";
 import type { ApprovalPort } from "../verify/index.js";
 
 /**
@@ -123,6 +124,17 @@ export { loadGoalFile, openStore, STATE_IGNORE_LINE };
  */
 export function gitRootOf(repoRoot: string): string | null {
   return findGitRoot(repoRoot);
+}
+
+/**
+ * `ent init` が外の世界に聞くこと。
+ *
+ * `.gitignore` に書く1行と、それを「無視できているか」判定する
+ * `stateDirIgnored` の基準は同じ文字列でなければならない。実体は
+ * `src/adapters/local.ts` にあるので、選ぶのはここになる。
+ */
+export function initProbes(): InitProbes {
+  return { gitRoot: gitRootOf, stateIgnoreLine: STATE_IGNORE_LINE };
 }
 
 /** 実際のファイルと環境変数を読む口。テストからは差し替える */

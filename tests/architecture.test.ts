@@ -109,6 +109,28 @@ describe("層の境界", () => {
     expect(offenders).toEqual([]);
   });
 
+  it("src/usecase/** と src/cli/** は合成ルートを import しない", () => {
+    // 依存の向きは外→内で、合成ルートはいちばん外側にある。ユースケースが
+    // そこを見に行くと、`initRepository` が「git に聞く実装」を自分で選ぶことになり、
+    // Port で受け取る形（`InitProbes` / `DoctorProbes`）が骨抜きになる。
+    // 合成ルート側は cli.ts と usecase の型を import するので、循環にもなる。
+    //
+    // 呼ぶのは `src/cli.ts` だけ。あそこがサブコマンドごとの手順を書く場所で、
+    // 「どの実装を挿すか」を合成ルートから受け取って usecase に渡す。
+    const inner = tsFilesUnder(SRC).filter((file) => {
+      const path = relativeToSrc(file);
+      return path.startsWith("usecase/") || path.startsWith("cli/");
+    });
+
+    const offenders = inner.flatMap((file) =>
+      importsOf(file)
+        .filter((specifier) => specifier.includes("wiring/"))
+        .map((specifier) => `${relativeToSrc(file)} -> ${specifier}`),
+    );
+
+    expect(offenders).toEqual([]);
+  });
+
   it("src/store/sqlite.ts を import するのは合成ルートだけ", () => {
     // 永続化も Adapter と同じ扱いにする。`Store` は使う側が所有する Port
     // （`src/store/port.ts`）で、SQLite であることは口からは見えない。
