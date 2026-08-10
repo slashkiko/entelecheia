@@ -1,7 +1,8 @@
+import { worktreeNameFor } from "../act/index.js";
 import type { Decision } from "../domain/action.js";
 import { errorMessage } from "../domain/error-message.js";
 import type { Goal } from "../domain/goal.js";
-import type { Run } from "../domain/run.js";
+import { DEFAULT_ACTOR_ROLE, type Run } from "../domain/run.js";
 import type { Verification } from "../domain/verification.js";
 
 /**
@@ -174,12 +175,20 @@ async function ensurePullRequest(
       skipped: "保護パスの関門が通っていないので push も PR 作成もしない",
     };
   }
-  if (target.run === null || target.run.status !== "completed") {
-    // Actor が走っていない、あるいは失敗したティックでは push するものが無い。
-    return { prNumber: target.prNumber, created: false, skipped: "完了した Run が無い" };
-  }
-
-  const pushed = await deps.branch.push(target.run.worktree, target.goal.repository.default_branch);
+  // **Run の有無で push を決めない。** ここは以前「完了した Run が無いティックでは
+  // push するものが無い」と書いていたが、それは「commit するのは Actor だけ」という
+  // 仮定だった。`ESCALATE(uncommitted_changes)` の解決手順は人間が commit することで、
+  // その commit には Run が付かない。PR が立ったあとの DECIDE は
+  // `WAIT(review_pending)` を選び続けるので次の ACT も来ず、人間が片付けた差分は
+  // remote に出ないまま固まる（実際に PR #34 がそうなった）。
+  //
+  // 失敗した Run のティックも同じく送る。push が送るのは commit 済みの差分だけなので、
+  // 失敗した Actor の書きかけはそもそも乗らない。前のティックまでに commit された分を
+  // 止める理由が無い。
+  const pushed = await deps.branch.push(
+    pushWorktree(target.goal),
+    target.goal.repository.default_branch,
+  );
   if (!pushed.pushed) {
     // 空の PR は通知にも検証にも使えない。
     return { prNumber: target.prNumber, created: false, skipped: "base との差分が無い" };
@@ -202,6 +211,22 @@ async function ensurePullRequest(
     body: pullRequestBody(target.goal),
   });
   return { prNumber: number, created: true, skipped: null };
+}
+
+/**
+ * push 先の作業ツリー。Goal だけから決まる。
+ *
+ * Run が無いティックでも押すので `run.worktree` は読めない。**名前の規則を
+ * ここに書かない。** `worktreeNameFor`（src/act/index.ts）が正で、規則を2箇所に
+ * 持つと、検査と push が別の作業ツリーを見ていても誰も気づけない。
+ *
+ * 役割は実装役に固定する（design.md §10-11）。`local.*` を観測するのも criteria の
+ * コマンドを流すのも未 commit の関門が見るのも実装役の作業ツリーで、push だけを
+ * `run.worktree` に従わせると、レビュー役が走ったティックだけ検査した木と押す木が
+ * ずれる。ずれた先に PR は無いので、押した分はどの検証にも載らない。
+ */
+function pushWorktree(goal: Goal): string {
+  return worktreeNameFor(goal.goal.id, DEFAULT_ACTOR_ROLE);
 }
 
 /** push を止める ESCALATE の理由。どちらも「関門が通っていない」を意味する */

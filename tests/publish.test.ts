@@ -204,24 +204,31 @@ describe("PR を確保する", () => {
     expect(result.skipped).toContain("差分");
   });
 
-  it("Run が無いティックでは何もしない", async () => {
+  it("Run が無いティックでも push して PR を確保する", async () => {
+    // ここは以前「Run が無いティックでは何もしない」を固定していた。その線を
+    // 残すと、人間が commit した分（Run が付かない）は remote に永久に出ない。
+    // 押す先は実装役の作業ツリーで、規則は worktreeNameFor が正になる
+    // （理由は tests/publish-human-commit.test.ts）。
     const s = sink();
     const result = await publish(target({ run: null }), deps(s));
 
-    expect(s.pushes).toEqual([]);
-    expect(result.skipped).toContain("Run");
+    expect(s.pushes).toEqual([{ name: "sample-goal", base: "main" }]);
+    expect(result.prNumber).toBe(42);
+    expect(result.created).toBe(true);
   });
 
-  it("失敗した Run では push しない", async () => {
-    // 途中で落ちた作業を PR にすると、通知が実態とずれる。
+  it("失敗した Run のティックでも commit 済みの差分は push する", async () => {
+    // 途中で落ちた作業が PR に乗ることはない。push が送るのは commit 済みの差分
+    // だけで、Actor の書きかけは worktree に残る（未 commit は controller の関門が
+    // 見る）。前のティックまでに commit された分を止める理由が無い。
     const s = sink();
     const result = await publish(
       target({ run: { ...COMPLETED_RUN, status: "failed", exitCode: 1 } }),
       deps(s),
     );
 
-    expect(s.pushes).toEqual([]);
-    expect(result.prNumber).toBeNull();
+    expect(s.pushes).toEqual([{ name: "sample-goal", base: "main" }]);
+    expect(result.prNumber).toBe(42);
   });
 
   it("PR を作れなくても throw しない", async () => {
