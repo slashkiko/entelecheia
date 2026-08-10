@@ -1,6 +1,6 @@
 ---
 name: ent
-description: ent CLI で Goal を収束させるときの手順。agent-context での構造の把握、init での初回セットアップ、doctor での前提の確認、start / run / get / list の1周、--dry-run での事前確認、abandon で追わなくなった Goal を終端にするところ、--limit での出力の絞り方、終了コードの読み方、WAITING_HUMAN や ESCALATE で人の承認や介入を待つところを扱う。
+description: ent CLI で Goal を収束させるときの手順。agent-context での構造の把握、init での初回セットアップ、doctor での前提の確認、start / run / get / list の1周、--dry-run での事前確認、abandon で追わなくなった Goal を終端にするところ、--report で進捗を PR に投稿せず stdout やファイルに出すところ、--limit での出力の絞り方、終了コードの読み方、WAITING_HUMAN や ESCALATE で人の承認や介入を待つところを扱う。
 ---
 
 # ent を回す
@@ -100,6 +100,40 @@ status も書かない。次のティックが何を観測し、どの criteria 
 `wouldTransitionTo` に入る。`skipped` は原則 `null` だが、`ent start` を挟んでいない
 Goal では「Goal が登録されていない」が入る（`ent init` の直後がこれにあたる）。
 dry-run かどうかは `skipped` ではなく `dryRun` で見分ける。
+
+## 進捗を PR に投稿しないで回す
+
+既定では criteria の pass 状況を PR コメントに積む。投稿せずに回すなら:
+
+```
+ent run <slug> --report stdout          # 出力 JSON の report.body に入る
+ent run <slug> --report ./progress.md   # ファイルに追記する
+```
+
+移るのは進捗の宛先だけになる。観測も判断も変わらず、push と PR の作成も止まらない。
+PR そのものは今までどおり公開される。投稿しなくなるのは criteria の pass 状況だけになる。
+
+`GITHUB_TOKEN` が無くても、PR がまだ無くても出る。進捗を書くのは PR を確保するより前で、
+確保できるかどうかとは切り離してある。
+
+`stdout` を指定しても素の Markdown は流れない。stdout は JSON 専用のままで、本文は
+`report.body` に入る。人間に見せるなら `jq -r .report.body` で取り出す。
+
+出力の `report` に入るもの:
+
+| 宛先 | 入るもの |
+| --- | --- |
+| `stdout` | `destination` / `written` / `error` / `body` |
+| ファイル | `destination` / `path` / `written` / `error`（本文はファイルの側にある） |
+
+`written: false` になるのは2通りある。書けなかったとき（`error` に理由が入り、stderr にも
+1行出る）と、そもそもティックが回らなかったとき（`error` は null で、理由は同じ出力の
+`skipped` にある）。どちらも終了コードは変わらない。通知の失敗でティックの成否を
+塗り替えない。
+
+`--report` を受け取るのは `run` だけで、他のサブコマンドに付けると終了コード 2 になる。
+`--dry-run` との併用も 2 で断る。あちらは publish を通らないので書く先が無く、
+criteria の結果は `observed.verifications` の側に入っている。
 
 ## 出力の絞り方
 

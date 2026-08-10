@@ -58,11 +58,42 @@ export interface PublishTarget {
   previousDigest: string | null;
 }
 
+/** 進捗を PR の外に書くときの宛先。実体は CLI が作る（`ent run --report`） */
+export type ReportDestination = "stdout" | "file";
+
+/**
+ * PR コメントの代わりに進捗を書く先。
+ *
+ * `CodeWriterPort` と別にしてあるのは、こちらが PR 番号を必要としないため。
+ * PR を確保できるかどうかと切り離せることが、この宛先の存在理由になる。
+ */
+export interface ProgressSink {
+  /** どこに書くか。結果に載せて、読む側が探す場所を分かるようにする */
+  readonly destination: ReportDestination;
+  /** 進捗を1件書く。失敗したら throw する（publish が握って結果に変える） */
+  write(body: string): Promise<void>;
+}
+
 export interface PublishDeps {
   writer: CodeWriterPort;
   branch: BranchPort;
   /** テスト時に固定するための時刻ソース */
   now: () => Date;
+  /**
+   * 進捗の宛先を PR の外に移す。未指定なら従来どおり PR コメントに書く。
+   *
+   * 指定されたら PR には**投稿しない**。両方に出すと「投稿しない」を満たさない。
+   */
+  report?: ProgressSink | undefined;
+}
+
+/** PR の外に進捗を書いた結果。`--report` が無ければ null になる */
+export interface ReportResult {
+  destination: ReportDestination;
+  /** 実際に書けたか */
+  written: boolean;
+  /** 書けなかった理由。書けたなら null */
+  error: string | null;
 }
 
 export interface PublishResult {
@@ -72,6 +103,8 @@ export interface PublishResult {
   created: boolean;
   /** このティックでコメントを書いたか */
   commented: boolean;
+  /** PR の外に進捗を書いた結果。宛先の指定が無ければ null */
+  report: ReportResult | null;
   /** 何もしなかった理由。した場合は null */
   skipped: string | null;
 }
@@ -88,12 +121,33 @@ export interface PublishResult {
  *   同じ状態を毎ティック通知すると、人間が読むのをやめる
  * - どの経路でも throw しない。失敗は skipped の理由として返す。
  *   通知に失敗しただけでティック全体を落とさない
+ * - `deps.report` があれば、進捗は PR ではなくそちらに書く（`ent run --report`）。
+ *   push と PR の確保は止めない。移すのは通知の宛先だけになる
  */
 export async function publish(target: PublishTarget, deps: PublishDeps): Promise<PublishResult> {
+  // 本文は宛先に関わらず1つ。宛先で内容が変わると、PR で読んだ人と手元で
+  // 読んだ人が別のものを見ることになる。
+  //
+  // 末尾に入る時刻は、以前は push と PR 作成の往復を終えてから取っていた。ここに
+  // 移したので、その往復ぶん（数秒）だけ早くなる。示したいのは「このティックが
+  // いつ判断したか」なので、通信の所要時間を含まない方がむしろ近い。
+  const body = commentBody(target, deps.now());
+
+  // PR の外に書くなら、PR の確保より先に書く。**この順序が仕様になる。**
+  // 下の経路は、PR を作れない・作る段でない・まだ番号が無いといった理由で
+  // 早く return する。この口を使う動機の多くは「PR がまだ無い」「トークンが
+  // 無い」側にあるので、後ろに置くと要るときに書けない。
+  //
+  // ダイジェストが前ティックと同じでも書く。PR コメントを飛ばすのは、同じ通知が
+  // 積まれると人間が読むのをやめるため。1回叩いて1回出す宛先では、黙って何も
+  // 出さない方が読めない（「回したのに出ない」と「回っていない」が同じ見た目になる）。
+  const report = deps.report === undefined ? null : await deliver(deps.report, body);
+
   const nothing = (skipped: string): PublishResult => ({
     prNumber: target.prNumber,
     created: false,
     commented: false,
+    report,
     skipped,
   });
 
@@ -112,6 +166,17 @@ export async function publish(target: PublishTarget, deps: PublishDeps): Promise
     return nothing(`PR を確保できなかった: ${errorMessage(error)}`);
   }
 
+  // 宛先を移したティックは、ここで終わる。PR には投稿しない。
+  if (report !== null) {
+    return {
+      prNumber,
+      created,
+      commented: false,
+      report,
+      skipped: `進捗は PR ではなく ${report.destination} に書いた`,
+    };
+  }
+
   if (prNumber === null) {
     return nothing("PR がまだ無いのでコメントできない");
   }
@@ -128,19 +193,35 @@ export async function publish(target: PublishTarget, deps: PublishDeps): Promise
   // 観測は1文字も変わらないので、初回しか書かないと2ティック目以降は PR が静かな
   // まま max_reconciles に当たって BLOCKED になり、止めた理由がどこにも出ない。
   if (target.previousDigest === target.digest && !stoppedByGuard(target.decision)) {
-    return { prNumber, created, commented: false, skipped: "観測が前のティックと同じ" };
+    return { prNumber, created, commented: false, report, skipped: "観測が前のティックと同じ" };
   }
 
   try {
-    await deps.writer.addComment(prNumber, commentBody(target, deps.now()));
-    return { prNumber, created, commented: true, skipped: null };
+    await deps.writer.addComment(prNumber, body);
+    return { prNumber, created, commented: true, report, skipped: null };
   } catch (error) {
     return {
       prNumber,
       created,
       commented: false,
+      report,
       skipped: `コメントできなかった: ${errorMessage(error)}`,
     };
+  }
+}
+
+/**
+ * 進捗を PR の外に書く。書けなくても throw しない。
+ *
+ * 失敗しても PR に流し直さない。投稿しないと言われている以上、書けなかった
+ * ことを結果に載せて返すのが正しい。呼び出し側（CLI）がそれを人間に見せる。
+ */
+async function deliver(sink: ProgressSink, body: string): Promise<ReportResult> {
+  try {
+    await sink.write(body);
+    return { destination: sink.destination, written: true, error: null };
+  } catch (error) {
+    return { destination: sink.destination, written: false, error: errorMessage(error) };
   }
 }
 

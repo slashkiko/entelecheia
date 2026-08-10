@@ -6,6 +6,7 @@ import type { Verification } from "../src/domain/verification.js";
 import {
   type BranchPort,
   type CodeWriterPort,
+  type ProgressSink,
   type PublishTarget,
   type PullRequestDraft,
   publish,
@@ -159,6 +160,28 @@ function target(over: Partial<PublishTarget> = {}): PublishTarget {
 
 function deps(s: Sink) {
   return { writer: s.writer, branch: s.branch, now: () => NOW };
+}
+
+/**
+ * PR の外に書く宛先。`ent run --report` が渡すものと同じ形にする。
+ *
+ * 実際のファイルにも stdout にも触らない。宛先の実体は CLI 側の責務で、
+ * ここで確かめたいのは「PR ではなくこちらに1回だけ書く」ことになる。
+ */
+function recorder(over: { fails?: boolean } = {}): { sink: ProgressSink; written: string[] } {
+  const written: string[] = [];
+  return {
+    written,
+    sink: {
+      destination: "file",
+      write: async (body) => {
+        if (over.fails === true) {
+          throw new Error("EACCES: permission denied");
+        }
+        written.push(body);
+      },
+    },
+  };
 }
 
 describe("PR を確保する", () => {
@@ -402,5 +425,137 @@ describe("2ティック目以降の push", () => {
     await publish(target({ prNumber: 11, decision: blocked }), deps(s));
 
     expect(s.pushes).toEqual([]);
+  });
+});
+
+/**
+ * 進捗の宛先を PR の外に移す（`ent run <slug> --report`）。
+ *
+ * criteria の pass 状況が毎ティック PR に積まれると困る場面がある。試走のたびに
+ * レビュー中の PR が伸びる、公開リポジトリで手元の検証結果を出したくない、
+ * そもそも GITHUB_TOKEN が無い、など。宛先を変えるだけで、観測も判断も変えない。
+ *
+ * 満たすべき性質:
+ * - 宛先を移したら PR には投稿しない。両方に出すと「投稿しない」を満たさない
+ * - **PR を確保できるかどうかと切り離す。** 進捗を PR の外に書く動機の多くは
+ *   「PR がまだ無い」「トークンが無い」側にある。PR を確保できたときにしか
+ *   書けないなら、この口は要るときに使えない
+ * - push と PR の作成は止めない。移すのは通知の宛先だけで、Actor の成果を
+ *   remote に出す経路には触れない
+ * - 本文は PR コメントと同じものにする。宛先で内容が変わると、PR で読んだ人と
+ *   ファイルで読んだ人が別のものを見る
+ * - 書けなくても throw しない。既存の通知と同じく、失敗は結果に載せて返す
+ */
+describe("進捗を PR の外に書く", () => {
+  it("PR にはコメントせず、宛先の方に書く", async () => {
+    const s = sink({ existing: 11 });
+    const r = recorder();
+    const result = await publish(target(), { ...deps(s), report: r.sink });
+
+    expect(s.comments).toEqual([]);
+    expect(result.commented).toBe(false);
+    expect(r.written).toHaveLength(1);
+    expect(result.report).toEqual({ destination: "file", written: true, error: null });
+  });
+
+  it("本文は PR コメントと同じ", async () => {
+    // 宛先で内容が変わると、PR で読んだ人とファイルで読んだ人が別のものを見る。
+    const onPr = sink({ existing: 11 });
+    await publish(target(), deps(onPr));
+
+    const s = sink({ existing: 11 });
+    const r = recorder();
+    await publish(target(), { ...deps(s), report: r.sink });
+
+    expect(r.written[0]).toBe(onPr.comments[0]?.body);
+  });
+
+  it("PR がまだ無くても書く", async () => {
+    // 差分が無ければ PR は作らない（空の PR は使えない）。それでも criteria の
+    // pass 状況は読めないと、この口を使う意味が無い。
+    const s = sink({ pushed: false });
+    const r = recorder();
+    const result = await publish(target(), { ...deps(s), report: r.sink });
+
+    expect(result.prNumber).toBeNull();
+    expect(r.written).toHaveLength(1);
+    expect(r.written[0]).toContain("ac-1");
+  });
+
+  it("PR を作れなくても書く", async () => {
+    // GITHUB_TOKEN が無いときの経路。Port は呼ばれた時点で throw する。
+    const s = sink({ createFails: true });
+    const r = recorder();
+    const result = await publish(target(), { ...deps(s), report: r.sink });
+
+    expect(r.written).toHaveLength(1);
+    expect(result.report?.written).toBe(true);
+  });
+
+  it("保護パスの関門で止まったティックでも書く", async () => {
+    // 人間を呼ぶ以上、何が起きたかは必ずどこかに残す。PR には出さないので、
+    // ここで落とすと関門が鳴ったことがどこにも出ない。
+    const s = sink();
+    const r = recorder();
+    await publish(
+      target({
+        decision: {
+          decidedAt: NOW.toISOString(),
+          action: { type: "ESCALATE", reason: "protected_path_touched" },
+          rationale: "制御ループ自体に触れたので停止する",
+          decidedBy: "guard",
+        },
+      }),
+      { ...deps(s), report: r.sink },
+    );
+
+    expect(r.written[0]).toContain("protected_path_touched");
+    // 関門の扱いは変えない。push も PR の作成も止まったままにする。
+    expect(s.pushes).toEqual([]);
+    expect(s.created).toEqual([]);
+  });
+
+  it("観測が前のティックと同じでも書く", async () => {
+    // PR コメントを飛ばすのは「同じ通知が積まれると読まれなくなる」ため。
+    // 1回叩いて1回出す宛先では、黙って何も出さない方が読めない。
+    const s = sink({ existing: 11 });
+    const r = recorder();
+    await publish(target({ digest: "same", previousDigest: "same" }), {
+      ...deps(s),
+      report: r.sink,
+    });
+
+    expect(r.written).toHaveLength(1);
+    expect(s.comments).toEqual([]);
+  });
+
+  it("push と PR の作成は止めない", async () => {
+    // 移すのは通知の宛先だけ。Actor の成果を remote に出す経路には触れない。
+    const s = sink();
+    const r = recorder();
+    const result = await publish(target(), { ...deps(s), report: r.sink });
+
+    expect(s.pushes).toEqual([{ name: "sample-goal", base: "main" }]);
+    expect(result.prNumber).toBe(42);
+    expect(result.created).toBe(true);
+  });
+
+  it("書けなくても throw せず、理由を返す", async () => {
+    const s = sink({ existing: 11 });
+    const r = recorder({ fails: true });
+    const result = await publish(target(), { ...deps(s), report: r.sink });
+
+    expect(result.report?.written).toBe(false);
+    expect(result.report?.error).toContain("EACCES");
+    // 書けなかったからといって PR に流し直さない。投稿しないと言われている。
+    expect(s.comments).toEqual([]);
+  });
+
+  it("指定が無ければ従来どおり PR に投稿する", async () => {
+    const s = sink({ existing: 11 });
+    const result = await publish(target(), deps(s));
+
+    expect(result.report).toBeNull();
+    expect(s.comments).toHaveLength(1);
   });
 });
