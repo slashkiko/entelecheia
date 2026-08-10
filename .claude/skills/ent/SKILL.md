@@ -43,6 +43,20 @@ ent get <slug>              # 宣言部と実行時状態をまとめて読む
 ent list                    # 登録済みの Goal を一覧する
 ```
 
+`ent start` は、叩いたディレクトリの HEAD を関門の基準として記録する。Actor の
+worktree はその commit から切られ、関門が worktree の差分を取る相手も同じ commit になる。
+**Goal の宣言と仕様は `ent start` より前に commit しておく。** そうすれば人間が書いた分は
+基準の側に入り、worktree の差分には Actor が書いた分だけが並ぶ。
+
+回している間、この基準にした commit を amend も rebase もしない。分岐点が消えると
+差分を取れなくなり、`ESCALATE(guard_unavailable)` で止まる。ティックの最中に
+`.goals/*.yaml` を書き換えるのも避ける。本体リポジトリ側の ACT 前後の差として拾われ、
+`.goals/**` はどの Goal からも外せない保護パスなので `protected_path_touched` になる。
+
+HEAD を読めなかった場合と、この記録より前に start した Goal は `default_branch` を
+基準にする。そのときは人間が書いた分も Actor の編集として並ぶ。止まったあとの扱いは
+下の「人の承認で止まるところ」を読む。
+
 追わなくなった Goal から降りるときだけ、もう1つサブコマンドがある。
 
 ```
@@ -67,11 +81,19 @@ criteria が赤いまま「完了した」と書ける口は用意していな�
 
 `ent doctor` は書き込みを一切しない。state ディレクトリも作らない。
 
-前提が欠けていても `ent run` は入口で落ちない。トークンが無くてもローカルの観測・
-検証コマンド・Actor の実行は進むので、入口で殺すと進められるものまで止まるため。
-その代わり、`GITHUB_TOKEN` が無いまま回すと `github.ci.conclusion` のような
-`type: fact` の criteria が永久に unobserved のまま埋まらない。回り続けるので
+前提が欠けていても `ent run` は入口で落ちない。GitHub のトークンが無くても
+ローカルの観測・検証コマンド・Actor の実行は進むので、入口で殺すと進められるものまで
+止まるため。その代わり、トークンを1つも読めないまま回すと `github.ci.conclusion` の
+ような `type: fact` の criteria が永久に unobserved のまま埋まらない。回り続けるので
 気づけない。doctor は何が欠けているかをその場で出す。
+
+GitHub のトークンは `doctor` も `run` も同じ順で読む（`GITHUB_TOKEN` → `GH_TOKEN` →
+`gh auth token`）。対話シェルから叩くぶんには、gh にログインしていれば環境変数を
+渡さなくてよい。**cron から回すときは別で**、PATH と gh の設定が引き継がれるとは
+限らないので `GITHUB_TOKEN` を明示するか、同じ環境で `ent doctor` を叩いて確かめる。
+doctor の `github_token` が落ちるのは、3つとも読めなかったときになる。
+環境変数に**空文字**を設定してあれば「渡さないと決めた」と読み、gh も呼ばない。
+未設定と空文字はここだけ意味が違う。
 
 終了コードだけは他のサブコマンドと意味が違う。0 は「failed が1件も無い」で、
 1 は「failed が1件以上」を指す。実行時エラーではない。unknown は数えない。
@@ -166,7 +188,9 @@ ent get <slug> --limit 5    # runs の件数。落ちるのは古い方から
 `ESCALATE` は行動であって Goal の状態ではない。`protected_path_touched` による
 `ESCALATE` は、触ってはいけないパスに変更が出たまま止まっている状態で、
 Goal の状態としては `WAITING_HUMAN` になる。承認待ちではなく、人間が片付けるのを
-待っている。次のティックでも解けない。`budget_exhausted` の `ESCALATE` だけは
+待っている。次のティックでも解けない。`guard_unavailable` も同じ形で、こちらは
+「触っていない」ではなく**関門そのものを動かせなかった**状態を指す。基準にした
+commit が消えたときがこれにあたる。`budget_exhausted` の `ESCALATE` だけは
 `BLOCKED` になる。
 
 `status` に入るのは Goal の状態（`ACTIVE` / `WAITING_HUMAN` / `WAITING_EXTERNAL` /

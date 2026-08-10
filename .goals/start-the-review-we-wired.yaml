@@ -1,0 +1,378 @@
+version: 1
+
+goal:
+  id: start-the-review-we-wired
+  name: 配線したレビュー役を、実際に起動する
+  desired_state: |
+    レビュー役は権限もプロンプトも worktree も配線済みなのに、それを起動する
+    経路がどこにも無い。`src/decide/` に `role` という文字列は1つも無く、
+    `action.role` は常に undefined なので、ACT は必ず実装役に落ちる。
+    `review.verdict` と `review.reviewed_sha` は観測キーに登録済みだが、
+    この Fact を作るコードは `src/` に存在しない。**宣言だけがあって実体が無い。**
+
+    これは前の Goal が意図的に残した宿題になる。
+    `collaborate-in-separate-worktrees.yaml` の 11 が「DECIDE がレビューを選ぶ
+    条件や、実装 → レビュー → 修正の往復をどう回すかは、この2つが動いてから
+    別に決める」と書いており、その2つは PR #27 と PR #30 でマージ済み。
+
+    どう作るかは Actor が決める。以下は「何が満たされていればよいか」を書く。
+
+    1. LLM が `role: review` を選べるようにする
+
+      `actionSchema` の ACT は既に `role` を optional で持っており、Zod は
+      通る。足りないのは DECIDE のプロンプトで、選べる行動の説明に role が
+      1文字も出てこない。書いていないものは選ばれない。
+
+      プロンプトに「ACT は実装役とレビュー役のどちらでも起動できる」ことと、
+      レビュー役は読むだけで書けないことを書く。既存の
+      「COMPLETE と ESCALATE は選べない」「WAIT にいつまで寝るかは書けない」
+      という制約の書き方に揃える。
+
+      **guard は変えない。** レビューをいつ起動するかを guard の決定論に
+      置かない。criteria に `review.verdict` を1本書けば、Fact ができるまで
+      その criterion は満たされず、Gap が残るあいだ guard は COMPLETE に
+      倒せないので、行動は必ず LLM に渡る。起動されない経路は criteria の側で
+      塞ぐのであって、guard に条件を足して塞ぐのではない。
+
+    2. レビュー役の Run から Fact を作る
+
+      `role: review` で走った Run の出力から `review.verdict` と
+      `review.reviewed_sha` を観測する。レビュー役のプロンプトは最後の行を
+      `verdict: approved` か `verdict: changes_requested` の1行だけにするよう
+      求めており、sha も述べさせている（`src/adapters/claude.ts`）。
+
+      **ただし、そこで言わせた文字列はまだ Fact ではない。** Fact にするのは
+      観測側の仕事で、確かめられなければ作らない（design.md §3.1）。
+
+      **材料は Run の生ログから取る。** `ActorPort` が返すのは `exitCode` /
+      `logRef` / `artifacts` だけで、Actor の最終メッセージは戻り値に載らない。
+      ただし `src/adapters/claude.ts` は SDK のメッセージを1件ずつ
+      `.goals/.state/runs/<run-id>/log.jsonl` に書いており、レビュー役の
+      最終メッセージもそこにある。**`src/adapters/claude.ts` は触らない**
+      （PROTECTED_PATH_FLOOR の中で、そもそも書けない）。
+
+      **観測の入口も FLOOR を避ける。** `ObserveTarget` に項目を足すと、
+      それを組み立てる `observeTargetOf` が `src/controller/index.ts` にあるので
+      FLOOR に当たる。「どの Run を読むか」は Port の側で解決し、`ObserveDeps` に
+      Port を1つ足す形にする。Port の定義は `src/observe/`、実装は新しい
+      adapter ファイル、組み立ては `src/cli.ts` の `tickPorts` に置けば、
+      FLOOR のファイルを1つも触らずに配線が通る。`ControllerDeps` は
+      `ReconcileDeps` を継承しているので、型は自動で伝わる。
+
+      - `verdict:` の行が見つからない、2つ以上ある、値が2値のどちらでもない
+        ときは Fact を作らず、理由を付けて `unobserved` に残す。理由は
+        `pending` にする。レビュー役は毎回同じ出力を返すとは限らないので、
+        待っても直らない `shape_mismatch` とは分ける
+      - sha が読めなかったときも同じ。verdict だけを単独で Fact にしない。
+        いつの時点のコードのレビューか分からない結論は、完了判定に使えない
+      - レビュー役を1度も起動していないティックで値を作らない。
+        `investigate` 役の Run から `verdict:` を拾わない。プロンプトが違うので
+        本来出ないが、出どころを role で絞る側にも書いておく
+      - Port が落ちたティックは `port_failed` として `unobserved` に残す。
+        「レビューをまだ回していない」と「レビューの結果を読めなかった」を混ぜない
+
+      あわせて `src/domain/fact-keys.ts` の「作る側はまだ居ない」という注記を
+      現状に合わせる。あの注記は `.goals/review-agent-reviews.yaml` という
+      存在しないファイルを指しており、2本に割った Goal を1本に戻した
+      （PR #30）時点で参照先が消えている。
+
+    3. 同じ commit を2度レビューしない
+
+      `review.reviewed_sha` が実装役の作業ツリーの HEAD（`local.head_sha`）と
+      一致しているあいだは、レビュー役を起動しない。実装が1行も進んでいないのに
+      「レビュー → レビュー → レビュー」と回る経路を、構造として塞ぐ。
+
+      **この照合が成立するのは、レビュー役が実装役と同じ作業ツリーを見るから**
+      になる（`worktreeNameFor`）。別の作業ツリーに分けると、レビュー役の HEAD は
+      base から動かないので `local.head_sha` と二度と一致しない。
+
+      判定は起動する側（DECIDE）に置く。Actor を起動してから「読む対象が
+      前回と同じだった」と気づく形だと、1回分の予算を使ってから止まる。
+
+      起動できないティックでは、プロンプトの選べる行動からレビュー役を外す。
+      書いていない選択肢は選ばれない。
+
+    4. 実装が進まないままレビューだけを回す状態を、読める理由で止める
+
+      3 で外したはずのレビュー役を LLM が返してきたら、その出力は採用せず、
+      理由を付けて再試行する（`MAX_LLM_RETRIES` の既存の経路）。再試行を
+      使い切っても同じなら、`escalateReasonSchema` に足す専用の理由
+      `review_not_converging` で止める。`invalid_decision` に畳まない。
+      形式が壊れているのではなく、実装が進まないままレビューだけを回そうと
+      している状態で、人間が読んで分かる名前が要る。
+
+      **止めるのはこの形だけにする。** `changes_requested` → 修正 → 再レビューを
+      繰り返す本来の非収束——実装が毎回進むので `review.reviewed_sha` も変わる——は、
+      ここでは止まらない。ダイジェストは Fact から作るので digest も変わり、
+      `max_unchanged_reconciles` も鳴らない。効くのは `max_actor_runs` による
+      `ESCALATE(budget_exhausted)` のままになる。
+
+      そちらまで止めるには往復の回数を数える口が要るが、それは `budget` に項目を
+      足す話で、下の理由でこの Goal の範囲外にしてある。**範囲外にしたものを
+      「直した」と書かない。**
+
+      **`budget` に新しい上限は足さない。** `budgetSchema` は
+      `src/domain/goal.ts` にあり、`PROTECTED_PATH_FLOOR` の中なので Actor には
+      書けない。加えて `budgetSchema` は strictObject で全項目が必須なので、
+      1項目足すと既存の Goal YAML 19本すべてに同じ行が要る。これは design.md
+      §10-8 が未決として残している当の問題で、この Goal で巻き取らない
+      （背景は context.background を参照）。
+
+    5. 古い commit へのレビューは、突き合わせる段で未達にする
+
+      `reviewed_sha` が実装役の HEAD と一致しないとき、Fact は観測どおり残す。
+      criteria と突き合わせる段で「まだ満たしていない」と判定する。
+
+      **突き合わせる段は VERIFY になる。** `type: fact` の criterion を判定して
+      `criteria.<id>.passed` を作るのは `src/verify/` の `judge` で、ASSESS は
+      その結果を読んで Gap にする。したがって照合の実体は VERIFY に置き、
+      ASSESS 側は既存のまま unmet の Gap を出す。
+
+      Fact を消さないのは、いつどの commit を読んだかを後から追えるようにする
+      ため。その代わり「VERIFIED だが完了判定には使えない Fact」という状態が
+      1つ増えるので、`Verification` の evidence と Gap の `detail` を読んだ人間が
+      「レビュー自体は通っているが、その後の commit が未レビュー」と分かる
+      文言になるところまでテストで固定する。
+
+    6. 完了判定の境界は変えない
+
+      guard に「レビューを通れ」という条件を足さない。レビューを完了条件に
+      するかどうかは、各 Goal が criteria に
+      `verification: { type: fact, key: review.verdict, equals: approved }` と
+      書くかどうかで決まる。この Goal 自身も ac-6 でそう書いてある
+      （**この Goal は、自分自身をレビューさせることで往復を1周させる**）。
+
+    7. 既存の性質を弱めない
+
+      レビュー役が編集のツールを持たないこと、`policies.require_human_approval`
+      由来の拒否が role によらず効くこと、検証コマンドと `local.*` の観測先が
+      実装役の作業ツリーに固定されていること。どれもこの変更で変わらない。
+
+    仕様は以下の3ファイルに書いてある。この YAML の記述と食い違ったら
+    テストに合わせる。
+
+      tests/review-decide.test.ts     1・3・4 に対応
+      tests/review-observe.test.ts    2 に対応
+      tests/review-stale-sha.test.ts  5 に対応
+
+    着手時点の実測は31件中18件が落ちる。残る13件は最初から緑で、内訳は
+    「弱めてはいけない性質を固定するもの」（guard が COMPLETE を止めない、
+    LLM が COMPLETE と ESCALATE を選べない、`review.verdict` 以外の
+    fact criterion の判定を変えない）と、いまはレビュー役を起動する経路が
+    無いために成立しているものになる。後者は実装後も緑のままでなければならない。
+
+    型チェックは3件のエラーで落ちる。これが足すべき API の契約そのものになる。
+
+      ObserveDeps に review が無い
+      src/observe/index.ts が ReviewPort を export していない
+      DecideTarget に facts が無い
+
+    ac-6 は Fact を作る側ができるまで満たされないので、Gap は最後まで残る。
+    それが正しい振る舞いになる。
+
+repository:
+  provider: github
+  owner: slashkiko
+  name: entelecheia
+  default_branch: main
+
+setup:
+  - pnpm install --frozen-lockfile
+
+acceptance_criteria:
+  - id: ac-1
+    description: 新しいテストが通り、既存のテストも通ったままになる（着手時点では18件が落ちている）
+    verification: { type: command, run: mise run test }
+
+  - id: ac-2
+    description: 型チェックが通る
+    verification: { type: command, run: mise run typecheck }
+
+  - id: ac-3
+    description: lint と format が通る
+    verification: { type: command, run: mise run lint }
+
+  - id: ac-4
+    description: サプライチェーンと workflow のチェックが通る（baseline 由来）
+    verification: { type: command, run: mise run check }
+
+  - id: ac-5
+    description: 変更を載せた PR の CI が成功している
+    verification: { type: fact, key: github.ci.conclusion, equals: success }
+
+  - id: ac-6
+    description: controller が起動したレビュー役が、この実装を読んで approved を返している
+    verification: { type: fact, key: review.verdict, equals: approved }
+
+  - id: ac-7
+    description: 完了判定と停止条件の境界が弱まっていないか、人間が差分を読んで確認する
+    verification:
+      type: human
+      prompt: |
+        この Goal は DECIDE に新しい行動の選択肢を1つ足します。テストが緑に
+        なったことは「境界を動かしていない」の証明にはならないので、差分を
+        読んでください。本 Goal に限って `src/decide/**` の保護を外してあります。
+
+        1. guard と LLM の境界
+
+           - guard が決める5つ（budget_exhausted / shape_mismatch / COMPLETE /
+             Gap ゼロの WAIT / loop_detected）とその判定順が変わっていないか
+           - レビューの起動が guard の決定論に入っていないか。criteria に
+             `review.verdict` を書いていない Goal で、勝手にレビューが走らないか
+           - guard に「レビューを通れ」という条件が足されていないか
+
+        2. 仕様を書き換えていないか
+
+           - tests/review-decide.test.ts、tests/review-observe.test.ts、
+             tests/review-stale-sha.test.ts の3本が、着手時点のまま残っているか。
+             `tests/**` は意図的に保護対象外なので、ここが唯一の防波堤になる。
+             assert を緩めて緑にする経路は、関門にもコマンドにもかからない
+
+        3. Fact を捏造していないか
+
+           - レビュー役を起動していないティックで `review.verdict` が
+             作られないか。`investigate` 役の Run から拾っていないか
+           - `verdict:` の行が読めなかったとき、Fact を作らず `unobserved` に
+             理由付きで残しているか。「読めなかった」を
+             「changes_requested」に畳んでいないか
+           - 前ティックの Fact が、今ティックの観測として生き残っていないか
+           - `reviewed_sha` が読めないとき、verdict だけを単独で Fact に
+             していないか
+
+        4. 止まり方
+
+           - 収束しない往復が、読める理由で止まるか。人工的に
+             `changes_requested` を返し続けさせて確かめたか
+           - `budget` のスキーマ（`src/domain/goal.ts`）に手が入っていないか。
+             ここは `PROTECTED_PATH_FLOOR` の中なので、入っていたら差し戻す
+           - FLOOR の他のファイル（`src/adapters/claude.ts`、
+             `src/controller/index.ts`）にも手が入っていないか
+
+        5. 実際に回して確かめる
+
+           - この Goal 自身の ac-6 が、controller が起動したレビュー役の
+             結論で満たされたか。人間が手で Fact を入れていないか
+           - `role: review` の Run が `runs` テーブルに残っているか
+           - レビュー役が実装役と同じ作業ツリーを読んでいるか。
+             `review.reviewed_sha` が実装役の HEAD と一致したティックがあるか
+
+context:
+  background: |
+    直近2本の機能（PR #26 の並列実行と PR #27 の役割ごとの worktree）は、
+    一度も実走していない。本体の `.goals/.state/goals.db` には `runs.role` 列が
+    まだ無く、`migrate()` は store を開くたびに走るので、これは PR #27 の
+    マージ後に `ent run` が一度も実行されていないことを意味する。
+    このリポジトリが4回払った授業料——実際に回すまで配管は繋がっていると
+    見なせない（README）——が、いままさに未回収で残っている。
+
+    この Goal を ent で回すと、レビュー役だけでなく役割ごとの worktree と
+    並列実行の配管も同時に実地を通る。
+
+    **なぜこの Goal を選んだか。** design.md §10 が「他のリポジトリで回す前に
+    決める」と名指しした2件（8 の Goal YAML の移行方針と、9 の検証コマンドの
+    実行権限）は、どちらも `src/domain/goal.ts` と `src/adapters/local.ts` を
+    触る。MVP 後レビューで入った `PROTECTED_PATH_FLOOR` にその2ファイルが
+    入っているので、**どちらも自己ホストでは実装できない。** 本 Goal が触る
+    `src/decide/**` と `src/observe/**` は FLOOR の外にあり、いま ent 自身に
+    回させられる唯一の候補になる。
+
+    **その制約は、この Goal の中身にも効いている。** 往復の上限を
+    `budget.max_review_rounds` のような新しい項目で表そうとすると、
+    `budgetSchema`（`src/domain/goal.ts`）に手が要る。FLOOR の中なので Actor には
+    書けず、さらに `budgetSchema` は strictObject で全項目が必須なので、
+    1項目足せば既存の Goal YAML 19本すべてに同じ行が要る。それは §10-8 が
+    未決として残している移行方針の問題そのもので、本 Goal で巻き取ると
+    「レビュー役を動かす」という主題が消える。回数の天井は `max_actor_runs` の
+    ままにし、止まった理由が読める形（専用の ESCALATE 理由）だけを足す。
+
+  constraints:
+    - guard の判定を増やさない。レビューをいつ起動するかは criteria が作る Gap で
+      決まる。`decide()` の guard が返す5つの条件とその判定順を変えない
+    - guard に「レビューを通れ」という条件を足さない。完了判定の境界は動かさない
+    - Goal のスキーマ（`src/domain/goal.ts`）を触らない。`budget` に新しい項目を
+      足さない（PROTECTED_PATH_FLOOR の中にあり、そもそも書けない）
+    - PROTECTED_PATH_FLOOR のファイルを1つも触らない。特に
+      `src/adapters/claude.ts`（レビュー役のプロンプトと生ログの書き出し）と
+      `src/controller/index.ts`（`observeTargetOf`）に手を入れずに配線する。
+      触りたくなったら、それは設計が FLOOR とぶつかっている合図なので、
+      実装を進めずに人間を呼ぶ
+    - 他の Goal の `.goals/*.yaml` を書き換えない
+    - レビュー役の権限を広げない。`src/adapters/claude.ts` の `ACTOR_TOOLS` で
+      編集のツールを持つのが実装役だけであることを変えない
+    - 確かめられなかったものを Fact にしない。読めなければ理由を付けて
+      `unobserved` に残す（design.md §3.1）
+    - 検証コマンドと `local.*` の観測先を実装役の作業ツリーから動かさない
+      （design.md §4.2 / §10-9）
+    - tests/review-decide.test.ts、tests/review-observe.test.ts、
+      tests/review-stale-sha.test.ts は仕様なので変更しない。
+      通らないなら実装側を直す
+    - 既存のテストを弱めない。特に tests/decide-llm-boundary.test.ts と
+      tests/review-actor.test.ts は通ったままにする。`ObserveDeps` と
+      `DecideTarget` に項目が増えるので、既存のテストの fixture にその分を
+      足すのは構わない。足すのは新しい項目だけで、assert は動かさない
+    - 依存パッケージを増やさない
+    - docs/design.md の「3. 中核の設計判断」を勝手に変えない
+    - mise run check（サプライチェーン検査）を壊さない
+    - PR の作成とコメントの投稿はしない。controller が行う
+
+  references:
+    - title: レビューをいつ起動するかを範囲外として残した Goal（11 が本 Goal の出発点）
+      path: .goals/collaborate-in-separate-worktrees.yaml
+    - title: 直す対象。guard と LLM の境界、プロンプト
+      path: src/decide/index.ts
+    - title: 直す対象。Fact を作る側
+      path: src/observe/index.ts
+    - title: 観測キーの登録と、「作る側はまだ居ない」の注記
+      path: src/domain/fact-keys.ts
+    - title: ACT の role と ESCALATE の理由
+      path: src/domain/action.ts
+    - title: ActorPort の戻り値（logRef はここにある）
+      path: src/act/index.ts
+    - title: Port を組み立てる場所（新しい Port の配線先）
+      path: src/cli.ts
+    - title: レビュー役のプロンプトと権限（広げない）
+      path: src/adapters/claude.ts
+    - title: 弱めてはいけない既存の性質
+      path: tests/decide-llm-boundary.test.ts
+    - title: 弱めてはいけない既存の性質
+      path: tests/review-actor.test.ts
+    - title: 設計ドキュメント
+      path: docs/design.md
+
+policies:
+  require_human_approval:
+    - merge
+    - force_push
+    - push_to_default_branch
+    - deploy
+    - secret_access
+    - external_send
+  protected_paths:
+    # 本 Goal は DECIDE に行動の選択肢を足すので、src/decide/** を外してある。
+    # 外したのは適用対象であって、検査の仕組みではない（constraints と ac-7 を参照）。
+    #
+    # 制御ループ本体・宣言部・関門・スキーマ・Agent のツール定義・シェルの起動口・
+    # 資格情報の除去リスト・.git・状態 DB は PROTECTED_PATH_FLOOR が下限として
+    # 必ず混ぜるので、ここには書かない（src/domain/goal.ts の withProtectedPathFloor）。
+    #
+    # 検証系。ここを書き換えられると Agent が自分の criteria を通せる。
+    - mise.toml
+    - mise-tasks/**
+    - vitest.config.ts
+    - biome.json
+    - tsconfig*.json
+    - .github/**
+    # 依存の追加は人間が通す。constraints にも書いてある。
+    - package.json
+    - pnpm-lock.yaml
+
+budget:
+  # 実装 → レビュー → 修正の往復が入るので、実装だけの Goal より多めに取る。
+  # 実装が毎回進む本来の非収束を止めるのはここになる（desired_state の 4）。
+  # 専用の ESCALATE が受け持つのは「実装が進まないままレビューだけを回す」形だけで、
+  # 往復そのものの回数はこの天井が数える。
+  max_actor_runs: 12
+  max_reconciles: 28
+  max_wall_clock: 5h
+  max_consecutive_failures: 3
+  max_unchanged_reconciles: 4

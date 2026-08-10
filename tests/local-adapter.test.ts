@@ -4,7 +4,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { commandRunner, gitBranch, gitWorktree, localRepo } from "../src/adapters/local.js";
+import {
+  commandRunner,
+  ghAuthToken,
+  gitBranch,
+  gitWorktree,
+  localRepo,
+} from "../src/adapters/local.js";
 
 /**
  * ローカル Port を実際の git に対して回す。
@@ -329,5 +335,29 @@ describe("localRepo", () => {
 
     writeFileSync(join(repoRoot, "README.md"), "# changed\n");
     expect((await port.snapshot()).dirty).toBe(true);
+  });
+});
+
+/**
+ * `gh auth token` からの読み取り。
+ *
+ * ここで確かめるのは値ではなく**落ち方**になる。gh が入っているか、ログイン
+ * しているかは環境によって違い、CI では両方とも無いことがある。値を assert すると
+ * 環境の差でテストが揺れるので、契約だけを固定する。
+ *
+ * 契約は2つ。throw しないことと、読めなければ null を返すこと。ここで throw すると、
+ * token が無くても進められるローカルの観測・検証コマンド・Actor の実行まで巻き添えで
+ * 止まる（`doctorPayload` が「入口で殺すと進められるものまで止まる」と書いている当のもの）。
+ */
+describe("ghAuthToken", () => {
+  it("読めても読めなくても throw しない", () => {
+    expect(() => ghAuthToken()).not.toThrow();
+  });
+
+  it("戻り値は token の文字列か null で、空文字は返さない", () => {
+    const token = ghAuthToken();
+
+    expect(token === null || typeof token === "string").toBe(true);
+    expect(token).not.toBe("");
   });
 });

@@ -1,4 +1,4 @@
-import { exec, execFile } from "node:child_process";
+import { exec, execFile, execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
@@ -284,7 +284,7 @@ export function gitWorktree(repoRoot: string, root: string): WorktreePort {
      *
      * `changedPaths` は worktree の中で git を回すので、`git worktree add` で
      * 分けた本体側の作業ツリーは観測できない（別の作業ツリーなので当然そうなる）。
-     * Actor は Bash を持っているから、`echo > ../../src/controller/index.ts` の
+     * Actor は Bash を持っているから、`echo > ../../../../src/controller/index.ts` の
      * 1行で隔離の外を書ける。そこを見るための口をもう1つ開ける。
      *
      * **ここで見えない範囲（design.md §10-6 の残る穴 (a) (b) (e)）:**
@@ -294,15 +294,15 @@ export function gitWorktree(repoRoot: string, root: string): WorktreePort {
      *   `.goals/.state/**` に毎ティック書くので、自分の書き込みが毎回違反として
      *   並ぶ。DB を直接書き換えられる経路がここに残る
      * - commit 済みの変更。本体側のブランチは controller が動かさないので
-     *   作業ツリーの汚れだけを見ているが、`git -C ../.. commit` や
-     *   `git -C ../.. stash` は拒否リストに無い。本体側で書いてから commit されると、
+     *   作業ツリーの汚れだけを見ているが、`git -C ../../../.. commit` や
+     *   `git -C ../../../.. stash` は拒否リストに無い。本体側で書いてから commit されると、
      *   汚れの集合から消えて検査の外に出る
      *
      * パスだけでなく中身の指紋も返す。controller は ACT の前後を比べて
      * 「Actor が書いた分」を切り出すが、パスの集合だけで比べると、
      * **人間が編集中のファイルを Actor が上書きしたときに前後で同じパスが並び、
      * 差がゼロになる**。自己ホストでは保護対象がまさに編集中でありうるうえ、
-     * Actor は `git -C ../.. status` でどれが汚れているかを読める。
+     * Actor は `git -C ../../../.. status` でどれが汚れているかを読める。
      * どこを上書きすれば検知されないかを選べる状態になってしまう。
      *
      * worktree の置き場（`root`）配下は除く。既定では `.goals/.state/` の下で
@@ -526,4 +526,41 @@ export function gitBranch(root: string): BranchPort {
  */
 export function pendingApproval(): ApprovalPort {
   return { getApproval: async () => null };
+}
+
+/**
+ * `gh auth token` から GitHub のトークンを読む。読めなければ null。
+ *
+ * `GITHUB_TOKEN` も `GH_TOKEN` も無いときの最後の手段になる。gh は README が
+ * 挙げている前提そのもの（mise と gh が入っていること）なので、依存を増やさない。
+ *
+ * **これが無いと doctor が毎回赤くなる。** トークンを渡し忘れたまま回すのは
+ * 実際に繰り返し起きていて、`ent doctor` のコメント自身が「GITHUB_TOKEN が無いまま
+ * 回して `github.ci.conclusion` が永久に unobserved になった」と書いている。
+ * 毎回落ちる検査は読まれなくなり、本当に落ちた回を見落とす。
+ *
+ * 落とし方を2つ決めてある。
+ *
+ * - **失敗を握り潰して null にする。** gh が入っていない・未ログイン・
+ *   headless で対話ログインが無い、のいずれも「トークンが無い」で同じ扱いになる。
+ *   ここで throw すると、トークン無しでも進められるローカルの観測と検証まで
+ *   止まる（`doctorPayload` のコメントと同じ理由）
+ * - **値をログにも例外にも載せない。** 返り値以外の経路に出さない。
+ *   `withheldEnv` が Actor から `GITHUB_TOKEN` を落としている意味を消さないため、
+ *   呼び出し側も `process.env` に書き戻さない
+ *
+ * argv 配列で叩く。シェルを経由してよいのは Goal YAML の `setup` と
+ * `verification.run` だけになる（design.md §7）。
+ */
+export function ghAuthToken(): string | null {
+  try {
+    const token = execFileSync("gh", ["auth", "token"], {
+      encoding: "utf8",
+      timeout: GIT_TIMEOUT_MS,
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+    return token === "" ? null : token;
+  } catch {
+    return null;
+  }
 }

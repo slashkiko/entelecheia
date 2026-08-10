@@ -37,6 +37,9 @@ import type { GoalState, Store } from "../store/index.js";
  */
 const MAX_LEASE_RENEWALS = 96;
 
+/** 関門の基準として受け付ける形。git の commit id そのもの */
+const SHA = /^[0-9a-f]{40}$/;
+
 export interface ControllerDeps
   extends ReconcileDeps,
     Pick<ActDeps, "worktree" | "actor">,
@@ -338,7 +341,11 @@ export async function tick(goal: Goal, deps: ControllerDeps): Promise<TickResult
     // 鳴りっぱなしの関門は誰も見なくなる。差分だけを Actor の仕業として数える。
     const repoBefore = await repoBaseline(deps);
 
-    const run = await maybeAct(goal, result.decision, deps, actorSignal);
+    // 基準が読めなければ Actor を起動しない。関門は下で guard_unavailable に倒すが、
+    // その前に1回分の予算を使ってしまうのは避ける。
+    const base = guardBaseOf(goal, state);
+    const run =
+      base === null ? null : await maybeAct(goal, result.decision, base, deps, actorSignal);
 
     // ACT のあいだに奪われていないか。Run はもう確定している（中断は act が
     // interrupted として書く）ので、止めるのはここから下の書き込みだけになる。
@@ -350,7 +357,7 @@ export async function tick(goal: Goal, deps: ControllerDeps): Promise<TickResult
     // Agent が触ってはいけないものに触れていないかを、ACT の外で検査する
     // （design.md §7 / §10-6）。Agent 側の disallowedTools は Agent の設定で、
     // SDK の外から同じ操作をされれば素通りする。
-    const guarded = await guardedDecision(goal, result.decision, run, repoBefore, deps);
+    const guarded = await guardedDecision(goal, result.decision, run, repoBefore, base, deps);
 
     // 未 commit の変更を残したまま「機械側の番は終わった」と言い切らせない
     // （design.md §10-11）。差し替えはここまでで、書き込むのは下の1行のまま。
@@ -496,6 +503,7 @@ async function preview(goal: Goal, state: GoalState, deps: ControllerDeps): Prom
     result.decision,
     null,
     await repoBaseline(deps),
+    guardBaseOf(goal, state),
     deps,
   );
 
@@ -572,7 +580,7 @@ async function reachableCode(state: GoalState, deps: ControllerDeps): Promise<Un
  * - **worktree の外は本体リポジトリ側の git で見る。** worktree の中で git を
  *   回しても、`git worktree add` で分けた本体側の作業ツリーは観測できない。
  *   `Run.artifacts` も Bash 経由の書き込みを拾わないので、
- *   `bash -c 'echo > ../../src/controller/index.ts'` はどちらの入力にも
+ *   `bash -c 'echo > ../../../../src/controller/index.ts'` はどちらの入力にも
  *   現れなかった。隔離が守るはずの当のファイルが検査から漏れていた
  * - 本体側は ACT 前の状態との差だけを数える。自己ホストなので人間の編集中の
  *   ファイルが最初から汚れている。それを違反にすると関門が毎回鳴る
@@ -584,11 +592,42 @@ async function reachableCode(state: GoalState, deps: ControllerDeps): Promise<Un
  * - worktree の中身は触らない。差分を残しておかないと人間が判断できない
  * - 元の rationale を残す。何をしようとしていたのかが読めなくなる
  */
+/**
+ * worktree を切る元と、関門が差分を取る相手。**この2つは同じでなければならない。**
+ *
+ * 記録があれば `ent start` 時点の repoRoot の HEAD（`GoalState.guardBaseSha`）を使う。
+ * 関門が答えたい問いは「Actor が何を書いたか」で、`repository.default_branch` が
+ * 答えるのは「リリース先との差は何か」になる。後者を前者に流用すると、人間が
+ * 呼び出し側のブランチに書いたもの——Goal の宣言（`.goals/*.yaml`）を含む——まで
+ * Actor の編集として並ぶ。`.goals/**` は PROTECTED_PATH_FLOOR にあるので、
+ * 宣言を1本置いただけで毎ティック `protected_path_touched` になっていた。
+ *
+ * 記録が無ければ `default_branch` に落とす。この列より前に start した Goal の
+ * worktree は既に default_branch から切られていて、基準だけを別の commit に
+ * 変えると、それまで通っていた差分が別の基準で並び直す。
+ */
+function guardBaseOf(goal: Goal, state: GoalState): string | null {
+  if (state.guardBaseSha === null) {
+    return goal.repository.default_branch;
+  }
+  // **記録があるなら形まで確かめる。** 状態 DB は gitignore 済みで、本体側の
+  // 汚れの観測（`repoDirtyState`）には出ない。ここを検証しないまま読むと、
+  // リテラル `HEAD` を1回書き込むだけで毎ティック `diff HEAD...HEAD` が空を返し、
+  // 関門が恒久的に黙る。`gitDiffAgainst` の catch は解決**できなかった**ときしか
+  // 効かないので、この経路は握り潰しではなく fail-open になる。
+  //
+  // 外れたら `default_branch` に落とさない。落とすと「基準が壊れている」が
+  // 「既定で回っている」に化ける。確かめられなかったことは確かめられなかったと
+  // して扱う（design.md §3.1）ので、呼び出し側が `guard_unavailable` に倒す。
+  return SHA.test(state.guardBaseSha) ? state.guardBaseSha : null;
+}
+
 async function guardedDecision(
   goal: Goal,
   decision: Decision,
   run: Run | null,
   repoBefore: RepoBaseline,
+  base: string | null,
   deps: ControllerDeps,
 ): Promise<Decision> {
   // act と同じ規則で worktree の場所を決める。ここがずれると、
@@ -598,12 +637,13 @@ async function guardedDecision(
   // 作業ツリー**にする。走っていないティック（ACT 以外・dry-run）は実装役だけ。
   //
   // **実装役を必ず混ぜるのは、push するのが実装役の木だから**（`pushWorktree`、
-  // src/publish/index.ts）。走った role の木だけを検査していると、レビュー役が
-  // 走ったティックでは「検査した木」と「押す木」が別になる。レビュー役は編集の
-  // ツールを持たないが Bash は持つので、`git -C ../<goal-id>` で実装役の木を
-  // 書いて commit する経路は塞がっていない。その commit は
-  // `changedPaths("<goal-id>-review", ...)` にも本体リポジトリ側の観測
+  // src/publish/index.ts）。走った role の木だけを検査していると、自分の木を持つ
+  // 役割（いまは `investigate`）が走ったティックでは「検査した木」と「押す木」が
+  // 別になる。読むだけの役割も Bash は持つので、`git -C ../<goal-id>` で実装役の
+  // 木を書いて commit する経路は塞がっていない。その commit は
+  // `changedPaths("<goal-id>-investigate", ...)` にも本体リポジトリ側の観測
   // （worktree の置き場は除外される）にも出ないまま push される。
+  // `review` は実装役と同じ木を見るので、下の `seen` で1つに畳まれる。
   //
   // 前のティックが残した違反は worktree に残ったままなので、どちらの木でも
   // 毎ティック再検知される。押す木を必ず検査に含める、が守りたい不変条件になる。
@@ -619,18 +659,34 @@ async function guardedDecision(
     decidedBy: "guard" as const,
   });
 
+  // 基準が読めない。記録が壊れているか、書き換えられている。
+  // 「触っていない」と「確かめられなかった」を混ぜない（design.md §3.1）。
+  if (base === null) {
+    return escalate(
+      "guard_unavailable",
+      "関門の基準（guard_base_sha）が commit id の形をしていないので停止する",
+    );
+  }
+
   // 作業ツリーごとに「編集されたパスの集合」と「そのツリーの場所」を組で持つ。
   // 場所は `findViolations` が相対パスを組み立てるのに要るので、集合だけを
   // 合流させると、別のツリーのパスを別のツリーの基点で読むことになる。
+  //
+  // 同じ木は2度検査しない。`review` は `implement` と同じ作業ツリーを見るので
+  // （`worktreeNameFor`）、名前で畳まないと同じ違反が二重に並ぶ。畳む前に
+  // primaryRole の側を回すので、Actor の自己申告（artifacts）は落ちない。
   const inspected: { path: string; edited: readonly string[] }[] = [];
+  const seen = new Set<string>();
   for (const role of roles) {
+    const name = worktreeNameFor(goal.goal.id, role);
+    if (seen.has(name)) {
+      continue;
+    }
+    seen.add(name);
     const path = role === primaryRole ? worktreePath : worktreePathFor(goal, role, null, deps);
     let changed: readonly string[];
     try {
-      changed = await deps.worktree.changedPaths(
-        worktreeNameFor(goal.goal.id, role),
-        goal.repository.default_branch,
-      );
+      changed = await deps.worktree.changedPaths(name, base);
     } catch (error) {
       return escalate(
         "guard_unavailable",
@@ -928,6 +984,7 @@ function sleepingUntil(resumeAfter: string | null, now: Date): string | null {
 async function maybeAct(
   goal: Goal,
   decision: Decision,
+  base: string,
   deps: ControllerDeps,
   signal: AbortSignal,
 ): Promise<Run | null> {
@@ -954,7 +1011,7 @@ async function maybeAct(
 
   // 同じ intent の何回目か。Task を持たないので Run の履歴から数える。
   const attempt = deps.store.listRuns(goalId).filter((r) => r.intent === intent).length + 1;
-  const result = await act({ goal, decision, attempt }, actDeps);
+  const result = await act({ goal, decision, attempt, base }, actDeps);
   return result.acted ? result.run : null;
 }
 

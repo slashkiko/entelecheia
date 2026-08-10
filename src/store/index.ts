@@ -58,6 +58,27 @@ export interface GoalState {
    * ここが `sqlite3` で直接書き換えるのとの差になる（`ent abandon --reason`）。
    */
   abandonReason: string | null;
+  /**
+   * 関門が差分を取る相手。`ent start` を叩いた時点の repoRoot の HEAD。
+   *
+   * 関門が答えたい問いは「Actor が何を書いたか」で、PR が答えたい問いは
+   * 「リリース先との差は何か」になる。`repository.default_branch` は後者なので、
+   * 前者の基準に流用すると、**人間が呼び出し側のブランチに書いたものまで
+   * Actor の編集として並ぶ**。Goal の宣言（`.goals/*.yaml`）がまさにそれで、
+   * `.goals/**` は PROTECTED_PATH_FLOOR にあるため毎ティック
+   * `protected_path_touched` になっていた。
+   *
+   * ブランチ名ではなく sha で持つ。差分は3点表記（`base...HEAD`）なので、
+   * base が先に進むだけなら分岐点は動かない。動くのは**分岐点の commit 自体を
+   * 書き換えたとき**で、そのとき `merge-base` が消えて
+   * `ESCALATE(guard_unavailable)` になる。作業ブランチでは amend も rebase も
+   * 日常的なので、ent を回している最中に1回打つだけで関門が張れなくなる。
+   * sha で固定しておけば、その commit が生きている限り差分は取れる。
+   *
+   * 記録が無い Goal（この列より前に start した分）は null で、呼び出し側が
+   * `default_branch` に落とす。移行のために古い挙動を残してある。
+   */
+  guardBaseSha: string | null;
 }
 
 /** `ent list` / Store.listGoals が返す1件分。宣言部と実行時状態の要点だけをまとめる */
@@ -97,6 +118,15 @@ export interface Store {
     activatedAt?: string,
   ): void;
   setObserveTarget(goalId: string, prNumber: number | null, issueNumber: number | null): void;
+
+  /**
+   * 関門が差分を取る相手を記録する（`GoalState.guardBaseSha`）。
+   *
+   * 書くのは `ent start` の1回だけにする。走行中に書き換えられる口を作ると、
+   * 「Actor が何を書いたか」の基準が途中で動く。基準が動く関門は、同じ差分に
+   * 対して別の答えを返すので、止まった理由をあとから再現できない。
+   */
+  setGuardBase(goalId: string, sha: string): void;
 
   /**
    * 「もう追わない」を1回で書く。status を ABANDONED にし、理由を残す。
@@ -244,6 +274,7 @@ export function openStore(path: string): Store {
         prNumber: row.pr_number,
         issueNumber: row.issue_number,
         abandonReason: row.abandon_reason,
+        guardBaseSha: row.guard_base_sha,
       };
     },
 
@@ -299,6 +330,10 @@ export function openStore(path: string): Store {
         issueNumber,
         goalId,
       );
+    },
+
+    setGuardBase(goalId, sha) {
+      db.prepare("UPDATE goals SET guard_base_sha = ? WHERE id = ?").run(sha, goalId);
     },
 
     acquireLease(goalId, owner, until, now) {
@@ -799,6 +834,7 @@ const goalRowSchema = z.object({
   issue_number: z.number().nullable(),
   // migrate() が後から足した列。古い DB を開いた直後は NULL になる。
   abandon_reason: z.string().nullable(),
+  guard_base_sha: z.string().nullable(),
 });
 
 const goalListRowSchema = z.object({
@@ -895,7 +931,10 @@ CREATE TABLE IF NOT EXISTS goals (
   issue_number  INTEGER,
   -- 人間が「もう追わない」と宣言した理由。ABANDONED でなければ NULL。
   -- 既にある DB には migrate() が足す。
-  abandon_reason TEXT
+  abandon_reason TEXT,
+  -- 関門が差分を取る相手。start した時点の repoRoot の HEAD（GoalState を参照）。
+  -- 既にある DB には migrate() が足す。
+  guard_base_sha TEXT
 );
 
 CREATE TABLE IF NOT EXISTS snapshots (
@@ -1005,5 +1044,13 @@ function migrate(db: DatabaseSync): void {
   const goalColumns = db.prepare("PRAGMA table_info(goals)").all() as unknown as { name: string }[];
   if (!goalColumns.some((column) => column.name === "abandon_reason")) {
     db.exec("ALTER TABLE goals ADD COLUMN abandon_reason TEXT");
+  }
+
+  // 関門が差分を取る相手（`GoalState.guardBaseSha`）。既定は NULL にする。
+  // 走行中の Goal に後から sha を当てると、それまで default_branch と比べて
+  // 通っていた差分が別の基準で並び直す。読む側が null を default_branch に
+  // 落とすことで、この列より前に start した Goal は挙動が変わらない。
+  if (!goalColumns.some((column) => column.name === "guard_base_sha")) {
+    db.exec("ALTER TABLE goals ADD COLUMN guard_base_sha TEXT");
   }
 }

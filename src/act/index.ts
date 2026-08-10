@@ -43,7 +43,7 @@ export interface WorktreePort {
    *
    * `changedPaths` は worktree の中で git を回すので、worktree の外に出た書き込みを
    * 1件も観測できない。`Run.artifacts` も SDK の Edit / Write しか拾わないため、
-   * Actor が `bash -c 'echo > ../../src/controller/index.ts'` と書けば、
+   * Actor が `bash -c 'echo > ../../../../src/controller/index.ts'` と書けば、
    * どちらの入力にも現れなかった。隔離が守るはずの当のファイルが、隔離の
    * 検査から漏れていたことになる。
    *
@@ -158,6 +158,18 @@ export interface ActTarget {
   decision: Decision;
   /** 同じ intent の何回目の試行か。design.md §4.5 の Task.attempts に対応する */
   attempt: number;
+  /**
+   * worktree を切る元。`GoalState.guardBaseSha`（`ent start` 時点の repoRoot の HEAD）。
+   *
+   * 関門が差分を取る相手と同じものを渡す。ここだけ `default_branch` にすると、
+   * 人間が呼び出し側のブランチに書いた分が worktree に入らないまま関門の基準にだけ
+   * 現れる（あるいはその逆になる）。**切った元と比べる相手は同じでなければならない。**
+   *
+   * 省略と null は `repository.default_branch` に落とす。この記録より前に start した
+   * Goal には sha が無く、走行中の worktree を別の commit へ切り直すと
+   * それまでの差分が PR から消える。
+   */
+  base?: string | null;
 }
 
 export interface ActDeps {
@@ -234,7 +246,16 @@ export async function act(target: ActTarget, deps: ActDeps): Promise<ActResult> 
   }
 
   // ここから先は Run(starting) が残っているので、どの経路でも必ず finish で確定させる。
-  const outcome = await runActor(target.goal, runId, action.intent, role, worktreeName, deps);
+  const outcome = await runActor(
+    target.goal,
+    runId,
+    action.intent,
+    role,
+    worktreeName,
+    // 切る元は関門の基準と同じものにする。記録が無ければ従来どおり default_branch。
+    target.base ?? target.goal.repository.default_branch,
+    deps,
+  );
   try {
     await deps.runs.finish(runId, outcome);
   } catch (error) {
@@ -269,6 +290,7 @@ async function runActor(
   intent: string,
   role: ActorRole,
   worktreeName: string,
+  base: string,
   deps: ActDeps,
 ): Promise<RunOutcome> {
   const failed = (detail: string, exitCode: number | null): RunOutcome => ({
@@ -285,7 +307,7 @@ async function runActor(
 
   let worktree: Worktree;
   try {
-    worktree = await deps.worktree.ensure(worktreeName, goal.repository.default_branch);
+    worktree = await deps.worktree.ensure(worktreeName, base);
   } catch (error) {
     // 隔離できていない状態で Agent を走らせると、controller 本体を書き換えうる。
     // 起動しなかったので exit_code は無い。
@@ -338,21 +360,37 @@ async function runActor(
  * 試行ごとに変えない。ティックをまたいで同じ作業ツリーに差分を積み上げ、
  * それがそのまま PR になるため。
  *
- * role を混ぜるのは、同じ Goal の中で役割の違う Actor が同じ作業ツリーを
- * 共有しないようにするため。レビュー役が checkout や clean を行えば実装側の
- * 途中の差分が消えるし、実装側が書き換えればレビュー役は「いつの時点の
- * コードを読んだのか」を言えなくなる。
+ * **`review` は `implement` と同じ作業ツリーを見る。** 当初は役割ごとに分けて
+ * いたが、分けると**レビューの対象が実装に永久に追いつかない**。レビュー役の
+ * 作業ツリーは base から切られるので実装役の commit が1つも入らず、
+ * `review.reviewed_sha`（レビュー役が読んだ HEAD）は base のまま動かない。
+ * 一方 `local.head_sha` は実装役の作業ツリーから観測する（`verifyRoot`）ので、
+ * Actor が1回 commit した時点で両者は二度と一致しない。「読んだ commit が
+ * 実装の HEAD と一致するときだけ結論を使う」という照合（design.md §10-6 /
+ * `review.reviewed_sha` の注記）が、常に不一致に倒れることになる。
+ * さらに1ティック目は `verifyRoot` が repoRoot に落ちるので、実装が1行も無い
+ * 状態でレビュー役が先に走ると、**人間のブランチをレビューした approved が
+ * sha 一致で通る**。
  *
- * **`implement` だけは goal.id のまま据え置く。** 既存の worktree と PR の
+ * 分けた当初の理由——レビュー役の checkout や clean で実装側の差分が消える、
+ * 実装側が書き換えるとレビューの対象が定まらない——は、**同時に走らせる場合の
+ * 話**になる。1ティックで起動する Actor は1体（design.md §5）なので、同じ
+ * ティックの中で両者が同じ作業ツリーを触ることはない。残るのは「レビュー役が
+ * 破壊的な git を打つ」経路だけで、そこは `src/adapters/claude.ts` の
+ * 拒否リストで role ごとに塞ぐ。
+ *
+ * **`implement` は goal.id のまま据え置く。** 既存の worktree と PR の
  * ブランチは `entelecheia/<goal.id>` にあり、規則を変えると走行中の Goal が
- * 別ブランチに乗り換えて、それまでの差分が PR から消える。
+ * 別ブランチに乗り換えて、それまでの差分が PR から消える。`investigate` は
+ * 分けたままにする。あちらは Goal の実装とは別のものを調べる役で、
+ * 実装の作業ツリーを汚す理由が無い。
  *
  * **第2引数に既定値を置かない。** `verifyRoot`（src/cli.ts）と未 commit の
  * 関門（src/controller/index.ts）は、観測した `local.branch` を
  * `worktreeBranchFor(worktreeNameFor(...))` と突き合わせて「その dirty が
  * どこを観測した値か」を判定している（design.md §10-11）。候補のブランチが
  * 2本ある以上、呼び出し側が「どちらの作業ツリーの話か」を毎回書かなければ、
- * review の作業ツリーの汚れを実装の書き残しと読んでも型でもテストでも
+ * `investigate` の作業ツリーの汚れを実装の書き残しと読んでも型でもテストでも
  * 気づけない。role を書いていない入力に既定を当てるのは、値を読む側
  * （`act`・`Run` を読む controller）の仕事にする（`DEFAULT_ACTOR_ROLE`）。
  *
@@ -361,7 +399,7 @@ async function runActor(
  * 別の作業ツリーを見ていても誰も気づけない。
  */
 export function worktreeNameFor(goalId: string, role: ActorRole): string {
-  return role === "implement" ? goalId : `${goalId}-${role}`;
+  return role === "investigate" ? `${goalId}-${role}` : goalId;
 }
 
 /**

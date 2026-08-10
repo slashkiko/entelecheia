@@ -74,6 +74,32 @@ describe("doctorPayload", () => {
     expect(report.exitCode).toBe(1);
   });
 
+  it("token が読めないときは、環境変数だけでなく gh も候補だったことを書く", async () => {
+    // 環境変数を渡し忘れただけで毎回赤くなる検査は読まれなくなり、本当に
+    // 落ちた回を見落とす。読む順（GITHUB_TOKEN → GH_TOKEN → gh auth token）を
+    // 落ちたときのメッセージにも出して、次に何をすればよいかを1行で示す。
+    const report = await doctorPayload(probes({ githubToken: () => null }));
+
+    const check = report.checks.find((c) => c.name === "github_token");
+    expect(check?.detail).toContain("gh auth token");
+  });
+
+  it("token を渡さないと決めた場合も failed として出す", async () => {
+    // 空文字は「読めなかった」ではなく「渡さないと決めた」。doctor は
+    // どちらも failed にする。GitHub の観測が埋まらないことに変わりはない。
+    const report = await doctorPayload(probes({ githubToken: () => "" }));
+
+    expect(report.checks.find((c) => c.name === "github_token")?.result).toBe("failed");
+  });
+
+  it("token を読めた検査は、値そのものを出さない", async () => {
+    const report = await doctorPayload(probes({ githubToken: () => "gho_secret" }));
+
+    const check = report.checks.find((c) => c.name === "github_token");
+    expect(check?.result).toBe("ok");
+    expect(check?.detail).not.toContain("gho_secret");
+  });
+
   it("Goal YAML が読めなければ、どの slug かと理由を残す", async () => {
     const report = await doctorPayload(
       probes({

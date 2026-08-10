@@ -47,7 +47,8 @@ git で見る。ただし見えるのはリポジトリの中の変更だけで�
 （`.goals/**`）に加えて、**関門そのもの（Agent の拒否リストを決めるファイルを含む）と
 検証系**にあたる。選び方の基準は design.md §7 にある。
 
-controller が持つ資格情報（`GITHUB_TOKEN`）は Agent に渡さない。git は argv 配列で叩き、
+controller が持つ資格情報（`GITHUB_TOKEN` / `GH_TOKEN` と、`gh auth token` から読んだ
+token）は Agent に渡さない。git は argv 配列で叩き、
 シェルを通すのは Goal YAML の `setup` と `verification.run` だけにする。
 `type: human` の承認は、リポジトリに書き込み権限がある人のものだけを数える。
 
@@ -86,9 +87,9 @@ controller は承認待ちで止まった。人間が待っているのは実装
 未 commit の変更を検知し、`ESCALATE(uncommitted_changes)` で人間を呼ぶ
 （design.md §10-11）。読むのは**今ティックの観測が worktree を見て作った**
 `local.dirty` だけで、観測に失敗したティックや worktree がまだ無いティックでは
-止まらない。役割ごとに worktree が分かれた（design.md §4.2）あとも、突き合わせるのは
+止まらない。役割が増えた（design.md §4.2）あとも、突き合わせるのは
 **実装役のブランチ**に固定してある。検証コマンドと `local.*` を観測する先が
-そちらだからで、レビュー役の作業ツリーの汚れを実装の書き残しと読まない。止めた理由と次の一手は `ent get` と PR のコメントの両方に出す。
+そちらで、レビュー役も同じ作業ツリーを読む。止めた理由と次の一手は `ent get` と PR のコメントの両方に出す。
 
 MVP 完了後のレビューでも、同じ形の穴が残っていた。Port を注入するテストは
 `src/adapters/local.ts`（実際の git とシェル）と `src/cli.ts` の `main()` を1行も通らず、
@@ -177,6 +178,23 @@ ent agent-context                  # CLI の構造を機械可読な JSON で出
 
 `ENT_MODEL` と `ENT_EFFORT` で Actor と LLM のモデルを上書きできる。
 1ティックごとに使用量を消費するので、試走は安いモデルで回せる。
+
+`ent start` は、そのとき叩いたディレクトリの HEAD を**関門の基準**として記録する。
+Actor の worktree はその commit から切られ、関門が worktree の差分を取る
+相手も同じ commit になる（worktree の外に出た書き込みの検知は別の経路で、
+本体リポジトリ側の ACT 前後の差を見る）。**Goal の宣言と仕様は、`ent start` より前に
+commit しておく。** そうすれば人間が書いた分は基準の側に入り、worktree の差分には
+Actor が書いた分だけが並ぶ。
+
+記録するのは、Run が1件も無い Goal に `ent start` を打ったときだけになる。走行中の
+Goal に打ち直しても基準は動かない。worktree は最初の基準から切られたまま残るので、
+基準だけを動かすと「切った元」と「比べる相手」がずれる。
+
+基準にした commit は、回している間 amend も rebase もしない。分岐点が消えると
+差分を取れなくなり、`ESCALATE(guard_unavailable)` で止まる。PR の宛先は
+`default_branch` のままで、HEAD を読めなかった場合とこの記録より前に start した
+Goal は、従来どおり `default_branch` を基準にする（そのときは人間が書いた分も
+Actor の編集として並ぶ）。
 
 `package.json` の `bin` に `ent` を登録してあるが、npm へ公開していないので
 いまは alias か `node dist/cli.js` で呼ぶ。
@@ -283,8 +301,15 @@ Actor が走ることも、状態が混ざることもない。ティックの�
 1本あたり CPU コア1〜2本を見込むとよい。目安としてコア数の半分までにしておくと、
 検証コマンドがタイムアウト側に倒れにくい。
 
-`GITHUB_TOKEN`（または `GH_TOKEN`）を渡すと GitHub を観測する。無ければ観測は
-`unobserved` に `port_failed` として残り、ASSESS も「PR は無い」とは読まない。
+GitHub の観測には token が要る。`GITHUB_TOKEN`（または `GH_TOKEN`）を渡せばそれを使い、
+どちらの環境変数も無ければ `gh auth token` に落とす。gh はセットアップの前提に入っているので、
+対話シェルから叩くぶんには何も渡さずに回してよい。cron から回すときは PATH と gh の設定が
+引き継がれるとは限らないので、`GITHUB_TOKEN` を明示するか、同じ環境で `ent doctor` を
+叩いて確かめる。**空文字を設定してあれば「渡さないと決めた」と読み、gh も呼ばない。**
+未設定と空文字はここだけ意味が違う。GitHub を観測させたくない場面で、対話ログインした
+gh のトークンが黙って使われないようにする。**いずれの経路でも token を読めなければ**観測は `unobserved` に
+`port_failed` として残り、ASSESS も「PR は無い」とは読まない。読めた token は
+`process.env` に書き戻さないので、Agent と検証コマンドの環境から落とす扱いは変わらない。
 Actor と LLM は Claude Code の OAuth をそのまま使う。
 
 ## ディレクトリ
@@ -293,8 +318,9 @@ Actor と LLM は Claude Code の OAuth をそのまま使う。
 .goals/<slug>.yaml        人間が編集。Git 管理。宣言部のみ。slug は goal.id と一致させる
 .goals/.state/goals.db    controller が書く実行時状態。gitignore 済み
 .goals/.state/worktrees/  Actor が編集する worktree。controller 本体とは物理的に分ける
-                          名前は (goal.id, role) から決まる。実装役は <slug>、
-                          それ以外は <slug>-<role>（design.md §4.2）
+                          名前は (goal.id, role) から決まる。実装役とレビュー役は
+                          同じ <slug> を読み書きし、調べる役（investigate）だけ
+                          <slug>-investigate に分かれる（design.md §4.2）
 .goals/.state/runs/<run-id>/  Agent の生ログ。DB にはパスだけ持つ
 src/domain/fact.ts        Fact の型（VERIFIED / INFERRED の分離）と Unresolved
 src/domain/fact-keys.ts   観測キーのレジストリ。Goal YAML の fact 検証はここを参照する

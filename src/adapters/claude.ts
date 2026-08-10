@@ -456,8 +456,32 @@ function disallowedToolsIn(role: ActorRole, gates: readonly ApprovalGate[]): str
       tools.push(tool);
     }
   }
+  for (const tool of DESTRUCTIVE_GIT) {
+    if (!ACTOR_TOOLS[role].includes("Edit") && !tools.includes(tool)) {
+      tools.push(tool);
+    }
+  }
   return tools;
 }
+
+/**
+ * 作業ツリーの中身を消す git。**編集のツールを持たない役割には渡さない。**
+ *
+ * レビュー役は実装役と同じ作業ツリーを見る（`worktreeNameFor`）。分けない理由は
+ * あちらに書いたが、分けないぶん「レビュー役が checkout や clean を打てば実装側の
+ * 差分が消える」という当初の懸念だけが残る。編集のツールを外しても Bash は残るので、
+ * `git checkout .` の1行で同じことができてしまう。
+ *
+ * 判定は role の名前ではなく**編集のツールを持っているか**で行う。役割が増えたとき、
+ * 読むだけの役割はここに書き足さなくても既定で塞がる。
+ */
+const DESTRUCTIVE_GIT = [
+  "Bash(git checkout *)",
+  "Bash(git restore *)",
+  "Bash(git clean *)",
+  "Bash(git reset *)",
+  "Bash(git stash *)",
+] as const;
 
 /** どの役割にも要る、読むためのツール。これが無ければコードを読めない */
 const READ_TOOLS = ["Read", "Glob", "Grep"] as const;

@@ -126,6 +126,19 @@ describe("review の Actor", () => {
     }
   });
 
+  it("作業ツリーを消す git を拒否リストに入れる", async () => {
+    // レビュー役は実装役と同じ作業ツリーを見る（worktreeNameFor）。編集のツールを
+    // 外しても Bash は残るので、`git checkout .` の1行で実装側の未 commit の
+    // 差分を消せる。分けないぶん、この経路だけは拒否リストで塞ぐ。
+    const sink = recorded();
+    await claudeActor(deps(sink)).run(invocation({ role: "review" }));
+
+    const disallowed = sink.options[0]?.disallowedTools ?? [];
+    for (const tool of ["checkout", "restore", "clean", "reset", "stash"]) {
+      expect(disallowed.some((denied) => denied.startsWith(`Bash(git ${tool}`))).toBe(true);
+    }
+  });
+
   it("読むためのツールは持つ", async () => {
     // 読めなければレビューにならない。Bash はテストの実行に要るので残す。
     const sink = recorded();
@@ -190,6 +203,16 @@ describe("implement の Actor（弱めない）", () => {
 
     const disallowed = sink.options[0]?.disallowedTools ?? [];
     expect(disallowed.some((tool) => tool.startsWith("Bash(git worktree"))).toBe(true);
+  });
+
+  it("作業ツリーを消す git は拒否しない", async () => {
+    // 実装役は自分の作業ツリーを持つ。やり直しのために checkout も reset も要る。
+    // 塞ぐのは、他人の作業ツリーを読むだけの役割に限る。
+    const sink = recorded();
+    await claudeActor(deps(sink)).run(invocation({ role: "implement" }));
+
+    const disallowed = sink.options[0]?.disallowedTools ?? [];
+    expect(disallowed.some((tool) => tool.startsWith("Bash(git checkout"))).toBe(false);
   });
 });
 

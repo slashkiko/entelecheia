@@ -153,8 +153,17 @@ describe("worktreeNameFor", () => {
     expect(worktreeNameFor(GOAL_ID, "implement")).toBe(GOAL_ID);
   });
 
-  it("role が違えば別の作業ツリーになる", () => {
-    expect(worktreeNameFor(GOAL_ID, "review")).not.toBe(worktreeNameFor(GOAL_ID, "implement"));
+  it("review は implement と同じ作業ツリーを見る", () => {
+    // 分けると、レビューの対象が実装に永久に追いつかない。レビュー役の作業ツリーは
+    // base から切られるので実装役の commit が1つも入らず、review.reviewed_sha は
+    // base のまま動かない。local.head_sha は実装役の作業ツリーから観測するので、
+    // Actor が1回 commit した時点で二度と一致しない（worktreeNameFor の注記）。
+    expect(worktreeNameFor(GOAL_ID, "review")).toBe(worktreeNameFor(GOAL_ID, "implement"));
+  });
+
+  it("investigate は分けたままにする", () => {
+    // Goal の実装とは別のものを調べる役なので、実装の作業ツリーを汚す理由が無い。
+    expect(worktreeNameFor(GOAL_ID, "investigate")).not.toBe(worktreeNameFor(GOAL_ID, "implement"));
   });
 
   it("同じ (goal.id, role) なら何度呼んでも同じ名前になる", () => {
@@ -167,31 +176,34 @@ describe("worktreeNameFor", () => {
     expect(worktreeNameFor("other-goal", "review")).not.toBe(worktreeNameFor(GOAL_ID, "review"));
   });
 
-  it("role ごとに checkout するブランチも分かれる", () => {
+  it("review が checkout するブランチも implement と同じになる", () => {
     // 未 commit の関門と verifyRoot は、観測した local.branch を
     // worktreeBranchFor(worktreeNameFor(...)) と突き合わせて観測の出自を見る。
-    // ここが衝突すると、review の作業ツリーの汚れを実装の書き残しと読む。
+    // review が同じブランチを見る以上、その突き合わせは実装役の側だけを指す。
     const implement = worktreeBranchFor(worktreeNameFor(GOAL_ID, "implement"));
     const review = worktreeBranchFor(worktreeNameFor(GOAL_ID, "review"));
 
-    expect(review).not.toBe(implement);
+    expect(review).toBe(implement);
+    expect(worktreeBranchFor(worktreeNameFor(GOAL_ID, "investigate"))).not.toBe(implement);
   });
 });
 
 describe("act の role", () => {
-  it("review の ACT は review の worktree を用意する", async () => {
+  it("review の ACT は implement の worktree を用意する", async () => {
     const s = spy();
     await act(target({ type: "ACT", intent: "実装をレビューする", role: "review" }), s.deps);
 
-    expect(s.ensured).toEqual([{ name: worktreeNameFor(GOAL_ID, "review"), baseBranch: "main" }]);
+    expect(s.ensured).toEqual([
+      { name: worktreeNameFor(GOAL_ID, "implement"), baseBranch: "main" },
+    ]);
   });
 
-  it("review の Actor には review の作業ツリーが渡る", async () => {
+  it("review の Actor には実装役の作業ツリーが渡る", async () => {
     const s = spy();
     await act(target({ type: "ACT", intent: "実装をレビューする", role: "review" }), s.deps);
 
-    expect(s.invocations[0]?.worktree.path).toContain(worktreeNameFor(GOAL_ID, "review"));
-    expect(s.invocations[0]?.worktree.path).not.toBe(
+    // 読む対象が実装そのものでなければ、reviewed_sha は実装の HEAD に追いつかない。
+    expect(s.invocations[0]?.worktree.path).toBe(
       `/tmp/entelecheia/worktrees/${worktreeNameFor(GOAL_ID, "implement")}`,
     );
   });
@@ -238,13 +250,15 @@ describe("act の role", () => {
     }
   });
 
-  it("implement と review が同じ作業ツリーを共有しない", async () => {
-    // 交代で回しても、互いの作業ツリーを踏まないこと。
+  it("implement と review は同じ作業ツリーを共有する", async () => {
+    // 1ティックで起動する Actor は1体なので（design.md §5）、同じティックの中で
+    // 両者が同じ作業ツリーを触ることはない。残る「レビュー役が破壊的な git を打つ」
+    // 経路は、拒否リスト（DESTRUCTIVE_GIT）で塞ぐ。
     const s = spy();
     await act(target({ type: "ACT", intent: "実装する", role: "implement" }), s.deps);
     await act(target({ type: "ACT", intent: "レビューする", role: "review" }), s.deps);
 
     const paths = s.invocations.map((invocation) => invocation.worktree.path);
-    expect(new Set(paths).size).toBe(2);
+    expect(new Set(paths).size).toBe(1);
   });
 });

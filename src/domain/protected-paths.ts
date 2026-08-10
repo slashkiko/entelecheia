@@ -50,7 +50,7 @@ export interface Violation {
  * - 保護パスは worktree からの相対パスで照合する。Actor が返すのは絶対パスなので、
  *   worktree の場所が変わってもパターンが腐らないようにする
  * - シンボリックリンクは実体へ解決してから見る。worktree の中に
- *   `link -> ../../src/controller` を置かれると、`..` で始まらずグロブにも
+ *   `link -> ../../../../src/controller` を置かれると、`..` で始まらずグロブにも
  *   一致しないパスができ、脱出の検査と保護パスの検査を両方すり抜けた
  * - worktree の中の `.goals/.state/` は照合しない。controller が書く実行時状態で、
  *   保護したい宣言部（`.goals/*.yaml`）ではない。詳しくは RUNTIME_STATE_DIR

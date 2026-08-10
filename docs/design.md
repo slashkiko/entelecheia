@@ -3,7 +3,7 @@
 このリポジトリの単一の設計ソース。新しく参加するとき（あるいは新しいセッションを開くとき）は、
 まずこれを読めば足りるように書いてある。
 
-最終更新: 2026-08-09（MVP レビューの指摘を反映）
+最終更新: 2026-08-10（関門の基準を PR の宛先から切り離し、レビュー役を実装役と同じ作業ツリーに寄せた）
 
 ---
 
@@ -242,26 +242,37 @@ Codex を足すときに Planner 側のコードを変えなくて済む形に�
   そのまま落とす（レビュー役だからといって merge や force push を許さない）。
   プロンプトも role ごとに分ける。権限だけ分けて文面が同じだと、レビュー役は編集を
   試みて拒否され続け、ターンをそこに使い切る
-- **worktree の名前が (goal.id, role) から決まる**（`worktreeNameFor`）。役割が違えば
-  作業ツリーもブランチも分かれる。同じ作業ツリーを共有すると、レビュー役の checkout や
-  clean で実装側の途中の差分が消え、実装側が書き換えればレビュー役は「いつの時点の
-  コードを読んだのか」を言えなくなる。**`implement` だけは `goal.id` のまま据え置く。**
+- **worktree の名前が (goal.id, role) から決まる**（`worktreeNameFor`）。
+  **`review` は `implement` と同じ作業ツリーを見て、`investigate` だけが分かれる。**
+  当初は3つとも分けていたが、分けると**レビューの対象が実装に永久に追いつかない**。
+  レビュー役の作業ツリーは base から切られるので実装役の commit が1つも入らず、
+  `review.reviewed_sha` は base のまま動かない。`local.head_sha` は実装役の作業ツリーから
+  観測する（§10-9）ので、Actor が1回 commit した時点で二度と一致しない。「読んだ commit が
+  実装の HEAD と一致するときだけ結論を使う」という照合（§4.3 の `review.reviewed_sha`）が、
+  常に不一致に倒れる。
+  さらに1ティック目は `verifyRoot` が repoRoot に落ちるので、実装が1行も無い状態で
+  レビュー役が先に走ると、**人間のブランチをレビューした approved が sha 一致で通る**。
+  分けた当初の理由——レビュー役の checkout や clean で実装側の差分が消える——は
+  **同時に走らせる場合の話**で、1ティックで起動する Actor は1体（§5）なので起きない。
+  残る「レビュー役が破壊的な git を打つ」経路は、拒否リストで role ごとに塞ぐ
+  （`git checkout` / `restore` / `clean` / `reset` / `stash` を、編集のツールを持たない
+  役割から落とす）。**`implement` は `goal.id` のまま据え置く。**
   既存の worktree と PR のブランチが `entelecheia/<goal.id>` にあり、規則を変えると
   走行中の Goal が別ブランチに乗り換えて、それまでの差分が PR から消える
 - **第2引数に既定値を置かない。** `verifyRoot`（§10-9）と未 commit の関門（§10-11）は
   観測した `local.branch` を `worktreeBranchFor(worktreeNameFor(...))` と突き合わせて
   観測の出自を判定する。保護パスの関門（§10-6）も同じ関数から検査する木を決める
-  （あちらは走った role の木と実装役の木の両方を見る）。候補のブランチが2本ある以上、
-  呼び出し側が「どちらの作業ツリーの話か」を毎回書かなければ、review の作業ツリーの
-  汚れを実装の書き残しと読んでも型でもテストでも気づけない。role を書いていない入力
-  （既存の Decision と既存の Run）に実装役を当てるのは、読む側の仕事にする
-  （`DEFAULT_ACTOR_ROLE`）
+  （あちらは走った role の木と実装役の木の両方を見る。`review` は実装役と同じ木なので
+  1つに畳まれる）。候補のブランチが2本ある以上、呼び出し側が「どちらの作業ツリーの
+  話か」を毎回書かなければ、`investigate` の作業ツリーの汚れを実装の書き残しと読んでも
+  型でもテストでも気づけない。role を書いていない入力（既存の Decision と既存の Run）に
+  実装役を当てるのは、読む側の仕事にする（`DEFAULT_ACTOR_ROLE`）
 - **どの役割として走ったかを Run に残す**（§4.5）。write-ahead の `starting` 側に書く。
   確定側に回すと、途中で kill された Run の role が空のまま残る（§3.6）
 
 **検証コマンドと `local.*` の観測先は `implement` の作業ツリーに固定する**（§10-9）。
-レビュー役の作業ツリーで criteria を検証すると、レビュー中に書き換わったものを
-実装の検証結果として読むことになる。PR に載るのも実装役のブランチになる。
+`investigate` の作業ツリーで criteria を検証すると、実装が1つも入っていない作業ツリーの
+結果を実装の検証結果として読むことになる。PR に載るのも実装役のブランチになる。
 
 ### 4.3 OBSERVE が取得するもの
 
@@ -358,7 +369,8 @@ Claude Max には5時間ローリングの使用量上限と週次上限があ�
 
 ```
 Goal          id, name, desired_state, status, lease_owner, lease_until,
-              resume_after, activated_at, reconciles, pr_number, issue_number
+              resume_after, activated_at, reconciles, pr_number, issue_number,
+              abandon_reason, guard_base_sha
 StateSnapshot goal_id, observed_at
 Fact          snapshot_id, seq, key, value, observed_at, confidence, evidence
 Unresolved    snapshot_id, seq, key, reason, detail      観測できなかった対象
@@ -407,7 +419,7 @@ GitHub が一時的に落ちただけで直したはずの Gap が復活する�
 分単位でかかる（§9 の実測では、1ティック目に 1,341,349 tokens を消費している）。
 `leaseSeconds` は 300 なので、延長しないと ACT の途中で期限が切れる。cron から回す構成
 （§3.6）では、そこで別プロセスが lease を奪い、同じ worktree（名前は (goal.id, role) から
-決まるので、同じ役割どうしなら同じ場所になる）で2つの ACT が並行する。稀な競合ではなく、実運用の既定の挙動になっていた。
+決まる。実装役とレビュー役は同じ場所になる）で2つの ACT が並行する。稀な競合ではなく、実運用の既定の挙動になっていた。
 
 ```sql
 UPDATE goals
@@ -427,8 +439,8 @@ UPDATE goals
 .goals/<slug>.yaml            人間が編集。Git 管理。宣言部のみ
 .goals/.state/goals.db        SQLite。機械のみが書く。gitignore
 .goals/.state/runs/<run-id>/  Agent の生ログ・diff。DB にはパスだけ持つ
-.goals/.state/worktrees/<slug>/ Actor が編集する worktree（実装役。§4.2）
-.goals/.state/worktrees/<slug>-<role>/ 実装役以外の Actor が編集する worktree
+.goals/.state/worktrees/<slug>/ Actor が読み書きする worktree（実装役とレビュー役。§4.2）
+.goals/.state/worktrees/<slug>-investigate/ 調べる役の worktree
 ```
 
 人間が編集する宣言部と、機械が書き換える実行時状態を混ぜない。
@@ -489,7 +501,7 @@ PRAGMA foreign_keys = ON;
 - Web UI（CLI と生成レポートのみ）
 - GitLab / Linear / Jira の Adapter 実装（インターフェースだけ切る）
 - 複数 Actor の並列実行（インターフェースは複数対応、実装は逐次1本）。
-  役割ごとに worktree は分かれるようになった（§4.2）が、**1ティックで起動する Actor は
+  役割が増えた（§4.2）が、**1ティックで起動する Actor は
   1体のまま**で、Decision も1ティックに1行のままにしてある。協働は同時ではなく
   ティックをまたいだ交代で成立させる。同じティックに2体を走らせると、Run の確定・
   lease・write-ahead の前提（§3.6 / §4.5）まで変わる
@@ -530,7 +542,7 @@ Phase 3 も GitHub 単独の自己ホストなので、そこでは検証され�
 | スキーマ | Zod | Agent 出力の検証ゲートと YAML バリデーションを同一定義で兼ねる |
 | YAML | `yaml`（eemeli） | コメント保持のラウンドトリップ編集。機械が書き戻すなら必須 |
 | DB | `node:sqlite`（Node 標準） | 同期 API でコードが素直。Node 22.13 以降はフラグなしで使える（22.5 で導入、それ以前は無い）。`mise.toml` が Node 24 を固定し、`engines` も `>=24` にしてあるため常に使える。better-sqlite3 + Drizzle の採用予定を取り下げた（下記） |
-| CLI | `node:util` の `parseArgs`（Node 標準） | サブコマンドが4つなので依存を足す価値が出ない。10 を超えたら citty か oclif に寄せる |
+| CLI | `node:util` の `parseArgs`（Node 標準） | サブコマンドが少ない（採用時は4つ、いまは7つ）ので依存を足す価値が出ない。10 を超えたら citty か oclif に寄せる |
 | プロセス実行 | `node:child_process`（Node 標準） | 検証コマンドと git を叩くだけなので標準で足りる。ストリーム制御が要るようになったら execa に移す |
 | GitHub | `@octokit/rest` + plugin-throttling/retry | ETag でポーリングのレート制限を節約 |
 | ログ | pino（未着手） | 構造化ログ。Decision テーブルとは別に生ログを残す。いまは CLI が JSON を1本出すだけ |
@@ -549,8 +561,8 @@ DB と CLI のどちらも Node 24 標準で置き換えた。判断の根拠は
    配布の重さをさらに増やす。`node:sqlite` は同じ同期 API を標準で持つ
 2. Drizzle の価値はマイグレーションだが、Goal YAML のスキーマは `version: 1` を
    literal で固定してあり（§10-8）、まだマイグレーションが存在しない
-3. CLI のサブコマンドは `start` / `run` / `show` / `list` の4つで、citty の型の恩恵より
-   依存が1つ増えるコストの方が重い
+3. CLI のサブコマンドは `start` / `run` / `show` / `list` の4つ（当時の名前。`show` は
+   いまの `get`）で、citty の型の恩恵より依存が1つ増えるコストの方が重い
 
 結果として、controller の本体は zod と yaml の2つだけに依存する。
 同じ理由で、プロセス実行も execa ではなく `node:child_process` にしてある。
@@ -621,6 +633,13 @@ DECIDE の LLM 呼び出しは `LlmCall.tokens` に残す（§4.5）。あとか
 
 `protected_paths` に何を並べるかは、**「Agent がそこを書き換えたら他の統制を全部外せるか」**
 で決める。制御ループ本体（`src/controller/**`）と Goal の宣言部（`.goals/**`）だけでは足りない。
+
+このうち**どの Goal からも外せない下限**を `PROTECTED_PATH_FLOOR`（`src/domain/goal.ts`）
+に置く。Goal が `protected_paths` を空にしても、スキーマが読み込みの時点で下限を混ぜる。
+関門の適用範囲を Goal 側が決める形のままだと、関門を外したい Goal がいつでも外せる。
+下限に入れるのは**書き換えられると関門そのものが働かなくなるもの**だけで、検証系
+（`mise.toml` など）と依存（`package.json`）は入れない。あちらは Goal によっては
+正当に触る対象になりうる。下の列挙は下限と、Goal ごとに足す分の両方を含む。
 
 - 関門そのもの（`src/domain/protected-paths.ts`）と、Agent の許可・拒否ツールを決める
   ファイル（`src/adapters/claude.ts`）。ここが開いていると、照合を常に false にするか
@@ -955,9 +974,35 @@ MVP を止める未確定は残っていない。ただし、他のリポジト�
    いまは **git が観測した変更**（`status --porcelain -uall` と base からの
    `diff --name-only`）を主にする。自己申告ではなく「書けた結果」を見るのが、
    Bash を許したまま取れる唯一の検査点になる。
+   **その base は `default_branch` ではない。** 関門が答えたい問いは
+   「Actor が何を書いたか」で、`repository.default_branch` が答えるのは
+   「リリース先との差は何か」になる。後者を前者に流用していたので、人間が
+   呼び出し側のブランチに書いたものまで Actor の編集として並んだ。ent は
+   `.claude/worktrees/<name>` のような呼び出し側の worktree から回し、Goal の宣言
+   （`.goals/<slug>.yaml`）と仕様テストはそこに書く。ent の worktree を
+   `main` から切ると、その宣言は base 側に入らないので `main...HEAD` に出る。
+   `.goals/**` は `PROTECTED_PATH_FLOOR` にあってどの Goal からも外せないため、
+   Actor が何もしていないティックでも `protected_path_touched` になった。
+   いまは `ent start` を叩いた時点の repoRoot の HEAD を
+   `GoalState.guardBaseSha` に記録し、worktree を切る元も関門が比べる相手も
+   そこに揃える。**切った元と比べる相手は同じでなければならない。**
+   ずれると、切った元に無いものを「Actor が書いた」と読むか、逆に Actor が
+   書いたものが差分から消える。PR の base（`publish`）は `default_branch` のまま。
+   **ブランチ名ではなく sha で持つ。** 3点表記（`base...HEAD`）は base が先に
+   進むだけなら分岐点が動かないが、分岐点の commit 自体を書き換えると
+   `merge-base` が消えて `guard_unavailable` になる。作業ブランチでは amend も
+   rebase も日常的なので、走行中に1回打つだけで関門が張れなくなる。
+   記録が無い Goal（この列より前に start した分）は `default_branch` に落とす。
+   走行中の worktree を別の commit へ切り直すと、それまでの差分が PR から消える。
+   **記録するのは、Run が1件も無い Goal に `ent start` を打ったときだけにする。**
+   条件を「記録がまだ無い」だけにすると、この列より前に start して worktree が
+   `default_branch` から切られている Goal に、いまの HEAD を基準として与えてしまう。
+   記録が commit id の形をしていなければ `default_branch` には落とさず
+   `guard_unavailable` に倒す。状態 DB は gitignore 済みで本体側の汚れの観測に出ないので、
+   検証しないまま読むとリテラル `HEAD` を1回書き込むだけで差分が恒久的に空になる。
    **worktree の外も git で見る。** worktree の中で git を回しても、
    `git worktree add` で分けた本体側の作業ツリーは観測できない。`Run.artifacts` も
-   Bash を拾わないので、`bash -c 'echo > ../../src/controller/index.ts'` は
+   Bash を拾わないので、`bash -c 'echo > ../../../../src/controller/index.ts'` は
    どちらの入力にも現れなかった。隔離が守るはずの当のファイルが、隔離の検査から
    漏れていたことになる。本体リポジトリ側でも `status --porcelain -uall` を回し、
    絶対パスで返して `escaped_worktree` に落とす。
@@ -965,7 +1010,7 @@ MVP を止める未確定は残っていない。ただし、他のリポジト�
    ファイルが最初から汚れているので、それを違反にすると関門が毎ティック鳴る。
    比較はパスの集合ではなく**中身の指紋**で行う。パス名だけで比べていると、人間が
    編集中のファイルを Actor が上書きしたときに前後で同じパスが並び、差が消える。
-   Actor は `git -C ../.. status` で汚れているファイルを読めるので、
+   Actor は `git -C ../../../.. status` で汚れているファイルを読めるので、
    パス名だけで比べていれば、どこを上書きすれば検知されないかを Actor が選べた。
    **commit 済みの差分は、base が解決できなければ握り潰さず throw する。**
    以前は `catch {}` で「変更なし」に畳んでいたが、Actor は
@@ -992,14 +1037,15 @@ MVP を止める未確定は残っていない。ただし、他のリポジト�
    （`ACT` 以外・dry-run）は実装役だけになる。
    実装役を必ず混ぜるのは、**push するのが実装役の作業ツリーだから**（§10-11）。
    走った role の木だけを検査していた頃は、レビュー役が走ったティックで
-   「検査した木」と「押す木」が別になっていた。レビュー役は編集のツールを持たないが
-   Bash は持つので、`git -C <実装役の木>` で書いて commit する経路は塞がっていない。
-   その commit はレビュー役の `changedPaths` にも、本体リポジトリ側の観測
-   （worktree の置き場は除外される）にも出ないまま push される。
+   「検査した木」と「押す木」が別になっていた。自分の木を持つ役割（いまは
+   `investigate`）は編集のツールを持たないが Bash は持つので、`git -C <実装役の木>` で
+   書いて commit する経路は塞がっていない。その commit はその役割の `changedPaths` にも、
+   本体リポジトリ側の観測（worktree の置き場は除外される）にも出ないまま push される。
    **守りたい不変条件は「押す木は必ず検査した木に含まれる」**で、そのために
    push 側を Run に従わせるのではなく検査側を広げてある。
-   逆向き——実装役のティックでレビュー役の木まで見る——はしない。
-   レビュー役が残した差分で実装が止まる理由が無い。
+   `review` は実装役と同じ木を見る（§4.2）ので、検査する木は1つに畳まれる。
+   逆向き——実装役のティックで `investigate` の木まで見る——はしない。
+   あちらが残した差分で実装が止まる理由が無い。
    違反は worktree に残り続けるので、どちらの木でも毎ティック再検知される。
    照合はシンボリックリンクを実体へ解決してから行い、大文字小文字は区別しない。
    macOS も Windows も既定でパスの大小を区別しないので、`src/Controller/index.ts` と
@@ -1026,7 +1072,7 @@ MVP を止める未確定は残っていない。ただし、他のリポジト�
    として止まる。安全側だが誤検知になる。
    (e) 本体側は未 commit の汚れしか見ない。worktree 側は commit 済みの差分まで
    追うが、本体側のブランチは controller が動かさないので `status` だけにしてある。
-   `git -C ../.. commit` や `git -C ../.. stash` は拒否リストに無いので、
+   `git -C ../../../.. commit` や `git -C ../../../.. stash` は拒否リストに無いので、
    本体側で書いてから commit されると、汚れの集合から消えて検査の外に出る。
    (c) と (d) は逆向きのトレードオフで、どちらも検知を永続化するか
    Actor プロセスと編集を紐付けないと同時には解けない。MVP では両方残す
@@ -1041,6 +1087,8 @@ MVP を止める未確定は残っていない。ただし、他のリポジト�
    Goal が増えたときに同じやり方は続けられない。
    **同じ問題は宣言の値にもある。** レビューで `protected_paths` を広げたとき、
    書き直したのは自己ホストで実際に回す2本だけで、完了済みの9本は `[]` のまま残した。
+   `[]` でも `PROTECTED_PATH_FLOOR`（§7）は掛かるので、関門が丸ごと外れた Goal は
+   無い。未決として残っているのは、**下限より広い分をどこに置くか**になる。
    再実行しない Goal に手を入れても差分が増えるだけだが、「どの Goal がどこまで
    守られているか」は YAML を1本ずつ読まないと分からない。既定値をどこに置くかは
    まだ決めていない
@@ -1051,8 +1099,8 @@ MVP を止める未確定は残っていない。ただし、他のリポジト�
    **役割が増えても、見るのは実装役の作業ツリーに固定する**（§4.2）。`verifyRoot` は
    場所の規則を直書きせず `worktreeNameFor(goal.id, 'implement')` を通す。2箇所に書くと、
    規則が変わったときに検証だけ別の作業ツリーを見ていても誰も気づけない。
-   レビュー役の作業ツリーで criteria を検証すると、レビュー中に書き換わったものを
-   実装の検証結果として読むことになる。
+   `investigate` の作業ツリーで criteria を検証すると、実装が1つも入っていない
+   作業ツリーの結果を実装の検証結果として読むことになる。
    **より大きな未決は、検証コマンドを controller の権限で実行していること。**
    worktree で `mise run test` を流すということは、worktree の `mise.toml` が
    何を実行するかを決める、ということでもある。検証系を `protected_paths` に入れて
@@ -1095,12 +1143,12 @@ MVP を止める未確定は残っていない。ただし、他のリポジト�
     落ちるのは `github.ci.*` だけ）。それを今の観測として読むと、「確かめられなかった」が
     「汚れている」に化ける。そのティックは `WAIT(observation_failed)` のまま進む。
     *どこ* — 同じ観測が作る `local.branch` が worktree のブランチ
-    （`worktreeBranchFor`）と一致するときだけ見る。**役割ごとに worktree が分かれた
-    （§4.2）ので、突き合わせる相手は `worktreeNameFor(goal.id, 'implement')` の
+    （`worktreeBranchFor`）と一致するときだけ見る。**役割が増えた（§4.2）ので、
+    突き合わせる相手は `worktreeNameFor(goal.id, 'implement')` の
     ブランチだと明示する。** `local.*` を観測するのも criteria のコマンドを流すのも
-    実装役の作業ツリーで（§10-9）、push されるのもそのブランチになる。ここを review 側に
-    向けると、レビュー中の作業ツリーの汚れを実装の書き残しと読む一方で、実装役が
-    書き残したものは見落とす。人間に案内する worktree のパスも同じ役割に揃える。
+    実装役の作業ツリーで（§10-9）、push されるのもそのブランチになる。ここを
+    `investigate` 側に向けると、実装が1つも入っていない作業ツリーを見ることになり、
+    実装役が書き残したものは見落とす。人間に案内する worktree のパスも同じ役割に揃える。
     「Run が1件でもあれば worktree を観測している」は代理にならない。`act` は `worktree.ensure` より先に Run(starting) を
     書くので、worktree を作れずに失敗した Run が1本あるだけで `verifyRoot` は
     controller 自身のリポジトリに落ちたままになり、人間の編集を Actor の書き残しと読む。
@@ -1120,7 +1168,7 @@ MVP を止める未確定は残っていない。ただし、他のリポジト�
     変わらないので、初回しか書かないと2ティック目以降は PR が静かなまま
     `max_reconciles` に当たって `BLOCKED` になる。`rationale` には止めた理由だけでなく
     **どうすれば進むか**（worktree のパスと、commit するか元に戻すか）を書く。
-    `ent show` の `decision.rationale` と PR の進捗コメントは同じ文字列を出すので、
+    `ent get` の `decision.rationale` と PR の進捗コメントは同じ文字列を出すので、
     ここが人間に届く唯一の説明になる。
     push まで止めるのは保護パスの関門だけで、こちらは止めない。commit された分は
     remote に出てよい。

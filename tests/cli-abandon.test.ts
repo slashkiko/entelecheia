@@ -114,8 +114,10 @@ beforeEach(async () => {
   mkdirSync(join(repoRoot, ".goals"), { recursive: true });
   writeFileSync(join(repoRoot, ".goals", "abandon-goal.yaml"), GOAL_YAML);
 
-  delete process.env.GITHUB_TOKEN;
-  delete process.env.GH_TOKEN;
+  // 空文字は「渡さないと決めた」の意味になる。delete だと `gh auth token` に
+  // 落ちて、対話ログインした gh があるマシンでは実物のトークンで GitHub を叩く。
+  process.env.GITHUB_TOKEN = "";
+  process.env.GH_TOKEN = "";
 
   stdout = [];
   vi.spyOn(process.stdout, "write").mockImplementation((chunk) => {

@@ -2,9 +2,11 @@ import { execFile } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { promisify } from "node:util";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { main } from "../src/cli.js";
+import { openStore } from "../src/store/index.js";
 
 /**
  * `ent` を実際のリポジトリと実際の SQLite に対して一周させる。
@@ -89,8 +91,10 @@ beforeEach(async () => {
   writeFileSync(join(repoRoot, ".goals", "smoke-goal.yaml"), GOAL_YAML);
 
   // GitHub を観測させない。トークンがあると Port が実際に叩きに行く。
-  delete process.env.GITHUB_TOKEN;
-  delete process.env.GH_TOKEN;
+  // 空文字は「渡さないと決めた」の意味になる。delete だと `gh auth token` に
+  // 落ちて、対話ログインした gh があるマシンでは実物のトークンで GitHub を叩く。
+  process.env.GITHUB_TOKEN = "";
+  process.env.GH_TOKEN = "";
 
   stdout = [];
   vi.spyOn(process.stdout, "write").mockImplementation((chunk) => {
@@ -161,6 +165,68 @@ describe("ent の一周", () => {
     expect(lastJson()).toEqual([
       expect.objectContaining({ id: "smoke-goal", status: "COMPLETED" }),
     ]);
+  });
+
+  it("start は関門の基準を1回だけ書く。打ち直しても動かさない", async () => {
+    // worktree は最初の基準から切られたまま残る。基準だけを今の HEAD に移すと、
+    // 「切った元」と「比べる相手」がずれ、切った元に無いものを Actor が書いたと読む。
+    await main(["start", "smoke-goal"]);
+    const store = openStore(join(repoRoot, ".goals", ".state", "goals.db"));
+    const first = store.getState("smoke-goal")?.guardBaseSha;
+    store.close();
+
+    expect(first).toMatch(/^[0-9a-f]{40}$/);
+
+    writeFileSync(join(repoRoot, "moved-on.md"), "# 呼び出し側が先に進む\n");
+    await run("git", ["-c", "user.email=t@example.com", "-c", "user.name=t", "add", "."], {
+      cwd: repoRoot,
+    });
+    await run(
+      "git",
+      ["-c", "user.email=t@example.com", "-c", "user.name=t", "commit", "-m", "moved on"],
+      { cwd: repoRoot },
+    );
+
+    expect(await main(["start", "smoke-goal"])).toBe(0);
+
+    const reopened = openStore(join(repoRoot, ".goals", ".state", "goals.db"));
+    try {
+      expect(reopened.getState("smoke-goal")?.guardBaseSha).toBe(first);
+    } finally {
+      reopened.close();
+    }
+  });
+
+  it("既に走っている Goal には、あとから基準を与えない", async () => {
+    // 条件を「記録がまだ無い」だけにすると、この列より前に start して worktree が
+    // default_branch から切られている Goal に、今の HEAD を基準として与えてしまう。
+    // 「切った元」と「比べる相手」がずれ、切った元に無いものを Actor が書いたと読む。
+    await main(["start", "smoke-goal"]);
+
+    const dbPath = join(repoRoot, ".goals", ".state", "goals.db");
+    const raw = new DatabaseSync(dbPath);
+    raw.exec("UPDATE goals SET guard_base_sha = NULL");
+    raw.close();
+
+    const store = openStore(dbPath);
+    store.startRun("smoke-goal", {
+      intent: "実装する",
+      actor: "claude-code",
+      role: "implement",
+      worktree: "smoke-goal",
+      attempt: 1,
+      startedAt: new Date().toISOString(),
+    });
+    store.close();
+
+    expect(await main(["start", "smoke-goal"])).toBe(0);
+
+    const reopened = openStore(dbPath);
+    try {
+      expect(reopened.getState("smoke-goal")?.guardBaseSha).toBeNull();
+    } finally {
+      reopened.close();
+    }
   });
 
   it("終端の Goal は start し直せない", async () => {

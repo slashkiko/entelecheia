@@ -21,6 +21,7 @@ import { githubApproval, githubCodeProvider, githubCodeWriter } from "./adapters
 import {
   commandRunner,
   findGitRoot,
+  ghAuthToken,
   gitBranch,
   gitWorktree,
   localRepo,
@@ -576,6 +577,34 @@ async function runCommand(argv: readonly string[]): Promise<number> {
 
       const now = new Date().toISOString();
       store.setStatus(goal.goal.id, "ACTIVE", null, now);
+
+      // 関門が差分を取る相手を、ここで1回だけ固定する（`GoalState.guardBaseSha`）。
+      //
+      // 読むのは呼び出し側の HEAD で、`repository.default_branch` ではない。
+      // 人間はこの commit の上に Goal の宣言と仕様を書いており、Actor が書くのは
+      // その先になる。default_branch を基準にすると、人間が書いた分まで
+      // Actor の編集として関門に並ぶ。
+      //
+      // **書くのは、まだ worktree が無い Goal に対してだけ。** 条件を
+      // 「記録がまだ無い」だけにすると、この列より前に start して既に走っている
+      // Goal（worktree は default_branch から切られている）に基準だけを今の HEAD で
+      // 与えてしまう。そうなると「切った元」と「比べる相手」がずれ、切った元に
+      // 無いものを「Actor が書いた」と読む。Run が1件でもあれば worktree はある。
+      //
+      // 記録できなかったら黙って進めず、何が起きるかを stderr に出す。start 自体は
+      // 止めない。関門は null を default_branch に落とすので、これまでどおり動く。
+      try {
+        const started = store.listRuns(goal.goal.id).length > 0;
+        if (current?.guardBaseSha == null && !started) {
+          const head = (await localRepo(repoRoot).snapshot()).headSha;
+          store.setGuardBase(goal.goal.id, head);
+        }
+      } catch (error) {
+        process.stderr.write(
+          `関門の基準にする HEAD を読めなかったので、${goal.repository.default_branch} を基準にする` +
+            `（人間が書いた分も Actor の編集として並ぶ）: ${errorMessage(error)}\n`,
+        );
+      }
       // --json を渡さないときの出力は変えない。cron と既存の呼び出しが読んでいる。
       process.stdout.write(
         command.json === true
@@ -1165,7 +1194,12 @@ export function agentContextPayload(): AgentContext {
       },
     ],
     env: [
-      { name: "GITHUB_TOKEN", required: false, summary: "無いと GitHub の観測が unresolved" },
+      {
+        name: "GITHUB_TOKEN",
+        required: false,
+        summary:
+          "無ければ GH_TOKEN と gh auth token に落ちる。どれも無いと GitHub の観測が unresolved",
+      },
       { name: "ENT_MODEL", required: false, summary: "DECIDE のモデル" },
       { name: "ENT_EFFORT", required: false, summary: "low / medium / high / xhigh / max" },
     ],
@@ -1356,14 +1390,16 @@ function githubTokenCheck(probes: DoctorProbes): DoctorCheck {
       name: "github_token",
       result: "failed",
       detail:
-        "GITHUB_TOKEN も GH_TOKEN も無い。github.pr.* と github.ci.* が観測できず、" +
+        "GitHub の token を読めない。読む順は GITHUB_TOKEN → GH_TOKEN → gh auth token で、" +
+        "環境変数に空文字を設定してあれば gh は呼ばない。" +
+        "github.pr.* と github.ci.* が観測できず、" +
         "type: fact の criteria は永久に unobserved のままになる。PR の作成とコメントも通らない",
     };
   }
   return {
     name: "github_token",
     result: "ok",
-    detail: "GITHUB_TOKEN が設定されている（値は出さない）",
+    detail: "GitHub のトークンを読めた（環境変数か gh auth token。値は出さない）",
   };
 }
 
@@ -1604,8 +1640,9 @@ function approval(goal: Goal, prNumber: number | null): ApprovalPort {
  *
  * Goal 専用の worktree があればそちらを使う。無ければ controller のリポジトリ。
  *
- * **見るのは実装役の作業ツリーに固定する。** レビュー役の作業ツリーで criteria を
- * 検証すると、レビュー中に書き換わったものを実装の検証結果として読むことになる。
+ * **見るのは実装役の作業ツリーに固定する。** `investigate` の作業ツリーで criteria を
+ * 検証すると、実装が1つも入っていない作業ツリーの結果を実装の検証結果として読む。
+ * `review` は実装役と同じ木を見るので（`worktreeNameFor`）、ここでは分岐しない。
  * `local.*` も同じ場所を観測するので、未 commit の関門（design.md §10-11）が
  * 突き合わせる `local.branch` も実装役のブランチになる。
  *
@@ -1626,9 +1663,47 @@ function verifyRoot(stateDir: string, goal: Goal): string {
   return existsSync(worktree) ? worktree : process.cwd();
 }
 
+/**
+ * 一度読んだトークンを覚えておく置き場。`null` は「まだ読んでいない」。
+ *
+ * `githubToken()` は doctor と `tickPorts` から複数回呼ばれる。毎回
+ * `gh auth token` を起動すると、1ティックで何度も外部プロセスが立つ。
+ *
+ * **「読めなかった」も覚える。** 中身を `string | null` にすると、
+ * 外部プロセスが立つ高い経路（gh が未インストール・未ログイン）だけが毎回
+ * やり直しになり、避けたかった場合に限ってキャッシュが効かない。
+ */
+let cachedGithubToken: { value: string | null } | null = null;
+
+/**
+ * controller が使う GitHub のトークン。無ければ null。
+ *
+ * 読む順は `GITHUB_TOKEN` → `GH_TOKEN` → `gh auth token`。gh は README が挙げている
+ * 前提そのものなので、依存は増えない。**`process.env` には書き戻さない。**
+ * 書き戻すと、`withheldEnv` が Actor と検証コマンドから落としている当のキーが
+ * controller のプロセスに生えて、落とす対象が増える。
+ *
+ * **空文字を設定してあれば「トークンは無い」と読み、gh も呼ばない。**
+ * 未設定（`undefined`）と空文字を区別するのはここだけで、意味が逆になる。
+ * 前者は「指定していない」なので gh に落ちてよいが、後者は「渡さないと決めた」に
+ * あたる。区別しないと、GitHub を観測させたくない場面——テストと、対話ログイン
+ * した gh がたまたま同じマシンにある CI——で、黙って実物のトークンが使われる。
+ */
 function githubToken(): string | null {
-  const token = process.env.GITHUB_TOKEN ?? process.env.GH_TOKEN;
-  return token === undefined || token === "" ? null : token;
+  if (cachedGithubToken !== null) {
+    return cachedGithubToken.value;
+  }
+
+  // 空文字はキャッシュしない。外部プロセスも立たないので覚える意味が無く、
+  // テストが同じプロセスで環境変数を差し替える経路も塞がない。
+  const fromEnv = process.env.GITHUB_TOKEN ?? process.env.GH_TOKEN;
+  if (fromEnv === "") {
+    return null;
+  }
+
+  const token = fromEnv === undefined ? ghAuthToken() : fromEnv;
+  cachedGithubToken = { value: token };
+  return token;
 }
 
 /**
