@@ -1,7 +1,8 @@
+import { worktreeNameFor } from "../act/index.js";
 import type { Decision } from "../domain/action.js";
 import { errorMessage } from "../domain/error-message.js";
 import type { Goal } from "../domain/goal.js";
-import type { Run } from "../domain/run.js";
+import { DEFAULT_ACTOR_ROLE, type Run } from "../domain/run.js";
 import type { Verification } from "../domain/verification.js";
 
 /**
@@ -131,7 +132,7 @@ export async function publish(target: PublishTarget, deps: PublishDeps): Promise
   // 末尾に入る時刻は、以前は push と PR 作成の往復を終えてから取っていた。ここに
   // 移したので、その往復ぶん（数秒）だけ早くなる。示したいのは「このティックが
   // いつ判断したか」なので、通信の所要時間を含まない方がむしろ近い。
-  const body = commentBody(target, deps.now());
+  const body = commentBody(target, deps.now(), null);
 
   // PR の外に書くなら、PR の確保より先に書く。**この順序が仕様になる。**
   // 下の経路は、PR を作れない・作る段でない・まだ番号が無いといった理由で
@@ -153,6 +154,8 @@ export async function publish(target: PublishTarget, deps: PublishDeps): Promise
 
   let prNumber = target.prNumber;
   let created = false;
+  /** push が失敗した理由。コメントに載せる。null なら push まで通っている */
+  let pushFailure: string | null = null;
 
   try {
     const ensured = await ensurePullRequest(target, deps);
@@ -163,7 +166,18 @@ export async function publish(target: PublishTarget, deps: PublishDeps): Promise
     created = ensured.created;
   } catch (error) {
     // PR を作れなくても観測と判断は済んでいる。ティック全体は落とさない。
-    return nothing(`PR を確保できなかった: ${errorMessage(error)}`);
+    //
+    // **PR が既にあるなら、ここで降りない。** 以前は push が throw した時点で
+    // 無条件に return していた。push の機会を Actor の実行から外したので、
+    // `ESCALATE(uncommitted_changes)` のティック——**人間が作業ツリーを手で
+    // 触っている状態**、つまり push が throw しやすい状態そのもの——でも必ず
+    // push を試すようになった。そこで降りると、止めた理由が PR に一度も出ない
+    // まま WAITING_HUMAN になる。人間に届かない関門は鳴っていないのと同じで、
+    // 下の「関門が止めたティックは必ず書く」が守ろうとしているものが消える。
+    if (prNumber === null) {
+      return nothing(`PR を確保できなかった: ${errorMessage(error)}`);
+    }
+    pushFailure = errorMessage(error);
   }
 
   // 宛先を移したティックは、ここで終わる。PR には投稿しない。
@@ -192,12 +206,22 @@ export async function publish(target: PublishTarget, deps: PublishDeps): Promise
   // 未 commit の関門（`uncommitted_changes`）も同じ性質を持つ。止まっているあいだ
   // 観測は1文字も変わらないので、初回しか書かないと2ティック目以降は PR が静かな
   // まま max_reconciles に当たって BLOCKED になり、止めた理由がどこにも出ない。
-  if (target.previousDigest === target.digest && !stoppedByGuard(target.decision)) {
+  //
+  // push が落ちたティックも必ず書く。同じ理由で、観測が変わらないまま push だけ
+  // 落ち続ける状態を黙って飛ばすと、PR は静かなまま人間が待ち続ける。
+  if (
+    target.previousDigest === target.digest &&
+    !stoppedByGuard(target.decision) &&
+    pushFailure === null
+  ) {
     return { prNumber, created, commented: false, report, skipped: "観測が前のティックと同じ" };
   }
 
   try {
-    await deps.writer.addComment(prNumber, body);
+    // push が落ちたときだけ本文を作り直す。`body` は push より前に作るので、
+    // 落ちたことをまだ知らない。通常のティックでは作り直さない。
+    const withFailure = pushFailure === null ? body : commentBody(target, deps.now(), pushFailure);
+    await deps.writer.addComment(prNumber, withFailure);
     return { prNumber, created, commented: true, report, skipped: null };
   } catch (error) {
     return {
@@ -255,12 +279,20 @@ async function ensurePullRequest(
       skipped: "保護パスの関門が通っていないので push も PR 作成もしない",
     };
   }
-  if (target.run === null || target.run.status !== "completed") {
-    // Actor が走っていない、あるいは失敗したティックでは push するものが無い。
-    return { prNumber: target.prNumber, created: false, skipped: "完了した Run が無い" };
-  }
-
-  const pushed = await deps.branch.push(target.run.worktree, target.goal.repository.default_branch);
+  // **Run の有無で push を決めない。** ここは以前「完了した Run が無いティックでは
+  // push するものが無い」と書いていたが、それは「commit するのは Actor だけ」という
+  // 仮定だった。`ESCALATE(uncommitted_changes)` の解決手順は人間が commit することで、
+  // その commit には Run が付かない。PR が立ったあとの DECIDE は
+  // `WAIT(review_pending)` を選び続けるので次の ACT も来ず、人間が片付けた差分は
+  // remote に出ないまま固まる（実際に PR #34 がそうなった）。
+  //
+  // 失敗した Run のティックも同じく送る。push が送るのは commit 済みの差分だけなので、
+  // 失敗した Actor の書きかけはそもそも乗らない。前のティックまでに commit された分を
+  // 止める理由が無い。
+  const pushed = await deps.branch.push(
+    pushWorktree(target.goal),
+    target.goal.repository.default_branch,
+  );
   if (!pushed.pushed) {
     // 空の PR は通知にも検証にも使えない。
     return { prNumber: target.prNumber, created: false, skipped: "base との差分が無い" };
@@ -283,6 +315,22 @@ async function ensurePullRequest(
     body: pullRequestBody(target.goal),
   });
   return { prNumber: number, created: true, skipped: null };
+}
+
+/**
+ * push 先の作業ツリー。Goal だけから決まる。
+ *
+ * Run が無いティックでも押すので `run.worktree` は読めない。**名前の規則を
+ * ここに書かない。** `worktreeNameFor`（src/act/index.ts）が正で、規則を2箇所に
+ * 持つと、検査と push が別の作業ツリーを見ていても誰も気づけない。
+ *
+ * 役割は実装役に固定する（design.md §10-11）。`local.*` を観測するのも criteria の
+ * コマンドを流すのも未 commit の関門が見るのも実装役の作業ツリーで、push だけを
+ * `run.worktree` に従わせると、レビュー役が走ったティックだけ検査した木と押す木が
+ * ずれる。ずれた先に PR は無いので、押した分はどの検証にも載らない。
+ */
+function pushWorktree(goal: Goal): string {
+  return worktreeNameFor(goal.goal.id, DEFAULT_ACTOR_ROLE);
 }
 
 /** push を止める ESCALATE の理由。どちらも「関門が通っていない」を意味する */
@@ -354,7 +402,7 @@ export const PROGRESS_MARKER = "<!-- ent:progress -->";
  * action と rationale だけでは「何が残っているか」が読めないので、
  * criteria ごとの Verification.result を並べる。
  */
-function commentBody(target: PublishTarget, now: Date): string {
+function commentBody(target: PublishTarget, now: Date, pushFailure: string | null): string {
   const rows = target.verifications.map(
     (v) => `| \`${v.criterionId}\` | ${MARKERS[v.result]} ${v.result} | ${oneLine(v.detail)} |`,
   );
@@ -363,6 +411,11 @@ function commentBody(target: PublishTarget, now: Date): string {
     PROGRESS_MARKER,
     `### ${describeAction(target.decision)}`,
     "",
+    // push が落ちたことを本文の先頭に出す。この下の criteria はローカルの
+    // 作業ツリーを見た結果なので、全部緑でも remote には何も出ていない。
+    ...(pushFailure === null
+      ? []
+      : [`> [!WARNING]`, `> push できなかった: ${oneLine(pushFailure)}`, ""]),
     // 改行を潰す。承認の定型文は行単位で照合されるので、本文の途中に
     // 独立した1行を作らせない。目印による除外と二重にしておく。
     flatten(target.decision.rationale),

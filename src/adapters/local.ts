@@ -432,17 +432,25 @@ function fingerprint(path: string): string {
 /**
  * base から分岐して以降に commit されたパス。
  *
- * ローカルの base が消えていたら `origin/<base>` に落とす。clone 直後や
- * base を checkout していない worktree では、ローカル側に ref が無いことが
- * 正常にありうる。両方とも解決できなければ throw する。握り潰すと
- * 「確かめられなかった」が「変わっていない」になる。
+ * **`origin/<base>` を先に試す。** 以前はローカルの `<base>` を先に見ていたが、
+ * 関門の入力を Actor が選べる形になっていた。`ALWAYS_DENIED`（src/adapters/claude.ts）
+ * が塞いでいるのは ref を**消す**側（`update-ref` / `branch -D`）だけで、
+ * ローカル ref を**前に進める**側（`git branch -f main HEAD` など）は塞いでいない。
+ * 一方 push が ahead を数えるのは `origin/<base>..HEAD` なので、ローカルの base
+ * だけを HEAD に進めれば「関門には差分ゼロ、push には差分あり」が成立する。
+ * 保護パスを書き換えた commit が、関門を鳴らさずに remote へ出ることになる。
+ *
+ * push と同じ ref を関門も見る、に揃える。`origin/<base>` が無いとき
+ * （remote を持たない repo、clone 直後）はローカルの `<base>` に落とす。
+ * 両方とも解決できなければ throw する。握り潰すと「確かめられなかった」が
+ * 「変わっていない」になる。
  */
 async function gitDiffAgainst(cwd: string, baseBranch: string): Promise<string> {
   try {
-    return await git(cwd, ["diff", "--name-only", `${baseBranch}...HEAD`]);
+    return await git(cwd, ["diff", "--name-only", `origin/${baseBranch}...HEAD`]);
   } catch (error) {
     try {
-      return await git(cwd, ["diff", "--name-only", `origin/${baseBranch}...HEAD`]);
+      return await git(cwd, ["diff", "--name-only", `${baseBranch}...HEAD`]);
     } catch {
       throw error;
     }

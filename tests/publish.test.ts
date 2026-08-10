@@ -48,6 +48,30 @@ const GOAL: Goal = {
   },
 };
 
+/**
+ * レビュー役の Run。**`worktree` を実装役と別名にしてある。**
+ *
+ * `push` 先が `run.worktree` に戻る退行を、テストが捕まえられるようにするため。
+ * 実装役の Run だけで固定していると `worktree` が `worktreeNameFor(id, "implement")`
+ * と同じ値になり、押す先を Run 側に従わせても assert が通ってしまう。
+ */
+const REVIEW_RUN: Run = {
+  id: "2",
+  intent: "差分を読む",
+  actor: "claude-code",
+  role: "review",
+  worktree: "sample-goal-review",
+  attempt: 1,
+  startedAt: NOW.toISOString(),
+  status: "completed",
+  finishedAt: NOW.toISOString(),
+  exitCode: 0,
+  logRef: "runs/2/log.jsonl",
+  tokens: 1200,
+  artifacts: [],
+  detail: null,
+};
+
 const COMPLETED_RUN: Run = {
   id: "1",
   intent: "テストの失敗を直す",
@@ -227,24 +251,41 @@ describe("PR を確保する", () => {
     expect(result.skipped).toContain("差分");
   });
 
-  it("Run が無いティックでは何もしない", async () => {
+  it("Run が無いティックでも push して PR を確保する", async () => {
+    // ここは以前「Run が無いティックでは何もしない」を固定していた。その線を
+    // 残すと、人間が commit した分（Run が付かない）は remote に永久に出ない。
+    // 押す先は実装役の作業ツリーで、規則は worktreeNameFor が正になる
+    // （理由は tests/publish-human-commit.test.ts）。
     const s = sink();
     const result = await publish(target({ run: null }), deps(s));
 
-    expect(s.pushes).toEqual([]);
-    expect(result.skipped).toContain("Run");
+    expect(s.pushes).toEqual([{ name: "sample-goal", base: "main" }]);
+    expect(result.prNumber).toBe(42);
+    expect(result.created).toBe(true);
   });
 
-  it("失敗した Run では push しない", async () => {
-    // 途中で落ちた作業を PR にすると、通知が実態とずれる。
+  it("失敗した Run のティックでも commit 済みの差分は push する", async () => {
+    // 途中で落ちた作業が PR に乗ることはない。push が送るのは commit 済みの差分
+    // だけで、Actor の書きかけは worktree に残る（未 commit は controller の関門が
+    // 見る）。前のティックまでに commit された分を止める理由が無い。
     const s = sink();
     const result = await publish(
       target({ run: { ...COMPLETED_RUN, status: "failed", exitCode: 1 } }),
       deps(s),
     );
 
-    expect(s.pushes).toEqual([]);
-    expect(result.prNumber).toBeNull();
+    expect(s.pushes).toEqual([{ name: "sample-goal", base: "main" }]);
+    expect(result.prNumber).toBe(42);
+  });
+
+  it("レビュー役の Run のティックでも、押すのは実装役の作業ツリー", async () => {
+    // レビュー役の木には実装が無い。押す先を run.worktree に従わせると、
+    // 実装役の commit は remote に出ないまま、レビュー役のブランチに
+    // 2本目の PR が立つ。押す先は Goal と role だけから決まる。
+    const s = sink();
+    await publish(target({ run: REVIEW_RUN }), deps(s));
+
+    expect(s.pushes).toEqual([{ name: "sample-goal", base: "main" }]);
   });
 
   it("PR を作れなくても throw しない", async () => {
@@ -261,6 +302,30 @@ describe("PR を確保する", () => {
     const result = await publish(target(), deps(s));
 
     expect(result.skipped).toContain("push");
+  });
+
+  it("PR が既にあるなら、push が落ちてもコメントは書く", async () => {
+    // push の機会を Actor の実行から外したので、ESCALATE(uncommitted_changes) の
+    // ティック——人間が作業ツリーを手で触っている、まさに push が落ちやすい
+    // 状態——でも push を試す。そこで降りると、止めた理由が PR に一度も出ない
+    // まま WAITING_HUMAN になる。人間に届かない関門は鳴っていないのと同じ。
+    const s = sink({ pushFails: true });
+    const result = await publish(target({ prNumber: 42 }), deps(s));
+
+    expect(result.commented).toBe(true);
+    expect(s.comments[0]?.body).toContain("push できなかった");
+  });
+
+  it("観測が前のティックと同じでも、push が落ちたら書く", async () => {
+    // 観測が変わらないまま push だけ落ち続ける状態を黙って飛ばすと、PR は
+    // 静かなまま人間が待ち続ける。
+    const s = sink({ pushFails: true });
+    const result = await publish(
+      target({ prNumber: 42, previousDigest: "same", digest: "same" }),
+      deps(s),
+    );
+
+    expect(result.commented).toBe(true);
   });
 });
 

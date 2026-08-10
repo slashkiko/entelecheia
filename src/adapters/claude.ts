@@ -552,6 +552,16 @@ const ALWAYS_DENIED = [
   "Bash(git branch -D *)",
   "Bash(git branch -d *)",
   "Bash(git branch --delete *)",
+  // ref を**前に進める**側も塞ぐ。消す側だけを塞いでも、`git branch -f main HEAD`
+  // でローカルの base を HEAD に揃えれば `<base>...HEAD` の差分が空になる。
+  // `changedPaths` は `origin/<base>` を先に見るようにしたが、remote を持たない
+  // repo ではローカルの base に落ちるので、そちらの経路も閉じておく。
+  // `git fetch .` と `git push .` は remote を自分自身にしてローカル ref を
+  // 書き換える形で、`branch -f` と同じところへ届く。
+  "Bash(git branch -f *)",
+  "Bash(git branch --force *)",
+  "Bash(git fetch . *)",
+  "Bash(git push . *)",
   "Bash(git worktree *)",
   // hooks の差し替えを拒否する。`core.hooksPath` を1回設定するだけで、
   // hooks のファイルを1つも触らずに、push のたびに走るスクリプト群を
