@@ -40,7 +40,7 @@ const MAX_LEASE_RENEWALS = 96;
 export interface ControllerDeps
   extends ReconcileDeps,
     Pick<ActDeps, "worktree" | "actor">,
-    Pick<PublishDeps, "writer" | "branch"> {
+    Pick<PublishDeps, "writer" | "branch" | "report"> {
   store: Store;
   /** lease の所有者。プロセスごとに一意にする */
   owner: string;
