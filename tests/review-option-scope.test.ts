@@ -106,12 +106,16 @@ function target(criteria: readonly AcceptanceCriterion[]): DecideTarget {
   };
 }
 
-function llmReturning(action: unknown): LlmPort & { prompts: string[] } {
+function llmReturning(...actions: unknown[]): LlmPort & { prompts: string[] } {
   const prompts: string[] = [];
+  let call = 0;
   return {
     prompts,
     chooseAction: async (prompt: string) => {
       prompts.push(prompt);
+      // 最後の要素で打ち止めにする。1つだけ渡せば「毎回同じ出力を返す LLM」になる。
+      const action = actions[Math.min(call, actions.length - 1)];
+      call += 1;
       return action;
     },
   };
@@ -159,6 +163,71 @@ describe("レビュー役を出すかどうかは criteria が決める", () => 
     // human の verification は key を持たない。形の違う criterion を
     // 素通りさせずに、fact のものだけを見ているかを固定する。
     expect(await promptFor([HUMAN_READS])).not.toContain('"role":"review"');
+  });
+});
+
+describe("選択肢に出さないだけでなく、返ってきても採用しない", () => {
+  /**
+   * プロンプトから消すのは「選ばれにくくする」であって「選べなくする」ではない。
+   *
+   * 同じファイルの `LLM_MAY_CHOOSE` が、その油断で一度焼かれた記録を残している。
+   * ESCALATE をプロンプトに書かないまま `llmActionSchema` が COMPLETE だけを
+   * 弾いていたところ、実走の2回目で `ESCALATE(loop_detected)` が返り、
+   * ループしていないのに採用された。上の describe が固定しているのは
+   * プロンプト文字列だけなので、受け取り側をここで固定する。
+   */
+  const REVIEW_ACT = { type: "ACT", role: "review", intent: "実装を読んでレビューする" };
+
+  it("レビューを求めていない Goal が返してきた review の ACT を採用しない", async () => {
+    const llm = llmReturning(REVIEW_ACT, { type: "ACT", intent: "テストを直す" });
+    const decision = await decide(target([TESTS_PASS, CI_GREEN]), deps(llm));
+
+    expect(llm.prompts).toHaveLength(2);
+    expect(llm.prompts[1]).toContain("採用されなかった理由");
+    expect(decision.action).toMatchObject({ type: "ACT", intent: "テストを直す" });
+    expect(decision.action).not.toHaveProperty("role", "review");
+  });
+
+  it("採用しなかった理由に、criteria が求めていないことを書く", async () => {
+    // 黙って捨てると、LLM は次のティックでも同じ出力を返す。
+    const llm = llmReturning(REVIEW_ACT, { type: "VERIFY" });
+    await decide(target([TESTS_PASS, CI_GREEN]), deps(llm));
+
+    expect(llm.prompts[1]).toContain("review.verdict");
+  });
+
+  it("再試行を使い切っても同じなら invalid_decision で止まる", async () => {
+    // `review_not_converging` に畳まない。あちらは「実装が進まないまま
+    // レビューだけを回す」形の名前で、レビューの往復が1周も無いこの Goal では
+    // 起きているのは「選択肢に無い行動を返してきた」——COMPLETE や ESCALATE を
+    // 返してきたのと同じこと——になる。
+    const decision = await decide(target([TESTS_PASS, CI_GREEN]), deps(llmReturning(REVIEW_ACT)));
+
+    expect(decision.action).toEqual({ type: "ESCALATE", reason: "invalid_decision" });
+    expect(decision.decidedBy).toBe("guard");
+  });
+
+  it("レビューを求めている Goal では、これまでどおり採用する", async () => {
+    // 受け取り側に足した条件が、求めている Goal まで塞いでいないか。
+    // ここが落ちると tests/review-decide.test.ts と食い違う。
+    const decision = await decide(
+      target([TESTS_PASS, REVIEW_APPROVED]),
+      deps(llmReturning(REVIEW_ACT)),
+    );
+
+    expect(decision.action).toMatchObject({ type: "ACT", role: "review" });
+    expect(decision.decidedBy).toBe("llm");
+  });
+
+  it("role を書かない ACT は、レビューを求めていない Goal でも通る", async () => {
+    // 絞っているのはレビュー役だけで、実装役の ACT に触っていないこと。
+    const decision = await decide(
+      target([TESTS_PASS, CI_GREEN]),
+      deps(llmReturning({ type: "ACT", intent: "テストを直す" })),
+    );
+
+    expect(decision.action).toMatchObject({ type: "ACT" });
+    expect(decision.decidedBy).toBe("llm");
   });
 });
 

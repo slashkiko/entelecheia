@@ -100,8 +100,11 @@ export const MAX_LLM_RETRIES = 2;
  *   レビュー役の選択肢を出すのも、その criteria を書いた Goal だけにする
  *   （`criteriaAskForReview`）。ただし直近のレビューが現在の HEAD を既に
  *   読んでいるあいだは、同じ commit を2度レビューさせないために選択肢から
- *   レビュー役を外し、外した理由を書く（`reviewedHeadOf`）。それでも返してきた
- *   出力は採用せず、再試行を使い切ったら ESCALATE(review_not_converging)
+ *   レビュー役を外し、外した理由を書く（`reviewedHeadOf`）。**外す条件は
+ *   プロンプトだけに置かない。** 同じ2つを受け取り側にも置き、外したはずの
+ *   レビュー役を返してきた出力は採用しない。criteria が求めていない Goal の分は
+ *   ESCALATE(invalid_decision)、レビュー済みの commit が HEAD のままの分は
+ *   再試行を使い切ったら ESCALATE(review_not_converging) で止まる
  * - rationale は必ず埋める。§4.5 の Decision テーブルに残す
  */
 export async function decide(target: DecideTarget, deps: DecideDeps): Promise<Decision> {
@@ -341,6 +344,9 @@ async function askLlm(
   decidedAt: string,
 ): Promise<Decision> {
   const failures: string[] = [];
+  // その Goal がレビューの結論を criteria で求めているか。求めていなければ
+  // レビュー役は選択肢に無く、返ってきても採用しない。
+  const asksForReview = criteriaAskForReview(target.criteria);
   // レビュー役を選択肢から外しているか。外している場合は、その commit の sha。
   const reviewedHead = reviewedHeadOf(target.facts);
   // 外したはずのレビュー役を返してきた回数。全試行がこれなら、出力の形が
@@ -384,12 +390,34 @@ async function askLlm(
       // 選択肢から外したレビュー役を返してきた。Zod は通るが採用しない。
       // 起動してから「読む対象が前回と同じだった」と気づく形にすると、
       // 1回分の予算を使ってから止まることになる。
-      if (reviewedHead !== null && isReviewAct(parsed.data)) {
-        reviewRejections += 1;
-        failures.push(
-          `レビュー役の ACT は選べない。直近のレビューが現在の HEAD（${reviewedHead}）を既に読んでおり、実装は1行も進んでいない。同じ commit を2度レビューさせない`,
-        );
-        continue;
+      //
+      // **「書いていない選択肢は選ばれない」を根拠に、受け取り側を空にしない。**
+      // 同じファイルの `LLM_MAY_CHOOSE` が、その油断で一度焼かれた記録を残している
+      // （ESCALATE をプロンプトから省いただけで閉じたつもりになり、実走の2回目で
+      // `ESCALATE(loop_detected)` が採用された）。選択肢から外す条件は2つあるので、
+      // 受け取り側にも同じ2つを置く。
+      if (isReviewAct(parsed.data)) {
+        // 1. criteria がレビューの結論を求めていない Goal。
+        //    この経路が空いていると、レビュー役の Run が1つできた時点で
+        //    `review.*` の pending が積まれ、Gap ゼロの Goal では guard の3番目が
+        //    WAIT を返して LLM が呼ばれなくなる。`latest()` は同じ Run を返し続けるので
+        //    pending は自力で消えず、予算が尽きるまで抜けられない
+        //    （`criteriaAskForReview` の注記に同じことが書いてある）。
+        if (!asksForReview) {
+          failures.push(
+            "レビュー役の ACT は選べない。この Goal の criteria は review.verdict も review.reviewed_sha も求めておらず、レビュー役を起動しても埋まる Gap が無い",
+          );
+          continue;
+        }
+
+        // 2. 直近のレビューが現在の HEAD を既に読んでいる。
+        if (reviewedHead !== null) {
+          reviewRejections += 1;
+          failures.push(
+            `レビュー役の ACT は選べない。直近のレビューが現在の HEAD（${reviewedHead}）を既に読んでおり、実装は1行も進んでいない。同じ commit を2度レビューさせない`,
+          );
+          continue;
+        }
       }
 
       const action = withoutLlmResumeAfter(parsed.data);
@@ -407,6 +435,12 @@ async function askLlm(
   // 全試行がレビュー役だったなら、出力の形が壊れているのではない。実装が
   // 進まないままレビューだけを回そうとしている状態で、止めた理由を読む人間には
   // 別のものとして届く必要がある（`invalid_decision` に畳まない）。
+  //
+  // 数えるのは 2 の拒否（レビュー済みの commit が HEAD のまま）だけにする。
+  // criteria がレビューを求めていない Goal で拒否した分は数えない。あちらには
+  // レビューの往復そのものが無く、起きているのは「選択肢に無い行動を返してきた」
+  // ——COMPLETE や ESCALATE を返してきたのと同じこと——なので、
+  // `invalid_decision` の側で止まるのが正しい。理由の文言は failures に残る。
   if (reviewRejections === MAX_LLM_RETRIES + 1) {
     return {
       decidedAt,
@@ -559,7 +593,11 @@ function reviewActionLines(
 /**
  * その Goal が criteria でレビューの結論を要求しているか。
  *
- * **レビュー役の選択肢を出すかどうかを、ここで criteria に紐づける。**
+ * **レビュー役を起動できるかどうかを、ここで criteria に紐づける。**
+ * 読むのは2箇所で、プロンプトに選択肢を出すか（`reviewActionLines`）と、
+ * 返ってきた ACT を採用するか（`askLlm`）になる。前者だけに置くと、
+ * 「書いていない選択肢は選ばれない」に受け取り側を預けたことになる。
+ *
  * 宣言部は「レビューをいつ起動するかは criteria が作る Gap で決まる」と
  * 書いているが、Gap は LLM を動機づけるだけで起動を絞りはしない。選択肢を
  * 無条件に出すと、`review.verdict` を1文字も書いていない Goal でもレビュー役を
@@ -575,7 +613,9 @@ function reviewActionLines(
  * 起動の口を criteria に閉じておけば、その Run が最初から存在しない。
  *
  * これは guard の判定ではない。guard は5つのままで、レビューの結論を1つも見ない
- * （`decide()` の1〜4）。ここが決めるのは、LLM に見せる選択肢の範囲だけになる。
+ * （`decide()` の1〜4）。ここが決めるのは、LLM に渡す行動の範囲——見せる選択肢と、
+ * 受け取る出力——だけになる。どちらも Gap が LLM に渡ったあとの話で、
+ * 完了判定の境界には触れない。
  */
 function criteriaAskForReview(criteria: readonly AcceptanceCriterion[]): boolean {
   const reviewKeys = new Set<string>([REVIEW_VERDICT_KEY, REVIEW_REVIEWED_SHA_KEY]);
