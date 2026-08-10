@@ -1,6 +1,17 @@
-import { accessSync, appendFileSync, constants, existsSync, mkdirSync, readdirSync } from "node:fs";
+#!/usr/bin/env node
+import {
+  accessSync,
+  appendFileSync,
+  constants,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  writeFileSync,
+} from "node:fs";
 import { hostname } from "node:os";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, extname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
 import { type EffortLevel, query } from "@anthropic-ai/claude-agent-sdk";
@@ -9,15 +20,18 @@ import { type ClaudeOptions, claudeActor, claudeLlm } from "./adapters/claude.js
 import { githubApproval, githubCodeProvider, githubCodeWriter } from "./adapters/github.js";
 import {
   commandRunner,
+  findGitRoot,
   gitBranch,
   gitWorktree,
   localRepo,
   pendingApproval,
+  STATE_IGNORE_LINE,
+  stateDirIgnored,
 } from "./adapters/local.js";
 import { type ControllerDeps, type TickResult, tick } from "./controller/index.js";
 import type { Decision } from "./domain/action.js";
 import { errorMessage } from "./domain/error-message.js";
-import { type Goal, SLUG } from "./domain/goal.js";
+import { type Goal, goalTemplate, SLUG, TEMPLATE_SLUG } from "./domain/goal.js";
 import { loadGoalFile } from "./domain/goal-loader.js";
 import { isTerminal } from "./domain/goal-state.js";
 import { PortError } from "./domain/port-error.js";
@@ -51,6 +65,7 @@ const DEFAULT_LIMIT = 50;
 
 const USAGE = `ent — Declare the end state; the controller converges to it.
 
+  ent init             いまのリポジトリを ent で回せる状態にする（冪等）
   ent start <slug>     Goal を登録して ACTIVE にする
   ent run <slug>       1ティック回して終了する（--once は既定）
                        --pr <n> / --issue <n> で観測対象を指定する
@@ -67,10 +82,26 @@ const USAGE = `ent — Declare the end state; the controller converges to it.
 `;
 
 /** エージェントが叩けるサブコマンド。エラーはこの集合をそのまま並べる（gist 2.3） */
-const SUBCOMMANDS = ["start", "run", "get", "abandon", "list", "doctor", "agent-context"] as const;
+const SUBCOMMANDS = [
+  "init",
+  "start",
+  "run",
+  "get",
+  "abandon",
+  "list",
+  "doctor",
+  "agent-context",
+] as const;
 type Subcommand = (typeof SUBCOMMANDS)[number];
 
 export type Command =
+  /**
+   * いまのリポジトリを ent で回せる状態にする。slug は取らない。
+   *
+   * どの Goal の話でもないので slug を受け取る理由が無く、`--force` のような
+   * 上書きの口も持たない。2度目は既にあるものを一切書き換えずに 0 で返る。
+   */
+  | { kind: "init"; json?: true }
   /** Goal を登録して ACTIVE にする */
   | { kind: "start"; slug: string; json?: true }
   /**
@@ -174,7 +205,7 @@ export function parseCommand(argv: readonly string[]): Command {
     const json = values.json === true ? ({ json: true } as const) : {};
 
     // slug を取らないサブコマンド。余分な引数は打ち間違いとして error にする。
-    if (sub === "list" || sub === "doctor" || sub === "agent-context") {
+    if (sub === "init" || sub === "list" || sub === "doctor" || sub === "agent-context") {
       if (positionals.length > 0) {
         return { kind: "error", message: `引数が多い: ${positionals.join(" ")}` };
       }
@@ -183,6 +214,9 @@ export function parseCommand(argv: readonly string[]): Command {
       }
       if (sub === "doctor") {
         return { kind: "doctor" };
+      }
+      if (sub === "init") {
+        return { kind: "init", ...json };
       }
       const limit = positiveInteger(values.limit, "--limit");
       if (typeof limit === "string") {
@@ -350,6 +384,10 @@ function isSubcommand(value: string): value is Subcommand {
  */
 function optionsFor(sub: Subcommand): ParseArgsOptions {
   switch (sub) {
+    case "init":
+      // `--force` は置かない。上書きできる口があると、人間が埋めた宣言部を
+      // 消す経路が公式のものになる。2度目は黙って既存を残す。
+      return { json: { type: "boolean" } };
     case "start":
       return { json: { type: "boolean" } };
     case "run":
@@ -454,6 +492,12 @@ async function runCommand(argv: readonly string[]): Promise<number> {
 
   const repoRoot = process.cwd();
   const stateDir = join(repoRoot, ".goals", ".state");
+
+  if (command.kind === "init") {
+    // Goal も DB も読まない。読める状態を作るのがこのコマンドなので、
+    // 読めないことを理由に落とすと最初の1回が通らない。
+    return initRepository(repoRoot, command.json === true);
+  }
 
   if (command.kind === "doctor") {
     // 読み取り専用にする。state ディレクトリを作るのも書き込みなので、
@@ -774,6 +818,172 @@ async function previewOnly(
 }
 
 /**
+ * `ent init` が置いたもの1つ分。
+ *
+ * created と kept を分けて出す。「作った」と「既にあったので触らなかった」が
+ * 同じ見た目だと、2度目に叩いた人が上書きされたのかどうかを判断できない。
+ */
+interface InitEntry {
+  /** repoRoot からの相対パス */
+  path: string;
+  /**
+   * `appended` を `created` と分ける。既にある `.gitignore` へ1行足したものを
+   * `created` と出すと「新しく作られた」と読めて、既存ファイルを変更した事実が
+   * 出力から消える。上のコメントの理由がそのまま当てはまる。
+   */
+  action: "created" | "appended" | "kept";
+}
+
+/** `ent init` の結果。--json のときはこれをそのまま出す */
+interface InitReport {
+  repoRoot: string;
+  entries: InitEntry[];
+  /** 次に何を叩くか。JSON を読む側にも同じことを伝える */
+  next: string;
+}
+
+/**
+ * いまのリポジトリを ent で回せる状態にする。
+ *
+ * 満たすべき性質:
+ * - 冪等。2度目は既にある `.goals/*.yaml` を上書きせず、`.gitignore` に同じ行を
+ *   二重に足さない。この repo のルートで叩いても壊れない
+ * - git のワークツリーのルートでなければ何も作らずに 1 で断る。argv は妥当なので
+ *   2 ではない
+ * - 書き込み先がシンボリックリンクなら何も書かない。リンク先はリポジトリの外を
+ *   指せるので、辿ると `ent init` が repoRoot の外に書くことになる
+ * - 出力は他のサブコマンドと揃える。`--json` のときは stdout に JSON だけを書く
+ */
+function initRepository(repoRoot: string, json: boolean): number {
+  const refuse = (message: string): number => {
+    // 作ってから気づかせない。何も置かずに、打ち直せる形を添える（gist 2.3）。
+    process.stderr.write(`${message}\n`);
+    return 1;
+  };
+
+  const gitRoot = findGitRoot(repoRoot);
+  if (gitRoot === null) {
+    return refuse(
+      `${repoRoot} は git リポジトリの中ではない。` +
+        "controller は worktree を作れず、.goals/.state/ の gitignore も意味を持たない" +
+        "（git init を先に叩くか、リポジトリのルートで叩き直す）",
+    );
+  }
+  // 「中にいる」だけでは足りない。`repoRoot` は常に process.cwd() なので、
+  // サブディレクトリで叩くとそこが対象リポジトリのルート扱いになり、worktree も
+  // 状態 DB もそこに置かれる。人間はリポジトリのルートに置いたつもりでいる。
+  if (resolve(gitRoot) !== resolve(repoRoot)) {
+    return refuse(
+      `${repoRoot} は git リポジトリのルートではない（ルートは ${gitRoot}）。` +
+        "ent は cwd を対象リポジトリとして扱うので、ルートで叩き直す",
+    );
+  }
+
+  const goalsDir = join(repoRoot, ".goals");
+  const gitignore = join(repoRoot, ".gitignore");
+  for (const path of [goalsDir, gitignore]) {
+    // 書き込み系はどれもリンクを辿るので、`.gitignore -> ~/.zshrc` のような
+    // リポジトリなら、clone して init を叩いた人の設定ファイルに書くことになる。
+    if (isSymbolicLink(path)) {
+      return refuse(`${path} はシンボリックリンクなので書かない（リンクを外してから叩き直す）`);
+    }
+  }
+
+  // 順に片付ける。`.goals/` が無い状態で雛形は置けないので、並べ替えられない。
+  const dir = ensureGoalsDir(goalsDir);
+  const ignore = ensureStateIgnored(gitignore);
+  const template = ensureGoalTemplate(goalsDir);
+  const entries = [dir, ignore, template];
+  const report: InitReport = { repoRoot, entries, next: nextStep(template) };
+
+  process.stdout.write(
+    json
+      ? `${JSON.stringify(report, null, 2)}\n`
+      : `${entries.map((entry) => `${entry.action.padEnd(8)}${entry.path}`).join("\n")}\n\n${report.next}\n`,
+  );
+  return 0;
+}
+
+/**
+ * 次に何を叩くか。**雛形を置いたときと、既にあったときで別のことを言う。**
+ *
+ * 両方を同じ文にしていたとき、`.goals/*.yaml` があるリポジトリでは
+ * 「`.goals/<既存の Goal>.yaml` の desired_state と acceptance_criteria を埋めてから
+ * ent start <既存の slug> を叩く」と出ていた。名前が挙がるのはアルファベット順の
+ * 1本目なので、終わった Goal を「これを埋めろ」と名指しすることになる。
+ * ファイルは壊れないが、init の唯一の出力が常に誤った指示になる。
+ */
+function nextStep(template: InitEntry): string {
+  if (template.action === "kept") {
+    return `.goals/ に既に Goal があるので雛形は置いていない。ent doctor で前提を確かめる`;
+  }
+  const slug = basename(template.path, extname(template.path));
+  return `${template.path} の goal.name / desired_state / acceptance_criteria / repository を埋めてから、ent doctor と ent start ${slug} を叩く`;
+}
+
+/** シンボリックリンクか。存在しないパスは false（これから作るので辿る先が無い） */
+function isSymbolicLink(path: string): boolean {
+  try {
+    return lstatSync(path).isSymbolicLink();
+  } catch {
+    return false;
+  }
+}
+
+function ensureGoalsDir(goalsDir: string): InitEntry {
+  if (existsSync(goalsDir)) {
+    return { path: ".goals/", action: "kept" };
+  }
+  mkdirSync(goalsDir, { recursive: true });
+  return { path: ".goals/", action: "created" };
+}
+
+/**
+ * `.gitignore` に `.goals/.state/` を足す。既に無視できていれば触らない。
+ *
+ * 足し忘れると、状態 DB と worktree と Agent の生ログが対象リポジトリの git に載る。
+ * 既存の内容は消さずに末尾へ追記する。人間が書いた行を init が捨てる理由が無い。
+ *
+ * 「既に無視できているか」は自分で判定しない。`stateDirIgnored`（git に聞く）と
+ * 判定を分けると、doctor が ok と言う状態に init が行を足すことになる。
+ */
+function ensureStateIgnored(path: string): InitEntry {
+  const existed = existsSync(path);
+  const body = existed ? readFileSync(path, "utf8") : "";
+  if (body.split("\n").some((line) => line.trim() === STATE_IGNORE_LINE)) {
+    return { path: ".gitignore", action: "kept" };
+  }
+
+  // 末尾に改行が無いファイルへ追記すると、最後の行と繋がって別の pattern になる。
+  const head = body === "" ? "" : body.endsWith("\n") ? `${body}\n` : `${body}\n\n`;
+  writeFileSync(
+    path,
+    `${head}# ent の実行時状態（goals.db / worktree / Agent の生ログ）\n${STATE_IGNORE_LINE}\n`,
+  );
+  return { path: ".gitignore", action: existed ? "appended" : "created" };
+}
+
+/**
+ * Goal YAML が1本も無ければ雛形を置く。1本でもあれば何もしない。
+ *
+ * 「雛形のファイルが無ければ置く」にはしない。人間が雛形を自分の slug に
+ * 改名した直後にもう一度叩くと、消したはずの `example-goal.yaml` が戻ってくる。
+ */
+function ensureGoalTemplate(goalsDir: string): InitEntry {
+  const [existing] = readdirSync(goalsDir)
+    .filter((name) => name.endsWith(".yaml") || name.endsWith(".yml"))
+    .sort();
+  if (existing !== undefined) {
+    return { path: `.goals/${existing}`, action: "kept" };
+  }
+
+  writeFileSync(join(goalsDir, `${TEMPLATE_SLUG}.yaml`), goalTemplate(TEMPLATE_SLUG), {
+    encoding: "utf8",
+  });
+  return { path: `.goals/${TEMPLATE_SLUG}.yaml`, action: "created" };
+}
+
+/**
  * `ent get` が出すもの。宣言部と実行時状態をマージして1枚にする（design.md §4.6）。
  *
  * 初めて ent run を全周させたとき、失敗の理由を追うのに SQLite を直接叩くことに
@@ -891,6 +1101,13 @@ export function agentContextPayload(): AgentContext {
     schemaVersion: 1,
     commands: [
       {
+        name: "init",
+        summary:
+          "いまのリポジトリを回せる状態にする。.goals/ と gitignore の行と Goal の雛形を置く。冪等",
+        args: [],
+        flags: [JSON_FLAG],
+      },
+      {
         name: "start",
         summary: "Goal を登録して ACTIVE にする",
         args: [slug],
@@ -1005,7 +1222,22 @@ export interface DoctorProbes {
   loadGoals: () => Promise<DoctorGoal[]>;
   /** state ディレクトリに書けるか */
   stateWritable: () => Promise<boolean>;
+  /** いま動いている Node のバージョン（`v24.18.1` の形） */
+  nodeVersion: () => string;
+  /** cwd が git のワークツリーの中か */
+  gitRepository: () => Promise<boolean>;
+  /** `.goals/.state/` が gitignore されているか。確かめられなければ null */
+  stateIgnored: () => Promise<boolean | null>;
 }
+
+/**
+ * `node:sqlite`（src/store/index.ts）が要求する Node のメジャーバージョン。
+ *
+ * 足りない Node で叩かれると import が例外になり、ent の話であることが
+ * メッセージから読み取れない。対象リポジトリ側の Node が使われる構成——
+ * shebang の `/usr/bin/env node`、mise や nvm を効かせた shell——では必ず起きる。
+ */
+const MIN_NODE_MAJOR = 24;
 
 /**
  * `ent doctor` が出すもの。ティックを回す前に、前提が揃っているかを読み取り専用で確かめる。
@@ -1025,7 +1257,12 @@ export interface DoctorProbes {
  * 出力は JSON にする。ent get / ent list と同じく機械可読を保つ。
  */
 export async function doctorPayload(probes: DoctorProbes): Promise<DoctorReport> {
+  // 並びは「その場所で ent が動くか」から「その Goal を回せるか」の順にする。
+  // Node が足りない環境では他の検査の結果を読んでも直す手が変わらない。
   const checks: DoctorCheck[] = [
+    nodeVersionCheck(probes),
+    await gitRepositoryCheck(probes),
+    await stateIgnoredCheck(probes),
     githubTokenCheck(probes),
     await goalsCheck(probes),
     await stateDirCheck(probes),
@@ -1037,6 +1274,79 @@ export async function doctorPayload(probes: DoctorProbes): Promise<DoctorReport>
     // unknown は数えない。分からないものを不合格に畳まない。
     exitCode: checks.some((check) => check.result === "failed") ? 1 : 0,
   };
+}
+
+/**
+ * 起動している Node が `node:sqlite` を持つか。
+ *
+ * 読めない形のバージョンは failed にも ok にも畳まず unknown で出す。
+ * 「確かめられなかった」を「問題なし」にしないのと同じ理由で、逆向きにも倒さない。
+ */
+function nodeVersionCheck(probes: DoctorProbes): DoctorCheck {
+  const version = probes.nodeVersion();
+  const major = Number(/^v?(\d+)/.exec(version)?.[1]);
+
+  if (!Number.isInteger(major)) {
+    return {
+      name: "node_version",
+      result: "unknown",
+      detail: `Node のバージョンを読めなかった: ${version}（node:sqlite は Node ${String(MIN_NODE_MAJOR)} 以上を要求する）`,
+    };
+  }
+  if (major < MIN_NODE_MAJOR) {
+    return {
+      name: "node_version",
+      result: "failed",
+      detail:
+        `node:sqlite が Node ${String(MIN_NODE_MAJOR)} 以上を要求するが、いま動いているのは ${version}。` +
+        "このまま叩くと store の import が例外になり、ent の話であることがメッセージから読み取れない" +
+        `（起動する Node を ${String(MIN_NODE_MAJOR)} 以上に固定する）`,
+    };
+  }
+  return {
+    name: "node_version",
+    result: "ok",
+    detail: `${version} で動いている（node:sqlite は Node ${String(MIN_NODE_MAJOR)} 以上を要求する）`,
+  };
+}
+
+/** cwd が git のワークツリーの中か。外だと worktree もブランチも作れない */
+async function gitRepositoryCheck(probes: DoctorProbes): Promise<DoctorCheck> {
+  if (!(await probes.gitRepository())) {
+    return {
+      name: "git_repository",
+      result: "failed",
+      detail:
+        "ここは git リポジトリの中ではない。controller は Actor 用の worktree を作れず、" +
+        ".goals/.state/ の gitignore も意味を持たない（git init を叩くか、リポジトリのルートで叩き直す）",
+    };
+  }
+  return { name: "git_repository", result: "ok", detail: "git リポジトリの中で叩いている" };
+}
+
+/** `.goals/.state/` が gitignore されているか。されていないと状態が git に載る */
+async function stateIgnoredCheck(probes: DoctorProbes): Promise<DoctorCheck> {
+  const ignored = await probes.stateIgnored();
+  if (ignored === null) {
+    // git に聞けなかった。「無視できていない」に畳むと doctor が常に赤くなる。
+    return {
+      name: "state_ignored",
+      result: "unknown",
+      detail:
+        "git check-ignore で確かめられなかった。.goals/.state/ が無視されていないと、" +
+        "状態 DB と worktree と Agent の生ログが対象リポジトリの git に載る",
+    };
+  }
+  if (!ignored) {
+    return {
+      name: "state_ignored",
+      result: "failed",
+      detail:
+        ".goals/.state が .gitignore に無い。状態 DB（goals.db）と Actor の worktree と " +
+        "Agent の生ログが、そのまま対象リポジトリの git に載る（ent init が足す）",
+    };
+  }
+  return { name: "state_ignored", result: "ok", detail: ".goals/.state は gitignore されている" };
 }
 
 function githubTokenCheck(probes: DoctorProbes): DoctorCheck {
@@ -1062,10 +1372,14 @@ async function goalsCheck(probes: DoctorProbes): Promise<DoctorCheck> {
   try {
     goals = await probes.loadGoals();
   } catch (error) {
+    // 「読めなかった」で止めない。壊れているのか、まだ始めていないのかを
+    // 読み分けられないと、次に何を叩けばよいかが README を読むまで分からない。
     return {
       name: "goals",
       result: "failed",
-      detail: `.goals/ を読めなかった: ${errorMessage(error)}`,
+      detail:
+        `.goals/ を読めなかった: ${errorMessage(error)}。` +
+        "このリポジトリでまだ始めていないなら ent init を叩く（.goals/ と雛形と gitignore の行を置く）",
     };
   }
 
@@ -1132,6 +1446,11 @@ function doctorProbes(repoRoot: string, stateDir: string): DoctorProbes {
     githubToken,
     loadGoals: async () => loadGoalSummaries(join(repoRoot, ".goals")),
     stateWritable: async () => isWritable(stateDir),
+    nodeVersion: () => process.version,
+    gitRepository: async () => findGitRoot(repoRoot) !== null,
+    // 無視できているかの判定は git にさせる。否定パターンも祖先の .gitignore も
+    // 自前では読めない（src/adapters/local.ts の stateDirIgnored）。
+    stateIgnored: async () => stateDirIgnored(repoRoot),
   };
 }
 

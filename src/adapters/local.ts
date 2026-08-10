@@ -1,7 +1,7 @@
 import { exec, execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
-import { isAbsolute, join, relative, resolve } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { promisify } from "node:util";
 import { type Worktree, type WorktreePort, worktreeBranchFor } from "../act/index.js";
 import { VERIFY_WITHHELD_ENV, withheldEnv } from "../domain/withheld-env.js";
@@ -65,6 +65,63 @@ async function gitRaw(cwd: string, args: readonly string[]): Promise<string> {
  */
 async function git(cwd: string, args: readonly string[]): Promise<string> {
   return (await gitRaw(cwd, args)).trim();
+}
+
+/**
+ * ここが属する git ワークツリーのルート。外なら null。
+ *
+ * **`ent init` と `ent doctor` の判定はここ1箇所に置く。** どちらも「その場所で
+ * ent を回せるか」を答えるもので、判定が2箇所にあると、init が作った場所を
+ * doctor が別の基準で見ることになる。`src/adapters/local.ts` は
+ * `PROTECTED_PATH_FLOOR` に入っているので、Agent が判定そのものを書き換えられない。
+ *
+ * **真偽ではなくルートを返す。** 祖先を辿るので、リポジトリのサブディレクトリでも
+ * 「中にいる」は真になる。一方 `repoRoot` は常に `process.cwd()` なので、
+ * `repo/src/` で `ent init` を叩くとそこに `.goals/` ができる。呼ぶ側が
+ * 「ここはルートか」を判断できるように、見つけた場所そのものを返す。
+ *
+ * `--show-toplevel` は使わない。linked worktree では本体側を返すことがあり、
+ * ent が回るのは worktree の側なので、辿った先の実体をそのまま返す。
+ * `.git` はディレクトリともファイルともなりうるので種類は問わない。
+ */
+export function findGitRoot(from: string): string | null {
+  let candidate = resolve(from);
+  while (!existsSync(join(candidate, ".git"))) {
+    const parent = dirname(candidate);
+    if (parent === candidate) {
+      return null;
+    }
+    candidate = parent;
+  }
+  return candidate;
+}
+
+/** `.goals/.state/` を無視する行。init が書き、doctor が読む。文言を2箇所に持たない */
+export const STATE_IGNORE_LINE = ".goals/.state/";
+
+/**
+ * `.goals/.state/` が gitignore されているか。判定は git にさせる。
+ *
+ * 自分で `.gitignore` を1行ずつ読む形にしていたが、git の意味論とずれる。
+ * 否定パターン（`!.goals/.state/goals.db`）は後の行が前の行を打ち消すので、
+ * 素朴な一致では「無視できている」と誤って読む。逆に、祖先の `.gitignore`・
+ * `.git/info/exclude`・`core.excludesFile` で既に無視できている repo では
+ * 誤って failed が出る。**doctor が ok と言った状態で状態 DB が commit される**
+ * のは、この検査を足した意味が消える壊れ方になる。
+ *
+ * 確かめられなかったとき（git が無い・リポジトリの外）は false を返さない。
+ * 「無視できていない」と「確かめられなかった」を畳まないため、呼ぶ側が
+ * `unknown` に倒せるように null を返す（design.md §3.1）。
+ */
+export async function stateDirIgnored(repoRoot: string): Promise<boolean | null> {
+  try {
+    await gitRaw(repoRoot, ["check-ignore", "-q", "--", STATE_IGNORE_LINE]);
+    return true;
+  } catch (error) {
+    // check-ignore は「無視されない」を終了コード 1 で返す。それ以外（128 など）は
+    // 判定できていないので null に倒す。code は execFile が載せる終了コード。
+    return (error as { code?: unknown }).code === 1 ? false : null;
+  }
 }
 
 /**

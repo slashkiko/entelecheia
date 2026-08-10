@@ -102,6 +102,42 @@ export const approvalGateSchema = z.enum([
 export type ApprovalGate = z.infer<typeof approvalGateSchema>;
 
 /**
+ * どの Goal からも外せない承認ゲートの下限。
+ *
+ * `require_human_approval` に書いたゲートは `DENIED_TOOLS`（src/adapters/claude.ts）
+ * の対応行だけを拒否パターンに変える。**書かなければ、その操作は Agent に許可
+ * されたまま残る。** 既存の Goal YAML は全部が6ゲートを列挙しているので誰も
+ * 気づかなかったが、`ent init` の雛形が `merge` だけを書いた時点で成立した。
+ *
+ * ここに置くのは `protected_paths` の下限と同じ基準——**書き換えられると関門
+ * そのものが働かなくなるもの**——だけにする。その基準に当たるのは2つ。
+ *
+ * - `external_send`: `gh pr comment` を Agent に許すと、`type: human` の criteria が
+ *   PR コメントの定型文で通る以上、Agent は自分で自分を承認できる。§7 の
+ *   human approval が空文になる。関門を無くすのではなく、関門の入力を Agent が
+ *   作れるようになる形なので、こちらの方が悪い
+ * - `secret_access`: `gh auth token` が読むのは keyring と hosts.yml で、
+ *   `WITHHELD_ENV` の env 除去では塞げない。controller が Agent に渡さないと
+ *   決めた資格情報を、Agent が自分で取り直せる
+ *
+ * `merge` / `force_push` / `push_to_default_branch` / `deploy` は入れない。
+ * どれも危ないが、**関門そのものは無効化しない**。Goal によっては正当に触る
+ * 対象になりうるので、下限は最小に保つ（`PROTECTED_PATH_FLOOR` と同じ判断）。
+ * 雛形は6つ全部を書くので、緩める側が意識的な操作になる。
+ */
+export const APPROVAL_GATE_FLOOR = ["secret_access", "external_send"] as const;
+
+/**
+ * Goal が宣言した承認ゲートに下限を混ぜる。並びは宣言順を先にし、重複は落とす。
+ *
+ * `withProtectedPathFloor` と同じ形にしてある。片方だけ transform を持つと、
+ * 「下限がある」という規則をどちらに適用したのかが読む側から分からなくなる。
+ */
+export function withApprovalGateFloor(declared: readonly ApprovalGate[]): ApprovalGate[] {
+  return [...new Set<ApprovalGate>([...declared, ...APPROVAL_GATE_FLOOR])];
+}
+
+/**
  * 使える単位と、その秒数。
  *
  * 正規表現をここから組み立てる。以前は `/^(\d+)([smh])$/` を手で書き、
@@ -256,7 +292,16 @@ export const goalSchema = z.strictObject({
   acceptance_criteria: z.array(acceptanceCriterionSchema).min(1),
   context: goalContextSchema,
   policies: z.strictObject({
-    require_human_approval: z.array(approvalGateSchema),
+    /**
+     * 人間の承認を必須にする操作。ここに書いたゲートだけが Agent の拒否ルールになる。
+     *
+     * `protected_paths` と同じく、`APPROVAL_GATE_FLOOR` をここで必ず混ぜる。
+     * 書き忘れたゲートは「許可」として効くので、既定が空のまま出てくることは無い。
+     */
+    require_human_approval: z
+      .array(approvalGateSchema)
+      .default([])
+      .transform(withApprovalGateFloor),
     /**
      * Agent に書き換えさせないパス。glob で書く（design.md §7 の自己ホスト用）。
      *
@@ -273,3 +318,90 @@ export const goalSchema = z.strictObject({
   budget: budgetSchema,
 });
 export type Goal = z.infer<typeof goalSchema>;
+
+/** `ent init` が置く雛形の slug。ファイル名と `goal.id` はローダーが突き合わせる */
+export const TEMPLATE_SLUG = "example-goal";
+
+/**
+ * `ent init` が置く、埋めるための Goal YAML。
+ *
+ * **ここに置くのは、中身が関門の一部だから。** `policies` は Agent の拒否ルールを
+ * 決める（`DENIED_TOOLS`）ので、雛形が緩いゲートを配れば、そこから始めた
+ * リポジトリはすべて緩いところから始まる。`PROTECTED_PATH_FLOOR` と
+ * `APPROVAL_GATE_FLOOR` の隣に置いて、下限と同じ関門として扱う。
+ * `src/cli.ts` は文字列を受け取って書くだけにする。
+ *
+ * そのまま `ent start` に渡せる必要は無い（`desired_state` と criteria は人間が
+ * 書くもの）が、**スキーマとしては妥当**にする。埋める前に「何が悪いのか」を
+ * 調べることになるのを避けるため。項目は上の goalSchema だけで書く。
+ *
+ * 人間が埋める箇所には、例外なくコメントを置く。`repository` を埋め忘れても
+ * `ent start` は通り、最初のティックで `your-org/your-repo` への 404 として
+ * 初めて表面化する。「ent の話だと分かるところで止める」という doctor の
+ * 方針と、雛形だけがずれることになる。
+ */
+export function goalTemplate(slug: string): string {
+  return `version: 1
+
+goal:
+  # ファイル名の slug と一致させる。改名するなら両方を直す。
+  # 揃っていないと ent start の前に goal-loader が弾く。
+  id: ${slug}
+  # 達成したいことの短い名前。ここも埋める。
+  name: 達成したいことの短い名前
+
+  # 手順ではなく「終わった状態」を書く。読んだ人が同じものを思い浮かべられる
+  # ところまで具体的に書く。ここが Actor に渡る本文になる。
+  desired_state: |
+    ここに、何が成立していれば終わりなのかを書く。
+
+# 対象リポジトリに合わせて埋める。埋め忘れても ent start は通るが、
+# 最初のティックで GitHub の 404 として出る。
+repository:
+  provider: github
+  owner: your-org
+  name: your-repo
+  default_branch: main
+
+# VERIFY が criteria を1件でも実行する前に1度だけ流す。冪等であること。
+setup: []
+
+# design.md §3.2: ここに落とせない Goal は ACTIVE にしない。
+# type は command / fact / human の3つ。
+acceptance_criteria:
+  - id: ac-1
+    description: 満たされたことを外から確かめられる条件
+    verification:
+      type: command
+      run: "echo 'ここを実際の検証コマンドに置き換える' && exit 1"
+
+context:
+  background: |
+    なぜこれをやるのか。Actor がそのまま読む。
+  constraints:
+    - 触ってほしくないものがあればここに書く
+  references: []
+
+policies:
+  # 書いたゲートだけが Agent の拒否ルールになる。**書かなければ許可される。**
+  # 6つ全部を並べておく。緩めるなら、消す側を意識的な操作にする。
+  # secret_access と external_send だけは APPROVAL_GATE_FLOOR が必ず混ぜるので、
+  # 消しても効き続ける。
+  require_human_approval:
+    - merge
+    - force_push
+    - push_to_default_branch
+    - deploy
+    - secret_access
+    - external_send
+  # Agent に書き換えさせないパス。ここが空でも PROTECTED_PATH_FLOOR は必ず効く。
+  protected_paths: []
+
+budget:
+  max_actor_runs: 8
+  max_reconciles: 20
+  max_wall_clock: 3h
+  max_consecutive_failures: 3
+  max_unchanged_reconciles: 4
+`;
+}
