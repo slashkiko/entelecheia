@@ -325,7 +325,7 @@ Actor と LLM は Claude Code の OAuth をそのまま使う。
 src/domain/fact.ts        Fact の型（VERIFIED / INFERRED の分離）と Unresolved
 src/domain/fact-keys.ts   観測キーのレジストリ。Goal YAML の fact 検証はここを参照する
 src/domain/goal.ts        Goal YAML の Zod スキーマ
-src/domain/goal-loader.ts Goal YAML の読み込みと、slug と goal.id の突き合わせ
+src/domain/goal-parse.ts  Goal YAML の検証と、slug と goal.id の突き合わせ。ファイルは読まない
 src/domain/gap.ts         ASSESS が出す Gap と Assessment の型
 src/domain/action.ts      DECIDE が選ぶ Action と Decision の型
 src/domain/run.ts         Actor の実行記録の型と ActorRole（役割ごとに worktree が分かれる）
@@ -334,6 +334,7 @@ src/domain/port-error.ts  Port の失敗の種別（usage_limit / unavailable）
 src/domain/verification.ts criteria 単位の検証結果。§9 の完了判定が読む索引
 src/domain/digest.ts      観測値のダイジェスト。ループ検知の材料になる
 src/domain/protected-paths.ts 保護パスの検査。制御ループ自体への編集を止める
+src/domain/guard-rules.ts guard（純ロジック）が読む判断規則。関門の基準と停止条件
 src/domain/llm-call.ts    LlmPort を1回呼んだ記録。Run を作らない分のトークン
 src/observe/              Observe と、依存する Port の定義
 src/verify/               Verify と、依存する Port の定義
@@ -342,14 +343,23 @@ src/decide/               Decide と LlmPort の定義。guard と LLM の境界
 src/act/                  Act。Actor を worktree 上で走らせる。write-ahead はここ
 src/reconcile/            OBSERVE → VERIFY → ASSESS → DECIDE を1ティックにまとめる
 src/publish/              PR の確保と進捗コメント。CodeWriterPort と BranchPort の定義
-src/store/                SQLite（node:sqlite）。lease、スナップショット、Run、Decision
+src/store/port.ts         実行時状態の Port。使う側が所有する口で、実装は持たない
+src/store/sqlite.ts       その SQLite 実装（node:sqlite）。挿すのは合成ルートだけ
 src/controller/           1ティックの外側。lease → 回収 → reconcile → 永続化 → ACT → 遷移
 src/adapters/local.ts     node:child_process で書ける Port（コマンド実行、git、worktree）
+src/adapters/goal-file.ts .goals/<slug>.yaml をファイルシステムから読む
 src/adapters/github.ts    CodeProviderPort。@octokit/rest + ETag
 src/adapters/claude.ts    ActorPort と LlmPort。Claude Agent SDK
                           role ごとの許可・拒否ツールとプロンプトもここ。編集の
                           ツールを持つのは実装役だけ（design.md §4.2）
-src/cli.ts                ent コマンド。引数の解釈と agent-context もここ
+src/wiring/index.ts       合成ルート。どの Port にどの Adapter を挿すかを決める唯一の場所
+src/usecase/init.ts       ent init。.goals/ と gitignore の行と Goal の雛形を置く
+src/usecase/doctor.ts     ent doctor。回す前の前提を、書かずに調べる
+src/usecase/inspect.ts    ent get / ent list が出す payload。読むだけ
+src/cli/parse.ts          引数の解釈。実行はしない
+src/cli/present.ts        出力の整形。stdout は JSON 専用、診断は stderr
+src/cli/agent-context.ts  ent agent-context が出す CLI の構造
+src/cli.ts                ent コマンドの入口。サブコマンドごとの手順と終了コードの契約
 .claude/skills/ent/SKILL.md  エージェントが手順として読むもの。叩く順と、人の承認で止まる場所
 AGENTS.md                 上の SKILL.md を指すだけの入口。手順は二重に書かない
 tests/                    Acceptance Criteria の実体と、実 git / 実 SQLite を叩く統合テスト

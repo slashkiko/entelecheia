@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { agentContextPayload, main, parseCommand } from "../src/cli.js";
-import { openStore } from "../src/store/index.js";
+import { openStore } from "../src/store/sqlite.js";
 
 /**
  * 「もう追わない」と人間が宣言する口を固定する。**「終わった」と言わせる口は作らない。**

@@ -2,7 +2,8 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { type ControllerDeps, tick } from "../src/controller/index.js";
 import type { LlmPort } from "../src/decide/index.js";
 import type { AcceptanceCriterion, Goal } from "../src/domain/goal.js";
-import { openStore, type Store } from "../src/store/index.js";
+import type { Store } from "../src/store/port.js";
+import { openStore } from "../src/store/sqlite.js";
 
 /**
  * 未 commit のまま取り残された実装を、controller が見落とさないこと。
@@ -25,7 +26,7 @@ import { openStore, type Store } from "../src/store/index.js";
  * 実装の途中で作業ツリーが汚れているのは正常なので、Gap が残っているティックと
  * まだ Actor が1度も走っていないティックは、これまでどおり進むことを併せて固定する。
  * 1ティック目は worktree がまだ無く、`local.*` は controller 自身のリポジトリを
- * 観測する（`src/cli.ts` の `verifyRoot`）。自己ホストでは人間の編集で汚れて
+ * 観測する（`src/wiring/index.ts` の `verifyRoot`）。自己ホストでは人間の編集で汚れて
  * いるのが普通なので、そこを違反と読むと関門が最初のティックから鳴りっぱなしになる。
  */
 
@@ -291,7 +292,7 @@ describe("未 commit の変更を残したまま終わらない", () => {
 
   it("Actor がまだ1度も走っていないティックは、汚れていても止めない", async () => {
     // 1ティック目は worktree がまだ無いので、`local.*` は controller 自身の
-    // リポジトリを観測する（src/cli.ts の verifyRoot）。自己ホストでは人間が
+    // リポジトリを観測する（src/wiring/index.ts の verifyRoot）。自己ホストでは人間が
     // 編集中のファイルで汚れているのが普通で、それを Actor の書き残しと
     // 読むと、どの Goal も最初のティックから進まなくなる。
     const goal = goalWith([COMMAND_CRITERION]);

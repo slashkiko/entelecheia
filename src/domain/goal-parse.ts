@@ -1,13 +1,14 @@
-import { readFileSync } from "node:fs";
-import { basename, extname } from "node:path";
 import { parse } from "yaml";
 import { type Goal, goalSchema } from "./goal.js";
 
 /**
- * `.goals/<slug>.yaml` を読み込んで検証する。
+ * Goal YAML の中身を検証して `Goal` にする。**ファイルは読まない。**
  *
  * design.md §3.2 の「Acceptance Criteria に還元できない Goal は ACTIVE にしない」を
  * 入口で強制するのがこの関数の役目。Zod を通らない YAML は Goal にならない。
+ *
+ * 読む側は `src/adapters/goal-file.ts` にある。同じファイルに置いていたあいだ、
+ * ドメイン層が `node:fs` を呼んでいた。
  */
 export function parseGoal(source: string, slug: string): Goal {
   const goal = goalSchema.parse(parse(source));
@@ -17,9 +18,4 @@ export function parseGoal(source: string, slug: string): Goal {
     throw new Error(`goal.id (${goal.goal.id}) がファイル名の slug (${slug}) と一致しない`);
   }
   return goal;
-}
-
-/** `.goals/foo.yaml` を読んで、ファイル名から slug を取り出して検証する */
-export function loadGoalFile(path: string): Goal {
-  return parseGoal(readFileSync(path, "utf8"), basename(path, extname(path)));
 }

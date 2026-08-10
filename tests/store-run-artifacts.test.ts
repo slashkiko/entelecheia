@@ -5,7 +5,7 @@ import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it } from "vitest";
 import type { Goal } from "../src/domain/goal.js";
 import type { RunIntent, RunOutcome } from "../src/domain/run.js";
-import { openStore } from "../src/store/index.js";
+import { openStore } from "../src/store/sqlite.js";
 
 /**
  * 行の検査が、JSON の中身まで届いていない。

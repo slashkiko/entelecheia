@@ -11,6 +11,10 @@
 # 「Review | CODEOWNERS and protected main branch」は、その差分にレビューが
 # 要ることを含意しているので、制御ループ本体と関門・検証系をここでも押さえる。
 /src/controller/ @slashkiko
+# guard が読む判断規則。もとは /src/controller/ の中にあってこの行に覆われていた。
+# 保護パスの下限（src/domain/goal.ts の PROTECTED_PATH_FLOOR）と同じで、
+# ここもパスのリテラルなので、リファクタで場所が動くとレビュー必須の範囲から外れる。
+/src/domain/guard-rules.ts @slashkiko
 /src/domain/protected-paths.ts @slashkiko
 /src/domain/goal.ts @slashkiko
 /src/adapters/claude.ts @slashkiko

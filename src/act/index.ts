@@ -385,7 +385,7 @@ async function runActor(
  * 分けたままにする。あちらは Goal の実装とは別のものを調べる役で、
  * 実装の作業ツリーを汚す理由が無い。
  *
- * **第2引数に既定値を置かない。** `verifyRoot`（src/cli.ts）と未 commit の
+ * **第2引数に既定値を置かない。** `verifyRoot`（src/wiring/index.ts）と未 commit の
  * 関門（src/controller/index.ts）は、観測した `local.branch` を
  * `worktreeBranchFor(worktreeNameFor(...))` と突き合わせて「その dirty が
  * どこを観測した値か」を判定している（design.md §10-11）。候補のブランチが
@@ -395,7 +395,7 @@ async function runActor(
  * （`act`・`Run` を読む controller）の仕事にする（`DEFAULT_ACTOR_ROLE`）。
  *
  * controller も保護パスの検査で同じ作業ツリーを指す必要があるので export する。
- * `src/cli.ts` の `verifyRoot` も含め、規則を2箇所に書くと、検査や検証が
+ * `src/wiring/index.ts` の `verifyRoot` も含め、規則を2箇所に書くと、検査や検証が
  * 別の作業ツリーを見ていても誰も気づけない。
  */
 export function worktreeNameFor(goalId: string, role: ActorRole): string {

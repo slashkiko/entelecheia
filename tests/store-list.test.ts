@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Goal } from "../src/domain/goal.js";
-import { openStore, type Store } from "../src/store/index.js";
+import type { Store } from "../src/store/port.js";
+import { openStore } from "../src/store/sqlite.js";
 
 /**
  * 登録済みの Goal を一覧する。

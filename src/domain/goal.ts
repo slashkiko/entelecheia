@@ -253,6 +253,12 @@ export const PROTECTED_PATH_FLOOR = [
   ".goals/**",
   // 関門のマッチャ本体。
   "src/domain/protected-paths.ts",
+  // 関門と予算の停止条件が読む判断規則。関門が差分を取る相手（`guardBaseOf`）、
+  // 未 commit の関門が見る述語（`claimsNothingLeft` / `observedValue`）、
+  // 経過時間と連続失敗の数え方がここにある。もとは `src/controller/**` の中に
+  // あって下限に覆われていた。**依存を持たない規則だからという理由でドメインへ
+  // 出すと、出した先が下限の外になる。** 移設と一緒に下限も動かす。
+  "src/domain/guard-rules.ts",
   // 関門の適用範囲を決めるスキーマ。この定数もここにある。
   "src/domain/goal.ts",
   // Agent の許可・拒否ツールを決める場所。
@@ -345,7 +351,7 @@ export function goalTemplate(slug: string): string {
 
 goal:
   # ファイル名の slug と一致させる。改名するなら両方を直す。
-  # 揃っていないと ent start の前に goal-loader が弾く。
+  # 揃っていないと ent start の前に goal-parse が弾く。
   id: ${slug}
   # 達成したいことの短い名前。ここも埋める。
   name: 達成したいことの短い名前

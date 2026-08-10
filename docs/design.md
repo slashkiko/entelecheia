@@ -131,6 +131,21 @@ Merge.dev が長年苦戦している領域。最初から全プロバイダを�
 1環境で動くものを作ってから抽象を抽出する。ただし Provider のインターフェースは
 最初から切っておき、1実装に癒着していないかだけレビューする。
 
+**どの Port にどの Adapter を挿すかを決めるのは1箇所だけにする。** その1箇所が
+`src/wiring/index.ts`（合成ルート）で、`tests/architecture.test.ts` が
+「`src/adapters/**` と `src/store/sqlite.ts` を import してよいのはここだけ」を
+機械で固定する。ここが増えると、テストで差し替えたつもりの Port が本番では
+別経路から直接入ってくる状態を作れる。
+
+かつてその1箇所は `src/cli.ts` だった。ルールが求めているのは「実装を選ぶ場所が
+1箇所」であって「その1箇所が CLI であること」ではないのに、`cli.ts` に固定したまま
+Port を足し続けたので、引数の解釈もユースケースも出力の整形も同じファイルに集まり、
+1,779 行になった。合成ルートを外に出したので、CLI は Adapter を知らずに済むように
+なった。いまは引数の解釈が `src/cli/parse.ts`、出力の整形が `src/cli/present.ts`、
+`agent-context` が出す CLI の構造が `src/cli/agent-context.ts`、各サブコマンドの
+中身が `src/usecase/**` に分かれていて、`src/cli.ts` に残るのはサブコマンドごとの
+手順と終了コードの契約だけになる。
+
 ### 3.4 webhook は MVP では不要
 
 Kubernetes の controller も watch だけで動くわけではなく、必ず periodic resync を持つ。
@@ -202,6 +217,16 @@ lease を解放して終了する。Ctrl+C が効かない状態は作らない�
 **Port** はこれらとは別の粒度で、reconcile の各段階が依存する関数の口を指す。
 `observe()` が受け取る `CodeProviderPort` のように、Provider の全体ではなく
 その段階が実際に呼ぶメソッドだけを並べる。テストで差し替える単位でもある。
+
+**実行時状態の置き場（`Store`）も同じ扱いにする。** 口は `src/store/port.ts`、
+いまの実装は SQLite（`src/store/sqlite.ts`）で、実装を選ぶのは §3.3 の合成ルート
+1箇所だけになる。かつては口の宣言そのものが SQLite 実装のファイルにあり、
+`src/controller/index.ts` がそこを名指しで import していた。内側が外側を参照する
+唯一の経路で、しかも `src/store/` は `src/adapters/` の下に無いので、
+「Adapter を import してよいのは合成ルートだけ」というテストの網にも掛からなかった。
+いまは `src/store/sqlite.ts` の import も同じテストが合成ルート1本に絞っている（§3.3）。
+Goal の実行時状態そのもの（`GoalState` / `GoalListItem`）と、1ティック分の観測
+（`Snapshot`）は保存の都合ではなく Goal の語彙なので、`src/domain/` が持つ。
 
 | Provider | 論理リソース | MVP の実装 |
 |---|---|---|
@@ -448,7 +473,7 @@ UPDATE goals
 `ent get <slug>` が両者をマージした1枚を標準出力に吐くので、参照時は1ファイルに見える。
 
 `.goals/<slug>.yaml` のスキーマは `src/domain/goal.ts` にある。slug は `goal.id` と
-一致させる（突き合わせは `src/domain/goal-loader.ts`）。ファイル名は Phase 番号ではなく
+一致させる（突き合わせは `src/domain/goal-parse.ts`）。ファイル名は Phase 番号ではなく
 Goal の内容から付ける。Phase は本書側の計画であって Goal の属性ではない。
 こうしておけば、Phase の区切りを変えてもファイル名は腐らない。
 
@@ -542,7 +567,7 @@ Phase 3 も GitHub 単独の自己ホストなので、そこでは検証され�
 | スキーマ | Zod | Agent 出力の検証ゲートと YAML バリデーションを同一定義で兼ねる |
 | YAML | `yaml`（eemeli） | コメント保持のラウンドトリップ編集。機械が書き戻すなら必須 |
 | DB | `node:sqlite`（Node 標準） | 同期 API でコードが素直。Node 22.13 以降はフラグなしで使える（22.5 で導入、それ以前は無い）。`mise.toml` が Node 24 を固定し、`engines` も `>=24` にしてあるため常に使える。better-sqlite3 + Drizzle の採用予定を取り下げた（下記） |
-| CLI | `node:util` の `parseArgs`（Node 標準） | サブコマンドが少ない（採用時は4つ、いまは7つ）ので依存を足す価値が出ない。10 を超えたら citty か oclif に寄せる |
+| CLI | `node:util` の `parseArgs`（Node 標準） | サブコマンドが少ない（採用時は4つ、いまは8つ）ので依存を足す価値が出ない。10 を超えたら citty か oclif に寄せる |
 | プロセス実行 | `node:child_process`（Node 標準） | 検証コマンドと git を叩くだけなので標準で足りる。ストリーム制御が要るようになったら execa に移す |
 | GitHub | `@octokit/rest` + plugin-throttling/retry | ETag でポーリングのレート制限を節約 |
 | ログ | pino（未着手） | 構造化ログ。Decision テーブルとは別に生ログを残す。いまは CLI が JSON を1本出すだけ |
@@ -569,7 +594,8 @@ DB と CLI のどちらも Node 24 標準で置き換えた。判断の根拠は
 
 外部依存は Port の実装側に寄せた。4本目で `@octokit/rest`（+ throttling / retry）と
 `@anthropic-ai/claude-agent-sdk` が入っている。octokit は `src/adapters/` に閉じており、
-Agent SDK は `src/cli.ts` が `query` を注入する1点だけが外に出る。
+Agent SDK は `src/wiring/index.ts`（§3.3 の合成ルート）が `query` を注入する1点だけが
+外に出る。
 
 §3.6 が触れている `ent watch` はまだ無い。常駐しない形（cron から `run` を叩く）だけを
 用意してあり、`watch` を足すかどうかは実際に cron で回してから決める。
@@ -640,10 +666,24 @@ DECIDE の LLM 呼び出しは `LlmCall.tokens` に残す（§4.5）。あとか
 下限に入れるのは**書き換えられると関門そのものが働かなくなるもの**だけで、検証系
 （`mise.toml` など）と依存（`package.json`）は入れない。あちらは Goal によっては
 正当に触る対象になりうる。下の列挙は下限と、Goal ごとに足す分の両方を含む。
+**下限の全量は `PROTECTED_PATH_FLOOR` を正とする。** 下の箇条書きは基準を説明するための
+代表例で、網羅ではない。両方に同じ一覧を持たせると、片方だけ古くなったときに
+どちらが関門の実体なのか読む側から分からなくなる。
 
 - 関門そのもの（`src/domain/protected-paths.ts`）と、Agent の許可・拒否ツールを決める
   ファイル（`src/adapters/claude.ts`）。ここが開いていると、照合を常に false にするか
   拒否リストを空にするだけで残りが全部外れる
+- **guard が読む判断規則（`src/domain/guard-rules.ts`）。** 関門が差分を取る相手
+  （`guardBaseOf`）、未 commit の関門が見る述語（`claimsNothingLeft` / `observedValue`）、
+  寝ている間かの判定（`sleepingUntil`）、経過時間と連続失敗の数え方がここにある。
+  書き換えれば関門は毎ティック空の差分を見るし、壁時計の停止条件も黙って無効化できる。
+  もとは `src/controller/**` の中にあって下限に覆われていた。**依存を持たない規則だから
+  という理由でドメインへ出すと、出した先が下限の外になる。** 下限はパスのリテラルなので、
+  **リファクタで場所が動くと保護は付いてこない。** 移設のたびに下限も一緒に動かす。
+  `tests/protected-floor.test.ts` が、規則がどのファイルで宣言されているかをソースから
+  読んで、その置き場が下限にあることまで見る。
+  1ファイルに集めてあるのは保護の単位と揃えるためで、語彙ごとに配ると下限に何本も
+  足すことになり、しかも Goal が正当に触りうる語彙と同じファイルになる
 - 検証系（`mise.toml` / `mise-tasks/**` / `vitest.config.ts` / `biome.json` /
   `tsconfig*.json` / `.github/**`）。VERIFY は worktree で criteria のコマンドを
   流すので（§10-9）、ここを書き換えられると Agent が自分の Acceptance Criteria を
@@ -774,7 +814,7 @@ Phase 3 の範囲は §9 の残り5項目と、取り直した「実装」、お
 
 | 順 | Goal | 範囲 | 状態 |
 |---|---|---|---|
-| 1 | `.goals/record-the-tick.yaml` | 1ティックの記録。観測対象の指定、LlmPort の生ログとトークン、Verification、`ent show` | 完了 |
+| 1 | `.goals/record-the-tick.yaml` | 1ティックの記録。観測対象の指定、LlmPort の生ログとトークン、Verification | 完了 |
 | 2 | `.goals/open-pr-and-detect-approval.yaml` | PR の作成と通知、`ApprovalPort`（§10-4） | 完了 |
 | 3 | `.goals/sleep-and-stop.yaml` | `resume_after` を読む（§10-5）、ループ検知（§10-2）、中断と使用量上限の実測 | 完了 |
 | 4 | `.goals/guard-the-controller.yaml` | 自己ホストの安全装置。`protected_paths`（§10-8）と controller 側の関門（§10-6） | 完了 |

@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { type ControllerDeps, tick } from "../src/controller/index.js";
 import type { Goal } from "../src/domain/goal.js";
-import { openStore, type Store } from "../src/store/index.js";
+import type { Store } from "../src/store/port.js";
+import { openStore } from "../src/store/sqlite.js";
 
 /**
  * ティックの途中で lease を失ったことを検知する、の仕様。
