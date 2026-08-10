@@ -1,3 +1,5 @@
+import { readdirSync, readFileSync } from "node:fs";
+import { join, relative } from "node:path";
 import { describe, expect, it } from "vitest";
 import { parse as parseYaml } from "yaml";
 import {
@@ -101,8 +103,57 @@ describe("保護パスの下限", () => {
     expect(PROTECTED_PATH_FLOOR).toContain("src/adapters/claude.ts");
     expect(PROTECTED_PATH_FLOOR).toContain("src/adapters/local.ts");
     expect(PROTECTED_PATH_FLOOR).toContain("src/domain/withheld-env.ts");
+    expect(PROTECTED_PATH_FLOOR).toContain("src/domain/guard-rules.ts");
+  });
+
+  it("guard が読む規則は、下限に入っているファイルの中に居る", () => {
+    // 下限はパスのリテラルなので、**コードを別のファイルへ移すだけで保護が外れる。**
+    // `guardBaseOf` や `elapsedSecondsSince` はもともと `src/controller/**` の中に
+    // あって下限に覆われていた。依存を持たない規則だからという理由でドメインへ
+    // 出したので、出した先も下限に入っていなければ、リファクタが静かに関門を弱める。
+    //
+    // 上の列挙（`toContain`）だけでは足りない。あれはファイルが下限にあることしか
+    // 見ないので、規則だけを下限の外のファイルへ移しても落ちない。ここでは
+    // **規則が実際にどのファイルで宣言されているか**をソースから確かめ、
+    // そのファイルが下限にあることまで見る。
+    const floor = new Set<string>(PROTECTED_PATH_FLOOR);
+
+    for (const name of GUARD_RULES) {
+      const homes = SOURCE_FILES.filter((file) =>
+        readFileSync(join(REPO_ROOT, file), "utf8").includes(`export function ${name}(`),
+      );
+
+      expect(homes, `${name} を export しているファイルが1つに定まらない`).toHaveLength(1);
+      expect(floor.has(homes[0] ?? ""), `${name} の置き場 ${homes[0]} が下限に無い`).toBe(true);
+    }
   });
 });
+
+/**
+ * guard（純ロジック）が読む判断規則。design.md §7 の停止条件はここが決める。
+ *
+ * 書き換えられると関門そのものが働かなくなるので、置き場は必ず
+ * `PROTECTED_PATH_FLOOR` の中でなければならない。
+ */
+const GUARD_RULES = [
+  "guardBaseOf",
+  "claimsNothingLeft",
+  "observedValue",
+  "sleepingUntil",
+  "elapsedSecondsSince",
+  "consecutiveFailuresOf",
+] as const;
+
+const REPO_ROOT = new URL("../", import.meta.url).pathname;
+
+/** repoRoot からの相対パスで、`src/**` の .ts を全部並べる */
+function sourceFiles(): string[] {
+  return readdirSync(join(REPO_ROOT, "src"), { withFileTypes: true, recursive: true })
+    .filter((entry) => entry.isFile() && entry.name.endsWith(".ts"))
+    .map((entry) => relative(REPO_ROOT, join(entry.parentPath, entry.name)));
+}
+
+const SOURCE_FILES = sourceFiles();
 
 /**
  * 承認ゲートの下限。`protected_paths` と同じ理由で、Goal から外せなくする。

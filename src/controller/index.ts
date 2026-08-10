@@ -7,11 +7,20 @@ import {
   worktreeNameFor,
 } from "../act/index.js";
 import type { BudgetUsage } from "../decide/index.js";
-import type { Action, Decision } from "../domain/action.js";
+import type { Decision } from "../domain/action.js";
 import { errorMessage } from "../domain/error-message.js";
 import type { Fact, Unresolved } from "../domain/fact.js";
 import type { Goal } from "../domain/goal.js";
 import { type GoalState, type GoalStatus, isTerminal, nextStatus } from "../domain/goal-state.js";
+import {
+  claimsNothingLeft,
+  consecutiveFailuresOf,
+  describeClaim,
+  elapsedSecondsSince,
+  guardBaseOf,
+  observedValue,
+  sleepingUntil,
+} from "../domain/guard-rules.js";
 import { describeViolations, findViolations } from "../domain/protected-paths.js";
 import { type ActorRole, DEFAULT_ACTOR_ROLE, type Run } from "../domain/run.js";
 import { toVerifications, type Verification } from "../domain/verification.js";
@@ -36,9 +45,6 @@ import type { Store } from "../store/port.js";
  * そのときは lease を手放して他のワーカーに渡す方がよい。
  */
 const MAX_LEASE_RENEWALS = 96;
-
-/** 関門の基準として受け付ける形。git の commit id そのもの */
-const SHA = /^[0-9a-f]{40}$/;
 
 export interface ControllerDeps
   extends ReconcileDeps,
@@ -592,36 +598,6 @@ async function reachableCode(state: GoalState, deps: ControllerDeps): Promise<Un
  * - worktree の中身は触らない。差分を残しておかないと人間が判断できない
  * - 元の rationale を残す。何をしようとしていたのかが読めなくなる
  */
-/**
- * worktree を切る元と、関門が差分を取る相手。**この2つは同じでなければならない。**
- *
- * 記録があれば `ent start` 時点の repoRoot の HEAD（`GoalState.guardBaseSha`）を使う。
- * 関門が答えたい問いは「Actor が何を書いたか」で、`repository.default_branch` が
- * 答えるのは「リリース先との差は何か」になる。後者を前者に流用すると、人間が
- * 呼び出し側のブランチに書いたもの——Goal の宣言（`.goals/*.yaml`）を含む——まで
- * Actor の編集として並ぶ。`.goals/**` は PROTECTED_PATH_FLOOR にあるので、
- * 宣言を1本置いただけで毎ティック `protected_path_touched` になっていた。
- *
- * 記録が無ければ `default_branch` に落とす。この列より前に start した Goal の
- * worktree は既に default_branch から切られていて、基準だけを別の commit に
- * 変えると、それまで通っていた差分が別の基準で並び直す。
- */
-function guardBaseOf(goal: Goal, state: GoalState): string | null {
-  if (state.guardBaseSha === null) {
-    return goal.repository.default_branch;
-  }
-  // **記録があるなら形まで確かめる。** 状態 DB は gitignore 済みで、本体側の
-  // 汚れの観測（`repoDirtyState`）には出ない。ここを検証しないまま読むと、
-  // リテラル `HEAD` を1回書き込むだけで毎ティック `diff HEAD...HEAD` が空を返し、
-  // 関門が恒久的に黙る。`gitDiffAgainst` の catch は解決**できなかった**ときしか
-  // 効かないので、この経路は握り潰しではなく fail-open になる。
-  //
-  // 外れたら `default_branch` に落とさない。落とすと「基準が壊れている」が
-  // 「既定で回っている」に化ける。確かめられなかったことは確かめられなかったと
-  // して扱う（design.md §3.1）ので、呼び出し側が `guard_unavailable` に倒す。
-  return SHA.test(state.guardBaseSha) ? state.guardBaseSha : null;
-}
-
 async function guardedDecision(
   goal: Goal,
   decision: Decision,
@@ -877,49 +853,6 @@ function uncommittedDecision(
 }
 
 /**
- * 今ティックの観測が、そのキーをその値で確かめたか。
- *
- * Fact が無い（観測できなかった）を false に畳んでよいのは、呼び出し側が
- * 「確かめられたときだけ止める」側に倒しているため。確かめられなかったティックは
- * Fact が欠けるので criteria も揃わず、止めるべき COMPLETE には届かない。
- */
-function observedValue(facts: readonly Fact[], key: string, value: unknown): boolean {
-  const fact = facts.find((f) => f.key === key);
-  return fact !== undefined && fact.confidence === "VERIFIED" && fact.value === value;
-}
-
-/**
- * 「あとは人間か外部の番だ」と言い切る Decision か。
- *
- * COMPLETE はそのまま終端になり、WAIT は次のティックまで機械側が何もしない。
- * どちらも「機械側にやることは残っていない」を意味するので、同じ関門で見る。
- */
-function claimsNothingLeft(decision: Decision): boolean {
-  const action = decision.action;
-  if (action.type === "COMPLETE") {
-    return true;
-  }
-  if (action.type !== "WAIT") {
-    return false;
-  }
-  // guard が出す WAIT(usage_limit) だけは意味が違う。LlmPort が上限に当たって
-  // 判断を保留しただけで、Gap は残っているかもしれない（design.md §10-3）。
-  return !(decision.decidedBy === "guard" && action.reason === "usage_limit");
-}
-
-/** 差し替えなければ何になっていたかを、人間が読む形にする */
-function describeClaim(action: Action): string {
-  switch (action.type) {
-    case "COMPLETE":
-      return "COMPLETE にすると";
-    case "WAIT":
-      return `WAIT(${action.reason}) で待つと`;
-    default:
-      return `${action.type} にすると`;
-  }
-}
-
-/**
  * ACT 前の本体リポジトリの汚れ。
  *
  * 控えられなかったことも値として持つ。ここで例外にすると、git が読めない環境で
@@ -955,23 +888,6 @@ async function observedRepoState(deps: ControllerDeps): Promise<Map<string, stri
     return dirty;
   }
   return new Map([...dirty, ...outOfSight]);
-}
-
-/**
- * まだ寝ているなら、その時刻を返す。起きてよければ null。
- *
- * 解釈できない値は「起きてよい」と読む。resume_after が壊れているせいで
- * Goal が永久に止まる方が、1ティック早く起きるより悪い。
- */
-function sleepingUntil(resumeAfter: string | null, now: Date): string | null {
-  if (resumeAfter === null) {
-    return null;
-  }
-  const at = Date.parse(resumeAfter);
-  if (Number.isNaN(at) || at <= now.getTime()) {
-    return null;
-  }
-  return resumeAfter;
 }
 
 /**
@@ -1024,15 +940,6 @@ async function maybeAct(
 function usageOf(state: GoalState, goal: Goal, deps: ControllerDeps): BudgetUsage {
   const runs = deps.store.listRuns(goal.goal.id);
 
-  // 末尾から連続する failed だけを数える。間に成功が挟まれば連続は切れる。
-  let consecutiveFailures = 0;
-  for (const run of [...runs].reverse()) {
-    if (run.status !== "failed") {
-      break;
-    }
-    consecutiveFailures += 1;
-  }
-
   // 解釈できない activated_at を 0 秒として扱うと、max_wall_clock だけが
   // 黙って無効化される（NaN との比較は常に false になる）。停止条件が消えるより、
   // 人間を呼ぶ側に倒す。decide の durationSeconds が上限を読めなかったときと同じ扱い。
@@ -1049,28 +956,8 @@ function usageOf(state: GoalState, goal: Goal, deps: ControllerDeps): BudgetUsag
   return {
     actorRuns: runs.length,
     reconciles: state.reconciles,
-    consecutiveFailures,
+    consecutiveFailures: consecutiveFailuresOf(runs),
     elapsedSeconds,
     trailingDigest,
   };
-}
-
-/**
- * ACTIVE になってからの経過秒数。max_wall_clock の判定に使う。
- *
- * 解釈できない値は Infinity にして上限側へ倒す。0 にすると、activated_at が
- * 壊れた Goal だけ経過時間の上限が黙って効かなくなる。
- * ダイジェストの計算はここには無い。`src/domain/digest.ts` が正で、
- * ループ検知が使う値と記録する値を1箇所に保つ。
- */
-export function elapsedSecondsSince(activatedAt: string | null, now: Date): number {
-  if (activatedAt === null) {
-    // まだ ACTIVE になっていない。経過時間はゼロで正しい。
-    return 0;
-  }
-  const parsed = Date.parse(activatedAt);
-  if (Number.isNaN(parsed)) {
-    return Number.POSITIVE_INFINITY;
-  }
-  return Math.max(0, Math.floor((now.getTime() - parsed) / 1000));
 }

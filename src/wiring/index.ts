@@ -5,6 +5,7 @@ import { type EffortLevel, query } from "@anthropic-ai/claude-agent-sdk";
 import { worktreeNameFor } from "../act/index.js";
 import { type ClaudeOptions, claudeActor, claudeLlm } from "../adapters/claude.js";
 import { githubApproval, githubCodeProvider, githubCodeWriter } from "../adapters/github.js";
+import { loadGoalFile } from "../adapters/goal-file.js";
 import {
   commandRunner,
   findGitRoot,
@@ -20,7 +21,6 @@ import type { DoctorGoal, DoctorProbes } from "../cli.js";
 import type { ControllerDeps } from "../controller/index.js";
 import { errorMessage } from "../domain/error-message.js";
 import type { Goal } from "../domain/goal.js";
-import { loadGoalFile } from "../domain/goal-loader.js";
 import { PortError } from "../domain/port-error.js";
 import type { CodeProviderPort } from "../observe/index.js";
 import type { CodeWriterPort } from "../publish/index.js";
@@ -108,9 +108,12 @@ export async function repoHeadSha(repoRoot: string): Promise<string> {
  * `stateDirIgnored` が「無視できているか」を判定するときの基準と同じものになる。
  * `ent init` が書く側で、この2つがずれると「書いたのに無視できていない」状態を作る。
  *
- * どちらも cli.ts からは Adapter / 実装を直接見せず、合成ルート経由で渡す。
+ * `loadGoalFile` — `.goals/<slug>.yaml` を読む（`src/adapters/goal-file.ts`）。
+ * 検証そのものは `parseGoal`（ドメイン）が持ち、ここが選ぶのは読み方だけになる。
+ *
+ * どれも cli.ts からは Adapter / 実装を直接見せず、合成ルート経由で渡す。
  */
-export { openStore, STATE_IGNORE_LINE };
+export { loadGoalFile, openStore, STATE_IGNORE_LINE };
 
 /**
  * 対象リポジトリの git ルート。git のワークツリーの中でなければ null。

@@ -16,7 +16,6 @@ import type { Decision } from "./domain/action.js";
 import { errorMessage } from "./domain/error-message.js";
 import type { Snapshot } from "./domain/fact.js";
 import { type Goal, goalTemplate, SLUG, TEMPLATE_SLUG } from "./domain/goal.js";
-import { loadGoalFile } from "./domain/goal-loader.js";
 import { type GoalListItem, type GoalState, isTerminal } from "./domain/goal-state.js";
 import type { Run } from "./domain/run.js";
 import type { Verification } from "./domain/verification.js";
@@ -25,6 +24,7 @@ import type { Store } from "./store/port.js";
 import {
   doctorProbes,
   gitRootOf,
+  loadGoalFile,
   openStore,
   repoHeadSha,
   STATE_IGNORE_LINE,

@@ -468,7 +468,7 @@ UPDATE goals
 `ent get <slug>` が両者をマージした1枚を標準出力に吐くので、参照時は1ファイルに見える。
 
 `.goals/<slug>.yaml` のスキーマは `src/domain/goal.ts` にある。slug は `goal.id` と
-一致させる（突き合わせは `src/domain/goal-loader.ts`）。ファイル名は Phase 番号ではなく
+一致させる（突き合わせは `src/domain/goal-parse.ts`）。ファイル名は Phase 番号ではなく
 Goal の内容から付ける。Phase は本書側の計画であって Goal の属性ではない。
 こうしておけば、Phase の区切りを変えてもファイル名は腐らない。
 

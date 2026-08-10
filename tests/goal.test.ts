@@ -1,8 +1,9 @@
 import { readdirSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { loadGoalFile } from "../src/adapters/goal-file.js";
 import { goalSchema } from "../src/domain/goal.js";
-import { loadGoalFile, parseGoal } from "../src/domain/goal-loader.js";
+import { parseGoal } from "../src/domain/goal-parse.js";
 
 const GOALS_DIR = join(import.meta.dirname, "..", ".goals");
 

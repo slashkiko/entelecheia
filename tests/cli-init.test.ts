@@ -13,8 +13,8 @@ import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { loadGoalFile } from "../src/adapters/goal-file.js";
 import { agentContextPayload, main, parseCommand } from "../src/cli.js";
-import { loadGoalFile } from "../src/domain/goal-loader.js";
 
 /**
  * `ent init`。この repo の外のリポジトリで ent を回し始められるようにする。

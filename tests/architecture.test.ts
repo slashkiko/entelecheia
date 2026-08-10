@@ -25,6 +25,9 @@ const FROM = /\bfrom\s+"([^"]+)"/g;
  */
 const COMPOSITION_ROOT = "wiring/index.ts";
 
+/** 許可リストの「どのファイルでもよい」を表す印。ファイル名には現れない文字を使う */
+const ANY_FILE = "*";
+
 function tsFilesUnder(dir: string): string[] {
   return readdirSync(dir, { withFileTypes: true, recursive: true })
     .filter((entry) => entry.isFile() && entry.name.endsWith(".ts"))
@@ -70,6 +73,38 @@ describe("層の境界", () => {
           .filter((specifier) => specifier.includes("adapters/"))
           .map((specifier) => `${relativeToSrc(file)} -> ${specifier}`),
       );
+
+    expect(offenders).toEqual([]);
+  });
+
+  it("src/domain/** が使う Node 組み込みは、許可した分だけ", () => {
+    // 上の「相対 import で層の外へ出ない」だけでは、ドメインが I/O を持つことを
+    // 止められない。`node:fs` は相対 import ではないので網に掛からず、実際に
+    // `goal-loader.ts` が `readFileSync` でファイルを読んでいた。層の依存は無くても、
+    // ファイルシステムに触る時点でテストから差し替えられない部品になる。
+    //
+    // 全面禁止にはしない。`node:path` の文字列操作と `node:crypto` のハッシュは
+    // 計算であって I/O ではなく、外に出すと呼び出し側が実装を選べてしまう。
+    // `node:fs` は1箇所だけ例外にする——`protected-paths.ts` の `realpathSync` は
+    // シンボリックリンクを実体へ解決するもので、**関門の要件そのもの**にあたる。
+    // 外に出すと「解決し忘れた入力」を作れる。意図した例外であることを、
+    // コメントではなくここに残す。
+    const allowed = new Map<string, readonly string[]>([
+      ["node:path", [ANY_FILE]],
+      ["node:crypto", [ANY_FILE]],
+      ["node:fs", ["protected-paths.ts"]],
+    ]);
+
+    const offenders = tsFilesUnder(join(SRC, "domain")).flatMap((file) => {
+      const name = relativeToSrc(file).slice("domain/".length);
+      return importsOf(file)
+        .filter((specifier) => specifier.startsWith("node:"))
+        .filter((specifier) => {
+          const files = allowed.get(specifier);
+          return files === undefined || !(files.includes(ANY_FILE) || files.includes(name));
+        })
+        .map((specifier) => `domain/${name} -> ${specifier}`);
+    });
 
     expect(offenders).toEqual([]);
   });
