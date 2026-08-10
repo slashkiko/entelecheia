@@ -29,6 +29,11 @@ function probes(over: Partial<DoctorProbes> = {}): DoctorProbes {
       { slug: "list-goals", error: null },
     ],
     stateWritable: async () => true,
+    // 別のリポジトリで回せるかを見るための3つ。ここを見ないと、対象リポジトリで
+    // 躓いたときに「なぜ動かないか」が例外の形でしか出てこない。
+    nodeVersion: () => "v24.18.1",
+    gitRepository: async () => true,
+    stateIgnored: async () => true,
     ...over,
   };
 }
@@ -107,6 +112,71 @@ describe("doctorPayload", () => {
 
     expect(report.checks.some((c) => c.result === "unknown")).toBe(true);
     expect(report.exitCode).toBe(0);
+  });
+
+  it("Node が 24 未満なら failed。必要なバージョンと実際のバージョンを両方書く", async () => {
+    // node:sqlite（src/store/index.ts）が Node 24 以上を要求する。足りない Node で
+    // 叩かれると import が例外になり、ent の話だとメッセージから読み取れない。
+    // 対象リポジトリ側の Node が使われる構成——shebang の /usr/bin/env node、
+    // mise や nvm を効かせた shell——では必ず起きる。
+    const report = await doctorPayload(probes({ nodeVersion: () => "v22.14.0" }));
+
+    const check = report.checks.find((c) => c.name === "node_version");
+    expect(check?.result).toBe("failed");
+    expect(check?.detail).toContain("24");
+    expect(check?.detail).toContain("22.14.0");
+    expect(report.exitCode).toBe(1);
+  });
+
+  it("Node が足りていれば ok", async () => {
+    const report = await doctorPayload(probes({ nodeVersion: () => "v24.0.0" }));
+
+    expect(report.checks.find((c) => c.name === "node_version")?.result).toBe("ok");
+  });
+
+  it("git リポジトリでなければ failed", async () => {
+    // controller は worktree を作れないし、.goals/.state/ の gitignore も
+    // 意味を持たない。回す前に分かる。
+    const report = await doctorPayload(probes({ gitRepository: async () => false }));
+
+    const check = report.checks.find((c) => c.name === "git_repository");
+    expect(check?.result).toBe("failed");
+    expect(report.exitCode).toBe(1);
+  });
+
+  it(".goals/.state/ が gitignore されていなければ failed。何が git に載るかを書く", async () => {
+    // 状態 DB・worktree・Agent の生ログが対象リポジトリの git に載る。
+    // 気づかないまま commit されるので、回す前に言う。
+    const report = await doctorPayload(probes({ stateIgnored: async () => false }));
+
+    const check = report.checks.find((c) => c.name === "state_ignored");
+    expect(check?.result).toBe("failed");
+    expect(check?.detail).toContain(".goals/.state");
+    expect(report.exitCode).toBe(1);
+  });
+
+  it("gitignore を確かめられなければ unknown にする", async () => {
+    // git に聞けなかったのを「無視できていない」に畳むと、doctor が常に赤くなる。
+    const report = await doctorPayload(probes({ stateIgnored: async () => null }));
+
+    expect(report.checks.find((c) => c.name === "state_ignored")?.result).toBe("unknown");
+    expect(report.exitCode).toBe(0);
+  });
+
+  it(".goals/ がまだ無いときは、次に叩くものが detail から読める", async () => {
+    // 「読めなかった」だけだと、壊れているのか、まだ始めていないのかが
+    // 読み分けられない。対象リポジトリで最初に叩くものを名指しする。
+    const report = await doctorPayload(
+      probes({
+        loadGoals: async () => {
+          throw new Error("ENOENT: no such file or directory, scandir '.goals'");
+        },
+      }),
+    );
+
+    const check = report.checks.find((c) => c.name === "goals");
+    expect(check?.result).toBe("failed");
+    expect(check?.detail).toContain("ent init");
   });
 
   it("JSON にできる形で返す。ent get と同じく機械可読を保つ", async () => {

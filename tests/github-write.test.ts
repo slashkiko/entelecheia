@@ -153,7 +153,10 @@ describe("githubApproval", () => {
       }).fetch,
     });
 
-  const comment = (body: string, login = "pr-author", association = "OWNER") => ({
+  // 既定の login を PR の作成者（`pr-author`）と別にしてある。作成者自身のコメントは
+  // 承認に数えないので、既定を作成者のままにすると、定型文の解釈を見たいテストが
+  // 「作成者だから弾かれた」で赤くなり、何を確かめていたのか読めなくなる。
+  const comment = (body: string, login = "teammate", association = "OWNER") => ({
     body,
     user: { login },
     created_at: "2026-08-09T06:00:00Z",
@@ -173,7 +176,7 @@ describe("githubApproval", () => {
         comments: [comment("/ent approve ac-6")],
       }).getApproval("ac-6");
 
-      expect(approval).toEqual({ approvedBy: "pr-author", approvedAt: "2026-08-09T06:00:00Z" });
+      expect(approval).toEqual({ approvedBy: "teammate", approvedAt: "2026-08-09T06:00:00Z" });
     });
 
     it("別の criterion の承認は読まない", async () => {
@@ -198,7 +201,7 @@ describe("githubApproval", () => {
         comments: [comment("  /ent approve ac-6  ")],
       }).getApproval("ac-6");
 
-      expect(approval?.approvedBy).toBe("pr-author");
+      expect(approval?.approvedBy).toBe("teammate");
     });
 
     it("複数行のコメントでも1行として一致すれば読む", async () => {
@@ -206,7 +209,7 @@ describe("githubApproval", () => {
         comments: [comment("見ました。問題ありません。\n/ent approve ac-6")],
       }).getApproval("ac-6");
 
-      expect(approval?.approvedBy).toBe("pr-author");
+      expect(approval?.approvedBy).toBe("teammate");
     });
 
     it("最初に承認した人を残す", async () => {
@@ -338,6 +341,19 @@ describe("githubApproval", () => {
 
         expect(approval?.approvedBy).toBe("teammate");
       }
+    });
+
+    it("PR の作成者自身のコメントは承認にしない", async () => {
+      // レビュー承認の側は既に作成者を弾いていたが、コメントの側は見ていなかった。
+      // `PROGRESS_MARKER` が弾くのは controller が書いたコメントだけなので、
+      // Agent が `gh pr comment` を持つ Goal では、PR の作成者名義で定型文を
+      // 書けば `type: human` の criteria が VERIFIED になる。
+      const approval = await approvalPort({
+        author: "pr-author",
+        comments: [comment("/ent approve ac-6", "pr-author")],
+      }).getApproval("ac-6");
+
+      expect(approval).toBeNull();
     });
 
     it("controller 自身の進捗コメントは承認にしない", async () => {
