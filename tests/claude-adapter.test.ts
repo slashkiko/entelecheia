@@ -126,6 +126,12 @@ describe("claudeActor", () => {
       "Bash(git branch -D *)",
       "Bash(git branch -d *)",
       "Bash(git branch --delete *)",
+      // ref を前に進める側も塞ぐ。`git branch -f main HEAD` でローカルの base を
+      // 揃えると `<base>...HEAD` の差分が空になり、push だけが ahead を数える。
+      "Bash(git branch -f *)",
+      "Bash(git branch --force *)",
+      "Bash(git fetch . *)",
+      "Bash(git push . *)",
       "Bash(git worktree *)",
       // hooks の差し替えも常に拒否する。core.hooksPath を1回設定するだけで、
       // hooks のファイルを1つも触らずに、push のたびに走るスクリプト群を

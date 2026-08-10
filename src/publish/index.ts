@@ -100,6 +100,8 @@ export async function publish(target: PublishTarget, deps: PublishDeps): Promise
 
   let prNumber = target.prNumber;
   let created = false;
+  /** push が失敗した理由。コメントに載せる。null なら push まで通っている */
+  let pushFailure: string | null = null;
 
   try {
     const ensured = await ensurePullRequest(target, deps);
@@ -110,7 +112,18 @@ export async function publish(target: PublishTarget, deps: PublishDeps): Promise
     created = ensured.created;
   } catch (error) {
     // PR を作れなくても観測と判断は済んでいる。ティック全体は落とさない。
-    return nothing(`PR を確保できなかった: ${errorMessage(error)}`);
+    //
+    // **PR が既にあるなら、ここで降りない。** 以前は push が throw した時点で
+    // 無条件に return していた。push の機会を Actor の実行から外したので、
+    // `ESCALATE(uncommitted_changes)` のティック——**人間が作業ツリーを手で
+    // 触っている状態**、つまり push が throw しやすい状態そのもの——でも必ず
+    // push を試すようになった。そこで降りると、止めた理由が PR に一度も出ない
+    // まま WAITING_HUMAN になる。人間に届かない関門は鳴っていないのと同じで、
+    // 下の「関門が止めたティックは必ず書く」が守ろうとしているものが消える。
+    if (prNumber === null) {
+      return nothing(`PR を確保できなかった: ${errorMessage(error)}`);
+    }
+    pushFailure = errorMessage(error);
   }
 
   if (prNumber === null) {
@@ -128,12 +141,19 @@ export async function publish(target: PublishTarget, deps: PublishDeps): Promise
   // 未 commit の関門（`uncommitted_changes`）も同じ性質を持つ。止まっているあいだ
   // 観測は1文字も変わらないので、初回しか書かないと2ティック目以降は PR が静かな
   // まま max_reconciles に当たって BLOCKED になり、止めた理由がどこにも出ない。
-  if (target.previousDigest === target.digest && !stoppedByGuard(target.decision)) {
+  //
+  // push が落ちたティックも必ず書く。同じ理由で、観測が変わらないまま push だけ
+  // 落ち続ける状態を黙って飛ばすと、PR は静かなまま人間が待ち続ける。
+  if (
+    target.previousDigest === target.digest &&
+    !stoppedByGuard(target.decision) &&
+    pushFailure === null
+  ) {
     return { prNumber, created, commented: false, skipped: "観測が前のティックと同じ" };
   }
 
   try {
-    await deps.writer.addComment(prNumber, commentBody(target, deps.now()));
+    await deps.writer.addComment(prNumber, commentBody(target, deps.now(), pushFailure));
     return { prNumber, created, commented: true, skipped: null };
   } catch (error) {
     return {
@@ -298,7 +318,7 @@ export const PROGRESS_MARKER = "<!-- ent:progress -->";
  * action と rationale だけでは「何が残っているか」が読めないので、
  * criteria ごとの Verification.result を並べる。
  */
-function commentBody(target: PublishTarget, now: Date): string {
+function commentBody(target: PublishTarget, now: Date, pushFailure: string | null): string {
   const rows = target.verifications.map(
     (v) => `| \`${v.criterionId}\` | ${MARKERS[v.result]} ${v.result} | ${oneLine(v.detail)} |`,
   );
@@ -307,6 +327,11 @@ function commentBody(target: PublishTarget, now: Date): string {
     PROGRESS_MARKER,
     `### ${describeAction(target.decision)}`,
     "",
+    // push が落ちたことを本文の先頭に出す。この下の criteria はローカルの
+    // 作業ツリーを見た結果なので、全部緑でも remote には何も出ていない。
+    ...(pushFailure === null
+      ? []
+      : [`> [!WARNING]`, `> push できなかった: ${oneLine(pushFailure)}`, ""]),
     // 改行を潰す。承認の定型文は行単位で照合されるので、本文の途中に
     // 独立した1行を作らせない。目印による除外と二重にしておく。
     flatten(target.decision.rationale),

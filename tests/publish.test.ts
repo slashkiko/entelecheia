@@ -47,6 +47,30 @@ const GOAL: Goal = {
   },
 };
 
+/**
+ * レビュー役の Run。**`worktree` を実装役と別名にしてある。**
+ *
+ * `push` 先が `run.worktree` に戻る退行を、テストが捕まえられるようにするため。
+ * 実装役の Run だけで固定していると `worktree` が `worktreeNameFor(id, "implement")`
+ * と同じ値になり、押す先を Run 側に従わせても assert が通ってしまう。
+ */
+const REVIEW_RUN: Run = {
+  id: "2",
+  intent: "差分を読む",
+  actor: "claude-code",
+  role: "review",
+  worktree: "sample-goal-review",
+  attempt: 1,
+  startedAt: NOW.toISOString(),
+  status: "completed",
+  finishedAt: NOW.toISOString(),
+  exitCode: 0,
+  logRef: "runs/2/log.jsonl",
+  tokens: 1200,
+  artifacts: [],
+  detail: null,
+};
+
 const COMPLETED_RUN: Run = {
   id: "1",
   intent: "テストの失敗を直す",
@@ -231,6 +255,16 @@ describe("PR を確保する", () => {
     expect(result.prNumber).toBe(42);
   });
 
+  it("レビュー役の Run のティックでも、押すのは実装役の作業ツリー", async () => {
+    // レビュー役の木には実装が無い。押す先を run.worktree に従わせると、
+    // 実装役の commit は remote に出ないまま、レビュー役のブランチに
+    // 2本目の PR が立つ。押す先は Goal と role だけから決まる。
+    const s = sink();
+    await publish(target({ run: REVIEW_RUN }), deps(s));
+
+    expect(s.pushes).toEqual([{ name: "sample-goal", base: "main" }]);
+  });
+
   it("PR を作れなくても throw しない", async () => {
     // 観測と判断は済んでいる。通知の失敗でティック全体を落とさない。
     const s = sink({ createFails: true });
@@ -245,6 +279,30 @@ describe("PR を確保する", () => {
     const result = await publish(target(), deps(s));
 
     expect(result.skipped).toContain("push");
+  });
+
+  it("PR が既にあるなら、push が落ちてもコメントは書く", async () => {
+    // push の機会を Actor の実行から外したので、ESCALATE(uncommitted_changes) の
+    // ティック——人間が作業ツリーを手で触っている、まさに push が落ちやすい
+    // 状態——でも push を試す。そこで降りると、止めた理由が PR に一度も出ない
+    // まま WAITING_HUMAN になる。人間に届かない関門は鳴っていないのと同じ。
+    const s = sink({ pushFails: true });
+    const result = await publish(target({ prNumber: 42 }), deps(s));
+
+    expect(result.commented).toBe(true);
+    expect(s.comments[0]?.body).toContain("push できなかった");
+  });
+
+  it("観測が前のティックと同じでも、push が落ちたら書く", async () => {
+    // 観測が変わらないまま push だけ落ち続ける状態を黙って飛ばすと、PR は
+    // 静かなまま人間が待ち続ける。
+    const s = sink({ pushFails: true });
+    const result = await publish(
+      target({ prNumber: 42, previousDigest: "same", digest: "same" }),
+      deps(s),
+    );
+
+    expect(result.commented).toBe(true);
   });
 });
 

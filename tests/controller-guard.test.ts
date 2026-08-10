@@ -55,6 +55,8 @@ interface Fixture {
   artifacts?: string[];
   /** git が観測した変更。Bash 経由の書き込みはこちらにしか出ない */
   changed?: string[];
+  /** worktree の名前ごとの変更。役割ごとに作業ツリーが分かれる場合に使う */
+  changedByWorktree?: Record<string, string[]>;
   /** changedPaths が落ちる場合 */
   changedError?: Error;
   /** 本体リポジトリ側の汚れ。1件目が ACT 前、2件目が ACT 後（絶対パス → 中身の指紋） */
@@ -90,9 +92,12 @@ function deps(store: Store, fixture: Fixture, sink: Sink): ControllerDeps {
         path: `${WORKTREE_ROOT}/${name}`,
         branch: `entelecheia/${name}`,
       }),
-      changedPaths: async () => {
+      changedPaths: async (name) => {
         if (fixture.changedError !== undefined) {
           throw fixture.changedError;
+        }
+        if (fixture.changedByWorktree !== undefined) {
+          return fixture.changedByWorktree[name] ?? [];
         }
         return fixture.changed ?? [];
       },
@@ -168,6 +173,31 @@ describe("保護パスの関門", () => {
     // 判断したのは LLM ではない（design.md §7）。
     expect(result.decision?.decidedBy).toBe("guard");
     expect(result.status).toBe("WAITING_HUMAN");
+  });
+
+  it("レビュー役のティックでも、実装役の作業ツリーの違反を拾う", async () => {
+    // push するのは実装役の木（pushWorktree、src/publish/index.ts）なので、
+    // 走った role の木だけを検査していると「検査した木」と「押す木」が別になる。
+    // レビュー役は編集ツールを持たないが Bash は持つので、git -C で実装役の木を
+    // 書いて commit する経路は塞がっていない。その commit はレビュー役の
+    // changedPaths にも本体リポジトリ側の観測にも出ない。
+    const result = await tickWith(goalWith(["src/controller/**"]), {
+      action: { type: "ACT", intent: "差分を読む", role: "review" },
+      changedByWorktree: { "sample-goal": ["src/controller/index.ts"], "sample-goal-review": [] },
+    });
+
+    expect(result.decision?.action).toMatchObject({ reason: "protected_path_touched" });
+    expect(result.decision?.decidedBy).toBe("guard");
+  });
+
+  it("実装役のティックでは、レビュー役の木は検査しない", async () => {
+    // 走っていない役割の木まで見ると、レビュー役が残した差分で実装が止まる。
+    // 押す木を必ず検査に含める、が守りたい不変条件で、その逆は要らない。
+    const result = await tickWith(goalWith(["src/controller/**"]), {
+      changedByWorktree: { "sample-goal": [], "sample-goal-review": ["src/controller/index.ts"] },
+    });
+
+    expect(result.decision?.action).not.toMatchObject({ reason: "protected_path_touched" });
   });
 
   it("worktree の外を編集しても止める", async () => {

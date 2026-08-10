@@ -594,12 +594,23 @@ async function guardedDecision(
   // act と同じ規則で worktree の場所を決める。ここがずれると、
   // 隔離の中の編集を「外に出た」と読んでしまう。
   //
-  // 見るのは「このティックで Actor が走った作業ツリー」にする。走っていない
-  // ティック（ACT 以外・dry-run）は実装役の作業ツリーを見る。前のティックが
-  // 残した違反は worktree に残したままなので、そちらは次のティックが拾う。
-  const role = run?.role ?? DEFAULT_ACTOR_ROLE;
-  const worktreeName = worktreeNameFor(goal.goal.id, role);
-  const worktreePath = worktreePathFor(goal, role, run, deps);
+  // 見るのは「このティックで Actor が走った作業ツリー」に加えて、**必ず実装役の
+  // 作業ツリー**にする。走っていないティック（ACT 以外・dry-run）は実装役だけ。
+  //
+  // **実装役を必ず混ぜるのは、push するのが実装役の木だから**（`pushWorktree`、
+  // src/publish/index.ts）。走った role の木だけを検査していると、レビュー役が
+  // 走ったティックでは「検査した木」と「押す木」が別になる。レビュー役は編集の
+  // ツールを持たないが Bash は持つので、`git -C ../<goal-id>` で実装役の木を
+  // 書いて commit する経路は塞がっていない。その commit は
+  // `changedPaths("<goal-id>-review", ...)` にも本体リポジトリ側の観測
+  // （worktree の置き場は除外される）にも出ないまま push される。
+  //
+  // 前のティックが残した違反は worktree に残ったままなので、どちらの木でも
+  // 毎ティック再検知される。押す木を必ず検査に含める、が守りたい不変条件になる。
+  const primaryRole = run?.role ?? DEFAULT_ACTOR_ROLE;
+  const worktreePath = worktreePathFor(goal, primaryRole, run, deps);
+  const roles: readonly ActorRole[] =
+    primaryRole === DEFAULT_ACTOR_ROLE ? [primaryRole] : [primaryRole, DEFAULT_ACTOR_ROLE];
 
   const escalate = (reason: "protected_path_touched" | "guard_unavailable", detail: string) => ({
     decidedAt: deps.now().toISOString(),
@@ -608,14 +619,27 @@ async function guardedDecision(
     decidedBy: "guard" as const,
   });
 
-  let changed: readonly string[];
-  try {
-    changed = await deps.worktree.changedPaths(worktreeName, goal.repository.default_branch);
-  } catch (error) {
-    return escalate(
-      "guard_unavailable",
-      `保護パスを検査できなかったので停止する: ${errorMessage(error)}`,
-    );
+  // 作業ツリーごとに「編集されたパスの集合」と「そのツリーの場所」を組で持つ。
+  // 場所は `findViolations` が相対パスを組み立てるのに要るので、集合だけを
+  // 合流させると、別のツリーのパスを別のツリーの基点で読むことになる。
+  const inspected: { path: string; edited: readonly string[] }[] = [];
+  for (const role of roles) {
+    const path = role === primaryRole ? worktreePath : worktreePathFor(goal, role, null, deps);
+    let changed: readonly string[];
+    try {
+      changed = await deps.worktree.changedPaths(
+        worktreeNameFor(goal.goal.id, role),
+        goal.repository.default_branch,
+      );
+    } catch (error) {
+      return escalate(
+        "guard_unavailable",
+        `保護パスを検査できなかったので停止する: ${errorMessage(error)}`,
+      );
+    }
+    // artifacts は SDK が申告する編集で、走った Actor の木にしか紐付かない。
+    const artifacts = role === primaryRole ? (run?.artifacts ?? []) : [];
+    inspected.push({ path, edited: [...artifacts, ...changed] });
   }
 
   if ("error" in repoBefore) {
@@ -661,13 +685,14 @@ async function guardedDecision(
   // `.goals/.state/...` という文字列が別のものを指すため（`PathOrigin`）。
   // 一緒くたにすると、本体の goals.db の改竄が「worktree の中の実行時状態」
   // として除外され、関門が鳴らないまま素通りする。
-  const edited = [...(run?.artifacts ?? []), ...changed];
-  if (edited.length === 0 && escaped.length === 0) {
+  if (inspected.every((tree) => tree.edited.length === 0) && escaped.length === 0) {
     return decision;
   }
 
   const violations = [
-    ...findViolations(edited, worktreePath, goal.policies.protected_paths),
+    ...inspected.flatMap((tree) =>
+      findViolations(tree.edited, tree.path, goal.policies.protected_paths),
+    ),
     ...findViolations(escaped, worktreePath, goal.policies.protected_paths, "repo_root"),
   ];
   if (violations.length === 0) {
