@@ -267,7 +267,7 @@ context:
 
   references:
     - title: PRAGMA の並びと lease の実装
-      path: src/store/index.ts
+      path: src/store/sqlite.ts
     - title: heartbeat が戻り値を捨てている場所
       path: src/controller/index.ts
     - title: worktree の名前が goal.id 固定であること

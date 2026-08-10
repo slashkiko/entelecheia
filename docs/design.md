@@ -664,6 +664,16 @@ DECIDE の LLM 呼び出しは `LlmCall.tokens` に残す（§4.5）。あとか
 - 関門そのもの（`src/domain/protected-paths.ts`）と、Agent の許可・拒否ツールを決める
   ファイル（`src/adapters/claude.ts`）。ここが開いていると、照合を常に false にするか
   拒否リストを空にするだけで残りが全部外れる
+- **guard が読む判断規則（`src/domain/guard-rules.ts`）。** 関門が差分を取る相手
+  （`guardBaseOf`）、未 commit の関門が見る述語（`claimsNothingLeft` / `observedValue`）、
+  経過時間と連続失敗の数え方がここにある。書き換えれば関門は毎ティック空の差分を見るし、
+  壁時計の停止条件も黙って無効化できる。
+  もとは `src/controller/**` の中にあって下限に覆われていた。**依存を持たない規則だから
+  という理由でドメインへ出すと、出した先が下限の外になる。** 下限はパスのリテラルなので、
+  リファクタで場所が動けば保護も動く。`tests/protected-floor.test.ts` が、規則がどの
+  ファイルで宣言されているかをソースから読んで、その置き場が下限にあることまで見る。
+  1ファイルに集めてあるのは保護の単位と揃えるためで、語彙ごとに配ると下限に何本も
+  足すことになり、しかも Goal が正当に触りうる語彙と同じファイルになる
 - 検証系（`mise.toml` / `mise-tasks/**` / `vitest.config.ts` / `biome.json` /
   `tsconfig*.json` / `.github/**`）。VERIFY は worktree で criteria のコマンドを
   流すので（§10-9）、ここを書き換えられると Agent が自分の Acceptance Criteria を

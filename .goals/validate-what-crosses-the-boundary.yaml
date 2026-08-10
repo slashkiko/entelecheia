@@ -203,7 +203,7 @@ context:
     - title: 承認 Port の失敗を port_failed に畳む場所
       path: src/verify/index.ts
     - title: artifacts の JSON が検査されない場所
-      path: src/store/index.ts
+      path: src/store/sqlite.ts
     - title: ESCALATE の理由
       path: src/domain/action.ts
     - title: 例外の種類から reason を決める側（既に作り分けている）

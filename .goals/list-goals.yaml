@@ -129,7 +129,7 @@ context:
     - title: CLI の現状
       path: src/cli.ts
     - title: Store の現状
-      path: src/store/index.ts
+      path: src/store/sqlite.ts
 
 policies:
   require_human_approval:

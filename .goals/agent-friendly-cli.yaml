@@ -220,7 +220,7 @@ context:
     - title: 仕様（--dry-run）
       path: tests/controller-dry-run.test.ts
     - title: Store の現状
-      path: src/store/index.ts
+      path: src/store/sqlite.ts
     - title: 設計ドキュメント
       path: docs/design.md
     - title: 人間向けの導入
