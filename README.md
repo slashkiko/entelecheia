@@ -160,6 +160,7 @@ ent run <slug>                     # 1ティック回して終了する
 ent run <slug> --pr <n>            # 観測対象の PR を指定する（controller が立てた分は自動）
 ent run <slug> --issue <n>         # 観測対象の Issue を指定する
 ent run <slug> --dry-run           # 書かずに、次のティックの中身だけを見る
+ent run <slug> --report stdout     # 進捗を PR に投稿せず、手元に出す
 ent get <slug>                     # 宣言部と実行時状態をまとめて表示する
 ent abandon <slug> --reason "…"    # もう追わないと宣言して終端にする（理由は必須）
 ent list                           # 登録済みの Goal を一覧する
@@ -181,6 +182,28 @@ ent agent-context                  # CLI の構造を機械可読な JSON で出
 
 常駐しない。`run` はどのティックも有限時間で終了し、待ちは Goal の状態として残る。
 継続して回すなら cron から `run` を叩く。
+
+### 進捗を PR に投稿しない
+
+既定では、criteria の pass 状況を PR コメントに積む。`--report` を付けると、同じ内容を
+PR ではなく手元に出す。
+
+```sh
+ent run <slug> --report stdout                        # 出力 JSON の report.body に入る
+ent run <slug> --report stdout | jq -r .report.body   # 表として読む
+ent run <slug> --report ./progress.md                 # ファイルに追記する
+```
+
+移るのは進捗の宛先だけになる。観測も判断も変わらないし、Actor が書いたものの push と
+PR の作成も止めない。**PR そのものは今までどおり公開される。** 投稿しなくなるのは
+criteria の pass 状況で、試走のたびにレビュー中の PR を伸ばしたくないときに使う。
+
+`GITHUB_TOKEN` が無くても、PR がまだ立っていなくても出る。進捗を書くのを PR の確保より
+前に置いてあるので、PR を確保できるかどうかとは切り離されている。
+
+`stdout` を指定しても素の Markdown は流れない。`run` の標準出力は JSON 専用で、
+本文は `report.body` に入る。受け取るのは `run` だけで、`--dry-run` とは併用できない。
+JSON に何が入るか、書けなかったときにどうなるかは `.claude/skills/ent/SKILL.md` にある。
 
 ### 複数の Goal を同時に回す
 
