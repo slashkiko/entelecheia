@@ -155,6 +155,7 @@ Acceptance Criteria を先に書く進め方なので、Goal に着手した直�
 mise run build                     # dist/cli.js を作る
 alias ent="node $(pwd)/dist/cli.js"
 
+ent init                           # いまのリポジトリを回せる状態にする（冪等）
 ent start <slug>                   # Goal を登録して ACTIVE にする
 ent run <slug>                     # 1ティック回して終了する
 ent run <slug> --pr <n>            # 観測対象の PR を指定する（controller が立てた分は自動）
@@ -167,8 +168,8 @@ ent doctor                         # 回す前の前提が揃っているかを�
 ent agent-context                  # CLI の構造を機械可読な JSON で出す
 ```
 
-`--json` は出力を JSON にする（`run` / `get` / `list` は既定で JSON。`start` と `abandon` は
-`--json` を付けたときだけ JSON になる）。
+`--json` は出力を JSON にする（`run` / `get` / `list` は既定で JSON。`start` と `abandon` と
+`init` は `--json` を付けたときだけ JSON になる）。
 `doctor` と `agent-context` は常に JSON で、`--json` は受け取らない。
 `--limit <n>` は `get` / `list` の件数を絞る。既定でも上限で切り、切れたときだけ
 絞り込み方が stderr に出る。エージェント向けの手順は `.claude/skills/ent/SKILL.md` に置いてある。
@@ -181,6 +182,40 @@ ent agent-context                  # CLI の構造を機械可読な JSON で出
 
 常駐しない。`run` はどのティックも有限時間で終了し、待ちは Goal の状態として残る。
 継続して回すなら cron から `run` を叩く。
+
+### この repo の外のリポジトリで使う
+
+**ent 本体の置き場所と、回す対象のリポジトリは別でよい。** `ent` は「いま居る
+ディレクトリ」を対象リポジトリとして扱う（`repoRoot = process.cwd()`）ので、
+ent はどこかに1つビルドしておき、対象リポジトリのルートで叩けばよい。
+対象リポジトリに ent を入れる必要も、依存を足す必要もない。
+
+```sh
+cd /path/to/entelecheia && mise run build
+alias ent="node /path/to/entelecheia/dist/cli.js"
+
+cd /path/to/your-repo
+ent init            # .goals/ と .gitignore の行と Goal の雛形を置く
+ent doctor          # その場所で回せるかを読み取り専用で調べる
+```
+
+`ent init` は冪等で、既にある `.goals/*.yaml` を上書きせず、`.gitignore` に
+同じ行を二重に足さない。git リポジトリでなければ何も作らずに終了コード 1 で断る。
+雛形はスキーマとして妥当なところまでしか埋まっていない。`desired_state` と
+`acceptance_criteria` は人間が書く。
+
+**起動する Node を固定する。** `node:sqlite` を使うので Node 24 以上が要る。
+`/usr/bin/env node` に任せると、対象リポジトリ側の mise や nvm が効いて古い Node が
+選ばれることがある。`ent doctor` の `node_version` がその場で言う。
+
+対象リポジトリ側では `.goals/.state/` が gitignore されていることを確かめる
+（`ent doctor` の `state_ignored`）。状態 DB と worktree と Agent の生ログが
+そこに入るので、載せると commit に混ざる。
+
+いま残っている制約が2つある。lease は `.goals/.state/goals.db` にあり gitignore
+済みなので、**端末をまたいだ排他は効かない**（2台が同じ Goal を回すと両方が PR を
+立てる）。`PROTECTED_PATH_FLOOR` は entelecheia 固有のパスを含むので、対象
+リポジトリに `src/controller/**` などがあると Agent が触った時点で違反になる。
 
 ### 複数の Goal を同時に回す
 
