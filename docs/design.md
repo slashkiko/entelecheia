@@ -567,7 +567,7 @@ Phase 3 も GitHub 単独の自己ホストなので、そこでは検証され�
 | スキーマ | Zod | Agent 出力の検証ゲートと YAML バリデーションを同一定義で兼ねる |
 | YAML | `yaml`（eemeli） | コメント保持のラウンドトリップ編集。機械が書き戻すなら必須 |
 | DB | `node:sqlite`（Node 標準） | 同期 API でコードが素直。Node 22.13 以降はフラグなしで使える（22.5 で導入、それ以前は無い）。`mise.toml` が Node 24 を固定し、`engines` も `>=24` にしてあるため常に使える。better-sqlite3 + Drizzle の採用予定を取り下げた（下記） |
-| CLI | `node:util` の `parseArgs`（Node 標準） | サブコマンドが少ない（採用時は4つ、いまは7つ）ので依存を足す価値が出ない。10 を超えたら citty か oclif に寄せる |
+| CLI | `node:util` の `parseArgs`（Node 標準） | サブコマンドが少ない（採用時は4つ、いまは8つ）ので依存を足す価値が出ない。10 を超えたら citty か oclif に寄せる |
 | プロセス実行 | `node:child_process`（Node 標準） | 検証コマンドと git を叩くだけなので標準で足りる。ストリーム制御が要るようになったら execa に移す |
 | GitHub | `@octokit/rest` + plugin-throttling/retry | ETag でポーリングのレート制限を節約 |
 | ログ | pino（未着手） | 構造化ログ。Decision テーブルとは別に生ログを残す。いまは CLI が JSON を1本出すだけ |
@@ -814,7 +814,7 @@ Phase 3 の範囲は §9 の残り5項目と、取り直した「実装」、お
 
 | 順 | Goal | 範囲 | 状態 |
 |---|---|---|---|
-| 1 | `.goals/record-the-tick.yaml` | 1ティックの記録。観測対象の指定、LlmPort の生ログとトークン、Verification、`ent show` | 完了 |
+| 1 | `.goals/record-the-tick.yaml` | 1ティックの記録。観測対象の指定、LlmPort の生ログとトークン、Verification | 完了 |
 | 2 | `.goals/open-pr-and-detect-approval.yaml` | PR の作成と通知、`ApprovalPort`（§10-4） | 完了 |
 | 3 | `.goals/sleep-and-stop.yaml` | `resume_after` を読む（§10-5）、ループ検知（§10-2）、中断と使用量上限の実測 | 完了 |
 | 4 | `.goals/guard-the-controller.yaml` | 自己ホストの安全装置。`protected_paths`（§10-8）と controller 側の関門（§10-6） | 完了 |
