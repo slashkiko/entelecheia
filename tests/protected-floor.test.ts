@@ -127,6 +127,29 @@ describe("保護パスの下限", () => {
       expect(floor.has(homes[0] ?? ""), `${name} の置き場 ${homes[0]} が下限に無い`).toBe(true);
     }
   });
+
+  it("guard が読む規則の置き場が、CODEOWNERS のレビュー必須にも入っている", () => {
+    // 下限と同じ問題が CODEOWNERS にもある。どちらもパスのリテラルで、
+    // `/src/controller/` の1行が中身ごと覆っていたものを外へ出すと、レビュー必須の
+    // 範囲から静かに落ちる。守りたいのは同じ不変条件——**guard の規則を変える差分は、
+    // 関門の下限にも人間のレビューにも必ず掛かる**——なので、ここで一緒に見る。
+    const owners = readFileSync(join(REPO_ROOT, "CODEOWNERS"), "utf8")
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((line) => line !== "" && !line.startsWith("#"))
+      .map((line) => (line.split(/\s+/)[0] ?? "").replace(/^\//, ""));
+
+    for (const name of GUARD_RULES) {
+      const home = SOURCE_FILES.find((file) =>
+        readFileSync(join(REPO_ROOT, file), "utf8").includes(`export function ${name}(`),
+      );
+      const covered = owners.some(
+        (owned) => owned === home || (owned.endsWith("/") && (home ?? "").startsWith(owned)),
+      );
+
+      expect(covered, `${name} の置き場 ${home} が CODEOWNERS に無い`).toBe(true);
+    }
+  });
 });
 
 /**
