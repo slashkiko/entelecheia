@@ -122,6 +122,11 @@ export function githubCodeProvider(options: GitHubOptions): CodeProviderPort {
         headSha: pr.head.sha,
         reviewDecision: reviewDecisionOf(reviews, requestedReviewers),
         requestedReviewers,
+        title: pr.title ?? null,
+        // 本文の無い PR は `body: null` で返る。空文字で返す個体もあるので、
+        // どちらも null に寄せる。読む側が「空だった」を1通りに扱えるようにする
+        // （`PullRequestSnapshot.body`）。
+        body: pr.body === null || pr.body === undefined || pr.body === "" ? null : pr.body,
       } satisfies PullRequestSnapshot;
     },
 
@@ -610,6 +615,16 @@ const pullRequestSchema = z.object({
   mergeable: z.boolean().nullish(),
   head: z.object({ sha: z.string() }),
   requested_reviewers: z.array(z.object({ login: z.string() })).nullish(),
+  /**
+   * タイトルと本文。**どちらも欠けていて構わない**（`mergeable` と同じ扱い）。
+   *
+   * この2つはレビュー役に渡すためだけに読む値で、完了判定には使わない。必須に
+   * すると、欠けた応答1回で PR の観測ごと shape_mismatch になり、`state` も
+   * `head_sha` も落ちたうえで人間が呼ばれる。読む側は取れなかったものを
+   * 「未取得」として扱えるようにしてある（`pullRequestTextFrom`）。
+   */
+  title: z.string().nullish(),
+  body: z.string().nullish(),
 });
 
 const reviewsSchema = z.array(

@@ -384,7 +384,9 @@ export async function tick(goal: Goal, deps: ControllerDeps): Promise<TickResult
     // その前に1回分の予算を使ってしまうのは避ける。
     const base = guardBaseOf(goal, state);
     const run =
-      base === null ? null : await maybeAct(goal, result.decision, base, deps, actorSignal);
+      base === null
+        ? null
+        : await maybeAct(goal, result.decision, base, result.observedFacts, deps, actorSignal);
 
     // ACT のあいだに奪われていないか。Run はもう確定している（中断は act が
     // interrupted として書く）ので、止めるのはここから下の書き込みだけになる。
@@ -1005,11 +1007,18 @@ async function observedRepoState(deps: ControllerDeps): Promise<Map<string, stri
  * `signal` は deps.signal（SIGTERM）と lease の喪失を束ねたもの。act は
  * これを見て Run を interrupted で確定するので、奪われた側の Run が failed に
  * ならない。意図して止めたものを failed にすると、再試行の上限を無駄に消費する。
+ *
+ * `observedFacts` は**今ティックの観測が作った Fact だけ**を渡す。act はそこから
+ * PR のタイトルと本文を取り出してレビュー役に載せる（`pullRequestTextFrom`）。
+ * 持ち越しを混ぜた `result.facts` を渡すと、GitHub を読めなかったティックにも
+ * 前回のタイトルと本文が届き、観測の失敗が古い値で埋まって見えなくなる
+ * （下の `uncommittedDecision` が `result.observedFacts` を選ぶのと同じ理由）。
  */
 async function maybeAct(
   goal: Goal,
   decision: Decision,
   base: string,
+  observedFacts: readonly Fact[],
   deps: ControllerDeps,
   signal: AbortSignal,
 ): Promise<Run | null> {
@@ -1036,7 +1045,7 @@ async function maybeAct(
 
   // 同じ intent の何回目か。Task を持たないので Run の履歴から数える。
   const attempt = deps.store.listRuns(goalId).filter((r) => r.intent === intent).length + 1;
-  const result = await act({ goal, decision, attempt, base }, actDeps);
+  const result = await act({ goal, decision, attempt, base, facts: observedFacts }, actDeps);
   return result.acted ? result.run : null;
 }
 

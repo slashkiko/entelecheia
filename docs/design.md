@@ -359,7 +359,7 @@ roleは次の5箇所を通る。
 ### 4.3 OBSERVE が取得するもの
 
 ```
-PR        number, state, mergeable, head_sha, review_decision, requested_reviewers
+PR        number, state, mergeable, head_sha, review_decision, requested_reviewers, title, body
 Review    state (APPROVED / CHANGES_REQUESTED / COMMENTED), author, submitted_at
 CI        workflow_run の conclusion、失敗時は失敗ジョブ名とログ URL
 Issue     state, labels, linked_pr
@@ -368,6 +368,22 @@ local     current_branch, HEAD sha, worktree に未コミット変更がある�
 
 CI の失敗内容まで取るのが要点。「CI が落ちた」だけでは次の ACT に渡す材料がない。
 失敗ジョブ名とログがあれば、そのまま Claude Code に渡して修正させられる。
+
+**PR の `title` と `body` は完了判定のためではなく、レビュー役に渡すために取る。**
+レビュー役の Actor には資格情報を渡していない（§7 の `WITHHELD_ENV`、§10-4）ので
+`gh` は未認証で、「宣言部の制約が PR 本文に反映されているか」のような観点は向こう側で
+確かめようがなく、毎回「未取得」で終わっていた。足りないのは資格情報ではなく、
+controller が既に読んでいる情報を渡す口になる。`act` が今ティックの観測から
+タイトルと本文を取り出し（`pullRequestTextFrom`）、レビュー役のプロンプトに載せる
+（`renderPullRequestText`）。**読むのは controller、書くのも controller、Actor へ渡すのは
+その観測結果だけ**という分担は変えていない。
+
+渡すのは**今ティックの観測が作った Fact だけ**にする。持ち越しを混ぜた集合を渡すと、
+GitHub を読めなかったティックにも前回のタイトルと本文が届き、観測の失敗が古い値で
+埋まって見えなくなる。渡っていないことと本文が空であることも、プロンプトの文面で
+分ける。前者は「未取得」と書かせ、後者は「本文は空」として観測できた結果になる（§3.1）。
+本文の中に `verdict:` / `reviewed_sha:` の行があると、レビュー役が引用したときに結論の行が
+2つになって観測が pending に落ちる（§10-6）ので、渡す側で印を付けて潰す。
 
 観測キーの実体は `src/domain/fact-keys.ts` に列挙してある。上の表は論理リソース側の
 呼び名で、Fact のキーは `github.pr.review_decision` のようなドット区切りの snake_case になる。
