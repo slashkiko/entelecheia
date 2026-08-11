@@ -259,7 +259,8 @@ mise run check    # サプライチェーンと workflow のチェック（basel
 手順を扱う。コマンドの一覧に続けて、「共通のオプション」「provider・model・effort を選ぶ」
 「Codex を使うとき」「関門の基準になる commit」「起動の仕方と、ent 自身を直すときの例外」の
 順になる。後半は運用にあたる。「この repo の外のリポジトリで使う」「進捗を PR に投稿しない」
-「粗いタスクを複数の Goal に割る」「複数の Goal を同時に回す」の4つが続く。
+「PR を draft で立てる」「粗いタスクを複数の Goal に割る」「複数の Goal を同時に回す」の
+5つが続く。
 
 ```sh
 mise run build                     # dist/cli.js を作る
@@ -464,7 +465,12 @@ draft で立てておくと、タイトル規約や PR テンプレートに合�
 タイトルは `goal.name` のまま、本文は ent 固定のテンプレートで作られる。
 
 > [!WARNING]
-> 対象リポジトリの workflow が draft の PR を除外している（`if: github.event.pull_request.draft == false` など）と、**CI が一度も走らない。** `github.ci.*` は unresolved のままなので、それを読む `type: fact` の criterion は解決せず、Goal は `max_unchanged_reconciles` に当たるまで同じところを回る。draft を宣言する前に、対象リポジトリの workflow が draft をどう扱うかを見る。
+> 対象リポジトリの workflow が draft の PR を除外している
+> （`if: github.event.pull_request.draft == false` など）と、**CI が一度も走らない。**
+> 走らなければ `github.ci.*` の Fact は1つも作られないので、それを読む `type: fact` の
+> criterion は解決しないまま残り、Goal は `max_unchanged_reconciles` に当たるまで
+> 同じところを回る。draft を宣言する前に、対象リポジトリの workflow が draft を
+> どう扱うかを見る。
 
 ### 粗いタスクを複数の Goal に割る
 
