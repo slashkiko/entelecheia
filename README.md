@@ -223,10 +223,15 @@ ent 自身を直すなら、[mise](https://mise.jdx.dev/) と [gh](https://cli.g
 入れる必要はない。
 
 ```sh
+mise trust        # clone 直後の1回だけ。これが無いと次の行が trust エラーで止まる
 mise install --locked
 pnpm install --frozen-lockfile
 mise run build    # dist/cli.js を作る。使う側に渡すのはこの成果物になる
 ```
+
+**1行目の `mise trust` は環境の不備ではなく手順の一部になる。** mise は信頼していない
+`mise.toml` を読まないので、飛ばすと `mise install --locked` が
+`Config files ... are not trusted.` で止まる。
 
 ## 検証
 
