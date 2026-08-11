@@ -85,6 +85,7 @@ function deps(store: Store, options: { dirty?: boolean } = {}): ControllerDeps {
         path: `${WORKTREE_ROOT}/${name}`,
         branch: `entelecheia/${name}`,
       }),
+      commit: async () => true,
       changedPaths: async () => [],
       repoDirtyState: async () => new Map(),
     },

@@ -66,6 +66,7 @@ function deps(store: Store): ControllerDeps {
     approval: { getApproval: async () => null },
     worktree: {
       ensure: async (name) => ({ path: `/tmp/${name}`, branch: `entelecheia/${name}` }),
+      commit: async () => true,
       changedPaths: async () => [],
       repoDirtyState: async () => new Map(),
     },

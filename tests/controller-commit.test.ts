@@ -70,7 +70,12 @@ function goalWith(criteria: readonly AcceptanceCriterion[]): Goal {
   };
 }
 
+/** commit の呼び出し記録。テストごとに beforeEach で空にする */
+let commits: { name: string; message: string }[] = [];
+
 interface Options {
+  /** worktree.commit が返す値。既定は「commit した」 */
+  committed?: boolean;
   /**
    * 作業ツリーに未 commit の変更があるか。
    *
@@ -142,7 +147,10 @@ function deps(store: Store, options: Options = {}): ControllerDeps {
       // controller が commit するようになった（tests/controller-commit.test.ts）が、
       // 何も commit されないこと（gitignore されたファイルだけが汚れている、
       // commit そのものが失敗した）はありうる。この関門はそのときの受け皿になる。
-      commit: async () => false,
+      commit: async (name, message) => {
+        commits.push({ name, message });
+        return options.committed ?? true;
+      },
       changedPaths: async () => [],
       repoDirtyState: async () => new Map(),
     },
@@ -196,34 +204,6 @@ function seedCompletedRun(store: Store): void {
   });
 }
 
-/**
- * worktree を作れずに失敗した Run を残す。
- *
- * `act` は `worktree.ensure` より先に Run(starting) を書く（write-ahead）。
- * 「Run が1件でもあれば worktree を観測している」と読むと、この Run 1本で
- * その前提が崩れる。README にある「`git branch --format` の引用符不足で
- * worktree の作成が Phase 2 からずっと失敗していた」が実際にこの形だった。
- */
-function seedFailedRun(store: Store): void {
-  const runId = store.startRun(GOAL_ID, {
-    intent: "criteria を満たす実装を書く",
-    actor: "claude-code",
-    role: "implement",
-    worktree: GOAL_ID,
-    attempt: 1,
-    startedAt: "2026-08-09T08:00:00.000Z",
-  });
-  store.finishRun(runId, {
-    status: "failed",
-    finishedAt: "2026-08-09T08:00:10.000Z",
-    exitCode: null,
-    logRef: null,
-    tokens: null,
-    artifacts: [],
-    detail: "worktree を用意できなかった: fatal: invalid reference",
-  });
-}
-
 let store: Store;
 
 beforeEach(() => {
@@ -239,149 +219,93 @@ function activate(goal: Goal): void {
   store.setStatus(GOAL_ID, "ACTIVE", null);
 }
 
-describe("未 commit の変更を残したまま終わらない", () => {
-  it("criteria が全部通っていても、未 commit の変更があれば COMPLETE にしない", async () => {
-    // これを許すと、実装が1行も push されないまま Goal が COMPLETED になる。
-    // criteria が通ったのは worktree の作業ツリーであって、PR の中身ではない。
-    // COMPLETED は終端なので、あとから取り消すこともできない（design.md §4.4）。
+describe("機械側の criteria が通ったら controller が commit する", () => {
+  beforeEach(() => {
+    commits = [];
+  });
+
+  it("command 型の criteria が全部通れば commit する", async () => {
+    // 「Actor が commit する」という前提を置くのをやめた（design.md §10-11）。
+    // intent にもプロンプトにも書けるが、従ったことは確かめられない。
+    const goal = goalWith([COMMAND_CRITERION]);
+    activate(goal);
+    seedCompletedRun(store);
+
+    await tick(goal, deps(store, { dirty: true }));
+
+    expect(commits).toHaveLength(1);
+  });
+
+  it("押す木に commit する", async () => {
+    // publish が押すのも実装役の木。ここがずれると、検査した木と押す木と
+    // commit する木が別々になる。
+    const goal = goalWith([COMMAND_CRITERION]);
+    activate(goal);
+    seedCompletedRun(store);
+
+    await tick(goal, deps(store, { dirty: true }));
+
+    expect(commits[0]?.name).toBe(GOAL_ID);
+  });
+
+  it("commit したティックは未 commit の関門で止めない", async () => {
+    // local.dirty は commit より前の観測なので、読むと自分が片付けた汚れで
+    // 自分を止めることになる。
     const goal = goalWith([COMMAND_CRITERION]);
     activate(goal);
     seedCompletedRun(store);
 
     const result = await tick(goal, deps(store, { dirty: true }));
+
+    expect(result.decision?.action).not.toEqual({
+      type: "ESCALATE",
+      reason: "uncommitted_changes",
+    });
+  });
+
+  it("command 型が1本も通っていなければ commit しない", async () => {
+    const goal = goalWith([COMMAND_CRITERION]);
+    activate(goal);
+    seedCompletedRun(store);
+
+    await tick(goal, deps(store, { dirty: true, exitCode: 1 }));
+
+    expect(commits).toHaveLength(0);
+  });
+
+  it("command 型の criteria が1本も無ければ commit しない", async () => {
+    // 機械側で確かめたものが1つも無いのに commit すると、Actor が書いただけの
+    // ものが commit 済みとして push される。
+    const goal = goalWith([HUMAN_CRITERION]);
+    activate(goal);
+    seedCompletedRun(store);
+
+    await tick(goal, deps(store, { dirty: true }));
+
+    expect(commits).toHaveLength(0);
+  });
+
+  it("commit のメッセージに Goal の名前と通った criteria を書く", async () => {
+    // 人間があとから履歴を読む唯一の手がかりになる。
+    const goal = goalWith([COMMAND_CRITERION]);
+    activate(goal);
+    seedCompletedRun(store);
+
+    await tick(goal, deps(store, { dirty: true }));
+
+    expect(commits[0]?.message).toContain(goal.goal.name);
+    expect(commits[0]?.message).toContain(COMMAND_CRITERION.id);
+  });
+
+  it("何も commit されなければ、未 commit の関門はこれまでどおり効く", async () => {
+    // gitignore されたファイルだけが汚れている場合や、commit そのものが
+    // 失敗した場合。関門を外すのではなく、鳴る条件を1つ減らしただけにする。
+    const goal = goalWith([COMMAND_CRITERION]);
+    activate(goal);
+    seedCompletedRun(store);
+
+    const result = await tick(goal, deps(store, { dirty: true, committed: false }));
 
     expect(result.decision?.action.type).not.toBe("COMPLETE");
-    expect(result.status).not.toBe("COMPLETED");
-    expect(store.getState(GOAL_ID)?.status).not.toBe("COMPLETED");
-
-    // 判断の材料は Fact として残っていること。これが消えると、人間が
-    // `ent show` を読んでも「なぜ完了しなかったか」を追えない（design.md §3.1）。
-    const dirty = (store.latestSnapshot(GOAL_ID)?.facts ?? []).find((f) => f.key === "local.dirty");
-    expect(dirty?.value).toBe(true);
-    expect(dirty?.confidence).toBe("VERIFIED");
-  });
-
-  it("未 commit の変更があれば、LLM の WAIT をそのまま採用しない", async () => {
-    // 実際に踏んだ経路。人間の承認待ちだけが残った状態で LLM が
-    // WAIT(review_pending) を返し、Goal は WAITING_HUMAN で止まった。
-    // 人間が待っているのは「実装が載った PR」なので、この待ちは永久に終わらない。
-    //
-    // 検知した結果どう動くかは実装が決めてよい。ここで固定するのは、
-    // その判断を LLM に委ねたままにしないこと（design.md §7）。
-    const goal = goalWith([COMMAND_CRITERION, HUMAN_CRITERION]);
-    activate(goal);
-    seedCompletedRun(store);
-
-    const llm: LlmPort = {
-      chooseAction: async () => ({ type: "WAIT", reason: "review_pending" }),
-    };
-    const result = await tick(goal, deps(store, { dirty: true, llm }));
-
-    expect(result.decision?.action).not.toMatchObject({ type: "WAIT", reason: "review_pending" });
-    expect(result.decision?.decidedBy).toBe("guard");
-
-    // 1ティックに1行だけ書く（保護パスの関門と同じ）。差し替えたぶんを
-    // 足すと、countTrailingDigest が数える行がずれる。
-    const decisions = store.listDecisions(GOAL_ID);
-    expect(decisions).toEqual([result.decision]);
-  });
-
-  it("作業ツリーが綺麗なら、これまでどおり COMPLETE にする", async () => {
-    const goal = goalWith([COMMAND_CRITERION]);
-    activate(goal);
-    seedCompletedRun(store);
-
-    const result = await tick(goal, deps(store, { dirty: false }));
-
-    expect(result.decision?.action.type).toBe("COMPLETE");
-    expect(result.status).toBe("COMPLETED");
-  });
-
-  it("Actor がまだ1度も走っていないティックは、汚れていても止めない", async () => {
-    // 1ティック目は worktree がまだ無いので、`local.*` は controller 自身の
-    // リポジトリを観測する（src/wiring/index.ts の verifyRoot）。自己ホストでは人間が
-    // 編集中のファイルで汚れているのが普通で、それを Actor の書き残しと
-    // 読むと、どの Goal も最初のティックから進まなくなる。
-    const goal = goalWith([COMMAND_CRITERION]);
-    activate(goal);
-
-    const result = await tick(goal, deps(store, { dirty: true }));
-
-    expect(result.decision?.action.type).toBe("COMPLETE");
-    expect(result.status).toBe("COMPLETED");
-  });
-
-  it("Gap が残っているティックは、汚れていても ACT を続ける", async () => {
-    // 実装の途中で作業ツリーが汚れているのは正常な状態にあたる。
-    // ここまで止めると、Actor は1ティックも実装を進められない。
-    const goal = goalWith([COMMAND_CRITERION]);
-    activate(goal);
-    seedCompletedRun(store);
-
-    const result = await tick(goal, deps(store, { dirty: true, exitCode: 1 }));
-
-    expect(result.decision?.action).toMatchObject({ type: "ACT" });
-    expect(result.run?.status).toBe("completed");
-    expect(result.status).toBe("ACTIVE");
-  });
-
-  it("止めたティックは、観測が前のティックと同じでも PR にコメントを書く", async () => {
-    // 関門が鳴っても、それが人間に届かなければ鳴っていないのと同じになる。
-    //
-    // 進捗コメントは既定では「観測が前のティックと同じなら書かない」。ダイジェストは
-    // Fact だけから作るので Decision を含まず、止まっているあいだ観測は1文字も
-    // 変わらない。黙って飛ばすと、2ティック目以降は PR が静かなまま
-    // max_reconciles に当たって BLOCKED になる。
-    //
-    // 保護パスの関門はこの規則を既に持っている（design.md §10-6 の
-    // 「PR が既にあるなら、観測が前ティックと同じでもコメントを書く」）。
-    // 同じ性質を持つ関門なので、同じ扱いにする。
-    const goal = goalWith([COMMAND_CRITERION]);
-    activate(goal);
-    seedCompletedRun(store);
-    // PR が無いとコメントの置き場所が無い。controller が既に立てた状態にする。
-    store.setObserveTarget(GOAL_ID, 7, null);
-
-    const sink = { comments: 0 };
-    await tick(goal, deps(store, { dirty: true, sink }));
-    const first = sink.comments;
-    await tick(goal, deps(store, { dirty: true, sink }));
-
-    expect(first).toBe(1);
-    expect(sink.comments).toBe(2);
-  });
-
-  it("観測できなかったティックを、前のティックの local.dirty で止めない", async () => {
-    // reconcile は前ティックの Fact を土台にして今ティックの観測で上書きするので、
-    // LocalRepoPort が落ちたティックには前ティックの local.dirty が VERIFIED の
-    // まま残る（陳腐化して落ちるのは github.ci.* だけ）。それを今の観測として
-    // 読むと、「確かめられなかった」が「汚れている」に化ける（design.md §3.1）。
-    const goal = goalWith([COMMAND_CRITERION]);
-    activate(goal);
-    seedCompletedRun(store);
-
-    // 1ティック目: 汚れているが Gap が残っているので ACT。local.dirty=true が残る。
-    await tick(goal, deps(store, { dirty: true, exitCode: 1 }));
-    // 2ティック目: LocalRepoPort が落ちる。criteria は通る。
-    const result = await tick(goal, deps(store, { localFails: true }));
-
-    expect(result.decision?.action).toMatchObject({ type: "WAIT", reason: "observation_failed" });
-  });
-
-  it("worktree を観測していない dirty では止めない", async () => {
-    // `verifyRoot` は worktree があればそちら、無ければ controller 自身の
-    // リポジトリを見る（src/cli.ts）。「Run が1件でもあれば worktree を観測して
-    // いる」は代理にならない。act は worktree.ensure より先に Run(starting) を
-    // 書くので、worktree を作れずに失敗した Run が1本あるだけで破れる。
-    //
-    // どこを観測した値かは、同じ観測で作られる local.branch で分かる。
-    const goal = goalWith([COMMAND_CRITERION]);
-    activate(goal);
-    seedFailedRun(store);
-
-    const result = await tick(goal, deps(store, { dirty: true, branch: "main" }));
-
-    expect(result.decision?.action.type).toBe("COMPLETE");
-    expect(result.status).toBe("COMPLETED");
   });
 });

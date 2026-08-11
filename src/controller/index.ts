@@ -20,6 +20,7 @@ import {
   describeDependencyGate,
   elapsedSecondsSince,
   guardBaseOf,
+  machineCriteriaSatisfied,
   observedValue,
   sleepingUntil,
 } from "../domain/guard-rules.js";
@@ -83,6 +84,11 @@ export interface ControllerDeps
    * 覗いたつもりの1回が次の本番ティックの観測先を差し替えていた。
    */
   observeOverride?: { prNumber?: number; issueNumber?: number } | undefined;
+  /**
+   * 人間に届く1行。commit できなかったような、止めるほどではないが黙ると
+   * 追えなくなることを出す。省略すると何も出ない。
+   */
+  log?: ((message: string) => void) | undefined;
 }
 
 /**
@@ -390,13 +396,27 @@ export async function tick(goal: Goal, deps: ControllerDeps): Promise<TickResult
     // SDK の外から同じ操作をされれば素通りする。
     const guarded = await guardedDecision(goal, result.decision, run, repoBefore, base, deps);
 
+    // 機械側の criteria が全部通ったら、controller が commit する
+    // （design.md §10-11）。**「Actor が commit する」という前提を置くのをやめた。**
+    // push が送るのは commit 済みの差分だけなので、commit されないと criteria が
+    // 全部通っていても remote には1行も出ず、CI も人間のレビューも始まらない。
+    //
+    // 保護パスの関門を通ったあとに置く。違反したティックで commit すると、
+    // 触ってはいけないものに触れた変更を履歴に載せることになる。
+    const committed = await commitVerifiedWork(goal, guarded, verifications, deps);
+
     // 未 commit の変更を残したまま「機械側の番は終わった」と言い切らせない
     // （design.md §10-11）。差し替えはここまでで、書き込むのは下の1行のまま。
     //
     // 渡すのは今ティックの観測が作った Fact だけにする。merge 済みの result.facts には
     // 前ティックの local.* が残るので、観測に失敗したティックを「汚れている」と
     // 読んでしまう（design.md §3.1）。
-    const decided = uncommittedDecision(goal, guarded, result.observedFacts, deps);
+    //
+    // **いま commit したティックは見ない。** `local.dirty` は commit より前の
+    // 観測なので、読むと自分が片付けた汚れで自分を止めることになる。
+    const decided = committed
+      ? guarded
+      : uncommittedDecision(goal, guarded, result.observedFacts, deps);
 
     // ここから下がこのティックの書き込みになる。直前にもう一度確かめる。
     // guardedDecision は git を叩くので、ACT 直後の確認から時間が空く。
@@ -781,6 +801,56 @@ function worktreePathFor(
   return deps.worktreeRoot === undefined
     ? (run?.worktree ?? worktreeName)
     : join(deps.worktreeRoot, worktreeName);
+}
+
+/**
+ * 機械側の criteria が全部通ったティックで、Actor が書いたものを commit する。
+ *
+ * **「Actor が commit する」という前提を置くのをやめた**（design.md §10-11）。
+ * intent に書いてもプロンプトに書いても、従ったことは確かめられない（§3.2）。
+ * 実測でも、同じ設定・同じモデルの Actor が commit するティックとしないティックの
+ * 両方が出た。push が送るのは commit 済みの差分だけなので、commit されないと
+ * criteria が全部通っていても remote には1行も出ず、CI も人間のレビューも始まらない。
+ *
+ * **関門が止めたティックでは commit しない。** 保護パスに触れた変更を履歴に
+ * 載せると、あとから通常の変更として流れる余地が生まれる（§10-6 が push を
+ * 止めているのと同じ理由）。`guard_unavailable` も同じ扱いで、検査できて
+ * いない以上「触っていない」とは言えない。
+ *
+ * **押す木に commit する。** `worktreeNameFor(goal.id, "implement")` に固定する
+ * のは publish と同じ理由で、Run 側に従わせると検査した木と押す木がずれる。
+ *
+ * 失敗しても throw しない。commit できなかったティックは、これまでどおり
+ * 未 commit の関門（`uncommittedDecision`）が拾う。ここで落とすと、
+ * 観測も Decision も書かないまま ティックが終わる。
+ */
+async function commitVerifiedWork(
+  goal: Goal,
+  decision: Decision,
+  verifications: readonly Verification[],
+  deps: ControllerDeps,
+): Promise<boolean> {
+  if (decision.action.type === "ESCALATE") {
+    return false;
+  }
+  if (!machineCriteriaSatisfied(goal.acceptance_criteria, verifications)) {
+    return false;
+  }
+
+  const passed = verifications
+    .filter((verification) => verification.result === "passed")
+    .map((verification) => verification.criterionId)
+    .join(", ");
+  const message = `${goal.goal.name}\n\n機械側の criteria が通ったので controller が commit した（${passed}）。\nActor の実行は Run の生ログに残る（design.md §10-11）。`;
+
+  try {
+    return await deps.worktree.commit(worktreeNameFor(goal.goal.id, DEFAULT_ACTOR_ROLE), message);
+  } catch (error) {
+    // 検査ではないので、確かめられなかったことにはしない。次のティックで
+    // 未 commit の関門が同じ状態を拾う。
+    deps.log?.(`commit できなかった: ${errorMessage(error)}`);
+    return false;
+  }
 }
 
 /**

@@ -74,6 +74,7 @@ describe("act が worktree を切る元", () => {
         ensured.push({ name, base });
         return { path: `${WORKTREE_ROOT}/${name}`, branch: `entelecheia/${name}` };
       },
+      commit: async () => true,
       changedPaths: async () => [],
       repoDirtyState: async () => new Map(),
     };
@@ -155,6 +156,7 @@ describe("関門が差分を取る相手", () => {
           path: `${WORKTREE_ROOT}/${name}`,
           branch: `entelecheia/${name}`,
         }),
+        commit: async () => true,
         changedPaths: async (_name, base) => {
           diffed.push(base);
           return [];

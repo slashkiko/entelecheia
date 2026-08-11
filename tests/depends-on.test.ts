@@ -220,6 +220,7 @@ describe("依存が揃うまでティックを進めない", () => {
       approval: { getApproval: async () => null },
       worktree: {
         ensure: async (name) => ({ path: `/tmp/${name}`, branch: `entelecheia/${name}` }),
+        commit: async () => true,
         changedPaths: async () => [],
         repoDirtyState: async () => new Map(),
       },

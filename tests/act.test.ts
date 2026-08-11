@@ -106,6 +106,7 @@ function spy(options: SpyOptions = {}): Spy {
       }
       return { path: `/tmp/entelecheia/${name}`, branch: `entelecheia/${name}` };
     },
+    commit: async () => true,
     changedPaths: async () => [],
     repoDirtyState: async () => new Map(),
   };
