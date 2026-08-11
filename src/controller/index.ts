@@ -29,8 +29,8 @@ import { type ReconcileDeps, reconcile } from "../reconcile/index.js";
 import type { Store } from "../store/port.js";
 
 /**
- * 1ティックの外側。lease を取り、reconcile を回し、結果を書き、ACT を実行し、
- * 状態を遷移させる。
+ * 1ティックの外側。lease を取り、reconcile を回し、ACT を実行し、結果を書き、
+ * 状態を遷移させる。書き込みを ACT の後に置く理由は design.md §3.6。
  *
  * reconcile と act 自体は変更しない。あの2つを純粋に保ったまま、
  * 副作用と永続化をこの層に集める（design.md §8）。
@@ -777,7 +777,7 @@ function worktreePathFor(
  * - ACT が出たティックは触らない。実装の途中で作業ツリーが汚れているのは正常で、
  *   ここまで止めると Actor は1ティックも実装を進められない
  * - **Actor がまだ1度も走っていない Goal では見ない。** 1ティック目は worktree が
- *   無く、`local.*` は controller 自身のリポジトリを観測する（`src/cli.ts` の
+ *   無く、`local.*` は controller 自身のリポジトリを観測する（`src/wiring/index.ts` の
  *   `verifyRoot`）。自己ホストでは人間の編集で汚れているのが普通なので、そこを
  *   Actor の書き残しと読むと、どの Goal も最初のティックから進まなくなる
  * - **worktree を観測した dirty だけを見る。** 「Run が1件でもあれば worktree を
@@ -821,7 +821,7 @@ function uncommittedDecision(
   // 書き残しではない。controller 自身のリポジトリの汚れで人間を呼ばない。
   //
   // 突き合わせる相手は**実装役の作業ツリー**に固定する。`local.*` を観測する
-  // のも criteria のコマンドを流すのも実装役の側で（`src/cli.ts` の
+  // のも criteria のコマンドを流すのも実装役の側で（`src/wiring/index.ts` の
   // `verifyRoot`）、PR に載るのもそのブランチだからになる。役割が増えても
   // ここを review 側にすると、レビュー中の作業ツリーの汚れを実装の書き残しと
   // 読む一方で、実装役が書き残したものを見落とす。

@@ -14,9 +14,11 @@ export type ActorKind = z.infer<typeof actorKindSchema>;
 /**
  * Actor の役割。design.md §4.2 の `ActorRole` に対応する。
  *
- * 役割が違えば作業ツリーも分かれる（`worktreeNameFor`）。同じ Goal の中で
- * 実装役とレビュー役が同じ作業ツリーを共有すると、レビュー中に実装側が
- * 書き換わり、レビューの対象が定まらない。
+ * 作業ツリーが分かれるのは `investigate` だけになる（`worktreeNameFor`）。
+ * 当初は3つとも分けていたが、レビュー役を分けるとその作業ツリーは base から
+ * 切られたままになり、`review.reviewed_sha` が実装役の HEAD と二度と一致しない。
+ * 「読んだ commit が実装の HEAD と一致するときだけ結論を使う」という照合が
+ * 常に不一致へ倒れるので、`review` は `implement` と同じ木を見る（§4.2）。
  *
  * `investigate` は §4.2 が宣言している3つ目で、いまは起動する側が居ない。
  * 型に残しておくのは、あとで足すときに列挙の変更が要らないようにするため。
@@ -62,7 +64,7 @@ export const runIntentSchema = z.object({
    * Run の role が空のまま残り、どの作業ツリーの Run だったのかが読めなくなる。
    */
   role: actorRoleSchema,
-  /** 隔離に使う worktree の名前。role ごとに分かれる（`worktreeNameFor`） */
+  /** 隔離に使う worktree の名前。`investigate` だけが分かれる（`worktreeNameFor`） */
   worktree: z.string().min(1),
   /** 同じ intent の何回目の試行か */
   attempt: z.number().int().positive(),

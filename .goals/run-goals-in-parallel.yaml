@@ -15,7 +15,7 @@ goal:
     「同時に叩くと壊れる」ではなく、**壊れたことが記録に残らない**形をしている。
     どう直すかは Actor が決める。以下は何が満たされていればよいかを書く。
 
-    1. まだ WAL になっていない DB を、複数プロセスが同時に開ける（src/store/index.ts）
+    1. まだ WAL になっていない DB を、複数プロセスが同時に開ける（src/store/sqlite.ts）
 
       `openStore` は PRAGMA を1つの `exec` に並べている。順番は
       journal_mode → synchronous → busy_timeout → foreign_keys で、
@@ -148,7 +148,7 @@ acceptance_criteria:
            - 同じ slug を2本に渡したときは、片方が
              「他のワーカーが lease を持っている」でスキップし、exit 0 で終わること
 
-        2. store の差分（src/store/index.ts）
+        2. store の差分（src/store/sqlite.ts）
 
            - journal_mode がまだ WAL のままか。同時に開けるようにする代わりに
              WAL を落としていないか（design.md §4.7）
@@ -213,7 +213,7 @@ context:
       （decide-llm-actions 4 / store-row-schema 11 / port-contract 12 /
       github-approval-permission 6）
     - collaborate-in-separate-worktrees — 7 件（worktree-roles）
-    - review-agent-reviews — 6 件（review-actor）
+    - start-the-review-we-wired — 6 件（review-actor）
 
     本 Goal の Actor はそれらを実装しない。したがって ac-1 は、3本が main に
     入るまで緑にならない。届かない criteria に向けて回し続けることになるので、
@@ -248,7 +248,7 @@ context:
       確かめている性質は減らさない
     - WAL をやめない（design.md §4.7）。同時に開けるようにする代わりに
       「複数リーダー + 単一ライター」を捨てる形にしない
-    - DB のスキーマ（src/store/index.ts の `SCHEMA`）を変えない。migration も
+    - DB のスキーマ（src/store/sqlite.ts の `SCHEMA`）を変えない。migration も
       足さない。既にある `.goals/.state/goals.db` がそのまま読めること
     - lease の意味を変えない。期限付きの所有権のままにする（design.md §4.5）。
       行ロックや別のロック機構に置き換えない
@@ -286,8 +286,8 @@ context:
       path: .goals/validate-what-crosses-the-boundary.yaml
     - title: 実装待ちの別 Goal（worktree を役割ごとに分ける側。本 Goal と同じ配管を触る）
       path: .goals/collaborate-in-separate-worktrees.yaml
-    - title: 実装待ちの別 Goal
-      path: .goals/review-agent-reviews.yaml
+    - title: 実装待ちの別 Goal（レビュー役を起動する側）
+      path: .goals/start-the-review-we-wired.yaml
 
 policies:
   require_human_approval:

@@ -3,7 +3,9 @@
 このリポジトリの単一の設計ソース。新しく参加するとき（あるいは新しいセッションを開くとき）は、
 まずこれを読めば足りるように書いてある。
 
-最終更新: 2026-08-10（関門の基準を PR の宛先から切り離し、レビュー役を実装役と同じ作業ツリーに寄せた）
+最終更新: 2026-08-11（リファクタ後に、実装と食い違っていた記述を揃えた。write-ahead の
+書き込み順、状態 DB の監視。あわせて2つ実装を変えた — `/ent approve` は PR の作成者が
+書いても承認として数える（§10-4）、合成ルートを保護パスの下限に足した（§7））
 
 ---
 
@@ -189,18 +191,26 @@ Agent SDK は Claude Code の OAuth をそのまま使うため Claude Max の�
 次ティックで回収できる crash-only 設計にする。
 
 ```
-1. 観測と検証を書く（snapshot / verifications）
+1. 観測と検証を組み立てる（まだ書かない）
 2. Run(status: starting) を commit          ← ここで kill されても
 3. Claude Code を起動                          次ティックが orphan として回収
 4. Run(status: completed|failed) を commit
-5. Decision を書く
+5. snapshot / verifications / Decision を書く
 ```
 
-4 と 5 は別のトランザクションになる。Decision は ACT のあとに関門
-（保護パス・未 commit）が差し替えうるので、ACT より前には確定できない。
-Fact も 1 の時点で確定する。ACT の途中で kill されると snapshot と
-verifications だけが残り、Decision の行が無いティックになる。次ティックは
-orphan Run の回収から始めるので、そこから回収できる。
+**ACT より前に書くのは Run(starting) だけにする。** write-ahead の本体はここで、
+Actor を起動した事実が残っていないと orphan を回収できない。ACT の途中で
+kill されると残るのはこの行だけになり、次ティックはその回収から始める。
+
+観測を先に書かないのは lease のため。ACT は分単位で、そのあいだに lease を
+奪われうる。先に書くと、奪われたと分かった時点では既に他のワーカーが回している
+Goal の行を汚した後になる。組み立ては観測した直後に行い、`observedAt` も観測した
+時刻のままにして、**書き込みだけを ACT の後へ寄せる**。書く直前にもう一度 lease を
+確かめ、失っていれば snapshot / verifications / Decision / status を1つも書かずに降りる。
+Run(starting) の行は既に書いてあるので残る。それが write-ahead の要点にあたる。
+
+Decision を最後に置く理由は別で、ACT のあとに関門（保護パス・未 commit）が
+差し替えうるため。1ティックにつき1行だけ書く。
 
 SIGTERM を受けたら走行中の Actor に伝播して kill し、Run を `interrupted` で確定し、
 lease を解放して終了する。Ctrl+C が効かない状態は作らない。
@@ -349,7 +359,8 @@ reconcile は `WAIT(review_pending)` から抜けられず、§9 の完了判定
 `.goals/assess-and-decide.yaml` の Goal で実際に踏んだ。
 
 経路そのものが誤りではない。`ApprovalPort` はレビュー承認と PR コメントの定型文の
-2つを signal にする（理由と判定順は §10-4）。
+2つを signal にする（理由と判定順は §10-4）。2つ目は作成者自身が書いても成立するので、
+1人運用でもここで承認待ちは解ける。
 
 ### 4.4 状態機械
 
@@ -613,8 +624,8 @@ engines のチェックを通ったうえで起動時にクラッシュする範
 Node 側もそれに合わせて mise タスクに寄せた。
 
 ```
-mise run typecheck / lint / test / verify   アプリケーション側
-mise run check                              サプライチェーンと workflow（baseline 由来）
+mise run typecheck / lint / build / test / verify   アプリケーション側
+mise run check                                      サプライチェーンと workflow（baseline 由来）
 ```
 
 ---
@@ -668,7 +679,8 @@ DECIDE の LLM 呼び出しは `LlmCall.tokens` に残す（§4.5）。あとか
 正当に触る対象になりうる。下の列挙は下限と、Goal ごとに足す分の両方を含む。
 **下限の全量は `PROTECTED_PATH_FLOOR` を正とする。** 下の箇条書きは基準を説明するための
 代表例で、網羅ではない。両方に同じ一覧を持たせると、片方だけ古くなったときに
-どちらが関門の実体なのか読む側から分からなくなる。
+どちらが関門の実体なのか読む側から分からなくなる。承認ゲートにも同じ形の下限があり、
+`APPROVAL_GATE_FLOOR` が `secret_access` と `external_send` をどの Goal にも混ぜる。
 
 - 関門そのもの（`src/domain/protected-paths.ts`）と、Agent の許可・拒否ツールを決める
   ファイル（`src/adapters/claude.ts`）。ここが開いていると、照合を常に false にするか
@@ -684,6 +696,15 @@ DECIDE の LLM 呼び出しは `LlmCall.tokens` に残す（§4.5）。あとか
   読んで、その置き場が下限にあることまで見る。
   1ファイルに集めてあるのは保護の単位と揃えるためで、語彙ごとに配ると下限に何本も
   足すことになり、しかも Goal が正当に触りうる語彙と同じファイルになる
+- **合成ルート（`src/wiring/index.ts`）。** 規則を守っても、その規則へ渡る
+  **入力**が開いていれば関門は無力になる。ここは `localRepo` / `commandRunner` /
+  `gitWorktree` を注入する場所で、未 commit の関門と VERIFY が見る作業ツリーを決める
+  `verifyRoot`（§10-9）も同じファイルにある。`guardBaseOf` を1文字も触らずに、
+  関門が読む観測そのものを差し替えられる。**こちらは上とは逆で**、リファクタ前も
+  同じコードが `src/cli.ts` にあって下限の外だった。移設で開いた穴ではなく、
+  以前から開いていたものを移設のついでに閉じたことになる。
+  `tests/protected-floor.test.ts` が、
+  `tickPorts` と `verifyRoot` の置き場を `guard-rules.ts` と同じ方式で見る
 - 検証系（`mise.toml` / `mise-tasks/**` / `vitest.config.ts` / `biome.json` /
   `tsconfig*.json` / `.github/**`）。VERIFY は worktree で criteria のコマンドを
   流すので（§10-9）、ここを書き換えられると Agent が自分の Acceptance Criteria を
@@ -920,6 +941,9 @@ Phase 3 で取り直した（§8）。
 `/ent approve ac-6` を人間が書き、guard が `COMPLETE` を選んで `COMPLETED` へ遷移する
 ところまで通したため。下の実測は別の Goal のもので、承認前の承認待ちで止まっている。
 
+そのとき `/ent approve` を書いたのは PR の作成者本人にあたる。作成者を承認から外すと
+この確認が再現できなくなるので、コメントの側は作成者を数える側で固定してある（§10-4）。
+
 ### 通しで1周したときの実測
 
 `.goals/list-goals.yaml` を controller に実装させたときの記録。
@@ -943,9 +967,17 @@ cache_read / output）の合計を持つ。単価が違うので、合計1つか
 
 ## 10. 未決事項
 
-MVP を止める未確定は残っていない。ただし、他のリポジトリで回す前に決める必要があるものが
-2つある（8 の Goal YAML の移行方針と、9 の検証コマンドの実行権限）。
-以下は実運用で必要になった順に埋める。
+MVP を止める未確定は残っていない。**他のリポジトリで回す前に決める必要があるのは
+8 と 9 の2つ。** どちらも主題は Phase 3 で確定していて、隣にある問いが1つずつ
+開いている。**取り消し線は「その項目の主題は確定した」を意味し、そのうえで一部が
+開いているものに（一部）を付ける。**
+
+- **8（一部）** — `protected_paths` をどこに載せるかは確定した。開いているのは
+  Goal YAML のスキーマを変えたときの移行方針の側になる
+- **9（一部）** — VERIFY を Goal 専用の worktree で流すことは確定した。開いているのは
+  そのコマンドを controller の権限で実行している側になる
+
+残りは他のリポジトリで回す前提を欠かないので、実運用で必要になった順に埋める。
 
 1. ~~**Goal YAML のスキーマ詳細**~~ — Phase 0 を1周して確定した。`src/domain/goal.ts` を参照。
    Phase 0 版からの差分は、`repository` と `setup` を足し、`verification` を
@@ -983,21 +1015,34 @@ MVP を止める未確定は残っていない。ただし、他のリポジト�
    トークンで投稿されたコメントの中に承認の1行が成立する。Agent に `gh pr comment` を
    禁じて塞いだ経路を controller が迂回する形だった。進捗コメントには HTML コメントの
    目印を入れて除外し、`rationale` の改行も潰して二重にする。
-   以下は signal そのものの定義で、Phase 3 の2本目から変わっていない。
+   以下は signal **が2つであること**の定義で、そこは Phase 3 の2本目から
+   変わっていない（**誰の投稿を数えるかは MVP レビューで2度変えた。下記**）。
    signal は2つあり、どちらか一方でも成立すれば承認とみなす。
    GitHub のレビュー承認（他人が Approve を押す。仕事で使うときの本来の経路）と、
    PR コメントの定型文 `/ent approve <criterion-id>`。§4.3 が言うのは
    「`review_decision` *だけ* には頼れない」で、経路そのものが誤りではない。
+   **PR の作成者をどう扱うかは、2つの経路で逆にする。** レビュー承認は作成者自身の
+   Approve を数えない（GitHub 自体も自分の PR の Approve を許さない）。
+   **コメントの定型文は作成者も数える。** `GITHUB_TOKEN` は開発者自身のトークンなので
+   PR を立てるのもその人で、ここで作成者を除くと `/ent approve` の経路そのものが消える。
    **1人で開発しているあいだ成立しないのはレビュー承認の側だけで、コメントの定型文は
-   1人でも成立する。** レビュー承認は作成者自身の Approve を数えない（GitHub 自体も
-   自分の PR の Approve を許さない）が、コメントの側は作成者を除外していない。
-   `GITHUB_TOKEN` は開発者自身のトークンなので、そこで作成者を除いてしまうと
-   `/ent approve` の経路そのものが消える。自分のリポジトリなら
-   `author_association` は `OWNER` になるので、そのまま承認として数える。
+   1人でも成立する。** 自分のリポジトリなら `author_association` は `OWNER` になるので、
+   書き込み権限を確かめたうえでそのまま承認として数える。
+   一度は自己承認を塞ぐために作成者を除外したが、**塞ぎたかったのは「Agent が作成者
+   名義で定型文を書く」経路であって、人間の作成者ではなかった。** 承認できる人を
+   減らす形で塞ぐと、§9 の「完了判定」を通した手順そのものが再現できなくなる。
+   **その経路は拒否リストで塞ぐ。** コメント投稿を落とす `external_send` は
+   `APPROVAL_GATE_FLOOR` にあってどの Goal からも外せず（§7）、controller 自身の
+   進捗コメントは `PROGRESS_MARKER` が除外する。role ごとのプロンプトにも
+   「承認の定型文を書かない」を明記して三重にしてある
+   （`src/adapters/github.ts` の `githubApproval`、`src/adapters/claude.ts` の
+   `DENIED_TOOLS`、`tests/github-write.test.ts`）。
+   **残る前提は、拒否リストが SDK の設定でしかないこと**（§10-6）。SDK の外から
+   同じ操作をされれば素通りするので、「Agent に PR コメントを書かせない」統制の
+   強さが、そのまま `type: human` の承認の強さになる。
    レビュー承認は PR 全体に対するものなので `type: human` の criteria すべてを満たす。
-   作成者自身の Approve は数えない。変更要求が最新として残っていれば、どちらの経路でも
-   承認しない。定型文は行全体で照合する。引用やコード例の中の同じ文字列を承認と読むと、
-   捏造した承認が作れてしまう
+   変更要求が最新として残っていれば、どちらの経路でも承認しない。定型文は行全体で
+   照合する。引用やコード例の中の同じ文字列を承認と読むと、捏造した承認が作れてしまう
 5. ~~**`resume_after` を誰が読むか**~~ — Phase 3 の3本目で確定した。`tick` が入口で
    判定し、過ぎるまで何もせずに return する。lease も取らない。取ると、寝ているだけの
    Goal が他のワーカーを塞ぐ。解釈できない値は「起きてよい」と読む。壊れた値のせいで
@@ -1100,9 +1145,14 @@ MVP を止める未確定は残っていない。ただし、他のリポジト�
    その場合に人間へ届くのは `ent get` と Decision の履歴だけになる。
    **残る穴を5つ書いておく。**
    (a) repoRoot の外（`~/.zshrc` や `~/.claude/**`）は git で観測できないので見えない。
-   (b) gitignore されたパスも見えない。`--ignored` を付ければ出るが、
-   controller 自身が `.goals/.state/**` に毎ティック書くので、自分の書き込みが
-   毎回違反として並ぶ。DB を直接書き換えられる経路がここに残る。
+   (b) git の観測に出ないものが2系統ある。gitignore されたパス（`.goals/.state/**`）と、
+   gitignore とは無関係に `git status` が原理的に出さないもの（`.git/hooks/**` と、
+   そもそもパスではない `core.hooksPath` の設定値）。前者は `--ignored` を付ければ出るが、
+   controller 自身が毎ティック書くので、自分の書き込みが毎回違反として並ぶ。
+   **どちらの系統も、実行に繋がる3つ——`.goals/.state/goals.db`・`.git/hooks/**`・
+   `core.hooksPath`——だけは `outOfSightState` が名指しで指紋を取り、ACT の前後で
+   比べる**（MVP レビューの SEC2 / SEC3）。残る穴は `goals.db` 以外の gitignore された
+   パスで、そこを書き換えられても検知しない。
    (c) 本体側の違反は、同じファイルが次のティックまで**そのまま**なら、
    その内容がベースラインに入るので鳴り止む。指紋で比べているので、同じファイルを
    もう一度書き換えれば再び鳴る。鳴り止むのは「1回の改変を放置した場合」に限る。
@@ -1117,7 +1167,7 @@ MVP を止める未確定は残っていない。ただし、他のリポジト�
    (c) と (d) は逆向きのトレードオフで、どちらも検知を永続化するか
    Actor プロセスと編集を紐付けないと同時には解けない。MVP では両方残す
 7. **Notion / Slack を足す時期** — 実環境ができてから
-8. ~~**`require_human_approval` にパス条件をどう載せるか**~~ — Phase 3 の4本目で確定した。
+8. ~~**`require_human_approval` にパス条件をどう載せるか**~~（一部） — Phase 3 の4本目で確定した。
    enum には載せず、`policies.protected_paths`（glob の配列）を別に持つ。
    enum の6値は「操作の種類」で、パスは「対象」なので軸が違う。1つの enum に混ぜると
    controller 側の照合が分岐だらけになる。
@@ -1132,7 +1182,7 @@ MVP を止める未確定は残っていない。ただし、他のリポジト�
    再実行しない Goal に手を入れても差分が増えるだけだが、「どの Goal がどこまで
    守られているか」は YAML を1本ずつ読まないと分からない。既定値をどこに置くかは
    まだ決めていない
-9. **VERIFY をどこで流すか** — Phase 3 の5本目で `repoRoot` から Goal 専用の worktree に
+9. ~~**VERIFY をどこで流すか**~~（一部） — Phase 3 の5本目で `repoRoot` から Goal 専用の worktree に
    変えたが、規則が「worktree があればそちら」という暗黙のものになっている。
    Goal YAML から指定できる方がよいかは決めていない。1ティック目は worktree が
    無いので `repoRoot` を見る、という非対称も残る。
