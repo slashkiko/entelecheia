@@ -136,6 +136,24 @@ describe("doctorPayload", () => {
     expect(check?.detail.length).toBeGreaterThan(0);
   });
 
+  it("Codex を選んだときは Codex のログイン確認方法を出す", async () => {
+    const report = await doctorPayload(probes({ actorKind: () => "codex" }));
+
+    const check = report.checks.find((c) => c.name === "codex_login");
+    expect(check?.result).toBe("unknown");
+    expect(check?.detail).toContain("codex login status");
+    expect(report.checks.some((c) => c.name === "claude_login")).toBe(false);
+  });
+
+  it("phase ごとに実行主体が違うときは両方のログイン前提を出す", async () => {
+    const report = await doctorPayload(
+      probes({ actorKinds: () => ["claude-code", "codex", "codex"] }),
+    );
+
+    expect(report.checks.filter((c) => c.name === "claude_login")).toHaveLength(1);
+    expect(report.checks.filter((c) => c.name === "codex_login")).toHaveLength(1);
+  });
+
   it("unknown だけでは失敗にしない", async () => {
     // 確かめられなかったことを不合格として扱うと、doctor が常に赤くなって読まれなくなる。
     const report = await doctorPayload(probes());

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { portErrorKindSchema } from "./port-error.js";
 
 /**
  * Actor を1回起動した記録。design.md §4.5 の Run テーブルに対応する。
@@ -95,6 +96,10 @@ export const runOutcomeSchema = z.object({
   artifacts: z.array(z.string()),
   /** なぜその status になったか。failed と interrupted のときだけ埋まる */
   detail: z.string().nullable(),
+  /** Port 境界で分類できた失敗。古い Run との互換のため省略可 */
+  errorKind: portErrorKindSchema.optional(),
+  /** usage_limit から再開してよい時刻。分からなければ null */
+  resumeAfter: z.string().datetime().nullable().optional(),
 });
 export type RunOutcome = z.infer<typeof runOutcomeSchema>;
 
@@ -107,5 +112,7 @@ export const runSchema = runIntentSchema.extend({
   tokens: z.number().int().nonnegative().nullable(),
   artifacts: z.array(z.string()),
   detail: z.string().nullable(),
+  errorKind: portErrorKindSchema.optional(),
+  resumeAfter: z.string().datetime().nullable().optional(),
 });
 export type Run = z.infer<typeof runSchema>;

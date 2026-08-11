@@ -12,11 +12,11 @@ import type { ReviewPort, ReviewRunSnapshot } from "../observe/index.js";
  * 最終メッセージは戻り値に載らない。載せるには `src/act/` と `src/adapters/claude.ts`
  * の両方に口が要るが、後者は `PROTECTED_PATH_FLOOR` の中にあって触れない。
  *
- * 一方 `src/adapters/claude.ts` は SDK のメッセージを1件ずつ
+ * 一方 Actor Adapter は実行イベントを1件ずつ
  * `.goals/.state/runs/<run-id>/log.jsonl` に書いており、レビュー役の最終メッセージも
- * そこにある。**読む側だけを足せば、FLOOR のファイルを1つも触らずに繋がる。**
- * 生ログの形（JSON Lines・`type: "result"` の行に本文が入る）に依存するので、
- * その知識はこの Adapter に閉じ込める。
+ * そこにある。Claude Code は `type: "result"`、Codex は
+ * `type: "item.completed"` の `agent_message` に本文を入れる。生ログの形に
+ * 依存する知識はこの Adapter に閉じ込める。
  *
  * ここが返すのは「どの Run の、どの本文か」までになる。本文を Fact にしてよいかを
  * 決めるのは observe の側で、確かめられなければ Fact を作らない（design.md §3.1）。
@@ -106,6 +106,14 @@ const resultLineSchema = z.object({
   result: z.string().optional(),
 });
 
+const codexAgentMessageSchema = z.object({
+  type: z.literal("item.completed"),
+  item: z.object({
+    type: z.literal("agent_message"),
+    text: z.string().optional(),
+  }),
+});
+
 /**
  * JSON Lines から最終メッセージを取り出す。見つからなければ null。
  *
@@ -126,9 +134,13 @@ function finalMessageIn(contents: string): string | null {
     } catch {
       continue;
     }
-    const result = resultLineSchema.safeParse(parsed);
-    if (result.success) {
-      return result.data.result ?? null;
+    const claude = resultLineSchema.safeParse(parsed);
+    if (claude.success) {
+      return claude.data.result ?? null;
+    }
+    const codex = codexAgentMessageSchema.safeParse(parsed);
+    if (codex.success) {
+      return codex.data.item.text ?? null;
     }
   }
   return null;

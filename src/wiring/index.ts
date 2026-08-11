@@ -2,8 +2,9 @@ import { accessSync, constants, existsSync, readdirSync } from "node:fs";
 import { hostname } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { type EffortLevel, query } from "@anthropic-ai/claude-agent-sdk";
-import { worktreeNameFor } from "../act/index.js";
+import { type ActorPort, worktreeNameFor } from "../act/index.js";
 import { type ClaudeOptions, claudeActor, claudeLlm } from "../adapters/claude.js";
+import { type CodexEffort, type CodexOptions, codexActor, codexLlm } from "../adapters/codex.js";
 import { githubApproval, githubCodeProvider, githubCodeWriter } from "../adapters/github.js";
 import { loadGoalFile } from "../adapters/goal-file.js";
 import {
@@ -19,9 +20,12 @@ import {
 } from "../adapters/local.js";
 import { reviewRunLog } from "../adapters/review-run.js";
 import type { ControllerDeps } from "../controller/index.js";
+import type { LlmPort } from "../decide/index.js";
 import { errorMessage } from "../domain/error-message.js";
 import type { Goal } from "../domain/goal.js";
+import type { LlmCall } from "../domain/llm-call.js";
 import { PortError } from "../domain/port-error.js";
+import type { ActorKind, ActorRole } from "../domain/run.js";
 import type { CodeProviderPort } from "../observe/index.js";
 import type { CodeWriterPort } from "../publish/index.js";
 import type { Store } from "../store/port.js";
@@ -56,13 +60,42 @@ import type { ApprovalPort } from "../verify/index.js";
  * 配管を見ることになった。dry-run の用途が「配管が繋がっているか」なので、
  * そこがずれると道具の意味が無くなる。
  */
+export interface AgentFactories {
+  claudeActor(options: ClaudeOptions): ActorPort;
+  claudeLlm(options: ClaudeOptions): LlmPort;
+  codexActor(options: CodexOptions): ActorPort;
+  codexLlm(options: CodexOptions): LlmPort;
+}
+
+export interface TickPortOptions {
+  env?: Record<string, string | undefined> | undefined;
+  agentFactories?: AgentFactories | undefined;
+}
+
+const DEFAULT_AGENT_FACTORIES: AgentFactories = {
+  claudeActor,
+  claudeLlm,
+  codexActor,
+  codexLlm,
+};
+
 export function tickPorts(
   goal: Goal,
   store: Store,
   repoRoot: string,
   stateDir: string,
+  options: TickPortOptions = {},
 ): Omit<ControllerDeps, "store"> {
   const worktrees = join(stateDir, "worktrees");
+  const onCall = (call: LlmCall): void => {
+    // 呼んだ直後に書く。ティックの最後にまとめて書くと、途中で kill された
+    // ぶんのトークンが消える（design.md §7）。
+    store.recordLlmCall(goal.goal.id, call);
+  };
+  const env = options.env ?? process.env;
+  const factories = options.agentFactories ?? DEFAULT_AGENT_FACTORIES;
+  const actor = routedActor(stateDir, env, factories);
+  const llm = selectedLlm(stateDir, env, onCall, factories);
   return {
     owner: `${hostname()}:${process.pid}`,
     leaseSeconds: 300,
@@ -80,15 +113,8 @@ export function tickPorts(
     approval: approval(goal, store.getState(goal.goal.id)?.prNumber ?? null),
     worktree: gitWorktree(repoRoot, worktrees),
     worktreeRoot: worktrees,
-    actor: claudeActor(claudeOptions(stateDir)),
-    llm: claudeLlm({
-      ...claudeOptions(stateDir),
-      // 呼んだ直後に書く。ティックの最後にまとめて書くと、途中で kill された
-      // ぶんのトークンが消える（design.md §7）。
-      onCall: (call) => {
-        store.recordLlmCall(goal.goal.id, call);
-      },
-    }),
+    actor,
+    llm,
     now: () => new Date(),
   };
 }
@@ -153,6 +179,7 @@ export function doctorProbes(repoRoot: string, stateDir: string): DoctorProbes {
     // 無視できているかの判定は git にさせる。否定パターンも祖先の .gitignore も
     // 自前では読めない（src/adapters/local.ts の stateDirIgnored）。
     stateIgnored: async () => stateDirIgnored(repoRoot),
+    actorKinds: () => selectedActorKinds(process.env),
   };
 }
 
@@ -353,13 +380,123 @@ function githubToken(): string | null {
  * モデルと effort は環境変数で上書きできる。1ティックごとに使用量を消費するので、
  * 試走を安いモデルで回せる口が要る（design.md §7）。指定が無ければ Claude Code の既定。
  */
-function claudeOptions(stateDir: string): ClaudeOptions {
+function claudeOptions(
+  stateDir: string,
+  selection: Extract<PhaseAgentSelection, { actor: "claude-code" }>,
+): ClaudeOptions {
   return {
     query,
     runsDir: join(stateDir, "runs"),
-    model: nonEmpty(process.env.ENT_MODEL),
-    effort: effortFrom(process.env.ENT_EFFORT),
+    model: selection.model,
+    effort: selection.effort,
   };
+}
+
+function codexOptions(
+  stateDir: string,
+  selection: Extract<PhaseAgentSelection, { actor: "codex" }>,
+): CodexOptions {
+  return {
+    runsDir: join(stateDir, "runs"),
+    model: selection.model,
+    effort: selection.effort,
+  };
+}
+
+export type AgentPhase = "decide" | ActorRole;
+
+export type PhaseAgentSelection =
+  | { actor: "claude-code"; model?: string | undefined; effort?: EffortLevel | undefined }
+  | { actor: "codex"; model?: string | undefined; effort?: CodexEffort | undefined };
+
+/**
+ * phase 固有の指定を読み、無ければ既存の共通指定へ落とす。
+ *
+ * `ENT_ACTOR` / `ENT_MODEL` / `ENT_EFFORT` は互換性のため残す。たとえば DECIDE だけ
+ * Codex にする場合は `ENT_DECIDE_ACTOR=codex` を重ねればよい。空文字は未指定として
+ * 共通値へ落とし、typo は黙って捨てない。
+ */
+export function agentSelectionFrom(
+  env: Record<string, string | undefined>,
+  phase: AgentPhase,
+): PhaseAgentSelection {
+  const prefix = `ENT_${phase.toUpperCase()}_`;
+  const actorKey = `${prefix}ACTOR`;
+  const modelKey = `${prefix}MODEL`;
+  const effortKey = `${prefix}EFFORT`;
+  const phaseActor = nonEmpty(env[actorKey]);
+  const actor = actorKindFrom(
+    phaseActor ?? env.ENT_ACTOR,
+    phaseActor === undefined ? "ENT_ACTOR" : actorKey,
+  );
+  const model = nonEmpty(env[modelKey]) ?? nonEmpty(env.ENT_MODEL);
+  const phaseEffort = nonEmpty(env[effortKey]);
+  const effortValue = phaseEffort ?? env.ENT_EFFORT;
+  const effortSource = phaseEffort === undefined ? "ENT_EFFORT" : effortKey;
+
+  if (actor === "codex") {
+    return { actor, model, effort: codexEffortFrom(effortValue, effortSource) };
+  }
+  return { actor, model, effort: effortFrom(effortValue, effortSource) };
+}
+
+function selectedLlm(
+  stateDir: string,
+  env: Record<string, string | undefined>,
+  onCall: (call: LlmCall) => void,
+  factories: AgentFactories = DEFAULT_AGENT_FACTORIES,
+): LlmPort {
+  const selection = agentSelectionFrom(env, "decide");
+  return selection.actor === "codex"
+    ? factories.codexLlm({ ...codexOptions(stateDir, selection), onCall })
+    : factories.claudeLlm({ ...claudeOptions(stateDir, selection), onCall });
+}
+
+/** role ごとの Adapter を1本の ActorPort に束ねる。 */
+function routedActor(
+  stateDir: string,
+  env: Record<string, string | undefined>,
+  factories: AgentFactories = DEFAULT_AGENT_FACTORIES,
+): ActorPort {
+  const byRole: Record<ActorRole, ActorPort> = {
+    implement: selectedActor(stateDir, agentSelectionFrom(env, "implement"), factories),
+    review: selectedActor(stateDir, agentSelectionFrom(env, "review"), factories),
+    investigate: selectedActor(stateDir, agentSelectionFrom(env, "investigate"), factories),
+  };
+
+  return {
+    kind: byRole.implement.kind,
+    kindFor: (role) => byRole[role].kind,
+    run: async (invocation) => byRole[invocation.role].run(invocation),
+  };
+}
+
+function selectedActor(
+  stateDir: string,
+  selection: PhaseAgentSelection,
+  factories: AgentFactories = DEFAULT_AGENT_FACTORIES,
+): ActorPort {
+  return selection.actor === "codex"
+    ? factories.codexActor(codexOptions(stateDir, selection))
+    : factories.claudeActor(claudeOptions(stateDir, selection));
+}
+
+function selectedActorKinds(
+  env: Record<string, string | undefined>,
+): Exclude<ActorKind, "human">[] {
+  const phases: readonly AgentPhase[] = ["decide", "implement", "review", "investigate"];
+  return [...new Set(phases.map((phase) => agentSelectionFrom(env, phase).actor))];
+}
+
+/**
+ * providerを選ぶ。未指定時は既存のClaude Codeを保ち、Codexはopt-inにする。
+ */
+function actorKindFrom(value: string | undefined, key = "ENT_ACTOR"): Exclude<ActorKind, "human"> {
+  const raw = nonEmpty(value) ?? "claude-code";
+  if (raw === "claude-code" || raw === "codex") {
+    return raw;
+  }
+  throw new Error(`${key} が不正: ${raw}（claude-code / codex）`);
 }
 
 function nonEmpty(value: string | undefined): string | undefined {
@@ -371,15 +508,26 @@ function nonEmpty(value: string | undefined): string | undefined {
  *
  * 知らない値を黙って捨てると「指定したのに効いていない」に気づけないので throw する。
  */
-function effortFrom(value: string | undefined): EffortLevel | undefined {
+function effortFrom(value: string | undefined, key = "ENT_EFFORT"): EffortLevel | undefined {
   const raw = nonEmpty(value);
   if (raw === undefined) {
     return undefined;
   }
   if (!EFFORT_LEVELS.includes(raw as EffortLevel)) {
-    throw new Error(`ENT_EFFORT が不正: ${raw}（${EFFORT_LEVELS.join(" / ")}）`);
+    throw new Error(`${key} が不正: ${raw}（${EFFORT_LEVELS.join(" / ")}）`);
   }
   return raw as EffortLevel;
+}
+
+function codexEffortFrom(value: string | undefined, key = "ENT_EFFORT"): CodexEffort | undefined {
+  const raw = nonEmpty(value);
+  if (raw === undefined) {
+    return undefined;
+  }
+  if (!CODEX_EFFORT_LEVELS.includes(raw as CodexEffort)) {
+    throw new Error(`${key} が不正: ${raw}（${CODEX_EFFORT_LEVELS.join(" / ")}）`);
+  }
+  return raw as CodexEffort;
 }
 
 /**
@@ -398,6 +546,15 @@ const EFFORT_LEVELS = [
   "xhigh",
   "max",
 ] as const satisfies readonly EffortLevel[];
+
+const CODEX_EFFORT_LEVELS = [
+  "none",
+  "minimal",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+] as const satisfies readonly CodexEffort[];
 
 /**
  * EFFORT_LEVELS に足りない値があればビルドが落ちる。

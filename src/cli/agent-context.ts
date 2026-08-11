@@ -46,7 +46,7 @@ export function agentContextPayload(): AgentContext {
   const slug = { name: "slug", required: true, type: "string" } as const;
 
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     commands: [
       {
         name: "init",
@@ -119,8 +119,30 @@ export function agentContextPayload(): AgentContext {
         summary:
           "無ければ GH_TOKEN と gh auth token に落ちる。どれも無いと GitHub の観測が unresolved",
       },
-      { name: "ENT_MODEL", required: false, summary: "DECIDE のモデル" },
-      { name: "ENT_EFFORT", required: false, summary: "low / medium / high / xhigh / max" },
+      {
+        name: "ENT_ACTOR",
+        required: false,
+        summary: "全phaseの既定provider。claude-code / codex。既定はclaude-code",
+      },
+      { name: "ENT_MODEL", required: false, summary: "全phaseの既定モデル" },
+      { name: "ENT_EFFORT", required: false, summary: "全phaseの既定effort" },
+      ...["DECIDE", "IMPLEMENT", "REVIEW", "INVESTIGATE"].flatMap((phase) => [
+        {
+          name: `ENT_${phase}_ACTOR`,
+          required: false,
+          summary: `${phase}だけproviderを上書き`,
+        },
+        {
+          name: `ENT_${phase}_MODEL`,
+          required: false,
+          summary: `${phase}だけモデルを上書き`,
+        },
+        {
+          name: `ENT_${phase}_EFFORT`,
+          required: false,
+          summary: `${phase}だけeffortを上書き`,
+        },
+      ]),
     ],
     exitCodes: [
       { code: 0, meaning: "成功。ティックが最後まで回った（doctor では failed が1件も無い）" },

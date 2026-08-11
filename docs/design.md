@@ -11,20 +11,23 @@ PR の作成者が書いても承認として数え、その代わり Agent の�
 渡し、宣言部を goalId で、読んだ commit を `reviewed_sha:` で名指しさせた（§4.2・§4.3））
 あわせて、commit の主体を Actor から controller に移し（§10-11）、落ちた検証コマンドの出力を
 evidence に残すようにした（§4.5）。
+Codex CLI Adapterとphase別のprovider・model・effort選択も追加し、Actorの使用量上限を
+Runからguardの待機判断へ伝播するようにした（§3.5・§4.2）。
 
 ---
 
 ## 1. 何を作るのか
 
 プロジェクトの完了状態（Desired State）を宣言すると、現在状態を観測し、
-ギャップが埋まるまで Claude Code を起動する controller。
+ギャップが埋まるまで Claude Code または Codex を起動する controller。
 
 Kubernetes の controller が `replicas: 3` に収束させるのと同じ構造を、
 ソフトウェア開発のタスクに持ち込む。人間が書くのは「どうなってほしいか」だけで、
-タスク分解も Actor の選択も実装手順も controller が決める。**ただしこれは目標とする姿になる。**
+Goal内のタスク分解、Actor roleの選択、実装手順はcontrollerが決める。
 分解が成り立っているのは1つの Goal の内側だけで、Goal をまたぐ分解——1つの粗いタスクを
 N 本の Goal に割ること——はいまも人間が行う（順序の宣言 `goal.depends_on` までは入っている。
-§10-12）。Actor の選択も、選べる先が実装役1つに固定されている（§4.2 / §4.3）。
+§10-12）。phaseごとに使うActor実装・model・effortは起動時の環境変数で人間が選び、
+未指定時は既定のClaude Codeへ落ちる（§3.5 / §4.2）。
 
 ```
         Desired State（人間が宣言）
@@ -67,7 +70,8 @@ N 本の Goal に割ること——はいまも人間が行う（順序の宣言
   Amp Event-Driven Orbs。**部品として参照する。**
 - **L5**: EvoRoute など。**履歴の形式だけ決めて後回し。**
 
-したがって実装コストは L1 と L2 に集中させ、L3 は Claude Code（Agent SDK）へ委譲する。
+したがって実装コストは L1 と L2 に集中させ、L3 は Claude Code または Codex の
+Actor Adapter へ委譲する。
 
 ### 名前について
 
@@ -170,10 +174,12 @@ reconcile は「今の状態を見て差分を埋める」冪等な関数で、
 レビュー承認の検知が1分程度遅れて困る場面はない。
 設計上は `EventSource` インターフェースだけ切っておき、後から webhook に差し替える。
 
-### 3.5 LLM への依存は Claude Code 1本に寄せる
+### 3.5 providerとモデルはphaseごとに選ぶ
 
-LLM を呼ぶのは DECIDE のうち Gap が残っている経路だけで、そこを Actor 層経由にすれば
-依存も認証も1系統で済む。出力は必ず Zod で検証し、通らなければ受け取らない（最大2回リトライ）。
+controllerの判断用LLMを呼ぶのはDECIDEのうちGapが残っている経路だけで、実装・レビュー・
+調査の呼び出しはActor roleとして分ける。どちらもPortとAdapterを経由し、phaseごとに
+providerを選んでもcontroller本体へprovider固有の分岐を漏らさない。DECIDEの出力は必ず
+Zodで検証し、通らなければ受け取らない（最大2回リトライ）。
 
 ASSESS は Fact だけを読む純関数で、LLM を呼ばない。DECIDE も、完了判定と停止条件は
 **guard**（LLM を呼ばずに決める純ロジック。`src/decide/`）が持つ。
@@ -181,11 +187,19 @@ ASSESS は Fact だけを読む純関数で、LLM を呼ばない。DECIDE も�
 Gap が残る場合の `WAIT`（レビュー待ちなど）は LLM も選べる。ただし
 **いつまで寝るかは常に guard が決める**（§10-3）。LLM に委ねるのは Gap の埋め方だけになる。
 
-Agent SDK は Claude Code の OAuth をそのまま使うため Claude Max のサブスクリプション内で動く。
-一方、Messages API に切り出した部分だけは API キーの従量課金になる。
-定額で回すなら Claude Code 1本に寄せるのが唯一の選択肢。
+既定はClaude Agent SDKで、Claude Codeの保存済み認証を使う。2026-08-11にCodex CLI
+Adapterを追加した。共通の`ENT_ACTOR` / `ENT_MODEL` / `ENT_EFFORT`に加えて、
+`DECIDE`、`IMPLEMENT`、`REVIEW`、`INVESTIGATE`ごとの同名上書きを受け取る。
+たとえば`ENT_DECIDE_ACTOR=codex`と`ENT_REVIEW_MODEL=<model>`を同時に指定できる。
+同じphaseのprovider・model・effortは1組として選び、ACTのRunには実際に使ったproviderを残す。
+effortの語彙はproviderごとに検証する。Claude Codeは`low / medium / high / xhigh / max`、
+Codexは`none / minimal / low / medium / high / xhigh`で、片方だけの値を他方へ黙って渡さない。
 
-`LlmPort` を挟んでおき、実測でコストや品質が問題になったら DECIDE だけ差し替える。
+Codexには公式のTypeScript SDK（`@openai/codex-sdk`）もあり、その実体はCodex CLIを起動して
+JSONL eventを交換するラッパーになる。ただし現行SDKの公開オプションからは、隔離契約に使う
+`--ephemeral`、`--ignore-user-config`、`--ignore-rules`を渡せない。この3つを外してSDKへ
+置き換えると、host固有のsession・設定・rulesが実行契約へ混ざるため、Codex Adapterは
+`codex exec`を直接起動する。SDKが必要な起動制約を公開した時点で置き換えを再評価する。
 
 ### 3.6 待機はプロセスではなく状態にする（中断可能性）
 
@@ -196,7 +210,7 @@ Agent SDK は Claude Code の OAuth をそのまま使うため Claude Max の�
   lease を取らない以上その場では書けないため状態に残らず、`ent run` の `skipped` にしか
   出ない。`resume_after` の待ち（§10-5）は、待ちに入った時点の `WAITING_EXTERNAL` が
   DB にあるのでここに含まれる
-- 次のティックは cron の次周回で来る。`ent run --once` を cron から叩く構成なら
+- 次のティックは cron の次周回で来る。`ent run <slug>` を cron から叩く構成なら
   常駐プロセスがそもそも存在しない（`ent watch` は未実装。§6）
 
 副作用の前に意図を書く **write-ahead** を徹底し、任意の瞬間に kill されても
@@ -205,7 +219,7 @@ Agent SDK は Claude Code の OAuth をそのまま使うため Claude Max の�
 ```
 1. 観測と検証を組み立てる（まだ書かない）
 2. Run(status: starting) を commit          ← ここで kill されても
-3. Claude Code を起動                          次ティックが orphan として回収
+3. 選択した Actor を起動                     次ティックが orphan として回収
 4. Run(status: completed|failed) を commit
 5. snapshot / verifications / Decision を書く
 ```
@@ -273,11 +287,14 @@ interface Actor {
 }
 ```
 
-MVP では `claude-code` だけを実装し、3つの role をすべて持たせる。
-Codex を足すときに Planner 側のコードを変えなくて済む形にしておけば十分。
+`claude-code` と `codex` の2実装が、3つのroleをすべて持つ。Codexは
+`implement=workspace-write`、`review/investigate=read-only` に固定する。
+`codex exec` はClaude Agent SDKと同じcommand単位のallow/denyを受け取らないため、
+Codex Adapterは明示opt-inとし、sandbox・資格情報除去・事後のgit関門を重ねる。
 
-`ActorRole` の実体は `src/domain/run.ts` の `actorRoleSchema` にある。`Actor` の方は
-まだ切っていない（`ActorPort` が `kind` を持つだけ）が、role は次の5箇所を通る。
+`ActorRole` の実体は `src/domain/run.ts` の `actorRoleSchema` にある。`ActorPort`は
+`kindFor(role)`で実際のproviderを返し、role別routerが選んだ値をwrite-aheadのRunに残す。
+roleは次の5箇所を通る。
 
 - **role が Agent の許可・拒否ツールを決める**（`src/adapters/claude.ts` の `ACTOR_TOOLS`）。
   編集のツール（Edit / Write / NotebookEdit）を持つのは `implement` だけで、`review` と
@@ -289,8 +306,8 @@ Codex を足すときに Planner 側のコードを変えなくて済む形に�
   そのまま落とす（レビュー役だからといって merge や force push を許さない）。
   プロンプトも role ごとに分ける。権限だけ分けて文面が同じだと、レビュー役は編集を
   試みて拒否され続け、ターンをそこに使い切る
-- **role が Agent に見せる skill を決める**（`src/adapters/claude.ts` の `SKILLS_FOR`）。
-  レビュー役にだけ `semantic-review` を渡す。実装役に渡すと「観点を満たすように書く」
+- **role がClaude Code Agentに見せるskillを決める**（`src/adapters/claude.ts`の`SKILLS_FOR`）。
+  Claude Codeのレビュー役にだけ`semantic-review`を渡す。実装役に渡すと「観点を満たすように書く」
   余地ができ、§3.1 が criteria で避けている構図がレビュー側で再発する。
   **`settingSources: []` は解かない。** ホストの `~/.claude` とリポジトリの `.claude` を
   読ませない判断はそのままで、controller が名指しした plugin（`plugins/ent-review/`）
@@ -302,6 +319,8 @@ Codex を足すときに Planner 側のコードを変えなくて済む形に�
   そのために `ActorInvocation` が `goalId` を運ぶ——宣言部は作業ツリーに commit 済みで
   入っているので、**どのファイルを読めばよいかだけを渡せば意図が届く**
   （`intent` に載るのは constraints だけで、`desired_state` は載らない）
+  Codexのreview roleにはこのClaude pluginを渡さず、Codex向けのrole別promptと
+  `reviewed_sha:` / `verdict:`の出力契約で同じ観測境界へ接続する
 - **worktree の名前が (goal.id, role) から決まる**（`worktreeNameFor`）。
   **`review` は `implement` と同じ作業ツリーを見て、`investigate` だけが分かれる。**
   当初は3つとも分けていたが、分けると**レビューの対象が実装に永久に追いつかない**。
@@ -455,7 +474,7 @@ Goal のライフサイクル
 
   WAITING_HUMAN(reason: review_pending)     レビュー承認待ち
   WAITING_EXTERNAL(reason: ci_running)      CI 完了待ち
-  WAITING_EXTERNAL(reason: usage_limit)     Claude の使用量上限。resume_after を持つ
+  WAITING_EXTERNAL(reason: usage_limit)     選択したLLM/Actorの使用量上限。resume_after を持つ
   BLOCKED(reason: budget_exhausted)         予算・回数・時間の上限に到達
 ```
 
@@ -474,10 +493,13 @@ ESCALATE の結果として Goal は BLOCKED か WAITING_HUMAN に遷移する�
 終端の Goal を ACTIVE に戻さない。COMPLETED を後から取り消せると、
 §9 の完了判定そのものが意味を失う。やり直すなら DB の状態を明示的に戻す。
 
-Claude Max には5時間ローリングの使用量上限と週次上限がある。
-何時間も走る controller はいずれ必ず当たるので、クラッシュではなく
+LLM/Actor providerには時間枠や契約に応じた使用量上限がある。
+何時間も走る controller は上限に当たりうるので、クラッシュや即時再試行ではなく
 `WAITING_EXTERNAL(usage_limit)` に落ちて、リセット時刻まで寝て自動再開する。
 リセット時刻が取れなければ指数バックオフ。
+DECIDEだけでなくActorの実行中に上限へ達した場合も、失敗分類、トークン、生ログをRunへ残し、
+guardが当該ACTを`WAIT(usage_limit)`へ差し替える。これにより次ティックの別providerのDECIDEが、
+同じACTを即座に再試行する経路を作らない。
 
 ### 4.5 データモデル
 
@@ -497,7 +519,8 @@ Verification  goal_id, reconcile_seq, criterion_id, result, reason,
 Decision      goal_id, reconcile_seq, observed_digest, action, rationale,
               decided_by, decided_at
 Run           goal_id, intent, actor, role, worktree, attempt, status, started_at,
-              finished_at, exit_code, log_ref, tokens, artifacts, detail
+              finished_at, exit_code, log_ref, tokens, artifacts, detail,
+              error_kind, actor_resume_after
 LlmCall       goal_id, purpose, tokens, log_ref, ok, called_at
 
 Criteria      未作成。criteria は Goal YAML が正
@@ -547,7 +570,7 @@ GitHub が一時的に落ちただけで直したはずの Gap が復活する�
 `Goal` の `lease_owner` / `lease_until` が「1 Goal につき reconcile は同時に1つ」を担保する。
 行ロックではなく期限付きの所有権にすることで、プロセスがクラッシュしても自動で解放される。
 
-**ティックが走っているあいだは期限を延長し続ける。** ACT は Claude Code の実行なので
+**ティックが走っているあいだは期限を延長し続ける。** ACT は選択した Actor の実行なので
 分単位でかかる（§9 の実測では、1ティック目に 1,341,349 tokens を消費している）。
 `leaseSeconds` は 300 なので、延長しないと ACT の途中で期限が切れる。cron から回す構成
 （§3.6）では、そこで別プロセスが lease を奪い、同じ worktree（名前は (goal.id, role) から
@@ -571,7 +594,7 @@ UPDATE goals
 .goals/<slug>.yaml            人間が編集。Git 管理。宣言部のみ
 .goals/.state/goals.db        SQLite。機械のみが書く。gitignore
 .goals/.state/runs/<run-id>/  Agent の生ログ・diff。DB にはパスだけ持つ
-.goals/.state/worktrees/<slug>/ Actor が読み書きする worktree（実装役とレビュー役。§4.2）
+.goals/.state/worktrees/<slug>/ 実装役とレビュー役が共有するworktree。実装役が書き、レビュー役が読む（§4.2）
 .goals/.state/worktrees/<slug>-investigate/ 調べる役の worktree
 ```
 
@@ -622,7 +645,7 @@ PRAGMA foreign_keys = ON;
 - Goal の登録と永続化。Desired State と Acceptance Criteria は `.goals/*.yaml` に手書き
 - OBSERVE（GitHub Issue / PR / CI、ローカル repo）
 - ASSESS（ギャップ算出）、PLAN / REPLAN、DECIDE
-- ACT（Claude Code の headless 実行、git worktree 隔離）
+- ACT（選択した Actor の非対話実行、git worktree 隔離）
 - VERIFY（`command` = 検証コマンド、`fact` = CI ステータスなど観測値との照合、`human` = 人間承認）
 - 状態機械、ポーリング、write-ahead 永続化、予算とループ上限、使用量上限での自動待機
 - 通知と承認は GitHub の PR コメント + CLI 標準出力で完結させる。
@@ -639,13 +662,16 @@ PRAGMA foreign_keys = ON;
   1体のまま**で、Decision も1ティックに1行のままにしてある。協働は同時ではなく
   ティックをまたいだ交代で成立させる。同じティックに2体を走らせると、Run の確定・
   lease・write-ahead の前提（§3.6 / §4.5）まで変わる。
-  **ここで言う並列は1ティックの内側の話になる。** Goal を N 本並べて別プロセスで回すこと
-  （§10-12 のサブ Goal）は別の軸で、lease が Goal 単位なので（§4.5）そちらは元から成立する
-- Codex CLI の実装（`kind` の型だけ用意）
+  **ここで言う並列は1ティックの内側の話になる。** Goal単位のleaseがあるためデータモデル上は
+  N本を別プロセスで扱えるが、同一ディレクトリでの並列実行は状態DBの指紋変化を
+  保護パス違反と誤検知するため現在未対応。README「複数のGoalを同時に回す」のとおり、
+  この制約が解けるまでは1本ずつ回す
+- ~~Codex CLI の実装~~（`ENT_ACTOR=codex`またはphase別指定で非対話JSONL Adapterを選ぶ）
 - L5 改善レイヤー（History は貯めるだけ、学習はしない）
 
-Notion と Slack を外したことで、MVP の外部依存が GitHub 1つになり、
-認証も GitHub token と Claude Code の OAuth だけで済む。
+Notion と Slack を外したことで、MVP の外部依存が GitHub 1つになった。
+既定の Claude Code 運用では GitHub token と Claude Code の OAuth だけで済み、
+Codex を選ぶ場合は Codex CLI の保存済みログインも必要になる。
 「Adapter を差し替えられる」という価値提案の検証は MVP 完了後に回る。
 Phase 3 も GitHub 単独の自己ホストなので、そこでは検証されない。
 
@@ -674,7 +700,7 @@ Phase 3 も GitHub 単独の自己ホストなので、そこでは検証され�
 | 領域 | 採用 | 理由 |
 |---|---|---|
 | ランタイム | Node.js 24（`mise.toml` で固定） | ネイティブモジュールの安定性 |
-| Actor 実行 | `@anthropic-ai/claude-agent-sdk` | Claude Code のライブラリ版。`claude -p` の exec と違い権限制御・hooks・セッション管理を API で扱える。Max の OAuth をそのまま使う |
+| Actor 実行 | `@anthropic-ai/claude-agent-sdk` / `codex exec --json` | 共通指定とphase別上書きから選ぶ。Codexは保存済み認証と非対話JSONLを使う |
 | スキーマ | Zod | Agent 出力の検証ゲートと YAML バリデーションを同一定義で兼ねる |
 | YAML | `yaml`（eemeli） | コメント保持のラウンドトリップ編集。機械が書き戻すなら必須 |
 | DB | `node:sqlite`（Node 標準） | 同期 API でコードが素直。Node 22.13 以降はフラグなしで使える（22.5 で導入、それ以前は無い）。`mise.toml` が Node 24 を固定し、`engines` も `>=24` にしてあるため常に使える。better-sqlite3 + Drizzle の採用予定を取り下げた（下記） |
@@ -738,7 +764,7 @@ mise run check                                      サプライチェーンと 
 
 ```yaml
 budget:
-  max_actor_runs: 20              # 1 Goal あたりの Claude Code 起動回数
+  max_actor_runs: 20              # 1 Goal あたりの Actor 起動回数
   max_reconciles: 50
   max_wall_clock: 6h
   max_consecutive_failures: 3
@@ -1005,7 +1031,7 @@ VERIFIED で汚れていれば `ESCALATE(uncommitted_changes)` にする（§10-
   だけでは足りず、関門そのものと検証系まで含める（選び方は §7）
 - controller が持つ資格情報を Agent に渡さず、外部コマンドを argv 配列で叩く（同じく §7）
 
-1つ目は `policies.protected_paths` として宣言し、controller が ACT の外側で
+2つ目は `policies.protected_paths` として宣言し、controller が ACT の外側で
 worktree の変更を検査する。Agent 側の `disallowedTools` は残したまま二重にする。
 片方は Agent の設定、もう片方は controller の判定で、破れ方が違う。
 
@@ -1125,10 +1151,13 @@ MVP を止める未確定は残っていない。**他のリポジトリで回�
    応答ヘッダ `anthropic-ratelimit-unified-status` から作られる。`resetsAt` は
    **秒**（実装が `Date.now()/1000` と引き算している）。`assistant` メッセージの
    `error: "rate_limit"` は上限と一時的な 429 の両方に付くので、単体では根拠にならず、
-   直前に `rejected` を見ているかで判断する。Port は `PortError("usage_limit")` を投げ、
-   DECIDE の guard が `WAIT(usage_limit, resumeAfter)` を返す。
-   なおこれらはドキュメントに記載が無く、根拠は Claude Code の実装読解にある。
-   SDK が変われば黙って壊れるので、Port を触るときに読み直す
+   直前に `rejected` を見ているかで判断する。DECIDEのPortは
+   `PortError("usage_limit")`を投げ、DECIDEのguardが`WAIT(usage_limit, resumeAfter)`を返す。
+   ActorのPortは同じ分類をRunの`errorKind`と`resumeAfter`へ保存し、controllerのguardが
+   元のACTを`WAIT(usage_limit, resumeAfter)`へ差し替える。CodexではJSONLの`error`または
+   `turn.failed`を最終メッセージより優先し、stdoutとstderrを生ログへ残す。
+   Claude Agent SDKの使用量上限判定はドキュメントに記載が無く、根拠はClaude Codeの
+   実装読解にある。SDKが変われば黙って壊れるので、Claude側のPortを触るときに読み直す
 4. ~~**人間の承認をどの signal で検知するか**~~ — Phase 3 の2本目で確定し、
    MVP レビューで**認可**を足した。誰が書いたかを見ていなかったので、公開リポジトリでは
    通りすがりの1行で `type: human` の criterion が VERIFIED になった。
@@ -1363,7 +1392,7 @@ MVP を止める未確定は残っていない。**他のリポジトリで回�
     残っていない」と言い切るティックで、前者は終端であとから取り消せず（§4.4）、
     後者は次のティックまで機械側が何もしない。`VERIFY` は criteria のコマンドを流すだけで
     worktree に1行も書かないので、やることは残っていても**残っているやることが書き残しを
-    解消しない**。判定は `leavesWorkUncommitted`（`src/domain/guard-rules.ts`）が正になる。どちらのティックでも、worktree に
+    解消しない**。判定は `leavesWorkUncommitted`（`src/domain/guard-rules.ts`）が正になる。いずれのティックでも、worktree に
     未 commit の変更が残っていてはいけない。差し替えないのは `WAIT(usage_limit)` だけで、
     あれは判断そのものを保留しただけなので、待てば続きがある（§10-5）。
     **材料は既にあった `local.dirty` を読む。** 観測を足していない。VERIFY と同じく
@@ -1535,8 +1564,10 @@ MVP を止める未確定は残っていない。**他のリポジトリで回�
     同時に回す」）、依存待ちの1本が枠を持ち続けると、進める側の Goal まで cron の1周で
     回らなくなる。
     **依存待ちのあいだも `activated_at` は立っている。** `ent start` は `DRAFT` から
-    `ACTIVE` に直行する（§4.4）ので、`max_wall_clock`（§7）は待っている時間ごと数える。
-    まとめて登録するときは、後続の Goal に長めの上限を書く。
+    `ACTIVE` に直行する（§4.4）。依存関門が`skipped`を返し続ける間は予算判定そのものへ
+    到達しないため、循環依存では`max_wall_clock`でも止まらない。依存が解消した次のティックでは、
+    依存待ちがDecisionの`WAIT`ではないため待機時間を差し引けず、`activated_at`からの時間を
+    含めて`max_wall_clock`を評価する。まとめて登録するときは、後続のGoalに長めの上限を書く。
     **依存先が終端に落ちた場合は、待ちと分けて数える。** `dependencyGate` は
     `pending`（まだ COMPLETED でない。待てば進む）と `unreachable`（`FAILED` /
     `ABANDONED`。待っても解けない）を別に返す（この `pending` は依存の分類で、§3.1 の
@@ -1578,3 +1609,5 @@ MVP を止める未確定は残っていない。**他のリポジトリで回�
   [Amp Event-Driven Orbs](https://ampcode.com/news/event-driven-orbs)
 - **L5（研究段階）**: [EvoRoute](https://arxiv.org/pdf/2601.02695)
 - **ドキュメント**: [Claude Agent SDK](https://code.claude.com/docs/en/agent-sdk)
+- **ドキュメント**: [Codex non-interactive mode](https://developers.openai.com/codex/noninteractive/)
+- **ドキュメント**: [Codex SDK](https://learn.chatgpt.com/docs/codex-sdk)

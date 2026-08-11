@@ -1,9 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { commandRunner } from "../src/adapters/local.js";
 import {
+  CLAUDE_ACTOR_WITHHELD_ENV,
+  CODEX_ACTOR_WITHHELD_ENV,
   NEUTRALIZED_ENV,
   VERIFY_WITHHELD_ENV,
-  WITHHELD_ENV,
   withheldEnv,
 } from "../src/domain/withheld-env.js";
 
@@ -53,6 +54,18 @@ describe("VERIFY に渡す環境変数", () => {
     }
   });
 
+  it("Codex の資格情報も検証コマンドに渡らない", async () => {
+    process.env.CODEX_API_KEY = SECRET;
+    try {
+      const runner = commandRunner(process.cwd());
+      const result = await runner.run("printenv CODEX_API_KEY || true");
+
+      expect(result.stdout).not.toContain(SECRET);
+    } finally {
+      delete process.env.CODEX_API_KEY;
+    }
+  });
+
   it("落とさないものは渡る", async () => {
     // 全部落とすと `mise run test` が動かない。PATH が通っていることを見る。
     const runner = commandRunner(process.cwd());
@@ -64,7 +77,7 @@ describe("VERIFY に渡す環境変数", () => {
 
   it("VERIFY 側の除去リストは Actor 側を包含する", () => {
     // 片方にだけ足す変更を落とす。VERIFY の方が広く落とす側。
-    for (const key of WITHHELD_ENV) {
+    for (const key of [...CLAUDE_ACTOR_WITHHELD_ENV, ...CODEX_ACTOR_WITHHELD_ENV]) {
       expect(VERIFY_WITHHELD_ENV).toContain(key);
     }
   });

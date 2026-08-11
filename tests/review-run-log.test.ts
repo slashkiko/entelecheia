@@ -49,6 +49,18 @@ function log(finalMessage: string): string {
   ].join("\n");
 }
 
+function codexLog(finalMessage: string): string {
+  return [
+    JSON.stringify({ type: "thread.started", thread_id: "thread-1" }),
+    JSON.stringify({
+      type: "item.completed",
+      item: { type: "agent_message", text: finalMessage },
+    }),
+    JSON.stringify({ type: "turn.completed", usage: { input_tokens: 10, output_tokens: 2 } }),
+    "",
+  ].join("\n");
+}
+
 function port(runs: Run[], logs: Record<string, string> = {}) {
   const read: string[] = [];
   return {
@@ -80,6 +92,14 @@ describe("どの Run を読むか", () => {
     // 「対象が無い」は取りこぼしではない。observe はこれを受けて
     // Fact も unobserved も作らない。
     expect(await review.latest()).toBeNull();
+  });
+
+  it("Codex の agent_message からも最終メッセージを返す", async () => {
+    const { review } = port([run({ actor: "codex" })], {
+      "/runs/1/log.jsonl": codexLog("verdict: approved"),
+    });
+
+    expect(await review.latest()).toEqual({ runId: "1", finalMessage: "verdict: approved" });
   });
 
   it("investigate 役の Run からは読まない", async () => {

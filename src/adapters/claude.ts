@@ -9,14 +9,14 @@ import type { ApprovalGate } from "../domain/goal.js";
 import type { LlmCall } from "../domain/llm-call.js";
 import { PortError } from "../domain/port-error.js";
 import type { ActorRole } from "../domain/run.js";
-import { WITHHELD_ENV, withheldEnv } from "../domain/withheld-env.js";
+import { CLAUDE_ACTOR_WITHHELD_ENV, withheldEnv } from "../domain/withheld-env.js";
 
 /**
  * 除去リストの置き場所は domain に移した。VERIFY 側（src/adapters/local.ts）も
  * 同じものを見る必要があるため。ここから再輸出しているのは、既存の呼び出し元と
  * テストが `adapters/claude` を参照しているのを壊さないため。
  */
-export { WITHHELD_ENV };
+export { CLAUDE_ACTOR_WITHHELD_ENV };
 
 /**
  * Claude Code 向けの ActorPort と LlmPort。Claude Agent SDK の query() を使う。
@@ -117,7 +117,7 @@ export function claudeActor(options: ClaudeOptions): ActorPort {
           // 読ませたい skill だけを、controller の側から名指しで渡す（SKILLS_FOR）。
           ...skillOptionsFor(role),
           // controller の資格情報を Agent のシェルに残さない。
-          env: withheldEnv(options.env ?? process.env),
+          env: withheldEnv(options.env ?? process.env, CLAUDE_ACTOR_WITHHELD_ENV),
         });
       } catch (error) {
         // 中断されたなら throw で返さない。act が catch すると logRef を落とすので、
@@ -160,7 +160,7 @@ export function claudeLlm(options: ClaudeOptions): LlmPort {
           allowedTools: [],
           permissionMode: "default",
           settingSources: [],
-          env: withheldEnv(options.env ?? process.env),
+          env: withheldEnv(options.env ?? process.env, CLAUDE_ACTOR_WITHHELD_ENV),
         });
       } catch (error) {
         // 失敗した呼び出しもトークンは消費している。記録しないと §7 の
