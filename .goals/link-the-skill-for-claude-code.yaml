@@ -1,0 +1,250 @@
+version: 1
+
+goal:
+  id: link-the-skill-for-claude-code
+  name: ent を他のリポジトリで回すとき、そこのエージェントが手順書に辿り着ける
+  desired_state: |
+    ent は自分の置き場所と対象リポジトリを分けて扱う（`repoRoot = process.cwd()`、
+    src/cli.ts）。ent 本体は1つビルドしておき、対象リポジトリのルートで叩けばよい。
+
+    その使い方をしたとき、**対象リポジトリで作業しているエージェントは ent の
+    手順書を読めない。** SKILL.md は ent 本体の `.claude/skills/ent/` にあり、
+    project scope の skill は対象リポジトリからは見えない。
+
+    同じ skill でも、controller がレビュー役に読ませる `ent-review` は問題に
+    ならない。plugin のパスを `import.meta.url` から引いているので、対象
+    リポジトリがどこであっても ent 本体の側で解決される。
+
+    ```ts
+    // src/adapters/claude.ts
+    const REVIEW_PLUGIN_DIR = fileURLToPath(new URL("../../plugins/ent-review", import.meta.url));
+    ```
+
+    controller が起動する Agent には配布口があり、**人間の側のエージェントが読む
+    手順書にだけ同等の口が無い。** 埋めるのはその非対称になる。
+
+    ## なぜ symlink なのか
+
+    埋め方は skill のシンボリックリンクにする。**Claude Code は `AGENTS.md` を
+    読まない**（公式ドキュメントが "Claude Code reads CLAUDE.md, not AGENTS.md"
+    と書いている）ので、そこに在り処を書いてもエージェントには届かない。skill は
+    ディレクトリのシンボリックリンクを辿って `SKILL.md` を読む仕様なので、
+    そちらに乗る。手順書を写すのではなく、実体を1つのまま指す。
+
+    ## なぜ user scope なのか
+
+    張る先は `~/.claude/skills/ent` にする。ent 本体はマシンに1つ入る
+    （`pnpm link --global`）ので、skill の登録も1回で済む形が釣り合う。
+
+    対象リポジトリの中（`<repo>/.claude/skills/ent`）に張ると、向け先が ent 本体の
+    絶対パスなのでマシン固有になり、commit すれば他の人の手元で壊れる。gitignore
+    すれば避けられるが、そのぶん各自が `ent init` を叩き直すことになる。user scope
+    なら、`ent init` を叩いていないリポジトリからでも読める。
+
+    ## 何が満たされていればよいか
+
+    どう作るかは Actor が決める。以下は満たすべき性質を書く。
+
+    1. `ent init` が `~/.claude/skills/ent` を張る
+
+      置き場（`~/.claude/skills/`）が無ければ作る。張るのはシンボリックリンクで、
+      向け先は ent 本体の `.claude/skills/ent` になる。実体は写さない。
+
+    2. `.goals/` や `.gitignore` と同じ扱いにする
+
+      冪等にする。2度目は張り直さない。`--json` の `entries` に
+      `created` / `kept` を出す。**repoRoot の外に作るものなので、出力に出ないと
+      人間は気づけない。**
+
+    3. 同じ名前が既に埋まっていれば、黙って差し替えない
+
+      別の場所を指す symlink だったときと、実体のディレクトリだったときは、
+      終了コード 1 で断る。中身は消さない。**どちらが正かを決めるのは ent では
+      ない。** 断ったときは対象リポジトリにも何も作らない。作ってから
+      気づかせない。
+
+    4. 断る条件は今までどおり
+
+      git のワークツリーのルートでなければ、これまでどおり 1 で断る。
+      **断ったのに `$HOME` だけ書き換わる、を作らない。**
+
+    5. 既存のサブコマンドの挙動を変えない
+
+      `.goals/` と `.gitignore` の行と Goal YAML の雛形は今までどおり置く。
+      `ent init` 以外の引数の解釈も出力も終了コードも動かさない。
+
+    ## 仕様は既にテストとして枝の上にある
+
+    `tests/cli-init-skill-link.test.ts` は、人間が先に書いてこのブランチへ commit
+    してある。着手時点で10件落ちる。**Actor がやるのはテストを緑にすることで、
+    テストを書くことではない。** テストを弱めて緑にすることは失敗にあたる。
+
+    `$HOME` はテストの `beforeEach` で一時ディレクトリに差し替えてある。
+    `os.homedir()` は `HOME` を見るので、実際の `~/.claude/skills/` を触らずに
+    確かめられる。
+
+    ## 触れない場所が2つある
+
+    `src/wiring/index.ts`（合成ルート）と `src/adapters/local.ts` は
+    `PROTECTED_PATH_FLOOR` に入っていて、Goal 側では外せない。したがって
+    **`InitProbes` に項目を足す形は採れない。** Port を増やせば合成ルートを
+    書き換えることになり、関門が `ESCALATE(protected_path_touched)` で止める。
+
+    向け先を `src/usecase/init.ts` の側で `import.meta.url` から、置き場を
+    `os.homedir()` から解決すれば、合成ルートに触らずに済む。上に引いた
+    `REVIEW_PLUGIN_DIR` が前半と同じことをしている。これは前例であって、
+    この形にしろという指定ではない。
+
+    ## 1度目の試行との違い
+
+    この Goal は作り直しになる。1度目は対象リポジトリの `AGENTS.md` に手順書への
+    絶対パスを書く形で実装し、PR まで進んだ（#51）。レビューで「AGENTS.md だと
+    Claude Code に対応できない」「skill のシンボリックリンクの方が AI エージェントの
+    仕組みに乗れる」「ユーザー単位で ent を入れているのに repoRoot でよいのか」の
+    3点を指摘され、いずれも事実として正しかった。AGENTS.md への追記はやめる。
+
+repository:
+  provider: github
+  owner: slashkiko
+  name: entelecheia
+  default_branch: main
+
+setup:
+  - pnpm install --frozen-lockfile
+
+acceptance_criteria:
+  - id: ac-1
+    description: 先に置いた cli-init-skill-link の仕様テストが通り、既存のテストも通ったままになる
+    verification: { type: command, run: mise run test }
+
+  - id: ac-2
+    description: 型チェックが通る
+    verification: { type: command, run: mise run typecheck }
+
+  - id: ac-3
+    description: lint と format が通る
+    verification: { type: command, run: mise run lint }
+
+  - id: ac-4
+    description: サプライチェーンと workflow のチェックが通る（baseline 由来）
+    verification: { type: command, run: mise run check }
+
+  - id: ac-5
+    description: 変更を載せた PR の CI が成功している
+    verification: { type: fact, key: github.ci.conclusion, equals: success }
+
+  - id: ac-6
+    description: 別のリポジトリのエージェントが実際に手順書を引けるかを、人間が手で確かめる
+    verification:
+      type: human
+      prompt: |
+        この Goal の成否は「別のリポジトリのエージェントが手順書を skill として
+        引けるか」で、この repo のテストが緑になったことはその証明になりません。
+        手で確かめてください。
+
+        1. 別のリポジトリで
+
+           - ent と関係の無い git リポジトリのルートで `ent init` を叩く
+           - `~/.claude/skills/ent` が張られ、辿った先に SKILL.md があるか
+           - **そのリポジトリで Claude Code を開き、ent の skill が見えるか。**
+             ここが本題です
+           - もう一度 `ent init` を叩いて、張り直されないか
+
+        2. 断るところ
+
+           - 既に `~/.claude/skills/ent` が別のものを指している状態で叩いて、
+             上書きされずに断られるか
+           - git リポジトリでない場所で叩いて、`$HOME` に何も作らずに断るか
+
+        3. この repo が壊れていないか
+
+           - この repo のルートで `ent init` を叩いても、既存の `.goals/*.yaml`
+             が上書きされないか。`ent list` と `ent get` が今までどおりか
+
+        4. 触っていないはずのところ
+
+           - README.md と docs/** に差分が無いか。README は #56 と #57 が
+             書き換え中で、ここに手を入れると衝突する
+           - 依存が増えていないか（package.json / pnpm-lock.yaml）
+           - 新しいサブコマンドが増えていないか
+
+        5. 残っているもの
+
+           **Codex 側の配布口はこの PR では埋まりません。** この repo は
+           `.agents/skills/ent` の symlink で Codex に渡していますが、対象
+           リポジトリ側にそれを作る話は入れていません。issue に残す形でよいか
+           確認してください。
+
+context:
+  background: |
+    issue #49 にあたる。ent を他のリポジトリで回す構成にしたときに、対象
+    リポジトリ側のエージェントが `ent` の手順書を読めないことが分かった。
+
+    手元では user scope（`~/.claude/skills/ent`）から repo の
+    `.claude/skills/ent` へシンボリックリンクを張って回避したが、手作業なので
+    セットアップした本人しか同じ状態を再現できない。**この Goal はその手作業を
+    `ent init` に畳む。**
+
+    1度目の試行（`point-agents-at-the-handbook`、PR #51）は AGENTS.md への
+    ポインタで実装し、レビューで否定された。Claude Code は AGENTS.md を読まない
+    ので、狙った読み手に届かない。その Goal は ABANDONED にしてある。
+
+  constraints:
+    - README.md と docs/** を触らない。README は #56 と #57 が書き換え中で、衝突する。protected_paths にも入れてある
+    - "`.claude/**` を編集しようとしない。Actor の Edit はそこで permission_denied になる。手順書に書きたいことがあれば、実装のコメントに残して人間に投げる"
+    - 新しいサブコマンドを足さない。`tests/docs-contract.test.ts` が README と SKILL.md への掲載を要求する
+    - "`InitProbes` に項目を足さない。合成ルート（src/wiring/index.ts）は下限の保護パスで編集できない"
+    - 依存を足さない。`node:fs` と `node:os` と `node:url` で済ませる
+    - 手順書の実体を写さない。symlink で指すだけにする
+    - 対象リポジトリの中に skill を作らない。向け先がマシン固有の絶対パスになるので、commit されると他の人の手元で壊れる
+    - "`tests/cli-init-skill-link.test.ts` は仕様なので変更しない。通らないなら実装側を直す"
+    - 既存の tests/ も弱めない
+    - テストの外で `$HOME` を書き換えない。実際の `~/.claude/` を触らない
+    - controller のティックの経路（observe / decide / act / verify）に触れない
+    - 下書きや調査用のファイルを worktree の外（`/tmp` など）に置かない。関門は worktree の外への書き込みを一律に `escaped_worktree` として止めるので、そこで人間待ちになる
+
+  references:
+    - title: ent init の本体。ここに手を入れることになる
+      path: src/usecase/init.ts
+    - title: 仕様。着手時点では落ちている
+      path: tests/cli-init-skill-link.test.ts
+    - title: import.meta.url から ent 本体の側のパスを解決する前例（REVIEW_PLUGIN_DIR）
+      path: src/adapters/claude.ts
+    - title: 下限として必ず混ざる保護パス（PROTECTED_PATH_FLOOR）
+      path: src/domain/goal.ts
+    - title: 指す先の実体
+      path: .claude/skills/ent/SKILL.md
+
+policies:
+  require_human_approval:
+    - merge
+    - force_push
+    - push_to_default_branch
+    - deploy
+    - secret_access
+    - external_send
+  # 下限（PROTECTED_PATH_FLOOR）はスキーマが必ず混ぜるので、ここには足す分だけ書く。
+  protected_paths:
+    # #56 と #57 が書き換え中。衝突させないために関門でも止める。
+    - README.md
+    - docs/**
+    # 検証系。ここを書き換えられると Agent が自分の criteria を通せる。
+    - mise.toml
+    - mise-tasks/**
+    - vitest.config.ts
+    - biome.json
+    - tsconfig*.json
+    - .github/**
+    # 依存の追加は人間が通す。
+    - package.json
+    - pnpm-lock.yaml
+    # ブランチ名の規則と PR 本文。この Goal 自身が走っている足場になる。
+    - src/act/**
+    - src/publish/**
+
+budget:
+  max_actor_runs: 8
+  max_reconciles: 20
+  max_wall_clock: 3h
+  max_consecutive_failures: 3
+  max_unchanged_reconciles: 4
