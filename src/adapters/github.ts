@@ -225,7 +225,8 @@ export function githubCodeWriter(options: GitHubOptions): CodeWriterPort {
  *    いない状況でも承認できる経路。criterion 単位で書ける。**こちらは PR の
  *    作成者も数える。** 1人で開発しているあいだ 1. が成立しない以上、ここでも
  *    作成者を外すと `type: human` の criterion を満たす経路が無くなる。
- *    Agent が作成者名義で書く経路は拒否リストで塞ぐ（design.md §10-4）
+ *    Agent が作成者名義で書く経路は、拒否リストではなく **Agent の中の `gh` を
+ *    未認証にすることで塞ぐ**（`NEUTRALIZED_ENV`。理由は design.md §10-4）
  *
  * 粒度が違うことに注意する。レビュー承認は PR 全体に対するもので、
  * criterion を選べない。したがって `type: human` の criteria すべてを満たす。

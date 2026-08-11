@@ -48,11 +48,15 @@ git で見る。ただし見えるのはリポジトリの中の変更だけで�
 検証系**にあたる。選び方の基準は design.md §7 にある。
 
 controller が持つ資格情報（`GITHUB_TOKEN` / `GH_TOKEN` と、`gh auth token` から読んだ
-token）は Agent に渡さない。git は argv 配列で叩き、
+token）は Agent に渡さない。**環境変数を落とすだけでなく、Agent と検証コマンドの中の
+`gh` を未認証にする**（`GH_CONFIG_DIR` を実在しないディレクトリへ向ける）。
+`HOME` は渡すしかないので、落とすだけではホストのログインが残る。
+git は argv 配列で叩き、
 シェルを通すのは Goal YAML の `setup` と `verification.run` だけにする。
 `type: human` の承認は、リポジトリに書き込み権限がある人のものだけを数える。
 レビュー承認は PR の作成者を除くが、**コメントの定型文は作成者も数える**。
-1人で回すリポジトリではそこが唯一の承認経路になる（design.md §10-4）。
+1人で回すリポジトリではそこが唯一の承認経路になるので、Agent がその経路に
+届かないことが承認の前提になる（design.md §10-4）。
 
 Goal の状態（ACTIVE / COMPLETED など）は `.goals/.state/goals.db` が持つ。
 行動の `COMPLETE` と Goal の状態 `COMPLETED` は別のもので、前者が選ばれた結果として後者になる。

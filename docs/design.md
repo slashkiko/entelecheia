@@ -771,6 +771,13 @@ Agent SDK の `env` は「マージではなく置き換え」なので、`proce
 `GITHUB_TOKEN` / `GH_TOKEN` を落として渡す。push と PR は controller だけが行うので、
 Actor 側にトークンが要る場面はそもそも無い。
 
+**落とすだけでは足りない。** `gh` はトークンの環境変数が無ければ
+`$HOME/.config/gh/hosts.yml` のログインに落ちる。`HOME` は渡すしかない
+（`mise` も `pnpm` も動かなくなる）ので、除去リストの届かないところに認証が
+残っていた。`NEUTRALIZED_ENV` が `GH_CONFIG_DIR` を実在しないディレクトリへ
+向けて、Actor と検証コマンドの中の `gh` を未認証にする。**消す側だけでなく、
+上書きして無効化する側も要る**（`src/domain/withheld-env.ts`。塞ぎたい経路は §10-4）。
+
 **git を argv 配列で叩く。** 外部コマンドをテンプレート文字列で組み立てると、
 引数のどれか1つでも controller の制御下に無ければシェルインジェクションになる。
 `gitBranch.push` はブランチ名を worktree から読むが、worktree の中身は Actor が
@@ -1076,15 +1083,23 @@ MVP を止める未確定は残っていない。**他のリポジトリで回�
    一度は自己承認を塞ぐために作成者を除外したが、**塞ぎたかったのは「Agent が作成者
    名義で定型文を書く」経路であって、人間の作成者ではなかった。** 承認できる人を
    減らす形で塞ぐと、§9 の「完了判定」を通した手順そのものが再現できなくなる。
-   **その経路は拒否リストで塞ぐ。** コメント投稿を落とす `external_send` は
-   `APPROVAL_GATE_FLOOR` にあってどの Goal からも外せず（§7）、controller 自身の
-   進捗コメントは `PROGRESS_MARKER` が除外する。role ごとのプロンプトにも
-   「承認の定型文を書かない」を明記して三重にしてある
-   （`src/adapters/github.ts` の `githubApproval`、`src/adapters/claude.ts` の
-   `DENIED_TOOLS`、`tests/github-write.test.ts`）。
-   **残る前提は、拒否リストが SDK の設定でしかないこと**（§10-6）。SDK の外から
-   同じ操作をされれば素通りするので、「Agent に PR コメントを書かせない」統制の
-   強さが、そのまま `type: human` の承認の強さになる。
+   **その経路は資格情報を届かせない側で塞ぐ。** 拒否リストだけでは足りない。
+   コメント投稿を落とす `external_send` は `APPROVAL_GATE_FLOOR` にあって
+   どの Goal からも外せない（§7）が、中身は glob なので
+   `gh api -X POST`（`--method POST` の別綴り）にも `sh -c` 経由の間接呼び出しにも
+   一致しない。**書ける形を数え上げる統制は、1つ書き落とした時点で穴になる。**
+   しかも `WITHHELD_ENV` が落とすのはトークンの環境変数だけで、`HOME` は渡すしか
+   ないので、Actor の中の `gh` は controller を動かしている人間の認証で通っていた。
+   いまは `NEUTRALIZED_ENV` が `GH_CONFIG_DIR` を実在しないディレクトリへ向け、
+   **Actor と検証コマンドの両方で `gh` を未認証にする**
+   （`src/domain/withheld-env.ts`。VERIFY 側も塞ぐのは、Actor が書いたテストが
+   controller の権限で走るため。§10-9）。
+   そのうえで、controller 自身の進捗コメントは `PROGRESS_MARKER` が除外し、
+   role ごとのプロンプトにも「承認の定型文を書かない」を明記してある。
+   **残る前提は2つ。** 1つは、`gh` 以外の手段（生の HTTPS 要求）を書かれたら
+   届くこと。`Bash(curl *)` は拒否リストにあるが、これも書ける形の数え上げに
+   戻る。もう1つは、拒否リストもプロンプトも SDK の設定でしかないこと（§10-6）。
+   資格情報を渡さない側は SDK の外でも効くので、そこだけは層が違う。
    レビュー承認は PR 全体に対するものなので `type: human` の criteria すべてを満たす。
    変更要求が最新として残っていれば、どちらの経路でも承認しない。定型文は行全体で
    照合する。引用やコード例の中の同じ文字列を承認と読むと、捏造した承認が作れてしまう
