@@ -64,6 +64,26 @@ git で見る。ただし見えるのはリポジトリの中の変更だけで�
 **関門そのもの（Agent の拒否リストを決めるファイルを含む）と検証系**になる。選び方の基準は
 design.md §7 にある。
 
+### push と PR 作成を人間の手に残す
+
+`policies.require_human_approval` が止めるのは Agent の操作で、controller 自身の push と
+PR 作成には効かない。そちらを止めるのは `policies.publish` になる。
+
+```yaml
+policies:
+  publish:
+    push_branch: auto
+    # チームで使うリポジトリなら manual にする。PR の作成はレビュアーへの
+    # 通知を伴い、取り消しても通知は戻らない。
+    open_pull_request: manual
+```
+
+書かなければ、これまでどおり push も PR 作成も自動で進む。`manual` にした段は controller が
+行わず、そのティックは `WAITING_HUMAN` で止まる。止めた段と、人間が何をすれば進むのかは
+`ent get <slug>` の `decision` に出る。`open_pull_request` を止めた場合は、人間が PR を
+立てれば次のティックがそれを見つけて先へ進む（宣言はそのままでよい）。名前を
+`require_human_approval` と分けた理由は design.md §7 にある。
+
 ### Agent に渡さない資格情報
 
 controller が持つ資格情報（`GITHUB_TOKEN` / `GH_TOKEN` と、`gh auth token` から読んだ token）は

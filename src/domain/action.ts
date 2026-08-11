@@ -67,6 +67,25 @@ export const escalateReasonSchema = z.enum([
    */
   "shape_mismatch",
   /**
+   * `policies.publish.push_branch: manual` を宣言しているので push しなかった。
+   *
+   * `protected_path_touched` とは別に立てる。あちらは「触ってはいけないものに
+   * 触れた」で、こちらは**人間がそう宣言したから止まった**になる。前者は worktree を
+   * 掃除しないと進まないが、後者は人間が自分で push すれば進む。同じ WAITING_HUMAN に
+   * 畳まれるので、reason を分けないと `ent list` からは見分けられない。
+   *
+   * 宣言部のキー名をそのまま reason にしてある。読んだ人間が `.goals/<slug>.yaml` の
+   * どの行を書き換えれば挙動が変わるのかを、翻訳表なしで辿れるようにする。
+   */
+  "push_branch_declared_manual",
+  /**
+   * `policies.publish.open_pull_request: manual` を宣言しているので PR を作らなかった。
+   *
+   * push は済んでいるので、人間が PR を立てれば次のティックがそれを見つけて進む
+   * （`findPullRequest`）。宣言を書き換えなくても解ける側の停止になる。
+   */
+  "open_pull_request_declared_manual",
+  /**
    * 実装が進まないまま、レビュー役だけを回そうとしている。
    *
    * 直近のレビューが現在の HEAD を既に読んでいるあいだ、DECIDE は選べる行動から

@@ -1,7 +1,7 @@
 import { worktreeNameFor } from "../act/index.js";
 import type { Decision } from "../domain/action.js";
 import { errorMessage } from "../domain/error-message.js";
-import type { Goal } from "../domain/goal.js";
+import { type Goal, type PublishStep, publishPolicyOf } from "../domain/goal.js";
 import { DEFAULT_ACTOR_ROLE, type Run } from "../domain/run.js";
 import type { Verification } from "../domain/verification.js";
 
@@ -106,6 +106,14 @@ export interface PublishResult {
   commented: boolean;
   /** PR の外に進捗を書いた結果。宛先の指定が無ければ null */
   report: ReportResult | null;
+  /**
+   * 宣言（`policies.publish`）で止めた段。止めていなければ null。
+   *
+   * `skipped` の文面と別に持つ。あちらは人間が読む1行で、こちらは controller が
+   * 「このティックは人間待ちで終わる」を決めるために読む値になる。文字列の
+   * 部分一致で分岐させると、文面を直した瞬間に停止条件が黙って消える。
+   */
+  held: PublishStep | null;
   /** 何もしなかった理由。した場合は null */
   skipped: string | null;
 }
@@ -124,6 +132,10 @@ export interface PublishResult {
  *   通知に失敗しただけでティック全体を落とさない
  * - `deps.report` があれば、進捗は PR ではなくそちらに書く（`ent run --report`）。
  *   push と PR の確保は止めない。移すのは通知の宛先だけになる
+ * - `policies.publish` で `manual` と宣言された段は行わない。行わなかったことを
+ *   `held` に載せて返す。**黙って何もしない経路は作らない。** 押せなかったのと
+ *   押さないと決めていたのが同じ見た目になると、人間はどちらかを確かめに
+ *   ログを掘ることになる（design.md §7）
  */
 export async function publish(target: PublishTarget, deps: PublishDeps): Promise<PublishResult> {
   // 本文は宛先に関わらず1つ。宛先で内容が変わると、PR で読んだ人と手元で
@@ -132,7 +144,7 @@ export async function publish(target: PublishTarget, deps: PublishDeps): Promise
   // 末尾に入る時刻は、以前は push と PR 作成の往復を終えてから取っていた。ここに
   // 移したので、その往復ぶん（数秒）だけ早くなる。示したいのは「このティックが
   // いつ判断したか」なので、通信の所要時間を含まない方がむしろ近い。
-  const body = commentBody(target, deps.now(), null);
+  const body = commentBody(target, deps.now(), null, null);
 
   // PR の外に書くなら、PR の確保より先に書く。**この順序が仕様になる。**
   // 下の経路は、PR を作れない・作る段でない・まだ番号が無いといった理由で
@@ -144,11 +156,15 @@ export async function publish(target: PublishTarget, deps: PublishDeps): Promise
   // 出さない方が読めない（「回したのに出ない」と「回っていない」が同じ見た目になる）。
   const report = deps.report === undefined ? null : await deliver(deps.report, body);
 
+  /** 宣言で止めた段。`ensurePullRequest` が決める。null なら止めていない */
+  let held: PublishStep | null = null;
+
   const nothing = (skipped: string): PublishResult => ({
     prNumber: target.prNumber,
     created: false,
     commented: false,
     report,
+    held,
     skipped,
   });
 
@@ -159,6 +175,8 @@ export async function publish(target: PublishTarget, deps: PublishDeps): Promise
 
   try {
     const ensured = await ensurePullRequest(target, deps);
+    // 止めた段は、早く return する経路でも必ず返す。`nothing` はこの変数を読む。
+    held = ensured.held;
     if (ensured.skipped !== null && prNumber === null) {
       return nothing(ensured.skipped);
     }
@@ -187,6 +205,7 @@ export async function publish(target: PublishTarget, deps: PublishDeps): Promise
       created,
       commented: false,
       report,
+      held,
       skipped: `進捗は PR ではなく ${report.destination} に書いた`,
     };
   }
@@ -209,26 +228,42 @@ export async function publish(target: PublishTarget, deps: PublishDeps): Promise
   //
   // push が落ちたティックも必ず書く。同じ理由で、観測が変わらないまま push だけ
   // 落ち続ける状態を黙って飛ばすと、PR は静かなまま人間が待ち続ける。
+  //
+  // 宣言で止めたティックも同じ扱いにする。止まっているあいだ観測は動かないので、
+  // 初回しか書かなければ PR は静かなまま人間が待つ。宣言したのは人間だが、
+  // 「いま止まっている」を知らせないのは押せなかったときと同じ壊れ方になる。
   if (
     target.previousDigest === target.digest &&
     !stoppedByGuard(target.decision) &&
-    pushFailure === null
+    pushFailure === null &&
+    held === null
   ) {
-    return { prNumber, created, commented: false, report, skipped: "観測が前のティックと同じ" };
+    return {
+      prNumber,
+      created,
+      commented: false,
+      report,
+      held,
+      skipped: "観測が前のティックと同じ",
+    };
   }
 
   try {
-    // push が落ちたときだけ本文を作り直す。`body` は push より前に作るので、
-    // 落ちたことをまだ知らない。通常のティックでは作り直さない。
-    const withFailure = pushFailure === null ? body : commentBody(target, deps.now(), pushFailure);
-    await deps.writer.addComment(prNumber, withFailure);
-    return { prNumber, created, commented: true, report, skipped: null };
+    // push が落ちた、あるいは宣言で止めたときだけ本文を作り直す。`body` は push より
+    // 前に作るので、どちらもまだ知らない。通常のティックでは作り直さない。
+    const withNotice =
+      pushFailure === null && held === null
+        ? body
+        : commentBody(target, deps.now(), pushFailure, held);
+    await deps.writer.addComment(prNumber, withNotice);
+    return { prNumber, created, commented: true, report, held, skipped: null };
   } catch (error) {
     return {
       prNumber,
       created,
       commented: false,
       report,
+      held,
       skipped: `コメントできなかった: ${errorMessage(error)}`,
     };
   }
@@ -267,7 +302,12 @@ async function deliver(sink: ProgressSink, body: string): Promise<ReportResult> 
 async function ensurePullRequest(
   target: PublishTarget,
   deps: PublishDeps,
-): Promise<{ prNumber: number | null; created: boolean; skipped: string | null }> {
+): Promise<{
+  prNumber: number | null;
+  created: boolean;
+  held: PublishStep | null;
+  skipped: string | null;
+}> {
   // 制御ループ自体に触れた変更は push もしない（design.md §7）。
   // remote に出た時点で、通常の変更として流れる余地が生まれる。
   // 検査できなかった場合も同じ扱いにする。関門が動いていない状態で push するのは、
@@ -276,7 +316,21 @@ async function ensurePullRequest(
     return {
       prNumber: target.prNumber,
       created: false,
+      held: null,
       skipped: "保護パスの関門が通っていないので push も PR 作成もしない",
+    };
+  }
+
+  const policy = publishPolicyOf(target.goal);
+
+  // 宣言で止まる段は、実行する前に返す。**「押してから無かったことにする」形は
+  // 取れない。** remote に出たブランチも、飛んだ通知も戻らない。
+  if (policy.push_branch === "manual") {
+    return {
+      prNumber: target.prNumber,
+      created: false,
+      held: "push_branch",
+      skipped: "policies.publish.push_branch: manual の宣言があるので push しない",
     };
   }
   // **Run の有無で push を決めない。** ここは以前「完了した Run が無いティックでは
@@ -295,17 +349,39 @@ async function ensurePullRequest(
   );
   if (!pushed.pushed) {
     // 空の PR は通知にも検証にも使えない。
-    return { prNumber: target.prNumber, created: false, skipped: "base との差分が無い" };
+    return {
+      prNumber: target.prNumber,
+      created: false,
+      held: null,
+      skipped: "base との差分が無い",
+    };
   }
   if (target.prNumber !== null) {
     // push は済んだ。PR はもうあるので作らない。
-    return { prNumber: target.prNumber, created: false, skipped: null };
+    return { prNumber: target.prNumber, created: false, held: null, skipped: null };
   }
 
   // 作る前に必ず探す。2本目を立てるとどちらが正かを決められなくなる。
+  //
+  // **宣言で止める前に探す。** 人間が手で立てた PR がここで見つかるので、
+  // `open_pull_request: manual` のまま Goal を先へ進められる。宣言より先に
+  // 止めてしまうと、人間が PR を立てても controller はそれを一度も見ないまま
+  // 毎ティック同じところで止まり、宣言を書き換える以外に進む道が無くなる。
   const existing = await deps.writer.findPullRequest(pushed.branch);
   if (existing !== null) {
-    return { prNumber: existing, created: false, skipped: null };
+    return { prNumber: existing, created: false, held: null, skipped: null };
+  }
+
+  // 止めるのは「作る」ことだけになる。PR の作成はレビュアーへの通知を伴い、
+  // 取り消しても通知は戻らない。push（ブランチが remote に出るだけ）とは
+  // 戻せなさが違うので、段を分けて宣言できるようにしてある。
+  if (policy.open_pull_request === "manual") {
+    return {
+      prNumber: null,
+      created: false,
+      held: "open_pull_request",
+      skipped: "policies.publish.open_pull_request: manual の宣言があるので PR を作らない",
+    };
   }
 
   const number = await deps.writer.createPullRequest({
@@ -314,7 +390,7 @@ async function ensurePullRequest(
     title: target.goal.goal.name,
     body: pullRequestBody(target.goal),
   });
-  return { prNumber: number, created: true, skipped: null };
+  return { prNumber: number, created: true, held: null, skipped: null };
 }
 
 /**
@@ -402,7 +478,12 @@ export const PROGRESS_MARKER = "<!-- ent:progress -->";
  * action と rationale だけでは「何が残っているか」が読めないので、
  * criteria ごとの Verification.result を並べる。
  */
-function commentBody(target: PublishTarget, now: Date, pushFailure: string | null): string {
+function commentBody(
+  target: PublishTarget,
+  now: Date,
+  pushFailure: string | null,
+  held: PublishStep | null,
+): string {
   const rows = target.verifications.map(
     (v) => `| \`${v.criterionId}\` | ${MARKERS[v.result]} ${v.result} | ${oneLine(v.detail)} |`,
   );
@@ -416,6 +497,9 @@ function commentBody(target: PublishTarget, now: Date, pushFailure: string | nul
     ...(pushFailure === null
       ? []
       : [`> [!WARNING]`, `> push できなかった: ${oneLine(pushFailure)}`, ""]),
+    // 宣言で止めたことも先頭に出す。落ちたのではないので WARNING にはしない。
+    // 下の criteria が全部緑でも、その先は人間が進める、という但し書きになる。
+    ...(held === null ? [] : [`> [!NOTE]`, `> ${HELD_NOTES[held]}`, ""]),
     // 改行を潰す。承認の定型文は行単位で照合されるので、本文の途中に
     // 独立した1行を作らせない。目印による除外と二重にしておく。
     flatten(target.decision.rationale),
@@ -433,6 +517,16 @@ function commentBody(target: PublishTarget, now: Date, pushFailure: string | nul
     `<sub>decided_by: ${target.decision.decidedBy} / digest: \`${target.digest.slice(0, 12)}\` / ${now.toISOString()}</sub>`,
   ].join("\n");
 }
+
+/** 宣言で止めた段を、PR を読む人間に1行で伝える文面 */
+const HELD_NOTES: Record<PublishStep, string> = {
+  push_branch:
+    "`policies.publish.push_branch: manual` の宣言があるので push していない。" +
+    "この PR は、宣言より前に押された分のままになる。",
+  open_pull_request:
+    "`policies.publish.open_pull_request: manual` の宣言があるので、" +
+    "controller は PR を作らない。",
+};
 
 const MARKERS: Record<Verification["result"], string> = {
   passed: "🟢",

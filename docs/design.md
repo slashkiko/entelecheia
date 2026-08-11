@@ -868,6 +868,52 @@ DECIDE の LLM 呼び出しは `LlmCall.tokens` に残す（§4.5）。あとか
 - `src/**` 全体も入れない。Agent が実装するのはまさにそこで、丸ごと保護すると
   このツールが仕事をできなくなる
 
+### publish を宣言で止める
+
+上の承認ゲート（`policies.require_human_approval`）が止めるのは **Agent** の操作になる。
+書いたゲートは `DENIED_TOOLS`（`src/adapters/claude.ts`）の対応行を拒否パターンに変えるだけで、
+**controller 自身の行動には1つも効かない**。push と PR 作成を行っているのは
+controller の publish（§9）なので、「PR を勝手に立てるな」を宣言する口が無かった。
+実際、Goal を回した次のティックで PR が立ち、人間が確認しようとした時点では
+レビュアーへの通知も飛んでいた。取り消しても通知は戻らない。
+
+**ゲートの意味は広げず、別の宣言にする。** `policies.publish` を新設し、
+`push_branch` と `open_pull_request` をそれぞれ `auto` / `manual` で宣言する。
+`require_human_approval` に `open_pull_request` を足す形は採らない。同じ列挙が
+主体（Agent / controller）によって別の関門に効くことになり、しかも対応する
+`DENIED_TOOLS` の行が無い値だけが Agent 側で素通りする。読み手からは、どの値が
+どちらに効くのかを名前から見分けられない。
+
+| 宣言 | 止める主体 | 効く先 |
+|---|---|---|
+| `policies.require_human_approval` | Agent | Actor に渡す拒否ツール（`deniedOperations`） |
+| `policies.publish` | controller | `src/publish/index.ts` の push と PR 作成 |
+
+値は「承認の要否」ではなく**実行主体**にしてある（`auto` = controller、`manual` = 人間）。
+承認を検知して先へ進む仕組み（`/ent approve`、§10-4）は criteria にしか無く、publish には
+無い。「承認待ち」と読める名前を付けると、どこかに承認する口があるはずだと探させることになる。
+
+段を2つに分けたのは、戻せなさが違うため。push はブランチが remote に出るだけだが、
+PR の作成はレビュアーへの通知を伴う。「ブランチは出してよいが PR は人間が立てる」を
+書けるようにする。
+
+**既定は `auto` で、下限（floor）は置かない。** `PROTECTED_PATH_FLOOR` と
+`APPROVAL_GATE_FLOOR` が下限を持つのは、書き換えられると関門そのものが働かなくなる
+ためで、こちらは止めなければ従来どおり動くだけになる。既定を `manual` に倒すと、
+いま回っている Goal が全部止まる。
+
+止めたティックは `ESCALATE(push_branch_declared_manual)` か
+`ESCALATE(open_pull_request_declared_manual)` になり、状態は `WAITING_HUMAN` に移る。
+**COMPLETE も上書きする。** PR が1本も無いまま「終わった」と言い切ると完了判定が
+意味を失う。理由を段ごとに分けてあるのは、`ent list` が出すのが種別と理由だけだから
+（§4.4 のとおり `WAITING_HUMAN` には他の理由も畳まれる）。人間が何をすれば進むのかは
+`decision.rationale` に書いて `ent get` と PR コメントの両方に出す。
+
+`open_pull_request` を止めた Goal は、**人間が PR を立てれば宣言を書き換えなくても進む**。
+publish は作る前に必ず同じ head の PR を探すので（`findPullRequest`）、次のティックが
+それを見つけて先へ行く。止めているのは「作る」ことだけで、既にある PR への進捗コメントは
+止めない。
+
 ### 資格情報と外部コマンド
 
 **トークンは Agent に渡さない。** Bash を許している以上、`printenv` も
