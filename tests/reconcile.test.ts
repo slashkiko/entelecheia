@@ -42,6 +42,8 @@ const GOAL: Goal = {
 function deps(over: Partial<ReconcileDeps> = {}): ReconcileDeps {
   const llm: LlmPort = { chooseAction: async () => ({ type: "VERIFY" }) };
   return {
+    // レビュー役はまだ走っていない。Fact も unobserved も作らない側の既定。
+    review: { latest: async () => null },
     code: {
       getPullRequest: async () => null,
       getLatestCiRun: async () => null,

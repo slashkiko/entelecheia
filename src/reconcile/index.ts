@@ -89,6 +89,9 @@ export async function reconcile(
   const decision = await decide(
     {
       criteria,
+      // 検証結果まで含めた Fact を渡す。DECIDE がここを読むのは
+      // 「レビュー役を選択肢に載せてよいか」の1点だけで、guard の判定には使わない。
+      facts,
       assessment,
       unresolved,
       observedDigest,

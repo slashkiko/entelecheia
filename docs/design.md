@@ -329,12 +329,57 @@ Phase 0 では Port の camelCase フィールド名との対応表がどこに�
 実行そのものだからで、`github.pr.review_decision`（GitHub 上の人間または bot の
 レビュー）とは別物になる。`verdict` と対で `reviewed_sha` を置くのは、「通った」だけでは
 いつの時点のコードのレビューか分からず、実装が進んだあとの Fact をそのまま完了判定に
-使うことになるため。**作る側はまだ無い。** `role: review` の ACT を出す経路が無く、
-レビュー役をいつ起動するかは別の Goal に分けてある。キーだけ先に登録してあるのは、
-Goal YAML が `verification: { type: fact, key: review.verdict, equals: approved }` と
-書けるようにするためで、Fact が無い間は Gap が残り COMPLETE には届かない（§3.1）。
-guard に「レビューを通れ」という条件は足していない。完了判定の境界（§7）を
-動かさずに済む形を選んである。
+使うことになるため。Goal YAML が
+`verification: { type: fact, key: review.verdict, equals: approved }` と書けば、
+Fact が無い間は Gap が残り COMPLETE には届かない（§3.1）。guard に
+「レビューを通れ」という条件は足していない。完了判定の境界（§7）を動かさずに済む
+形を選んである。
+
+作る側は `ReviewPort`（`src/observe/index.ts`）になる。`role: review` で走った Run の
+生ログ（§4.6 の `runs/<run-id>/log.jsonl`）から最終メッセージを読み、observe が
+それを Fact にする。`ObserveTarget` ではなく Port を足す形にしたのは、
+`ObserveTarget` を組み立てる `observeTargetOf` が `src/controller/index.ts`
+（`PROTECTED_PATH_FLOOR` の中）にあるためで、「どの Run を読むか」は Port の側で解決する。
+**レビュー役が言った文字列は、まだ Fact ではない。** `verdict:` の行は行全体で照合し
+（§10-4 と同じ理由。本文の途中に現れた同じ文字列を結論として拾うと、捏造した承認が
+作れる）、行が無い・2つ以上ある・2値のどちらでもない・読んだ commit の sha が
+決まらないときは、どちらのキーも Fact にせず `pending` として `unobserved` に残す。
+`shape_mismatch` にはしない。あちらは guard が即 ESCALATE する「待っても直らない」失敗で、
+レビュー役は毎回同じ出力を返すとは限らない。レビュー役を1度も起動していない
+ティックでは、Fact も `unobserved` も作らない。
+
+sha は本文中の 40 桁を数える。同じ sha を何度述べても1つと数え、違う sha が並んで
+いたら、どれを読んだ結果なのか決められないので `pending` に落とす。**これが既定の
+経路になる。** その手前に `reviewed_sha:` の行を1つだけ見る経路を置いてあるが、
+この綴りはどこからも要求されていない。レビュー役のプロンプト（`src/adapters/claude.ts`）が
+言うのは「読んだ commit の sha を述べる」ことだけで、`PROTECTED_PATH_FLOOR` の中に
+あるので、要求する側を足すことはできない。したがって名指しの行は、レビュー役が
+たまたまその形で書いたときだけ効く追加の経路であって、暗黙の契約を読む側で
+吸収し切ったわけではない。**数えるだけの規則が落とす出力——差分の比較元を完全形で
+併記する、`git log` の出力を1行引用する。どれも指示に従った書き方になる——は、
+大半のティックで依然として落ちる。** 落ち方は Fact を作らず `pending` に残す
+安全側で、待てばレビューを回し直せる。名指しを既定の規約にするにはプロンプト側に
+要求する1行が要り、それは `PROTECTED_PATH_FLOOR` を動かす話になる。ここで
+読む側だけを直して「吸収した」と書かない。
+
+起動する側は DECIDE のプロンプトになる。選べる行動に `role: review` の ACT を1つ足し、
+`review.reviewed_sha` が `local.head_sha` と一致しているあいだは——実装が1行も
+進んでいないということなので——その選択肢を理由付きで外す。判定を guard に足さないのは、
+レビューをいつ回すかを決定論に置くと「レビューを通れ」という条件を完了判定の手前に
+足したのと同じになるため。外したはずのレビュー役を LLM が返し続け、再試行を使い切った
+場合だけ `ESCALATE(review_not_converging)` で止める（`invalid_decision` に畳まない）。
+
+**選択肢を出すのは、criteria がレビューの結論を求めている Goal だけになる。** Gap は
+LLM を動機づけるだけで起動を絞りはしないので、無条件に出すと `review.verdict` を
+1文字も書いていない Goal でもレビュー役が起動できる。予算1回分の話にとどまらない。
+レビュー役の Run が1つできると、その最終メッセージが読めなかったティックは
+`review.*` が `pending` として `unresolved` に積まれ、Gap がゼロの Goal では
+guard の3番目（§7）が WAIT を返して LLM が呼ばれない。もう一度レビューを回すという
+選択そのものができず、`latest()` は同じ Run を返し続けるので pending は自力で消えない。
+criteria に書いた Goal は verdict が欠ければ Gap が立って回復できるので、
+**書いていない Goal だけが COMPLETE に届かなくなる**という逆転になる。起動の口を
+criteria に閉じておけば、その Run が最初から存在しない。ここも guard の判定ではなく、
+LLM に見せる選択肢の範囲になる。
 
 `github.pr.review_decision` は REST の `pulls/{n}` と `pulls/{n}/reviews` から導出する。
 GraphQL なら1回で取れるが、ETag による conditional request（§3.4）が効くのは REST の

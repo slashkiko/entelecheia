@@ -17,6 +17,7 @@ import {
   STATE_IGNORE_LINE,
   stateDirIgnored,
 } from "../adapters/local.js";
+import { reviewRunLog } from "../adapters/review-run.js";
 import type { ControllerDeps } from "../controller/index.js";
 import { errorMessage } from "../domain/error-message.js";
 import type { Goal } from "../domain/goal.js";
@@ -70,6 +71,10 @@ export function tickPorts(
     branch: gitBranch(worktrees),
     local: localRepo(verifyRoot(stateDir, goal)),
     command: commandRunner(verifyRoot(stateDir, goal)),
+    // レビュー役の結論は、この controller が起動した Run の生ログから読む
+    // （design.md §4.6 の `runs/<run-id>/log.jsonl`）。Run を選ぶ材料は
+    // 実行時状態の側にあるので、Store から取る。
+    review: reviewRunLog({ listRuns: () => store.listRuns(goal.goal.id) }),
     // 承認はレビュー承認と PR コメントの定型文の2つで検知する（design.md §10-4）。
     // PR がまだ無い Goal では常に未承認になる。捏造した承認を作らない。
     approval: approval(goal, store.getState(goal.goal.id)?.prNumber ?? null),

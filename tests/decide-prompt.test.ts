@@ -122,6 +122,8 @@ function spyLlm(): LlmPort & { calls: string[] } {
 function target(over: Partial<DecideTarget> = {}): DecideTarget {
   return {
     criteria: CRITERIA,
+    // レビュー役を起動してよいかを見る材料。この fixture では観測が無い。
+    facts: [],
     assessment: assessment(GAPS),
     unresolved: [HUMAN_UNRESOLVED, PORT_UNRESOLVED],
     observedDigest: "digest-1",

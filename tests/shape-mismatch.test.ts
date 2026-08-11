@@ -85,6 +85,8 @@ describe("応答の形が違うとき", () => {
         local: {
           snapshot: async () => ({ branch: "main", headSha: "a".repeat(40), dirty: false }),
         },
+        // レビュー役はまだ走っていない。Fact も unobserved も作らない側の既定。
+        review: { latest: async () => null },
         now: () => new Date("2026-08-09T09:00:00.000Z"),
       },
     );
@@ -107,6 +109,8 @@ describe("応答の形が違うとき", () => {
         local: {
           snapshot: async () => ({ branch: "main", headSha: "a".repeat(40), dirty: false }),
         },
+        // レビュー役はまだ走っていない。Fact も unobserved も作らない側の既定。
+        review: { latest: async () => null },
         now: () => new Date("2026-08-09T09:00:00.000Z"),
       },
     );
@@ -141,6 +145,7 @@ describe("shape_mismatch の倒し方", () => {
             verification: { type: "command", run: "mise run test" },
           },
         ],
+        facts: [],
         assessment: { assessedAt: NOW, gaps: [], satisfied: true },
         unresolved: [
           { key: "github.pr", reason: "shape_mismatch", detail: "応答の形が想定と違う" },

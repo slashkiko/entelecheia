@@ -36,6 +36,8 @@ const UNMET: Gap = { criterionId: "ac-1", kind: "unmet", detail: "exit_code=1" }
 function target(): DecideTarget {
   return {
     criteria: CRITERIA,
+    // レビュー役を起動してよいかを見る材料。この fixture では観測が無い。
+    facts: [],
     assessment: { assessedAt: NOW.toISOString(), gaps: [UNMET], satisfied: false },
     unresolved: [],
     observedDigest: "digest-1",

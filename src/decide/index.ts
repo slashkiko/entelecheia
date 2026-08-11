@@ -1,7 +1,12 @@
 import { type Action, actionSchema, type Decision, type WaitReason } from "../domain/action.js";
 import { errorMessage } from "../domain/error-message.js";
-import type { Unresolved } from "../domain/fact.js";
-import { criterionFactKey } from "../domain/fact-keys.js";
+import { type Fact, type Unresolved, verifiedOnly } from "../domain/fact.js";
+import {
+  criterionFactKey,
+  LOCAL_HEAD_SHA_KEY,
+  REVIEW_REVIEWED_SHA_KEY,
+  REVIEW_VERDICT_KEY,
+} from "../domain/fact-keys.js";
 import type { Assessment, Gap } from "../domain/gap.js";
 import { type AcceptanceCriterion, type Budget, durationSeconds } from "../domain/goal.js";
 import { isUnavailable, isUsageLimit, resumeAfterOf } from "../domain/port-error.js";
@@ -48,6 +53,13 @@ export interface DecideTarget {
    * unresolved の reason だけでは区別できず、criteria の verification 形式で分かれる。
    */
   criteria: readonly AcceptanceCriterion[];
+  /**
+   * OBSERVE と VERIFY が集めた Fact。
+   *
+   * guard の判定には使わない。読むのは「レビュー役を選択肢に載せてよいか」
+   * （`reviewedHeadOf`）だけで、行動を決めるのは変わらず LLM になる。
+   */
+  facts: readonly Fact[];
   assessment: Assessment;
   unresolved: readonly Unresolved[];
   /** 今ティックの観測ダイジェスト。ループ検知が `usage.trailingDigest` と突き合わせる */
@@ -82,6 +94,17 @@ export const MAX_LLM_RETRIES = 2;
  * - それ以外は LlmPort に渡し、戻り値を Zod で検証する。
  *   通らなければ MAX_LLM_RETRIES 回まで再試行し、それでも駄目なら
  *   ESCALATE(invalid_decision)。検証を通らない出力は受け取らない
+ * - **レビューをいつ起動するかは guard に持たせない。** 判定は6つ目にせず、
+ *   LLM に渡す選択肢の側で表す。criteria に `review.verdict` を書いた Goal では
+ *   Fact ができるまで Gap が残るので、行動はどのみち LLM に渡る。
+ *   レビュー役の選択肢を出すのも、その criteria を書いた Goal だけにする
+ *   （`criteriaAskForReview`）。ただし直近のレビューが現在の HEAD を既に
+ *   読んでいるあいだは、同じ commit を2度レビューさせないために選択肢から
+ *   レビュー役を外し、外した理由を書く（`reviewedHeadOf`）。**外す条件は
+ *   プロンプトだけに置かない。** 同じ2つを受け取り側にも置き、外したはずの
+ *   レビュー役を返してきた出力は採用しない。criteria が求めていない Goal の分は
+ *   ESCALATE(invalid_decision)、レビュー済みの commit が HEAD のままの分は
+ *   再試行を使い切ったら ESCALATE(review_not_converging) で止まる
  * - rationale は必ず埋める。§4.5 の Decision テーブルに残す
  */
 export async function decide(target: DecideTarget, deps: DecideDeps): Promise<Decision> {
@@ -321,11 +344,19 @@ async function askLlm(
   decidedAt: string,
 ): Promise<Decision> {
   const failures: string[] = [];
+  // その Goal がレビューの結論を criteria で求めているか。求めていなければ
+  // レビュー役は選択肢に無く、返ってきても採用しない。
+  const asksForReview = criteriaAskForReview(target.criteria);
+  // レビュー役を選択肢から外しているか。外している場合は、その commit の sha。
+  const reviewedHead = reviewedHeadOf(target.facts);
+  // 外したはずのレビュー役を返してきた回数。全試行がこれなら、出力の形が
+  // 壊れているのではなく、実装が進まないままレビューだけを回そうとしている。
+  let reviewRejections = 0;
 
   for (let attempt = 0; attempt <= MAX_LLM_RETRIES; attempt += 1) {
     let raw: unknown;
     try {
-      raw = await deps.llm.chooseAction(buildPrompt(target, failures));
+      raw = await deps.llm.chooseAction(buildPrompt(target, failures, reviewedHead));
     } catch (error) {
       // 使用量上限だけは名指しで分かる（design.md §10-3）。待てば直るので
       // ESCALATE ではなく WAIT にし、§4.4 の WAITING_EXTERNAL(usage_limit) へ繋ぐ。
@@ -356,6 +387,39 @@ async function askLlm(
 
     const parsed = llmActionSchema.safeParse(raw);
     if (parsed.success) {
+      // 選択肢から外したレビュー役を返してきた。Zod は通るが採用しない。
+      // 起動してから「読む対象が前回と同じだった」と気づく形にすると、
+      // 1回分の予算を使ってから止まることになる。
+      //
+      // **「書いていない選択肢は選ばれない」を根拠に、受け取り側を空にしない。**
+      // 同じファイルの `LLM_MAY_CHOOSE` が、その油断で一度焼かれた記録を残している
+      // （ESCALATE をプロンプトから省いただけで閉じたつもりになり、実走の2回目で
+      // `ESCALATE(loop_detected)` が採用された）。選択肢から外す条件は2つあるので、
+      // 受け取り側にも同じ2つを置く。
+      if (isReviewAct(parsed.data)) {
+        // 1. criteria がレビューの結論を求めていない Goal。
+        //    この経路が空いていると、レビュー役の Run が1つできた時点で
+        //    `review.*` の pending が積まれ、Gap ゼロの Goal では guard の3番目が
+        //    WAIT を返して LLM が呼ばれなくなる。`latest()` は同じ Run を返し続けるので
+        //    pending は自力で消えず、予算が尽きるまで抜けられない
+        //    （`criteriaAskForReview` の注記に同じことが書いてある）。
+        if (!asksForReview) {
+          failures.push(
+            "レビュー役の ACT は選べない。この Goal の criteria は review.verdict も review.reviewed_sha も求めておらず、レビュー役を起動しても埋まる Gap が無い",
+          );
+          continue;
+        }
+
+        // 2. 直近のレビューが現在の HEAD を既に読んでいる。
+        if (reviewedHead !== null) {
+          reviewRejections += 1;
+          failures.push(
+            `レビュー役の ACT は選べない。直近のレビューが現在の HEAD（${reviewedHead}）を既に読んでおり、実装は1行も進んでいない。同じ commit を2度レビューさせない`,
+          );
+          continue;
+        }
+      }
+
       const action = withoutLlmResumeAfter(parsed.data);
       return {
         decidedAt,
@@ -368,6 +432,24 @@ async function askLlm(
     failures.push(parsed.error.issues.map((issue) => issue.message).join("; "));
   }
 
+  // 全試行がレビュー役だったなら、出力の形が壊れているのではない。実装が
+  // 進まないままレビューだけを回そうとしている状態で、止めた理由を読む人間には
+  // 別のものとして届く必要がある（`invalid_decision` に畳まない）。
+  //
+  // 数えるのは 2 の拒否（レビュー済みの commit が HEAD のまま）だけにする。
+  // criteria がレビューを求めていない Goal で拒否した分は数えない。あちらには
+  // レビューの往復そのものが無く、起きているのは「選択肢に無い行動を返してきた」
+  // ——COMPLETE や ESCALATE を返してきたのと同じこと——なので、
+  // `invalid_decision` の側で止まるのが正しい。理由の文言は failures に残る。
+  if (reviewRejections === MAX_LLM_RETRIES + 1) {
+    return {
+      decidedAt,
+      action: { type: "ESCALATE", reason: "review_not_converging" },
+      rationale: `実装が進まないまま、レビュー済みの commit（${reviewedHead}）を ${reviewRejections} 回ともレビューさせようとした。同じ commit を2度レビューしても Gap は埋まらない`,
+      decidedBy: "guard",
+    };
+  }
+
   // 採用できる出力が出なかった。捏造して進めるより人間を呼ぶ。
   // 判断したのは LLM ではなくこの guard なので decidedBy は "guard" にする。
   return {
@@ -376,6 +458,36 @@ async function askLlm(
     rationale: `LlmPort の出力を ${MAX_LLM_RETRIES + 1} 回とも採用できなかった: ${failures.join(" / ")}`,
     decidedBy: "guard",
   };
+}
+
+/**
+ * レビュー役を選択肢から外すか。外すなら、既に読まれている commit の sha を返す。
+ *
+ * 実装役の作業ツリーの HEAD（`local.head_sha`）と、直近のレビューが読んだ commit
+ * （`review.reviewed_sha`）が一致しているあいだは、レビューを回しても読む対象が
+ * 前回と同じになる。「レビュー → レビュー → レビュー」と回る経路を構造として塞ぐ。
+ *
+ * **この照合が成立するのは、レビュー役が実装役と同じ作業ツリーを見るから**になる
+ * （`worktreeNameFor`）。別の作業ツリーに分けると、レビュー役の HEAD は base から
+ * 動かないので `local.head_sha` と二度と一致しない。
+ *
+ * どちらかが観測できていなければ外さない。確かめられなかったことを
+ * 「同じ commit だ」と読むと、レビューが必要なティックで選択肢が消える。
+ * 見るのは VERIFIED な Fact だけで、推論で選択肢を消さない（design.md §3.1）。
+ */
+function reviewedHeadOf(facts: readonly Fact[]): string | null {
+  const verified = verifiedOnly(facts);
+  const reviewed = verified.find((f) => f.key === REVIEW_REVIEWED_SHA_KEY);
+  const head = verified.find((f) => f.key === LOCAL_HEAD_SHA_KEY);
+  if (reviewed === undefined || head === undefined || reviewed.value !== head.value) {
+    return null;
+  }
+  return String(head.value);
+}
+
+/** レビュー役として Actor を起動する ACT か */
+function isReviewAct(action: Action): boolean {
+  return action.type === "ACT" && action.role === "review";
 }
 
 /**
@@ -391,7 +503,22 @@ function withoutLlmResumeAfter(action: Action): Action {
   return action.type === "WAIT" ? { ...action, resumeAfter: null } : action;
 }
 
-function buildPrompt(target: DecideTarget, failures: readonly string[]): string {
+/**
+ * LLM に渡すプロンプトを組み立てる。
+ *
+ * `reviewedHead` が入っているティックは、選べる行動からレビュー役を外す。
+ * **黙って消さない。** 外した理由と、その commit の sha を書く。書いていない
+ * 選択肢は選ばれないが、なぜ選べないかが読めないと、LLM も人間も
+ * 「レビューを回せば埋まる Gap」を前にして同じ出力を繰り返す。
+ *
+ * criteria がレビューの結論を求めていない Goal では、レビュー役の行そのものを
+ * 出さない（`criteriaAskForReview`）。
+ */
+function buildPrompt(
+  target: DecideTarget,
+  failures: readonly string[],
+  reviewedHead: string | null,
+): string {
   const criteria = target.criteria
     .map((c) => `- ${c.id} (${c.verification.type}): ${c.description}`)
     .join("\n");
@@ -411,7 +538,8 @@ function buildPrompt(target: DecideTarget, failures: readonly string[]): string 
     `## 予算の残り\n- actor 実行: ${target.usage.actorRuns}/${target.budget.max_actor_runs}\n- reconcile: ${target.usage.reconciles}/${target.budget.max_reconciles}\n- 連続失敗: ${target.usage.consecutiveFailures}/${target.budget.max_consecutive_failures}\n- 経過時間: ${target.usage.elapsedSeconds}s/${target.budget.max_wall_clock}`,
     [
       "## 選べる行動",
-      '- {"type":"ACT","intent":"Actor に何をさせるか"} — 実装や修正で Gap を埋める',
+      '- {"type":"ACT","intent":"Actor に何をさせるか"} — 実装や修正で Gap を埋める。role を書かなければ実装役になる',
+      ...reviewActionLines(target.criteria, reviewedHead),
       '- {"type":"VERIFY"} — 検証していない criteria を確かめる。kind が unknown の Gap に使う',
       '- {"type":"WAIT","reason":"review_pending|ci_running|usage_limit|observation_failed"}',
       '- {"type":"REPLAN"} — いまの進め方では Gap が埋まらない',
@@ -433,10 +561,76 @@ function buildPrompt(target: DecideTarget, failures: readonly string[]): string 
   return sections.join("\n\n");
 }
 
+/**
+ * レビュー役に関する行。起動できるティックは選択肢として、
+ * 起動できないティックは外した理由として書く。
+ *
+ * 起動できないときに JSON の書式そのものを出さないのは、書いていない選択肢は
+ * 選ばれないという性質をここで使っているため。形だけ見せて「選ぶな」と
+ * 添えるより、選べる形を1つ減らす方が確実になる。
+ *
+ * レビューを求めていない Goal には、外した理由すら書かない。あちらには
+ * レビュー役という選択肢が最初から無く、「今回は選べない」と書けば
+ * 「いつかは選べる」と読める。
+ */
+function reviewActionLines(
+  criteria: readonly AcceptanceCriterion[],
+  reviewedHead: string | null,
+): string[] {
+  if (!criteriaAskForReview(criteria)) {
+    return [];
+  }
+  if (reviewedHead === null) {
+    return [
+      '- {"type":"ACT","role":"review","intent":"何を読んでどう判断させるか"} — 実装役とは別の Actor をレビュー役として起動する。読むだけで書けないので、これ自体は実装を進めない',
+    ];
+  }
+  return [
+    `- レビュー役の ACT は、このティックでは選べない。直近のレビューが現在の HEAD（${reviewedHead}）を既に読んでおり、実装は1行も進んでいない。同じ commit を2度レビューさせない`,
+  ];
+}
+
+/**
+ * その Goal が criteria でレビューの結論を要求しているか。
+ *
+ * **レビュー役を起動できるかどうかを、ここで criteria に紐づける。**
+ * 読むのは2箇所で、プロンプトに選択肢を出すか（`reviewActionLines`）と、
+ * 返ってきた ACT を採用するか（`askLlm`）になる。前者だけに置くと、
+ * 「書いていない選択肢は選ばれない」に受け取り側を預けたことになる。
+ *
+ * 宣言部は「レビューをいつ起動するかは criteria が作る Gap で決まる」と
+ * 書いているが、Gap は LLM を動機づけるだけで起動を絞りはしない。選択肢を
+ * 無条件に出すと、`review.verdict` を1文字も書いていない Goal でもレビュー役を
+ * 起動でき、Actor 実行1回分の予算が消える。
+ *
+ * それだけでは済まない。レビュー役の Run が1つでもできると、その最終メッセージが
+ * 読めなかったティックは `review.*` が `pending` として `unresolved` に積まれる。
+ * Gap がゼロの Goal では guard の3番目が WAIT を返して LLM が呼ばれず、
+ * 「レビューをもう一度回す」という選択そのものができない。`latest()` は同じ Run を
+ * 返し続けるので pending は自力で消えず、予算が尽きるまで WAIT が続く。
+ * criteria に書いた Goal は verdict が欠ければ Gap が立って LLM に渡るので
+ * 自力で回復でき、**書いていない Goal だけが完了に届かなくなる**という逆転が起きる。
+ * 起動の口を criteria に閉じておけば、その Run が最初から存在しない。
+ *
+ * これは guard の判定ではない。guard は5つのままで、レビューの結論を1つも見ない
+ * （`decide()` の1〜4）。ここが決めるのは、LLM に渡す行動の範囲——見せる選択肢と、
+ * 受け取る出力——だけになる。どちらも Gap が LLM に渡ったあとの話で、
+ * 完了判定の境界には触れない。
+ */
+function criteriaAskForReview(criteria: readonly AcceptanceCriterion[]): boolean {
+  const reviewKeys = new Set<string>([REVIEW_VERDICT_KEY, REVIEW_REVIEWED_SHA_KEY]);
+  return criteria.some(
+    (criterion) =>
+      criterion.verification.type === "fact" && reviewKeys.has(criterion.verification.key),
+  );
+}
+
 function describeAction(action: Action): string {
   switch (action.type) {
     case "ACT":
-      return `ACT(${action.intent})`;
+      // role も残す。`ent show` と Decision テーブルから、実装役とレビュー役の
+      // どちらを起動したティックだったかを読み分けられるようにする。
+      return `ACT(${action.role ?? "implement"}: ${action.intent})`;
     case "WAIT":
       return `WAIT(${action.reason})`;
     case "ESCALATE":
