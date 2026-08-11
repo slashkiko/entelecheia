@@ -1,0 +1,250 @@
+version: 1
+
+goal:
+  id: install-ent-from-a-built-checkout
+  name: ent を使うだけの人が、作る側のツールチェーンを通らずに入れられる
+  desired_state: |
+    README は「この repo の外のリポジトリで使う」を正式な使い方として書いている。
+    ところが、その「使うだけ」の人も contributor と同じ入口を通ることになっている。
+
+    ```sh
+    mise trust
+    mise install --locked
+    pnpm install --frozen-lockfile
+    mise run build
+    ```
+
+    **ent の実行にこれらは1つも要らない。** `src/` に mise への参照は1つも無く、
+    `ent doctor` が見る項目にも mise は入っていない。mise がこのリポジトリで
+    担っているのはツールチェーンの固定・セキュリティツールの固定・task runner の
+    3つで、どれもビルドする側のものになる。pnpm と tsc も同じで、ビルド済みの
+    `dist/cli.js` があれば要らない。使う側に残るのは Node 24 以上と gh と Actor の
+    ログインの3つだけになる。
+
+    ## 何が満たされていればよいか
+
+    どう作るかは Actor が決める。以下は満たすべき性質を書く。
+
+    1. README が使う側と作る側で分かれている
+
+      使うだけの人が `pnpm install --frozen-lockfile` に行き当たる前に、自分の
+      入口を読み終えている状態にする。使う側に載せるのは `pnpm link --global` で
+      PATH に入れる形になる。ローカルの checkout から global の bin を張るので、
+      npm への公開を待たずに書ける。
+
+      見出しの文言は決めない。順序だけを仕様として固定してある。
+
+    2. 起動の仕方の説明が、alias の直書きを正としない
+
+      いまの README は `alias ent="$ENT_NODE $(pwd)/dist/cli.js"` を入口に置いて
+      いる。alias はそのシェルセッション限りなので cron からは効かず、cron の節
+      だけが `dist/cli.js` の絶対パスを直書きすることになっている。**PATH に
+      `ent` が通っていれば、その分岐が要らなくなる。** cron の節もそれを正にする。
+
+      Node 24 以上を固定する必要そのものは消えない。cron の PATH に何が入るかは
+      環境によるので、そこは残す。
+
+    3. 配布物の輪郭が `package.json` に書いてある
+
+      `files` を置き、`bin.ent` の指す先がそこに含まれるようにする。漏れると
+      `pnpm pack` にも `npm publish` にも入口が入らず、張った symlink の先に
+      何も無い、という壊れ方になる。`src/` と `tests/` は配らない。
+
+    4. 要求する Node のバージョンが1箇所から決まる
+
+      `engines.node` と、`ent doctor` が `node:sqlite` を根拠に使っている下限が
+      同じ数字になる。2箇所に別々に書くと、片方だけ動いたときに「入るのに
+      動かない」か「動くのに入らない」のどちらかになる。下限は doctor の側が
+      正で、突き合わせられる形で公開する。
+
+    5. npm への公開はしない
+
+      `"private": true` を外さない。`npx entelecheia` の入口は公開を要するので、
+      この Goal の外に残す。公開は外向きの操作で、ループの中で決めるものではない。
+
+    ## 仕様は既にテストとして枝の上にある
+
+    `tests/package-contract.test.ts` は、人間が先に書いてこのブランチへ commit
+    してある。着手時点で `mise run test` が7件、`mise run typecheck` が下限の
+    定数の未 export で落ちる。**Actor がやるのはテストを緑にすることで、テストを
+    書くことではない。** テストを弱めて緑にすることは、この Goal では失敗にあたる。
+
+    ## 足してはいけないものが1つある
+
+    `prepare` スクリプトを足さない。ビルドを `pnpm install` に紐付けると、
+    ビルドが落ちたときに `pnpm install --frozen-lockfile` が落ちる。これは
+    **この repo の全 Goal の `setup:` に書いてあるコマンド**で、走行中の Goal を
+    含めて全部が setup の段で止まる。使う側の便利さと引き換えに、controller が
+    自分を動かせなくなる形になる。
+
+    ## README を書き換えるときに壊しやすいものが1つある
+
+    `tests/docs-contract.test.ts` は、README に**行頭が `ent <サブコマンド>` の形で
+    現れる集合**を、`agent-context` が出す実装側の集合と網羅で突き合わせる。
+    README の構成を変えるときに、どれか1つでも行頭から外れると落ちる。実在しない
+    サブコマンドを行頭に書いても落ちる。
+
+    ## 手順書（SKILL.md）には書かない
+
+    SKILL.md は CLI の**使い方**に閉じる。**入れ方はそこに入れない。** npm への
+    公開が通ったら要らなくなる記述で、使い方の手順とは寿命が違う。読み手が
+    違うから両方に書く、という理由では足りない。
+
+repository:
+  provider: github
+  owner: slashkiko
+  name: entelecheia
+  default_branch: main
+
+setup:
+  - pnpm install --frozen-lockfile
+
+acceptance_criteria:
+  - id: ac-1
+    description: 先に置いた package-contract の仕様テストが通り、既存のテストも通ったままになる
+    verification: { type: command, run: mise run test }
+
+  - id: ac-2
+    description: 型チェックが通る（下限の定数が export されていないと落ちる）
+    verification: { type: command, run: mise run typecheck }
+
+  - id: ac-3
+    description: lint と format が通る
+    verification: { type: command, run: mise run lint }
+
+  - id: ac-4
+    description: サプライチェーンと workflow のチェックが通る（baseline 由来）
+    verification: { type: command, run: mise run check }
+
+  - id: ac-5
+    description: 変更を載せた PR の CI が成功している
+    verification: { type: fact, key: github.ci.conclusion, equals: success }
+
+  - id: ac-6
+    description: 使う側の入口が実際に通るかを、人間が手で確かめる
+    verification:
+      type: human
+      prompt: |
+        この Goal の成否は「使うだけの人が contributor の入口を通らずに ent を
+        叩けるか」で、この repo のテストが緑になったことはその証明になりません。
+        手で1周してください。
+
+        1. 使う側の入口
+
+           - README の使う側の節だけを読んで、その手順どおりに
+             `pnpm link --global` を叩き、`ent doctor` が PATH から起動するか
+           - その状態で、ent と関係の無いリポジトリのルートへ移って
+             `ent init` と `ent doctor` が動くか
+           - cron の節が、PATH に `ent` が通っている前提で読めるか
+           - `pnpm pack` の中身に `dist/` が入り、`src/` と `tests/` が
+             入っていないか
+
+        2. README が読み手で分かれているか
+
+           - 使うだけの人が `mise` と `pnpm install` と `tsc` に行き当たらずに
+             読み終えられるか
+           - 作る側の手順が消えていないか
+
+        3. この Goal が閉じないもの
+
+           **`npx entelecheia` はこの PR では通りません。** npm への公開を要する
+           ので、外向きの判断として残してあります。issue に残す形でよいか
+           確認してください。
+
+        4. 触っていないはずのところ
+
+           - `"private": true` が外れていないか
+           - `package.json` に `prepare` が足されていないか。足すと
+             `pnpm install --frozen-lockfile` にビルドが紐付き、全 Goal の
+             `setup:` がビルドの失敗で止まります
+           - 依存が増えていないか（pnpm-lock.yaml）
+           - docs/** に差分が無いか
+
+        5. テストを弱めて通していないか
+
+           - `tests/package-contract.test.ts` の assert が、先に置いた時点から
+             緩められていないか
+
+context:
+  background: |
+    issue #50 にあたる。1度目の試行は収束せずに終わっている。#49 の仕様テストを
+    含む commit から `ent start` したので、Actor の worktree では #49 のテストが
+    9件落ちたままになり、ac-1 が最初から通りようがなかった。Actor はその赤を
+    埋めようとして #49 の実装を作り直し、下限の保護パスに触れて止まった。
+    その Goal（`install-ent-without-the-build-toolchain`）は ABANDONED にしてある。
+
+    今回は #49 の実装を取り込んだ base から立てる。着手時点で落ちるのは
+    `tests/package-contract.test.ts` だけになる。
+
+    README を触れるようになった点も1度目と違う。別の worktree が進めていた
+    README と docs の書き換えは main に入った（PR #53）。1度目は衝突を避けて
+    README を保護パスに入れていたが、今回は issue が挙げる直し方の1つ目
+    （README を使う側と作る側で分ける）を正面から入れる。
+
+    design.md は言語選定のところで、TypeScript を選んだときの配布の弱さについて
+    「`npx entelecheia` で試せるようにすれば十分カバーできる」と書いている。
+    設計上その手当ては済んだ扱いになっているが、`"private": true` なので実際には
+    入口が無い。**この Goal はそこまでは払わない。** 公開を要さない側——PATH に
+    `ent` を通す道——だけを通す。
+
+  constraints:
+    - docs/** を触らない。`npx` を巡る設計の記述を変えるかどうかは、公開の判断と一緒に人間が決める
+    - "`\"private\": true` を外さない。npm への公開はこの Goal の外に置く"
+    - "`prepare` スクリプトを足さない。全 Goal の setup が `pnpm install --frozen-lockfile` を通るので、ビルドの失敗が setup の失敗に化ける"
+    - 依存を足さない。pnpm-lock.yaml は protected_paths に入れてある
+    - 新しいサブコマンドを足さない
+    - SKILL.md を触らない。手順書は CLI の使い方に閉じる。入れ方は README の側だけに書く
+    - README で、行頭が `ent <語>` の行の集合を変えない。`tests/docs-contract.test.ts` が実装側の集合と網羅で突き合わせる。実在しないサブコマンドを行頭に書いても落ちる
+    - README から作る側の手順を消さない。分けるのであって、捨てるのではない
+    - "`tests/package-contract.test.ts` は仕様なので変更しない。通らないなら実装側を直す"
+    - 既存の tests/ も弱めない
+    - controller のティックの経路（observe / decide / act / verify）に触れない
+    - ビルドの出力先を変えない。`bin` と tsconfig.build.json の出力先がずれると、リンクした先に何も無い状態になる
+    - 下書きや調査用のファイルを worktree の外（`/tmp` など）に置かない。関門は worktree の外への書き込みを一律に `escaped_worktree` として止めるので、そこで人間待ちになる
+
+  references:
+    - title: 仕様。着手時点では落ちている
+      path: tests/package-contract.test.ts
+    - title: bin / engines / private の現状
+      path: package.json
+    - title: Node の下限の出どころ（node:sqlite）と doctor の detail
+      path: src/usecase/doctor.ts
+    - title: 使う側と作る側が混ざっている当のもの。alias と cron の節もここ
+      path: README.md
+    - title: README とサブコマンドの網羅集合の突き合わせ
+      path: tests/docs-contract.test.ts
+
+policies:
+  require_human_approval:
+    - merge
+    - force_push
+    - push_to_default_branch
+    - deploy
+    - secret_access
+    - external_send
+  # 下限（PROTECTED_PATH_FLOOR）はスキーマが必ず混ぜるので、ここには足す分だけ書く。
+  # **README.md と package.json はここに書かない。** この Goal はその2つを書き換える
+  # のが仕事で、保護すると自分の criteria を満たせなくなる。依存の追加は
+  # pnpm-lock.yaml 側で止める。
+  protected_paths:
+    # 設計の記述。公開の判断と一緒に人間が決める。
+    - docs/**
+    # 検証系。ここを書き換えられると Agent が自分の criteria を通せる。
+    - mise.toml
+    - mise-tasks/**
+    - vitest.config.ts
+    - biome.json
+    - tsconfig*.json
+    - .github/**
+    # 依存の追加は人間が通す。
+    - pnpm-lock.yaml
+    # ブランチ名の規則と PR 本文。この Goal 自身が走っている足場になる。
+    - src/act/**
+    - src/publish/**
+
+budget:
+  max_actor_runs: 8
+  max_reconciles: 20
+  max_wall_clock: 3h
+  max_consecutive_failures: 3
+  max_unchanged_reconciles: 4
