@@ -55,7 +55,7 @@ goal:
       - 検証コマンドを起動できなかった場合も `port_failed` のまま。
         シェルの失敗は Port の応答の形ではない
 
-    3. `runs.artifacts` を文字列の配列として読む（src/store/sqlite.ts）
+    3. `runs.artifacts` を文字列の配列として読む（src/store/index.ts）
 
       `runRowSchema` は `artifacts: z.string()` までは見るが、読む側は
       `JSON.parse(row.artifacts) as string[]` で、**パースした結果は誰も
@@ -183,7 +183,7 @@ context:
     - 既存の guard の順序を変えない。予算の枯渇はどの理由より先に止める
     - 承認の権限判定（src/adapters/github.ts の `permitted` と permission API）を
       触らない。main の AND のままにする
-    - DB のスキーマ（src/store/sqlite.ts の `SCHEMA`）を変えない。migration も
+    - DB のスキーマ（src/store/index.ts の `SCHEMA`）を変えない。migration も
       足さない。既にある `.goals/.state/goals.db` がそのまま読めること
     - 制御ループ本体（src/controller/**）と Goal の宣言部（.goals/**）は触らない。
       3点とも `escalateReasonSchema` への追加と decide / verify / store の

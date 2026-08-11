@@ -66,6 +66,22 @@ export const escalateReasonSchema = z.enum([
    * これまでどおり `WAIT(observation_failed)` のままにする。
    */
   "shape_mismatch",
+  /**
+   * 実装が進まないまま、レビュー役だけを回そうとしている。
+   *
+   * 直近のレビューが現在の HEAD を既に読んでいるあいだ、DECIDE は選べる行動から
+   * レビュー役を外す。それでも LLM がレビュー役を返し続け、再試行を使い切った
+   * 状態がこれにあたる。
+   *
+   * `invalid_decision` に畳まない。出力の形が壊れているのではなく、
+   * 同じ commit を2度レビューさせようとしている状態で、止めた理由を読む人間には
+   * 別のものとして届く必要がある。
+   *
+   * **止まるのはこの形だけになる。** `changes_requested` → 修正 → 再レビューを
+   * 繰り返す本来の非収束は、実装が毎回進むので `review.reviewed_sha` が変わり、
+   * ここでは止まらない。そちらの天井は `max_actor_runs` が受け持つ。
+   */
+  "review_not_converging",
 ]);
 export type EscalateReason = z.infer<typeof escalateReasonSchema>;
 

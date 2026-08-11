@@ -55,16 +55,9 @@ goal:
       それを組み立てる `observeTargetOf` が `src/controller/index.ts` にあるので
       FLOOR に当たる。「どの Run を読むか」は Port の側で解決し、`ObserveDeps` に
       Port を1つ足す形にする。Port の定義は `src/observe/`、実装は新しい
-      adapter ファイル。ここまでは FLOOR の外なので Actor が書く。
-      `ControllerDeps` は `ReconcileDeps` を継承しているので、型は自動で伝わる。
-
-      **合成ルートへの結線だけは Actor が書けない。** Port を実際に挿す
-      `tickPorts` はリファクタで `src/cli.ts` から `src/wiring/index.ts` へ移り、
-      そのファイルは下限に入った（design.md §7）。**この1箇所は人間が
-      `ent start` より前に commit しておく。** そうすれば関門の基準の側に入り、
-      worktree の差分には出ない（README の「ent を動かす」を参照）。
-      Actor がここを触ると `ESCALATE(protected_path_touched)` で必ず止まるので、
-      止まったら「配線が済んでいない」の合図として読む。
+      adapter ファイル、組み立ては `src/cli.ts` の `tickPorts` に置けば、
+      FLOOR のファイルを1つも触らずに配線が通る。`ControllerDeps` は
+      `ReconcileDeps` を継承しているので、型は自動で伝わる。
 
       - `verdict:` の行が見つからない、2つ以上ある、値が2値のどちらでもない
         ときは Fact を作らず、理由を付けて `unobserved` に残す。理由は
@@ -253,9 +246,7 @@ acceptance_criteria:
            - `budget` のスキーマ（`src/domain/goal.ts`）に手が入っていないか。
              ここは `PROTECTED_PATH_FLOOR` の中なので、入っていたら差し戻す
            - FLOOR の他のファイル（`src/adapters/claude.ts`、
-             `src/controller/index.ts`、`src/wiring/index.ts`）にも
-             Actor の手が入っていないか。合成ルートへの結線は人間が
-             `ent start` より前に commit する分なので、Actor の差分に出たら差し戻す
+             `src/controller/index.ts`）にも手が入っていないか
 
         5. 実際に回して確かめる
 
@@ -301,12 +292,10 @@ context:
     - Goal のスキーマ（`src/domain/goal.ts`）を触らない。`budget` に新しい項目を
       足さない（PROTECTED_PATH_FLOOR の中にあり、そもそも書けない）
     - PROTECTED_PATH_FLOOR のファイルを1つも触らない。特に
-      `src/adapters/claude.ts`（レビュー役のプロンプトと生ログの書き出し）、
-      `src/controller/index.ts`（`observeTargetOf`）、
-      `src/wiring/index.ts`（`tickPorts` の合成ルート）に手を入れずに実装する。
-      合成ルートへの結線は人間が `ent start` より前に commit しておく分なので、
-      そこが未着なら実装を進めずに人間を呼ぶ。それ以外で触りたくなったときも、
-      設計が FLOOR とぶつかっている合図として同じく人間を呼ぶ
+      `src/adapters/claude.ts`（レビュー役のプロンプトと生ログの書き出し）と
+      `src/controller/index.ts`（`observeTargetOf`）に手を入れずに配線する。
+      触りたくなったら、それは設計が FLOOR とぶつかっている合図なので、
+      実装を進めずに人間を呼ぶ
     - 他の Goal の `.goals/*.yaml` を書き換えない
     - レビュー役の権限を広げない。`src/adapters/claude.ts` の `ACTOR_TOOLS` で
       編集のツールを持つのが実装役だけであることを変えない
@@ -339,8 +328,8 @@ context:
       path: src/domain/action.ts
     - title: ActorPort の戻り値（logRef はここにある）
       path: src/act/index.ts
-    - title: Port を組み立てる場所（新しい Port の配線先。下限の中なので人間が先に書く）
-      path: src/wiring/index.ts
+    - title: Port を組み立てる場所（新しい Port の配線先）
+      path: src/cli.ts
     - title: レビュー役のプロンプトと権限（広げない）
       path: src/adapters/claude.ts
     - title: 弱めてはいけない既存の性質

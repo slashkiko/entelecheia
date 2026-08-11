@@ -91,10 +91,7 @@ controller は承認待ちで止まった。人間が待っているのは実装
 `local.dirty` だけで、観測に失敗したティックや worktree がまだ無いティックでは
 止まらない。役割が増えた（design.md §4.2）あとも、突き合わせるのは
 **実装役のブランチ**に固定してある。検証コマンドと `local.*` を観測する先が
-そちらで、レビュー役も同じ作業ツリーを読む（**ただしレビュー役を起動する経路は
-まだ無い。** 権限もプロンプトも worktree も配線済みだが、`role: review` の ACT を
-出す側が居ない。design.md §4.3）。止めた理由と次の一手は `ent get` と PR のコメントの
-両方に出す。
+そちらで、レビュー役も同じ作業ツリーを読む。止めた理由と次の一手は `ent get` と PR のコメントの両方に出す。
 
 MVP 完了後のレビューでも、同じ形の穴が残っていた。Port を注入するテストは
 `src/adapters/local.ts`（実際の git とシェル）と `src/cli.ts` の `main()` を1行も通らず、
@@ -154,14 +151,11 @@ mise run check    # サプライチェーンと workflow のチェック（basel
 別だから。`tsconfig.json` は `noEmit` で `tests/**` を含み、`bin` の実体を作るのは
 `tsconfig.build.json` の側になる。
 
-**現時点では `typecheck` と `test` が落ちる。** `lint` と `build` と `check` は通る
-（`build` は `tests/**` を見ないので、落ちているのが仕様テストだけなら影響を受けない）。
-`start-the-review-we-wired` の仕様テストを先に commit してあり、実装がまだ
-入っていない。落ち方は `.goals/start-the-review-we-wired.yaml` が着手時点の実測として
-宣言しているとおりで、main の CI（`.github/workflows/verify.yml`）も同じ理由で赤い。
+現時点では `typecheck` / `lint` / `build` / `test` / `check` の5つとも通る。
 
 Acceptance Criteria を先に書く進め方なので、Goal に着手した直後は `typecheck` と
 `test` が落ちる。それは進め方に由来する想定内の状態であって、環境の不備ではない。
+落ちる件数まで含めて、その Goal の `desired_state` が着手時点の実測として宣言する。
 
 ## ent を動かす
 

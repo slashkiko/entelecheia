@@ -3,10 +3,16 @@ import {
   type Evidence,
   type Fact,
   type Unresolved,
+  type VerifiedFact,
   type VerifyResult,
   verifiedOnly,
 } from "../domain/fact.js";
-import { criterionFactKey } from "../domain/fact-keys.js";
+import {
+  criterionFactKey,
+  LOCAL_HEAD_SHA_KEY,
+  REVIEW_REVIEWED_SHA_KEY,
+  REVIEW_VERDICT_KEY,
+} from "../domain/fact-keys.js";
 import type { AcceptanceCriterion } from "../domain/goal.js";
 import { isShapeMismatch } from "../domain/port-error.js";
 
@@ -127,6 +133,53 @@ async function runSetup(setup: readonly string[], deps: VerifyDeps): Promise<str
   return null;
 }
 
+/**
+ * レビューの結論を、読んだ commit ごと突き合わせる。
+ *
+ * verdict が approved でも、それが3コミット前のコードに対する結論なら、
+ * いまの実装は誰も読んでいない。**Fact は消さない。** 観測できたものは
+ * 観測できたとおりに残し、完了判定に使えるかどうかはここで決める。
+ * いつどの commit を読んだかを後から追えるようにするためで、その代わり
+ * 「VERIFIED だが完了判定には使えない Fact」という状態が1つ増える。
+ * 読む人間が取り違えないよう、両方の sha を evidence に書く。
+ *
+ * 突き合わせる相手が観測できていなければ、合否を出さず pending にする。
+ * 「確かめられなかった」を「不合格」にすると、観測の穴が実装の不備として
+ * PR に出る（design.md §3.1）。
+ *
+ * この照合を `type: fact` の criterion 全体には広げない。CI の結論のように
+ * 「どの commit を読んだか」を持たない観測まで巻き込むと、全部が未検証になる。
+ */
+function judgeReviewVerdict(
+  verdict: VerifiedFact,
+  expected: unknown,
+  verified: readonly VerifiedFact[],
+): Outcome {
+  const reviewed = verified.find((f) => f.key === REVIEW_REVIEWED_SHA_KEY);
+  const head = verified.find((f) => f.key === LOCAL_HEAD_SHA_KEY);
+  if (reviewed === undefined || head === undefined) {
+    const missing = reviewed === undefined ? REVIEW_REVIEWED_SHA_KEY : LOCAL_HEAD_SHA_KEY;
+    return {
+      resolved: false,
+      reason: "pending",
+      detail: `${REVIEW_VERDICT_KEY} は観測できているが、${missing} が VERIFIED な Fact として観測されていない。どの commit へのレビューかを突き合わせられないので合否を出さない`,
+    };
+  }
+
+  const current = reviewed.value === head.value;
+  const shas = `${REVIEW_REVIEWED_SHA_KEY}=${String(reviewed.value)} ${LOCAL_HEAD_SHA_KEY}=${String(head.value)}`;
+  return {
+    resolved: true,
+    passed: current && verdict.value === expected,
+    evidence: {
+      source: verdict.evidence.source,
+      detail: current
+        ? `${REVIEW_VERDICT_KEY}=${JSON.stringify(verdict.value)} expected=${JSON.stringify(expected)}（${shas}: 現在の HEAD へのレビュー）`
+        : `${REVIEW_VERDICT_KEY}=${JSON.stringify(verdict.value)} expected=${JSON.stringify(expected)}（${shas}: レビュー後に実装が進んでおり、いまの HEAD は誰も読んでいない）`,
+    },
+  };
+}
+
 async function judge(
   criterion: AcceptanceCriterion,
   observed: readonly Fact[],
@@ -157,7 +210,8 @@ async function judge(
     case "fact": {
       // 完了判定に使ってよいのは VERIFIED だけ（design.md §3.1）。
       // INFERRED しか無いキーは不合格ではなく、まだ検証できていない。
-      const fact = verifiedOnly(observed).find((f) => f.key === verification.key);
+      const verified = verifiedOnly(observed);
+      const fact = verified.find((f) => f.key === verification.key);
       if (fact === undefined) {
         return {
           resolved: false,
@@ -165,6 +219,12 @@ async function judge(
           detail: `${verification.key} が VERIFIED な Fact として観測されていない`,
         };
       }
+
+      // レビューの結論だけは、値のほかに「どの commit を読んだ結論か」を見る。
+      if (verification.key === REVIEW_VERDICT_KEY) {
+        return judgeReviewVerdict(fact, verification.equals, verified);
+      }
+
       return {
         resolved: true,
         passed: fact.value === verification.equals,

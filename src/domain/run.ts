@@ -14,11 +14,17 @@ export type ActorKind = z.infer<typeof actorKindSchema>;
 /**
  * Actor の役割。design.md §4.2 の `ActorRole` に対応する。
  *
- * 作業ツリーが分かれるのは `investigate` だけになる（`worktreeNameFor`）。
- * 当初は3つとも分けていたが、レビュー役を分けるとその作業ツリーは base から
- * 切られたままになり、`review.reviewed_sha` が実装役の HEAD と二度と一致しない。
- * 「読んだ commit が実装の HEAD と一致するときだけ結論を使う」という照合が
- * 常に不一致へ倒れるので、`review` は `implement` と同じ木を見る（§4.2）。
+ * 作業ツリーを分けるかどうかは役割ごとに決まる（`worktreeNameFor`）。分かれるのは
+ * `investigate` だけで、**レビュー役は実装役と同じ作業ツリーを読む。**
+ * 読む対象が実装役の書いたものである以上、別の木に分けると base のままの
+ * コードをレビューすることになる。
+ *
+ * **その共有は、いまや正しさの前提になっている。** 同じ commit を2度
+ * レビューさせない判定（`reviewedHeadOf`・`src/decide/index.ts`）も、古い commit への
+ * レビューを未達にする判定（`src/verify/index.ts`）も、`review.reviewed_sha` と
+ * 実装役の `local.head_sha` が一致しうることに依存している。レビュー役を別の木へ
+ * 移すと、レビュー役の HEAD は base から動かないので二度と一致せず、同じ commit を
+ * 延々レビューし続ける形に静かに変わる。移すなら、その2つの判定も一緒に直す。
  *
  * `investigate` は §4.2 が宣言している3つ目で、いまは起動する側が居ない。
  * 型に残しておくのは、あとで足すときに列挙の変更が要らないようにするため。
