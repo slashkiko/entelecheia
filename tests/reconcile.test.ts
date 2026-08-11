@@ -13,6 +13,7 @@ const GOAL: Goal = {
     id: "sample-goal",
     name: "サンプル",
     desired_state: "何かが完成している",
+    depends_on: [],
   },
   repository: {
     provider: "github",

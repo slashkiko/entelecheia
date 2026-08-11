@@ -49,7 +49,7 @@ const HUMAN_CRITERION: AcceptanceCriterion = {
 function goalWith(criteria: readonly AcceptanceCriterion[]): Goal {
   return {
     version: 1,
-    goal: { id: GOAL_ID, name: "サンプル", desired_state: "何かが完成している" },
+    goal: { id: GOAL_ID, name: "サンプル", desired_state: "何かが完成している", depends_on: [] },
     repository: {
       provider: "github",
       owner: "slashkiko",

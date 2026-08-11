@@ -287,12 +287,49 @@ export function withProtectedPathFloor(declared: readonly string[]): string[] {
 
 export const goalSchema = z.strictObject({
   version: z.literal(1),
-  goal: z.strictObject({
-    /** ファイル名の slug と一致させる。突き合わせはローダーの責務 */
-    id: z.string().regex(SLUG, "id は kebab-case で書く"),
-    name: z.string().min(1),
-    desired_state: z.string().min(1),
-  }),
+  goal: z
+    .strictObject({
+      /** ファイル名の slug と一致させる。突き合わせはローダーの責務 */
+      id: z.string().regex(SLUG, "id は kebab-case で書く"),
+      name: z.string().min(1),
+      desired_state: z.string().min(1),
+      /**
+       * この Goal より先に COMPLETED になっていなければならない Goal の id
+       * （design.md §10-12）。
+       *
+       * 分解した1本ごとに Goal を立てる方針を採ったので、順序はここに宣言する。
+       * Goal の下に Task 層は切らないため、依存を持つ層はここしかない。
+       *
+       * **宣言部に置く。** 実行時状態（`GoalState`）ではなく Goal YAML が正なのは、
+       * 依存が人間の書いた設計であって観測結果ではないため（§4.6）。
+       *
+       * 既定は空。書いていない既存の Goal はこれまでどおり単独で回る。
+       */
+      depends_on: z
+        .array(z.string().regex(SLUG, "depends_on は kebab-case の id で書く"))
+        .default([]),
+    })
+    .superRefine((goal, ctx) => {
+      // 自分自身への依存は、書けた時点で永久に進まない Goal になる。
+      // 循環はファイル1本からは見えないので、ここで見るのは自己参照だけにする。
+      if (goal.depends_on.includes(goal.id)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["depends_on"],
+          message: "depends_on に自分自身は書けない",
+        });
+      }
+      const duplicated = goal.depends_on.filter(
+        (id, index) => goal.depends_on.indexOf(id) !== index,
+      );
+      if (duplicated.length > 0) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["depends_on"],
+          message: `depends_on に同じ id が2回ある: ${[...new Set(duplicated)].join(", ")}`,
+        });
+      }
+    }),
   repository: repositorySchema,
   setup: setupSchema.default([]),
   acceptance_criteria: z.array(acceptanceCriterionSchema).min(1),
@@ -360,6 +397,11 @@ goal:
   # ところまで具体的に書く。ここが Actor に渡る本文になる。
   desired_state: |
     ここに、何が成立していれば終わりなのかを書く。
+
+  # 先に COMPLETED になっていなければならない Goal の id（design.md §10-12）。
+  # 粗いタスクを複数の Goal に割ったときの順序をここに書く。
+  # 空なら単独で回る。依存が揃うまで ent run は lease も取らずに待つ。
+  depends_on: []
 
 # 対象リポジトリに合わせて埋める。埋め忘れても ent start は通るが、
 # 最初のティックで GitHub の 404 として出る。
