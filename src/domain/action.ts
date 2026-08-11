@@ -10,7 +10,23 @@ import { actorRoleSchema } from "./run.js";
 
 /** 待ちの理由。いずれも reconcile は即 return し、次のティックを待つ */
 export const waitReasonSchema = z.enum([
-  /** レビュー承認待ち。design.md §4.4 の WAITING_HUMAN(review_pending) */
+  /**
+   * 人間の承認待ち。design.md §4.4 の WAITING_HUMAN にあたる。
+   *
+   * `review_pending` を名指しし直したもの。あちらは「人間の承認待ち」と
+   * 「controller 自身のレビュー役の結論待ち」の両方に読めた。controller の
+   * レビュー役に待つ状態は無い（レビュー役は ACT で同期に走る）ので、後者に
+   * 与える語は無く、待つ相手が人間であることを語の側に書いておく。
+   */
+  "human_review_pending",
+  /**
+   * `human_review_pending` の旧名。新しく選ぶことはない。
+   *
+   * **消さない。** decisions テーブルは読むたびに `actionSchema.parse` を通る
+   * （`listDecisions`）ので、enum から落とすと既に走っている Goal の行が
+   * そこで落ち、履歴を読み直せなくなる。語は入れ替えるのではなく足す。
+   * 遷移先は `human_review_pending` と同じ WAITING_HUMAN のままにする。
+   */
   "review_pending",
   /** CI 完了待ち。WAITING_EXTERNAL(ci_running) */
   "ci_running",
@@ -108,7 +124,7 @@ export const actionSchema = z.discriminatedUnion("type", [
     /**
      * 再開してよい時刻。分からなければ null にして指数バックオフに任せる。
      *
-     * 省略も null と同じに扱う。LLM は `{"type":"WAIT","reason":"review_pending"}` を
+     * 省略も null と同じに扱う。LLM は `{"type":"WAIT","reason":"human_review_pending"}` を
      * 返してきたが、必須にしていたせいで弾かれ、再試行に3万トークン以上かかった。
      * 「キーが無い」と「分からない」を区別しても controller の分岐は変わらない。
      */

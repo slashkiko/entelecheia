@@ -89,7 +89,7 @@ export const MAX_LLM_RETRIES = 2;
  *   ループ検知は Gap が無い場合より後に置く。空回りしていても、満たしているなら完了でよい
  * - WAIT の reason は unresolved と criteria から決める
  *     port_failed が1件でもある                  → observation_failed
- *     pending だけで、対応する criterion が human → review_pending
+ *     pending だけで、対応する criterion が human → human_review_pending
  *     pending だけで、それ以外                     → ci_running
  * - それ以外は LlmPort に渡し、戻り値を Zod で検証する。
  *   通らなければ MAX_LLM_RETRIES 回まで再試行し、それでも駄目なら
@@ -105,6 +105,12 @@ export const MAX_LLM_RETRIES = 2;
  *   レビュー役を返してきた出力は採用しない。criteria が求めていない Goal の分は
  *   ESCALATE(invalid_decision)、レビュー済みの commit が HEAD のままの分は
  *   再試行を使い切ったら ESCALATE(review_not_converging) で止まる
+ * - **WAIT も同じ手で外す。** レビュー役が `changes_requested` を返し、その commit が
+ *   まだ HEAD のままなら、待っても変わるものが無い。人間を待つ WAIT を選択肢から
+ *   外し、外した理由を書く（`changesRequestedHeadOf`）。ここもプロンプトだけに
+ *   置かず、受け取り側にも同じ条件を置く。外したはずの WAIT を返し続けて再試行を
+ *   使い切ったら ESCALATE(invalid_decision) で止まる。`review_not_converging` には
+ *   数えないし、新しい ESCALATE の理由も足さない
  * - rationale は必ず埋める。§4.5 の Decision テーブルに残す
  */
 export async function decide(target: DecideTarget, deps: DecideDeps): Promise<Decision> {
@@ -249,7 +255,10 @@ function waitReason(target: DecideTarget): WaitReason {
       .map((c) => criterionFactKey(c.id)),
   );
   if (target.unresolved.some((u) => humanKeys.has(u.key))) {
-    return "review_pending";
+    // 待つ相手が人間であることを語の側に書く。`review_pending` は
+    // 「controller のレビュー役の結論待ち」とも読めたが、レビュー役は ACT で
+    // 同期に走るので待つ状態が無く、その読みに与える語も要らない。
+    return "human_review_pending";
   }
 
   return "ci_running";
@@ -349,6 +358,8 @@ async function askLlm(
   const asksForReview = criteriaAskForReview(target.criteria);
   // レビュー役を選択肢から外しているか。外している場合は、その commit の sha。
   const reviewedHead = reviewedHeadOf(target.facts);
+  // WAIT を選択肢から外しているか。外している場合は、指摘の付いた commit の sha。
+  const changesRequestedHead = changesRequestedHeadOf(target.facts);
   // 外したはずのレビュー役を返してきた回数。全試行がこれなら、出力の形が
   // 壊れているのではなく、実装が進まないままレビューだけを回そうとしている。
   let reviewRejections = 0;
@@ -356,7 +367,9 @@ async function askLlm(
   for (let attempt = 0; attempt <= MAX_LLM_RETRIES; attempt += 1) {
     let raw: unknown;
     try {
-      raw = await deps.llm.chooseAction(buildPrompt(target, failures, reviewedHead));
+      raw = await deps.llm.chooseAction(
+        buildPrompt(target, failures, reviewedHead, changesRequestedHead),
+      );
     } catch (error) {
       // 使用量上限だけは名指しで分かる（design.md §10-3）。待てば直るので
       // ESCALATE ではなく WAIT にし、§4.4 の WAITING_EXTERNAL(usage_limit) へ繋ぐ。
@@ -418,6 +431,19 @@ async function askLlm(
           );
           continue;
         }
+      }
+
+      // 選択肢から外した WAIT を返してきた。こちらの条件は1つで、
+      // 「レビュー役が変更を求め、その commit がまだ HEAD のまま」になる。
+      //
+      // 外しているのは WAIT という行動そのものなので、reason は見ない。
+      // 待つ相手を人間から CI に付け替えても、実装が1行も進んでいない事実は
+      // 変わらず、次のティックも同じ観測から始まる。
+      if (parsed.data.type === "WAIT" && changesRequestedHead !== null) {
+        failures.push(
+          `WAIT は選べない。レビュー役が現在の HEAD（${changesRequestedHead}）に changes_requested を返しており、待っても変わるものが無い。指摘を直す ACT を選ぶ`,
+        );
+        continue;
       }
 
       const action = withoutLlmResumeAfter(parsed.data);
@@ -485,6 +511,34 @@ function reviewedHeadOf(facts: readonly Fact[]): string | null {
   return String(head.value);
 }
 
+/**
+ * WAIT を選択肢から外すか。外すなら、指摘の付いた commit の sha を返す。
+ *
+ * レビュー役が `changes_requested` を返し、その commit がまだ HEAD のままなら、
+ * 待って変わるものが何も無い。指摘を直せるのは実装役だけで、人間の承認も CI も
+ * この状態を先へ進めない。それでも DECIDE は `WAIT` を選び続けていた（issue #61）。
+ *
+ * 待つ相手として名前を与えられるものが無いので、reason を足すのではなく WAIT
+ * そのものを外す。`reviewedHeadOf` が「同じ commit を2度レビューさせない」ために
+ * レビュー役を外すのと同じ手になる。
+ *
+ * 判定は `reviewedHeadOf`（レビューが現在の HEAD を読んでいる）に verdict の
+ * 一致を重ねたもので、見るのは VERIFIED な Fact だけになる。推論で選択肢を
+ * 消さない（design.md §3.1）。確かめられていない `changes_requested` を根拠に
+ * WAIT を消すと、レビューが走っていない Goal で人間を待つ手段が無くなる。
+ *
+ * これは guard ではない。`decide()` の 1〜4 は5つのままで、完了判定の境界には
+ * 触れない。ここが決めるのは LLM に渡す行動の範囲だけになる。
+ */
+function changesRequestedHeadOf(facts: readonly Fact[]): string | null {
+  const reviewedHead = reviewedHeadOf(facts);
+  if (reviewedHead === null) {
+    return null;
+  }
+  const verdict = verifiedOnly(facts).find((f) => f.key === REVIEW_VERDICT_KEY);
+  return verdict?.value === "changes_requested" ? reviewedHead : null;
+}
+
 /** レビュー役として Actor を起動する ACT か */
 function isReviewAct(action: Action): boolean {
   return action.type === "ACT" && action.role === "review";
@@ -513,11 +567,15 @@ function withoutLlmResumeAfter(action: Action): Action {
  *
  * criteria がレビューの結論を求めていない Goal では、レビュー役の行そのものを
  * 出さない（`criteriaAskForReview`）。
+ *
+ * `changesRequestedHead` が入っているティックは、同じ手で WAIT を外す
+ * （`waitActionLines`）。
  */
 function buildPrompt(
   target: DecideTarget,
   failures: readonly string[],
   reviewedHead: string | null,
+  changesRequestedHead: string | null,
 ): string {
   const criteria = target.criteria
     .map((c) => `- ${c.id} (${c.verification.type}): ${c.description}`)
@@ -541,12 +599,11 @@ function buildPrompt(
       '- {"type":"ACT","intent":"Actor に何をさせるか"} — 実装や修正で Gap を埋める。role を書かなければ実装役になる',
       ...reviewActionLines(target.criteria, reviewedHead),
       '- {"type":"VERIFY"} — 検証していない criteria を確かめる。kind が unknown の Gap に使う',
-      '- {"type":"WAIT","reason":"review_pending|ci_running|usage_limit|observation_failed"}',
+      ...waitActionLines(changesRequestedHead),
       '- {"type":"REPLAN"} — いまの進め方では Gap が埋まらない',
       "",
       "COMPLETE と ESCALATE は選べない。完了判定と停止条件は controller が決める。",
-      "WAIT にいつまで寝るかは書けない。起きる時刻も controller が決める。",
-      "人間を待つべきだと判断したら WAIT(review_pending) を選ぶ。",
+      ...waitClosingLines(changesRequestedHead),
       // 出力形式の強制はトランスポートの責務なので adapter 側に一本化する。
       // LlmPort の契約は「戻り値を Zod で検証する」までしか言っていない。
     ].join("\n"),
@@ -559,6 +616,44 @@ function buildPrompt(
   }
 
   return sections.join("\n\n");
+}
+
+/**
+ * WAIT に関する行。選べるティックは選択肢として、
+ * 選べないティックは外した理由として書く。
+ *
+ * `reviewActionLines` と同じ手を採る。選べないときに JSON の書式そのものを
+ * 出さないのは、書いていない選択肢は選ばれないという性質をここで使っているため。
+ * 「形だけ見せて選ぶなと添える」より「選べる形を1つ減らす」方が確実になる。
+ *
+ * 外した理由には commit の sha と `changes_requested` を書く。黙って消すと、
+ * なぜ待てないのかが読めず、LLM も人間も同じ出力を繰り返す。
+ */
+function waitActionLines(changesRequestedHead: string | null): string[] {
+  if (changesRequestedHead === null) {
+    return [
+      '- {"type":"WAIT","reason":"human_review_pending|ci_running|usage_limit|observation_failed"}',
+    ];
+  }
+  return [
+    `- WAIT は、このティックでは選べない。レビュー役が現在の HEAD（${changesRequestedHead}）に changes_requested を返しており、待っても変わるものが無い。指摘を直せるのは実装役だけになる`,
+  ];
+}
+
+/**
+ * 「選べる行動」の末尾に置く、WAIT の使い方の注記。
+ *
+ * 誘い文句は形の一種なので、WAIT を外したティックには出さない。形だけ消して
+ * 「人間を待つべきだと判断したら」を残すと、消したはずの選択肢がそこから読まれる。
+ */
+function waitClosingLines(changesRequestedHead: string | null): string[] {
+  if (changesRequestedHead !== null) {
+    return [];
+  }
+  return [
+    "WAIT にいつまで寝るかは書けない。起きる時刻も controller が決める。",
+    "人間を待つべきだと判断したら WAIT(human_review_pending) を選ぶ。",
+  ];
 }
 
 /**

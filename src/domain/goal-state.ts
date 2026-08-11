@@ -1,5 +1,5 @@
 import { z } from "zod";
-import type { Action } from "./action.js";
+import type { Action, WaitReason } from "./action.js";
 
 /**
  * Goal のライフサイクル。design.md §4.4 の状態機械をそのまま型にする。
@@ -39,11 +39,21 @@ export function isTerminal(status: GoalStatus): boolean {
  * 満たすべき性質:
  * - 終端状態からは遷移しない。現在の状態をそのまま返す
  * - COMPLETE → COMPLETED
- * - WAIT(review_pending) → WAITING_HUMAN、それ以外の WAIT → WAITING_EXTERNAL
+ * - WAIT(human_review_pending | review_pending) → WAITING_HUMAN、
+ *   それ以外の WAIT → WAITING_EXTERNAL
  * - ESCALATE(budget_exhausted) → BLOCKED、それ以外の ESCALATE → WAITING_HUMAN
  * - ACT / VERIFY / REPLAN → ACTIVE
  * - ACTIVE でない状態からでも、上の対応で ACTIVE に戻れる（design.md §4.4 の ⇅）
  */
+/**
+ * 待つ相手が人間である WAIT の理由。ここに載っている分だけ WAITING_HUMAN になる。
+ *
+ * 2語あるのは名前を入れ替えたからで、意味は1つになる。`review_pending` を
+ * 落とすと、その語で書かれた過去の Decision が WAITING_EXTERNAL に化け、
+ * 人間の承認待ちが「外部待ち」として再開を待ち続ける。
+ */
+const HUMAN_WAIT_REASONS = new Set<WaitReason>(["human_review_pending", "review_pending"]);
+
 export function nextStatus(current: GoalStatus, action: Action): GoalStatus {
   if (isTerminal(current)) {
     return current;
@@ -55,7 +65,9 @@ export function nextStatus(current: GoalStatus, action: Action): GoalStatus {
 
     case "WAIT":
       // 待つ相手が人間か外部かで、次のティックが何を見に行くかが変わる。
-      return action.reason === "review_pending" ? "WAITING_HUMAN" : "WAITING_EXTERNAL";
+      // `review_pending` は `human_review_pending` の旧名で、過去の Decision を
+      // 読み直したときに同じ WAITING_HUMAN に落ちる必要がある。
+      return HUMAN_WAIT_REASONS.has(action.reason) ? "WAITING_HUMAN" : "WAITING_EXTERNAL";
 
     case "ESCALATE":
       // 人間を呼ぶ点は同じだが、上限に達したかどうかで再開の条件が違う。

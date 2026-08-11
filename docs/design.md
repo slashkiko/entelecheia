@@ -475,7 +475,7 @@ Goal のライフサイクル
 
 待機の種類（いずれも reconcile は即 return する）
 
-  WAITING_HUMAN(reason: review_pending)     レビュー承認待ち
+  WAITING_HUMAN(reason: human_review_pending)  人間の承認待ち（旧名 review_pending）
   WAITING_EXTERNAL(reason: ci_running)      CI 完了待ち
   WAITING_EXTERNAL(reason: usage_limit)     選択したLLM/Actorの使用量上限。resume_after を持つ
   BLOCKED(reason: budget_exhausted)         予算・回数・時間の上限に到達
