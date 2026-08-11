@@ -55,6 +55,7 @@ const GOAL: Goal = {
     id: GOAL_ID,
     name: "サンプル",
     desired_state: "何かが完成している",
+    depends_on: [],
   },
   repository: {
     provider: "github",
@@ -111,6 +112,7 @@ function spy(): Spy {
       ensured.push({ name, baseBranch });
       return { path: `/tmp/entelecheia/worktrees/${name}`, branch: worktreeBranchFor(name) };
     },
+    commit: async () => true,
     changedPaths: async () => [],
     repoDirtyState: async () => new Map(),
   };

@@ -10,7 +10,12 @@ const NOW = new Date("2026-08-09T05:00:00.000Z");
 
 const GOAL: Goal = {
   version: 1,
-  goal: { id: "sample-goal", name: "サンプル", desired_state: "何かが完成している" },
+  goal: {
+    id: "sample-goal",
+    name: "サンプル",
+    desired_state: "何かが完成している",
+    depends_on: [],
+  },
   repository: {
     provider: "github",
     owner: "slashkiko",

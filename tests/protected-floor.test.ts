@@ -106,6 +106,7 @@ describe("保護パスの下限", () => {
     expect(PROTECTED_PATH_FLOOR).toContain("src/adapters/local.ts");
     expect(PROTECTED_PATH_FLOOR).toContain("src/domain/withheld-env.ts");
     expect(PROTECTED_PATH_FLOOR).toContain("src/domain/guard-rules.ts");
+    expect(PROTECTED_PATH_FLOOR).toContain("src/wiring/index.ts");
   });
 
   it("guard が読む規則は、下限に入っているファイルの中に居る", () => {
@@ -152,7 +153,39 @@ describe("保護パスの下限", () => {
       expect(covered, `${name} の置き場 ${home} が CODEOWNERS に無い`).toBe(true);
     }
   });
+
+  it("関門への入力を決める配線も、下限と CODEOWNERS の中に居る", () => {
+    // 規則と同じ理由で押さえる。`guardBaseOf` を守っても、その規則へ渡る観測を
+    // 作る Adapter の注入と `verifyRoot` が外に出ていれば、関門は別の作業ツリーを
+    // 見たまま毎ティック緑を返す。規則側と同じく、**宣言が実際にどのファイルに
+    // あるか**をソースから読んで、その置き場が両方に入っていることまで見る。
+    const floor = new Set<string>(PROTECTED_PATH_FLOOR);
+    const owners = codeownerPaths();
+
+    for (const name of WIRING_RULES) {
+      const homes = SOURCE_FILES.filter((file) =>
+        readFileSync(join(REPO_ROOT, file), "utf8").includes(`function ${name}(`),
+      );
+
+      expect(homes, `${name} を宣言しているファイルが1つに定まらない`).toHaveLength(1);
+      const home = homes[0] ?? "";
+      expect(floor.has(home), `${name} の置き場 ${home} が下限に無い`).toBe(true);
+      expect(
+        owners.some((owned) => owned === home || (owned.endsWith("/") && home.startsWith(owned))),
+        `${name} の置き場 ${home} が CODEOWNERS に無い`,
+      ).toBe(true);
+    }
+  });
 });
+
+/** CODEOWNERS が覆うパス。先頭の `/` を落として repoRoot 相対に揃える */
+function codeownerPaths(): string[] {
+  return readFileSync(join(REPO_ROOT, "CODEOWNERS"), "utf8")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line !== "" && !line.startsWith("#"))
+    .map((line) => (line.split(/\s+/)[0] ?? "").replace(/^\//, ""));
+}
 
 /**
  * guard（純ロジック）が読む判断規則。design.md §7 の停止条件はここが決める。
@@ -163,11 +196,24 @@ describe("保護パスの下限", () => {
 const GUARD_RULES = [
   "guardBaseOf",
   "claimsNothingLeft",
+  "leavesWorkUncommitted",
   "observedValue",
   "sleepingUntil",
   "elapsedSecondsSince",
+  "waitedSeconds",
   "consecutiveFailuresOf",
 ] as const;
+
+/**
+ * 関門への**入力**を決める配線。規則（`GUARD_RULES`）と対にして押さえる。
+ *
+ * 規則を1文字も触らなくても、関門が読む観測を差し替えれば関門は無力になる。
+ * `tickPorts` は `localRepo` / `commandRunner` / `gitWorktree` を注入する場所で、
+ * `verifyRoot` は未 commit の関門と VERIFY が見る作業ツリーを決める。
+ * どちらもリファクタで `src/cli.ts` から合成ルートへ移った。**下限も CODEOWNERS も
+ * パスのリテラルなので、移設のたびに一緒に動かさないと保護が付いてこない。**
+ */
+const WIRING_RULES = ["tickPorts", "verifyRoot"] as const;
 
 const REPO_ROOT = new URL("../", import.meta.url).pathname;
 

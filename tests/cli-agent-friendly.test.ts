@@ -21,7 +21,7 @@ const AT = "2026-08-09T09:00:00.000Z";
 function goalWith(id: string): Goal {
   return {
     version: 1,
-    goal: { id, name: `${id} の名前`, desired_state: "何かが完成している" },
+    goal: { id, name: `${id} の名前`, desired_state: "何かが完成している", depends_on: [] },
     repository: {
       provider: "github",
       owner: "slashkiko",

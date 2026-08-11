@@ -91,7 +91,8 @@ ent abandon <slug> --reason "なぜ追わないのか"
 `--reason` は必須で、空白だけも通らない。status を `ABANDONED` にして理由を残すので、
 次のティックはその Goal を拾わなくなる。理由は `ent get` の `state.abandonReason` に出る。
 
-**対になる `ent complete` は無い。** 完了判定は VERIFIED な Fact だけで行う（§3.1）ので、
+**対になる `ent complete` は無い。** 完了判定は VERIFIED な Fact だけで行う
+（design.md §3.1）ので、
 criteria が赤いまま「完了した」と書ける口は用意していない。ループの外で desired state が
 満たされた場合（人間が手で PR をマージした、など）に使うのが `abandon` だ。
 「終わった」ではなく「もう追わない」を記録する。
@@ -129,6 +130,7 @@ phase間でproviderが混ざる場合は両方が出る。
 `ent run` は**1ティックで必ず終了する**。常駐しないし、完了まで待つフラグも無い。
 収束させるには `ent run` を繰り返し叩く（cron から回す形を想定している）。
 待ちは `ent run` の中で寝るのではなく、`WAIT` という判断として返る。
+ただし`goal.depends_on`の依存待ちは例外で、`WAIT`も状態遷移も作らず`skipped`に出る。
 ポーリングを自作しない。次の周まで待つのは呼び出し側の仕事になる。
 
 回す前に中身だけ見たいなら:
@@ -210,6 +212,11 @@ ent get <slug> --limit 5    # runs の件数。落ちるのは古い方から
 この2つはどちらもエージェントが代行してはいけない。人間が承認したことの signal
 なので、代わりに出すと承認の意味が消える。`ent get <slug>` の `verifications` で、
 どの criterion が待ちなのかを読む。
+
+**どちらの経路も、リポジトリに書き込み権限がある人のものだけを数える。**
+レビュー承認は PR の作成者を除く（GitHub 自体が自分の PR への Approve を許さない）が、
+コメントの定型文は作成者も数える。1人で回しているリポジトリでは、そこが唯一の
+承認経路になる（design.md §10-4）。
 
 `ESCALATE` は行動であって Goal の状態ではない。`protected_path_touched` による
 `ESCALATE` は、触ってはいけないパスに変更が出たまま止まっている状態で、

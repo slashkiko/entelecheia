@@ -14,13 +14,17 @@ import type { Goal } from "../domain/goal.js";
 import { type GoalState, type GoalStatus, isTerminal, nextStatus } from "../domain/goal-state.js";
 import {
   actorUsageLimitDecision,
-  claimsNothingLeft,
   consecutiveFailuresOf,
+  dependencyGate,
   describeClaim,
+  describeDependencyGate,
   elapsedSecondsSince,
   guardBaseOf,
+  leavesWorkUncommitted,
+  machineCriteriaSatisfied,
   observedValue,
   sleepingUntil,
+  waitedSeconds,
 } from "../domain/guard-rules.js";
 import { describeViolations, findViolations } from "../domain/protected-paths.js";
 import { type ActorRole, DEFAULT_ACTOR_ROLE, type Run } from "../domain/run.js";
@@ -30,8 +34,8 @@ import { type ReconcileDeps, reconcile } from "../reconcile/index.js";
 import type { Store } from "../store/port.js";
 
 /**
- * 1ティックの外側。lease を取り、reconcile を回し、結果を書き、ACT を実行し、
- * 状態を遷移させる。
+ * 1ティックの外側。lease を取り、reconcile を回し、ACT を実行し、結果を書き、
+ * 状態を遷移させる。書き込みを ACT の後に置く理由は design.md §3.6。
  *
  * reconcile と act 自体は変更しない。あの2つを純粋に保ったまま、
  * 副作用と永続化をこの層に集める（design.md §8）。
@@ -82,6 +86,11 @@ export interface ControllerDeps
    * 覗いたつもりの1回が次の本番ティックの観測先を差し替えていた。
    */
   observeOverride?: { prNumber?: number; issueNumber?: number } | undefined;
+  /**
+   * 人間に届く1行。commit できなかったような、止めるほどではないが黙ると
+   * 追えなくなることを出す。省略すると何も出ない。
+   */
+  log?: ((message: string) => void) | undefined;
 }
 
 /**
@@ -213,6 +222,29 @@ export async function tick(goal: Goal, deps: ControllerDeps): Promise<TickResult
   const sleeping = sleepingUntil(state.resumeAfter, deps.now());
   if (sleeping !== null) {
     return idle(state.status, `resume_after まで寝ている: ${sleeping}`);
+  }
+
+  // 依存する Goal が揃うまで進めない（design.md §10-12）。
+  //
+  // **lease は取らない。** resume_after と同じ理由で、待っているだけの Goal が
+  // 他のワーカーを塞ぐ。並べる本数を決めるのは呼び出し側なので（README
+  // 「複数の Goal を同時に回す」）、依存待ちの1本が枠を持ち続けると、
+  // 進める側の Goal まで cron の1周で回らなくなる。
+  //
+  // **`ent start` の入口ではなくここで見る。** あちらで「ACTIVE にしない」形に
+  // すると、依存先をまだ start していない順序で宣言を書けなくなる。分解した
+  // サブ Goal をまとめて登録する使い方（§10-12）がそれに当たる。
+  //
+  // 状態は動かさない。ここで書けば止まった理由が DB に残るが、そのためには
+  // lease を取ることになり、上の理由と衝突する。理由は `skipped` に載せて
+  // `ent run` の出力に出す。
+  const gate = dependencyGate(
+    goal.goal.depends_on,
+    (dependencyId) => deps.store.getState(dependencyId)?.status ?? null,
+  );
+  const blocked = describeDependencyGate(gate);
+  if (blocked !== null) {
+    return idle(state.status, blocked);
   }
 
   // 見るだけのティック。ここから下（lease・回収・永続化・ACT・publish）は
@@ -367,13 +399,27 @@ export async function tick(goal: Goal, deps: ControllerDeps): Promise<TickResult
     const guarded = await guardedDecision(goal, result.decision, run, repoBefore, base, deps);
     const actorGuarded = actorUsageLimitDecision(guarded, run);
 
+    // 機械側の criteria が全部通ったら、controller が commit する
+    // （design.md §10-11）。**「Actor が commit する」という前提を置くのをやめた。**
+    // push が送るのは commit 済みの差分だけなので、commit されないと criteria が
+    // 全部通っていても remote には1行も出ず、CI も人間のレビューも始まらない。
+    //
+    // 保護パスの関門を通ったあとに置く。違反したティックで commit すると、
+    // 触ってはいけないものに触れた変更を履歴に載せることになる。
+    const committed = await commitVerifiedWork(goal, guarded, verifications, deps);
+
     // 未 commit の変更を残したまま「機械側の番は終わった」と言い切らせない
     // （design.md §10-11）。差し替えはここまでで、書き込むのは下の1行のまま。
     //
     // 渡すのは今ティックの観測が作った Fact だけにする。merge 済みの result.facts には
     // 前ティックの local.* が残るので、観測に失敗したティックを「汚れている」と
     // 読んでしまう（design.md §3.1）。
-    const decided = uncommittedDecision(goal, actorGuarded, result.observedFacts, deps);
+    //
+    // **いま commit したティックは見ない。** `local.dirty` は commit より前の
+    // 観測なので、読むと自分が片付けた汚れで自分を止めることになる。
+    const decided = committed
+      ? actorGuarded
+      : uncommittedDecision(goal, actorGuarded, result.observedFacts, deps);
 
     // ここから下がこのティックの書き込みになる。直前にもう一度確かめる。
     // guardedDecision は git を叩くので、ACT 直後の確認から時間が空く。
@@ -519,7 +565,18 @@ async function preview(goal: Goal, state: GoalState, deps: ControllerDeps): Prom
   // 汚れていて完了 Run が履歴にある状態で、実ティックが WAITING_HUMAN になるのに
   // dry-run は COMPLETED を予告する。「1行も push せず COMPLETED」を防ぐために
   // 足した関門を、それを覗くための道具が見ていないことになる（design.md §10-11）。
-  const decided = uncommittedDecision(goal, guarded, result.observedFacts, deps);
+  //
+  // **ただし commit する条件は書かずに判定する。** 実ティックは機械側の criteria が
+  // 通っていれば先に commit するので、そのティックで関門は鳴らない。dry-run は
+  // 書かない側なので commit は起こせないが、**起こしていたら鳴らなかった**ことは
+  // 同じ純ロジックで分かる。ここを見ないと、実ティックが commit して進むはずの
+  // ティックを dry-run だけが `ESCALATE(uncommitted_changes)` と予告する。
+  const wouldCommit =
+    guarded.action.type !== "ESCALATE" &&
+    machineCriteriaSatisfied(goal.acceptance_criteria, verifications);
+  const decided = wouldCommit
+    ? guarded
+    : uncommittedDecision(goal, guarded, result.observedFacts, deps);
 
   return {
     ran: false,
@@ -761,6 +818,56 @@ function worktreePathFor(
 }
 
 /**
+ * 機械側の criteria が全部通ったティックで、Actor が書いたものを commit する。
+ *
+ * **「Actor が commit する」という前提を置くのをやめた**（design.md §10-11）。
+ * intent に書いてもプロンプトに書いても、従ったことは確かめられない（§3.2）。
+ * 実測でも、同じ設定・同じモデルの Actor が commit するティックとしないティックの
+ * 両方が出た。push が送るのは commit 済みの差分だけなので、commit されないと
+ * criteria が全部通っていても remote には1行も出ず、CI も人間のレビューも始まらない。
+ *
+ * **関門が止めたティックでは commit しない。** 保護パスに触れた変更を履歴に
+ * 載せると、あとから通常の変更として流れる余地が生まれる（§10-6 が push を
+ * 止めているのと同じ理由）。`guard_unavailable` も同じ扱いで、検査できて
+ * いない以上「触っていない」とは言えない。
+ *
+ * **押す木に commit する。** `worktreeNameFor(goal.id, "implement")` に固定する
+ * のは publish と同じ理由で、Run 側に従わせると検査した木と押す木がずれる。
+ *
+ * 失敗しても throw しない。commit できなかったティックは、これまでどおり
+ * 未 commit の関門（`uncommittedDecision`）が拾う。ここで落とすと、
+ * 観測も Decision も書かないまま ティックが終わる。
+ */
+async function commitVerifiedWork(
+  goal: Goal,
+  decision: Decision,
+  verifications: readonly Verification[],
+  deps: ControllerDeps,
+): Promise<boolean> {
+  if (decision.action.type === "ESCALATE") {
+    return false;
+  }
+  if (!machineCriteriaSatisfied(goal.acceptance_criteria, verifications)) {
+    return false;
+  }
+
+  const passed = verifications
+    .filter((verification) => verification.result === "passed")
+    .map((verification) => verification.criterionId)
+    .join(", ");
+  const message = `${goal.goal.name}\n\n機械側の criteria が通ったので controller が commit した（${passed}）。\nActor の実行は Run の生ログに残る（design.md §10-11）。`;
+
+  try {
+    return await deps.worktree.commit(worktreeNameFor(goal.goal.id, DEFAULT_ACTOR_ROLE), message);
+  } catch (error) {
+    // 検査ではないので、確かめられなかったことにはしない。次のティックで
+    // 未 commit の関門が同じ状態を拾う。
+    deps.log?.(`commit できなかった: ${errorMessage(error)}`);
+    return false;
+  }
+}
+
+/**
  * 未 commit の変更を残したまま「機械側の番は終わった」と言い切らせない。
  *
  * push は commit 済みの差分しか送らない（`git push -u origin HEAD:<branch>`）のに、
@@ -771,15 +878,15 @@ function worktreePathFor(
  * 「実装が載った PR」なので永久に終わらない（design.md §10-11）。
  *
  * 満たすべき性質:
- * - 差し替えるのは「機械側にやることが残っていない」と言い切るティックだけにする。
- *   COMPLETE と WAIT の2つで、WAIT は LLM が返したものも guard が
- *   Gap ゼロから出したものも同じ意味を持つ
+ * - 差し替えるのは「このティックで書き残しが commit されない」と言い切れるティックに
+ *   する。COMPLETE と WAIT と VERIFY の3つで、WAIT は LLM が返したものも guard が
+ *   Gap ゼロから出したものも同じ意味を持つ。判定は `leavesWorkUncommitted` が正
  * - `WAIT(usage_limit)` は差し替えない。あれは判断そのものを保留しただけで、
  *   上限が明ければ続きがある（design.md §10-5）。待てば直る状態で人間を呼ばない
  * - ACT が出たティックは触らない。実装の途中で作業ツリーが汚れているのは正常で、
  *   ここまで止めると Actor は1ティックも実装を進められない
  * - **Actor がまだ1度も走っていない Goal では見ない。** 1ティック目は worktree が
- *   無く、`local.*` は controller 自身のリポジトリを観測する（`src/cli.ts` の
+ *   無く、`local.*` は controller 自身のリポジトリを観測する（`src/wiring/index.ts` の
  *   `verifyRoot`）。自己ホストでは人間の編集で汚れているのが普通なので、そこを
  *   Actor の書き残しと読むと、どの Goal も最初のティックから進まなくなる
  * - **worktree を観測した dirty だけを見る。** 「Run が1件でもあれば worktree を
@@ -808,7 +915,7 @@ function uncommittedDecision(
   observedFacts: readonly Fact[],
   deps: ControllerDeps,
 ): Decision {
-  if (!claimsNothingLeft(decision)) {
+  if (!leavesWorkUncommitted(decision)) {
     return decision;
   }
 
@@ -823,7 +930,7 @@ function uncommittedDecision(
   // 書き残しではない。controller 自身のリポジトリの汚れで人間を呼ばない。
   //
   // 突き合わせる相手は**実装役の作業ツリー**に固定する。`local.*` を観測する
-  // のも criteria のコマンドを流すのも実装役の側で（`src/cli.ts` の
+  // のも criteria のコマンドを流すのも実装役の側で（`src/wiring/index.ts` の
   // `verifyRoot`）、PR に載るのもそのブランチだからになる。役割が増えても
   // ここを review 側にすると、レビュー中の作業ツリーの汚れを実装の書き残しと
   // 読む一方で、実装役が書き残したものを見落とす。
@@ -945,7 +1052,15 @@ function usageOf(state: GoalState, goal: Goal, deps: ControllerDeps): BudgetUsag
   // 解釈できない activated_at を 0 秒として扱うと、max_wall_clock だけが
   // 黙って無効化される（NaN との比較は常に false になる）。停止条件が消えるより、
   // 人間を呼ぶ側に倒す。decide の durationSeconds が上限を読めなかったときと同じ扱い。
-  const elapsedSeconds = elapsedSecondsSince(state.activatedAt, deps.now());
+  //
+  // 人間か外部を待っていた分は引く。待てと指示したのは controller の側なので、
+  // その時間を Goal の予算から引くのは筋が通らない（`waitedSeconds`）。
+  const now = deps.now();
+  const elapsedSeconds = Math.max(
+    0,
+    elapsedSecondsSince(state.activatedAt, now) -
+      waitedSeconds(deps.store.listDecisions(goal.goal.id), state.activatedAt, now),
+  );
 
   // 直近まで同じ観測が続いていた回数。今回のティックは含まない。
   // 含めると、DECIDE が「今回は変わった」を判定できなくなる。

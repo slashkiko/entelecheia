@@ -39,6 +39,23 @@ export interface WorktreePort {
    */
   changedPaths(name: string, baseBranch: string): Promise<string[]>;
   /**
+   * その worktree の変更を1つの commit にまとめる。**controller が呼ぶ。**
+   *
+   * 何も commit するものが無ければ false を返す。呼び出し側が「commit した」と
+   * 「するものが無かった」を分けられるようにしてある。
+   *
+   * **「Actor が commit する」という前提を置くのをやめたのでここに来た**
+   * （design.md §10-11）。intent に書いてもプロンプトに書いても、従ったことは
+   * 確かめられない（§3.2）。実測でも、同じ設定の Actor が commit するティックと
+   * しないティックの両方が出た。push が送るのは commit 済みの差分だけなので、
+   * commit されないと criteria が全部通っていても remote には1行も出ない。
+   *
+   * 全部入れる（`add --all`）。Actor がどこを書いたかは呼び出し側が
+   * `changedPaths` で既に検査していて、保護パスに触れていればそもそもここへ
+   * 来ない。ここで選び直すと、検査した集合と commit する集合がずれる。
+   */
+  commit(name: string, message: string): Promise<boolean>;
+  /**
    * 本体リポジトリ側で汚れているパスと、その中身の指紋を返す。
    * 鍵は**絶対パス**で、worktree 配下は含めない。
    *
@@ -104,6 +121,20 @@ export interface ActorInvocation {
    * write-ahead で先に採番済みなので、Actor を起動する時点で必ず決まっている。
    */
   runId: string;
+  /**
+   * どの Goal の実行か。Actor 側が宣言部（`.goals/<goalId>.yaml`）を名指しするのに使う。
+   *
+   * レビュー役は「宣言された意図」と差分を突き合わせる。その意図の一次情報は
+   * PR 本文ではなく Goal の `desired_state` と `acceptance_criteria` で、
+   * `intent` には載っていない（`withConstraints` が足すのは constraints だけ）。
+   * 作業ツリーには宣言部が commit 済みで入っているので、**どのファイルを読めば
+   * よいかだけを渡せば届く。**
+   *
+   * ブランチ名（`worktreeBranchFor` が作る `entelecheia/<goalId>`）から引くことも
+   * できるが、それだとプロンプトが命名規則に依存する。id は既にここにあるので、
+   * 素直に渡す。
+   */
+  goalId: string;
   /**
    * DECIDE が決めた intent に Goal の制約を足したもの。そのまま Actor への
    * プロンプトになる。組み立ては `withConstraints` が持つ。
@@ -334,6 +365,8 @@ async function runActor(
   try {
     const result = await deps.actor.run({
       runId,
+      // 宣言部の置き場所を Actor に名指しさせるために渡す（`ActorInvocation.goalId`）。
+      goalId: goal.goal.id,
       intent: withConstraints(intent, goal),
       // 使ってよいツールは Actor 側が role から決める（design.md §4.2）。
       role,

@@ -118,6 +118,47 @@ type Outcome =
   | { resolved: true; passed: boolean; evidence: Evidence }
   | { resolved: false; reason: Unresolved["reason"]; detail: string };
 
+/** 生ログではないので上限を置く。数十MBを SQLite に押し込まない（design.md §4.6） */
+const COMMAND_OUTPUT_LIMIT = 2000;
+
+/**
+ * 落ちたコマンドの出力を、あとから読める長さで evidence に残す。
+ *
+ * 通ったときは `exit_code=0` だけにする。全件緑の出力を毎ティック DB に積む
+ * 理由が無く、`ent get` を読む側のノイズにもなる。
+ *
+ * **落ちたときは末尾を残す。** これまで `exit_code=1` しか残しておらず、
+ * criteria が一度だけ落ちて次のティックで通った、という揺れを追う手段が
+ * 何も無かった（実際に踏んだ。同じ worktree で手で流すと通り、Verification には
+ * 終了コードだけが残っていた）。design.md §3.1 は「確かめられなかったことを
+ * 黙って落とさない」を中核に置いているが、**確かめた結果が不合格だったときの
+ * 中身**は落ちていた。
+ *
+ * 末尾を採るのは、テストランナーもリンタも失敗の要約を最後に出すため。
+ * 先頭から切ると、通ったケースの列挙で埋まる。
+ *
+ * stderr を先に見て、空なら stdout に落とす。`mise run test` のように失敗の
+ * 要約を stdout に出すものがある。
+ */
+export function describeCommandResult(result: CommandResult): string {
+  const head = `exit_code=${result.exitCode}`;
+  if (result.exitCode === 0) {
+    return head;
+  }
+
+  const output = result.stderr.trim() === "" ? result.stdout : result.stderr;
+  const trimmed = output.trim();
+  if (trimmed === "") {
+    return `${head}（出力なし）`;
+  }
+
+  const tail =
+    trimmed.length <= COMMAND_OUTPUT_LIMIT
+      ? trimmed
+      : `…（先頭を切った）\n${trimmed.slice(-COMMAND_OUTPUT_LIMIT)}`;
+  return `${head}\n${tail}`;
+}
+
 /** setup を順に流す。失敗したら理由を返し、成功したら null を返す */
 async function runSetup(setup: readonly string[], deps: VerifyDeps): Promise<string | null> {
   for (const command of setup) {
@@ -195,7 +236,10 @@ async function judge(
         return {
           resolved: true,
           passed: result.exitCode === 0,
-          evidence: { source: command, detail: `exit_code=${result.exitCode}` },
+          evidence: {
+            source: command,
+            detail: describeCommandResult(result),
+          },
         };
       } catch (error) {
         // 起動できなかったことを不合格にすると、捏造した不合格になる。

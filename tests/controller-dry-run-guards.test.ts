@@ -33,7 +33,7 @@ const COMMAND_CRITERION: AcceptanceCriterion = {
 
 const GOAL: Goal = {
   version: 1,
-  goal: { id: GOAL_ID, name: "サンプル", desired_state: "何かが完成している" },
+  goal: { id: GOAL_ID, name: "サンプル", desired_state: "何かが完成している", depends_on: [] },
   repository: {
     provider: "github",
     owner: "slashkiko",
@@ -53,7 +53,7 @@ const GOAL: Goal = {
   },
 };
 
-function deps(store: Store, options: { dirty?: boolean } = {}): ControllerDeps {
+function deps(store: Store, options: { dirty?: boolean; approved?: boolean } = {}): ControllerDeps {
   return {
     store,
     owner: "worker-a",
@@ -78,13 +78,17 @@ function deps(store: Store, options: { dirty?: boolean } = {}): ControllerDeps {
       run: async () => ({ exitCode: 0, stdout: "", stderr: "" }),
     },
     approval: {
-      getApproval: async () => null,
+      getApproval: async () =>
+        options.approved === true
+          ? { approvedBy: "reviewer", approvedAt: "2026-08-09T08:00:00.000Z" }
+          : null,
     },
     worktree: {
       ensure: async (name) => ({
         path: `${WORKTREE_ROOT}/${name}`,
         branch: `entelecheia/${name}`,
       }),
+      commit: async () => true,
       changedPaths: async () => [],
       repoDirtyState: async () => new Map(),
     },
@@ -155,9 +159,24 @@ describe("--dry-run は本番と同じ関門を通す", () => {
     // 同じ状態で本番のティックは ESCALATE(uncommitted_changes) → WAITING_HUMAN に
     // なる（tests/controller-uncommitted.test.ts）。dry-run だけが COMPLETE を
     // 見せると、「1行も push せず COMPLETED」を安全だと読ませる。
+    //
+    // **`command` 型を持たない Goal で見る。** 機械側の criteria が全部通った
+    // ティックは、本番なら controller が先に commit するので関門は鳴らない
+    // （tests/controller-commit.test.ts）。dry-run はそれも予告するので、
+    // ここで確かめたいのは「commit が起きない側のティック」になる。
+    const humanOnly: Goal = {
+      ...GOAL,
+      acceptance_criteria: [
+        {
+          id: "ac-1",
+          description: "人間が確認する",
+          verification: { type: "human", prompt: "読む" },
+        },
+      ],
+    };
     seedCompletedRun(store);
 
-    const result = await tick(GOAL, deps(store, { dirty: true }));
+    const result = await tick(humanOnly, deps(store, { dirty: true, approved: true }));
 
     expect(result.dryRun).toBe(true);
     expect(result.decision?.action.type).not.toBe("COMPLETE");

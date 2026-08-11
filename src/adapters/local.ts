@@ -235,6 +235,37 @@ export function gitWorktree(repoRoot: string, root: string): WorktreePort {
      * commit 済みと未 commit の両方を返す。前者を落とすと、違反した編集が
      * commit された次のティックで検知できなくなる。
      */
+    /**
+     * worktree の変更を1つの commit にまとめる。commit したら true。
+     *
+     * git は argv 配列で叩く（design.md §7）。メッセージは stdin から渡さず
+     * `-m` で渡すが、`execFile` なのでシェルは通らない。Actor が書いた
+     * ブランチ名やパスが引数に混ざる経路はここには無い。
+     *
+     * 作業ツリーが無い・壊れている場合は throw する。`changedPaths` と同じで、
+     * 「変更が無い」と「確かめられなかった」を混ぜない（design.md §3.1）。
+     */
+    async commit(name, message): Promise<boolean> {
+      const path = pathOf(name);
+      if (!existsSync(path)) {
+        throw new Error(`作業ツリーが無いので commit できない: ${path}`);
+      }
+      if (!existsSync(join(path, ".git"))) {
+        // 親をたどって controller 本体のリポジトリを commit してしまう。
+        throw new Error(`作業ツリーが壊れている（.git が無い）: ${path}`);
+      }
+
+      await gitRaw(path, ["add", "--all"]);
+      // 何も無いのに commit すると空の commit が積まれる。criteria が通った
+      // ティックは毎回ここを通るので、放っておくと履歴が空 commit で埋まる。
+      const staged = await gitRaw(path, ["diff", "--cached", "--name-only"]);
+      if (staged.trim() === "") {
+        return false;
+      }
+      await gitRaw(path, ["commit", "-m", message]);
+      return true;
+    },
+
     async changedPaths(name, baseBranch): Promise<string[]> {
       const path = pathOf(name);
       if (!existsSync(path)) {
@@ -292,7 +323,8 @@ export function gitWorktree(repoRoot: string, root: string): WorktreePort {
      *   ここから先は git ベースの検査では原理的に届かない
      * - gitignore されたパス。`--ignored` を付ければ出るが、controller 自身が
      *   `.goals/.state/**` に毎ティック書くので、自分の書き込みが毎回違反として
-     *   並ぶ。DB を直接書き換えられる経路がここに残る
+     *   並ぶ。ただし状態 DB そのものは相方の `outOfSightState` が指紋で見るので、
+     *   ここに残るのは `goals.db` 以外の gitignore されたパスになる
      * - commit 済みの変更。本体側のブランチは controller が動かさないので
      *   作業ツリーの汚れだけを見ているが、`git -C ../../../.. commit` や
      *   `git -C ../../../.. stash` は拒否リストに無い。本体側で書いてから commit されると、

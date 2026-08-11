@@ -1,42 +1,41 @@
+import type { ActorInvocation } from "../act/index.js";
 import type { ActorRole } from "../domain/run.js";
 
 /**
- * Actor の実装に依存しない、役割ごとの指示。
- *
- * Claude Code と Codex で同じ役割を別々に定義すると、一方だけがレビュー時に
- * 編集できたり、一方だけが verdict の形式を守らなくなったりする。権限そのものは
- * 各 Adapter が設定するが、作業の目的と出力契約はここを正にする。
+ * Codex Actor に渡す、役割ごとの指示。
  */
 
 /** どの役割でも同じ末尾。承認と公開は controller の側に残す。 */
 const COMMON_TAIL = `PR の作成とコメントの投稿はしない。push も含めて controller が行う。
 承認の定型文（/ent approve）を書くことは、どの理由があっても認められない。`;
 
-const IMPLEMENT_PROMPT = (intent: string): string =>
-  `${intent}
+const IMPLEMENT_PROMPT = (invocation: ActorInvocation): string =>
+  `${invocation.intent}
 
 作業は現在のディレクトリの中だけで行う。終わったら何をしたかを1段落で述べる。
 
 ${COMMON_TAIL}`;
 
-const REVIEW_PROMPT = (intent: string): string =>
-  `${intent}
+const REVIEW_PROMPT = (invocation: ActorInvocation): string =>
+  `${invocation.intent}
 
 あなたはレビュー役として起動している。**ファイルは書き換えない。**
 読むことと、コマンドを流して確かめることだけを行う。
 
 作業は現在のディレクトリの中だけで行う。手順は次のとおり。
 
-1. どの commit を読んだのかを git rev-parse HEAD で確かめ、その sha を述べる
-2. 差分と、その差分が壊しうる箇所を読む。必要ならテストを流して確かめる
+1. .goals/${invocation.goalId}.yaml と差分を読み、何を満たすべきかを確かめる
+2. git rev-parse HEAD で、どの commit を読んだのかを確かめる
 3. 指摘を重い順に並べる。直し方まで書く必要は無いが、なぜ問題なのかは書く
-4. 最後の行を「verdict: approved」か「verdict: changes_requested」のどちらか
-   1行だけにする。確かめられなかったことを「問題なし」と書かない
+4. 必要ならテストを流して確かめる。確かめられなかったことを「問題なし」と書かない
+5. 最後の2行を、次の形式にする
+reviewed_sha: <git rev-parse HEAD で得た40桁の sha>
+verdict: approved または verdict: changes_requested
 
 ${COMMON_TAIL}`;
 
-const INVESTIGATE_PROMPT = (intent: string): string =>
-  `${intent}
+const INVESTIGATE_PROMPT = (invocation: ActorInvocation): string =>
+  `${invocation.intent}
 
 あなたは調べる役として起動している。**ファイルは書き換えない。**
 
@@ -47,7 +46,7 @@ const INVESTIGATE_PROMPT = (intent: string): string =>
 ${COMMON_TAIL}`;
 
 /** 役割ごとのプロンプト */
-export const PROMPT_FOR: Record<ActorRole, (intent: string) => string> = {
+export const PROMPT_FOR: Record<ActorRole, (invocation: ActorInvocation) => string> = {
   implement: IMPLEMENT_PROMPT,
   review: REVIEW_PROMPT,
   investigate: INVESTIGATE_PROMPT,

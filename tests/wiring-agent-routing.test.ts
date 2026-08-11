@@ -7,7 +7,12 @@ import { agentSelectionFrom, type AgentFactories, tickPorts } from "../src/wirin
 
 const GOAL: Goal = {
   version: 1,
-  goal: { id: "routing", name: "配線", desired_state: "phase ごとに provider が選ばれる" },
+  goal: {
+    id: "routing",
+    name: "配線",
+    desired_state: "phase ごとに provider が選ばれる",
+    depends_on: [],
+  },
   repository: { provider: "github", owner: "o", name: "r", default_branch: "main" },
   setup: [],
   acceptance_criteria: [],
@@ -150,6 +155,7 @@ describe("phase ごとの Agent 選択", () => {
           actor: ports.actor,
           worktree: {
             ensure: async () => ({ path: "/worktree", branch: "entelecheia/routing" }),
+            commit: async () => true,
             changedPaths: async () => [],
             repoDirtyState: async () => new Map(),
           },

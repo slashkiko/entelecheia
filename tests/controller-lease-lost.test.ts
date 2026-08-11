@@ -41,7 +41,12 @@ const AFTER_EXPIRY = new Date(NOW.getTime() + 3_600_000);
 
 const GOAL: Goal = {
   version: 1,
-  goal: { id: "sample-goal", name: "サンプル", desired_state: "何かが完成している" },
+  goal: {
+    id: "sample-goal",
+    name: "サンプル",
+    desired_state: "何かが完成している",
+    depends_on: [],
+  },
   repository: {
     provider: "github",
     owner: "slashkiko",
@@ -98,6 +103,7 @@ function deps(store: Store, over: Partial<ControllerDeps> = {}): ControllerDeps 
     approval: { getApproval: async () => null },
     worktree: {
       ensure: async (name) => ({ path: `/tmp/${name}`, branch: `entelecheia/${name}` }),
+      commit: async () => true,
       changedPaths: async () => [],
       repoDirtyState: async () => new Map(),
     },

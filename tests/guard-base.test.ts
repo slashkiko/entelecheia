@@ -38,7 +38,7 @@ const WORKTREE_ROOT = "/tmp/entelecheia-guard-base";
 function goalFixture(id: string): Goal {
   return {
     version: 1,
-    goal: { id, name: "サンプル", desired_state: "何かが完成している" },
+    goal: { id, name: "サンプル", desired_state: "何かが完成している", depends_on: [] },
     repository: {
       provider: "github",
       owner: "slashkiko",
@@ -74,6 +74,7 @@ describe("act が worktree を切る元", () => {
         ensured.push({ name, base });
         return { path: `${WORKTREE_ROOT}/${name}`, branch: `entelecheia/${name}` };
       },
+      commit: async () => true,
       changedPaths: async () => [],
       repoDirtyState: async () => new Map(),
     };
@@ -155,6 +156,7 @@ describe("関門が差分を取る相手", () => {
           path: `${WORKTREE_ROOT}/${name}`,
           branch: `entelecheia/${name}`,
         }),
+        commit: async () => true,
         changedPaths: async (_name, base) => {
           diffed.push(base);
           return [];

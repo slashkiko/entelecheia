@@ -49,7 +49,7 @@ const HUMAN_CRITERION: AcceptanceCriterion = {
 function goalWith(criteria: readonly AcceptanceCriterion[]): Goal {
   return {
     version: 1,
-    goal: { id: GOAL_ID, name: "サンプル", desired_state: "何かが完成している" },
+    goal: { id: GOAL_ID, name: "サンプル", desired_state: "何かが完成している", depends_on: [] },
     repository: {
       provider: "github",
       owner: "slashkiko",
@@ -138,6 +138,11 @@ function deps(store: Store, options: Options = {}): ControllerDeps {
         path: `${WORKTREE_ROOT}/${name}`,
         branch: `entelecheia/${name}`,
       }),
+      // **ここは commit が効かなかった側を固定する。** criteria が通ったティックは
+      // controller が commit するようになった（tests/controller-commit.test.ts）が、
+      // 何も commit されないこと（gitignore されたファイルだけが汚れている、
+      // commit そのものが失敗した）はありうる。この関門はそのときの受け皿になる。
+      commit: async () => false,
       changedPaths: async () => [],
       repoDirtyState: async () => new Map(),
     },
@@ -279,6 +284,42 @@ describe("未 commit の変更を残したまま終わらない", () => {
     // 足すと、countTrailingDigest が数える行がずれる。
     const decisions = store.listDecisions(GOAL_ID);
     expect(decisions).toEqual([result.decision]);
+  });
+
+  it("未 commit の変更があれば、LLM の VERIFY もそのまま採用しない", async () => {
+    // PR #39 の実走で踏んだ経路。Actor が29ファイルを書いたまま commit せずに
+    // 終えたあと、LLM は VERIFY を3ティック続けて選んだ。COMPLETE でも WAIT でも
+    // ないので関門は鳴らず、`max_unchanged_reconciles` に向かって静かに近づいた。
+    //
+    // VERIFY は criteria のコマンドを流して結果を読むだけで、worktree には1行も
+    // 書かない。「機械側にやることが残っている」の側ではあるが、残っているやることは
+    // 書き残しを解消しない。関門が問うているのは「このティックで commit されるか」で、
+    // 答えは COMPLETE や WAIT と同じになる。
+    const goal = goalWith([COMMAND_CRITERION, HUMAN_CRITERION]);
+    activate(goal);
+    seedCompletedRun(store);
+
+    const llm: LlmPort = { chooseAction: async () => ({ type: "VERIFY" }) };
+    const result = await tick(goal, deps(store, { dirty: true, llm }));
+
+    expect(result.decision?.action.type).not.toBe("VERIFY");
+    expect(result.decision?.decidedBy).toBe("guard");
+    // 止めた理由と進め方が読めること。ここが `ent get` と PR の進捗コメントに
+    // 出る唯一の説明になる。
+    expect(result.decision?.rationale).toContain("commit");
+  });
+
+  it("作業ツリーが綺麗なら VERIFY をそのまま通す", async () => {
+    // 逆向きの誤り。汚れていない worktree で VERIFY を止めると、
+    // 検証していない criteria を確かめる手段が1つ消える。
+    const goal = goalWith([COMMAND_CRITERION, HUMAN_CRITERION]);
+    activate(goal);
+    seedCompletedRun(store);
+
+    const llm: LlmPort = { chooseAction: async () => ({ type: "VERIFY" }) };
+    const result = await tick(goal, deps(store, { dirty: false, llm }));
+
+    expect(result.decision?.action.type).toBe("VERIFY");
   });
 
   it("作業ツリーが綺麗なら、これまでどおり COMPLETE にする", async () => {

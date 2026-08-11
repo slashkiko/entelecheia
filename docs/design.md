@@ -3,7 +3,16 @@
 このリポジトリの単一の設計ソース。新しく参加するとき（あるいは新しいセッションを開くとき）は、
 まずこれを読めば足りるように書いてある。
 
-最終更新: 2026-08-11（Codex CLI Adapter を追加し、関門の基準を PR の宛先から切り離し、レビュー役を実装役と同じ作業ツリーに寄せた）
+最終更新: 2026-08-11（タスク分解の粒度を決め、分解した1本ごとに Goal を立てる方針にして、
+順序の宣言 `goal.depends_on` を入れた。分解を機械にやらせる場合の宣言部の書き手も決めた。
+実装は保留。あわせて、実装と食い違っていた記述を揃え、2つ実装を変えた — `/ent approve` は
+PR の作成者が書いても承認として数え、その代わり Agent の中の `gh` を未認証にする（§10-4）、
+合成ルートを保護パスの下限に足した（§7）。さらに、レビュー役にだけ semantic-review の skill を
+渡し、宣言部を goalId で、読んだ commit を `reviewed_sha:` で名指しさせた（§4.2・§4.3））
+あわせて、commit の主体を Actor から controller に移し（§10-11）、落ちた検証コマンドの出力を
+evidence に残すようにした（§4.5）。
+Codex CLI Adapterとphase別のprovider・model・effort選択も追加し、Actorの使用量上限を
+Runからguardの待機判断へ伝播するようにした（§3.5・§4.2）。
 
 ---
 
@@ -13,8 +22,12 @@
 ギャップが埋まるまで Claude Code または Codex を起動する controller。
 
 Kubernetes の controller が `replicas: 3` に収束させるのと同じ構造を、
-ソフトウェア開発のタスクに持ち込む。人間が書くのは「どうなってほしいか」と、起動時に使う
-Actor 実装の選択だけで、タスク分解も Actor role の選択も実装手順も controller が決める。
+ソフトウェア開発のタスクに持ち込む。人間が書くのは「どうなってほしいか」だけで、
+Goal内のタスク分解、Actor roleの選択、実装手順はcontrollerが決める。
+分解が成り立っているのは1つの Goal の内側だけで、Goal をまたぐ分解——1つの粗いタスクを
+N 本の Goal に割ること——はいまも人間が行う（順序の宣言 `goal.depends_on` までは入っている。
+§10-12）。phaseごとに使うActor実装・model・effortは起動時の環境変数で人間が選び、
+未指定時は既定のClaude Codeへ落ちる（§3.5 / §4.2）。
 
 ```
         Desired State（人間が宣言）
@@ -122,7 +135,8 @@ Port が `null` を返した場合はここに積まない。「存在しない�
 Goal の入口で検証手段への変換を必須にし、変換できない criteria は登録させない。
 
 MVP では Goal YAML を人間が手書きするので、YAML のレビューがそのまま承認ゲートになる。
-承認用の別 UI は要らない。
+承認用の別 UI は要らない。この前提が効くのは人間が書いているあいだだけで、分解を機械に
+やらせる経路（§10-12）を入れると、機械が書いた分にはこのゲートが掛からない。
 
 ### 3.3 Adapter は1実装だけ作り、境界だけ先に切る
 
@@ -192,7 +206,10 @@ JSONL eventを交換するラッパーになる。ただし現行SDKの公開オ
 使用量上限やレビュー待ちで controller が常駐して落とせなくなるのは論外。
 
 - reconcile はどのティックも**有限時間で必ず return する**。sleep して常駐しない
-- 待ちは `WAITING_*` として DB に書き、プロセスは終了する
+- 待ちは `WAITING_*` として DB に書き、プロセスは終了する。**例外は依存待ち**（§10-12）で、
+  lease を取らない以上その場では書けないため状態に残らず、`ent run` の `skipped` にしか
+  出ない。`resume_after` の待ち（§10-5）は、待ちに入った時点の `WAITING_EXTERNAL` が
+  DB にあるのでここに含まれる
 - 次のティックは cron の次周回で来る。`ent run <slug>` を cron から叩く構成なら
   常駐プロセスがそもそも存在しない（`ent watch` は未実装。§6）
 
@@ -200,18 +217,26 @@ JSONL eventを交換するラッパーになる。ただし現行SDKの公開オ
 次ティックで回収できる crash-only 設計にする。
 
 ```
-1. 観測と検証を書く（snapshot / verifications）
+1. 観測と検証を組み立てる（まだ書かない）
 2. Run(status: starting) を commit          ← ここで kill されても
 3. 選択した Actor を起動                     次ティックが orphan として回収
 4. Run(status: completed|failed) を commit
-5. Decision を書く
+5. snapshot / verifications / Decision を書く
 ```
 
-4 と 5 は別のトランザクションになる。Decision は ACT のあとに関門
-（保護パス・未 commit）が差し替えうるので、ACT より前には確定できない。
-Fact も 1 の時点で確定する。ACT の途中で kill されると snapshot と
-verifications だけが残り、Decision の行が無いティックになる。次ティックは
-orphan Run の回収から始めるので、そこから回収できる。
+**ACT より前に書くのは Run(starting) だけにする。** write-ahead の本体はここで、
+Actor を起動した事実が残っていないと orphan を回収できない。ACT の途中で
+kill されると残るのはこの行だけになり、次ティックはその回収から始める。
+
+観測を先に書かないのは lease のため。ACT は分単位で、そのあいだに lease を
+奪われうる。先に書くと、奪われたと分かった時点では既に他のワーカーが回している
+Goal の行を汚した後になる。組み立ては観測した直後に行い、`observedAt` も観測した
+時刻のままにして、**書き込みだけを ACT の後へ寄せる**。書く直前にもう一度 lease を
+確かめ、失っていれば snapshot / verifications / Decision / status を1つも書かずに降りる。
+Run(starting) の行は既に書いてあるので残る。それが write-ahead の要点にあたる。
+
+Decision を最後に置く理由は別で、ACT のあとに関門（保護パス・未 commit）が
+差し替えうるため。1ティックにつき1行だけ書く。
 
 SIGTERM を受けたら走行中の Actor に伝播して kill し、Run を `interrupted` で確定し、
 lease を解放して終了する。Ctrl+C が効かない状態は作らない。
@@ -269,7 +294,7 @@ Codex Adapterは明示opt-inとし、sandbox・資格情報除去・事後のgit
 
 `ActorRole` の実体は `src/domain/run.ts` の `actorRoleSchema` にある。`ActorPort`は
 `kindFor(role)`で実際のproviderを返し、role別routerが選んだ値をwrite-aheadのRunに残す。
-roleは次の4箇所を通る。
+roleは次の5箇所を通る。
 
 - **role が Agent の許可・拒否ツールを決める**（`src/adapters/claude.ts` の `ACTOR_TOOLS`）。
   編集のツール（Edit / Write / NotebookEdit）を持つのは `implement` だけで、`review` と
@@ -281,6 +306,21 @@ roleは次の4箇所を通る。
   そのまま落とす（レビュー役だからといって merge や force push を許さない）。
   プロンプトも role ごとに分ける。権限だけ分けて文面が同じだと、レビュー役は編集を
   試みて拒否され続け、ターンをそこに使い切る
+- **role がClaude Code Agentに見せるskillを決める**（`src/adapters/claude.ts`の`SKILLS_FOR`）。
+  Claude Codeのレビュー役にだけ`semantic-review`を渡す。実装役に渡すと「観点を満たすように書く」
+  余地ができ、§3.1 が criteria で避けている構図がレビュー側で再発する。
+  **`settingSources: []` は解かない。** ホストの `~/.claude` とリポジトリの `.claude` を
+  読ませない判断はそのままで、controller が名指しした plugin（`plugins/ent-review/`）
+  だけが Agent から見える。skill の一覧に出るのはその1件になる。
+  中身は ent の外でも使う汎用の skill で、**Goal も criteria も verdict も知らない。**
+  PR ではなく作業ツリーの HEAD を見ること、意図の一次情報が `.goals/<goal.id>.yaml` で
+  あること、本文の後ろに `reviewed_sha:` と `verdict:` の2行を足すことは、すべて
+  `REVIEW_PROMPT` の側に書く。観点は skill が持ち、契約は controller が持つ。
+  そのために `ActorInvocation` が `goalId` を運ぶ——宣言部は作業ツリーに commit 済みで
+  入っているので、**どのファイルを読めばよいかだけを渡せば意図が届く**
+  （`intent` に載るのは constraints だけで、`desired_state` は載らない）
+  Codexのreview roleにはこのClaude pluginを渡さず、Codex向けのrole別promptと
+  `reviewed_sha:` / `verdict:`の出力契約で同じ観測境界へ接続する
 - **worktree の名前が (goal.id, role) から決まる**（`worktreeNameFor`）。
   **`review` は `implement` と同じ作業ツリーを見て、`investigate` だけが分かれる。**
   当初は3つとも分けていたが、分けると**レビューの対象が実装に永久に追いつかない**。
@@ -362,19 +402,27 @@ Fact が無い間は Gap が残り COMPLETE には届かない（§3.1）。guar
 レビュー役は毎回同じ出力を返すとは限らない。レビュー役を1度も起動していない
 ティックでは、Fact も `unobserved` も作らない。
 
-sha は本文中の 40 桁を数える。同じ sha を何度述べても1つと数え、違う sha が並んで
-いたら、どれを読んだ結果なのか決められないので `pending` に落とす。**これが既定の
-経路になる。** その手前に `reviewed_sha:` の行を1つだけ見る経路を置いてあるが、
-この綴りはどこからも要求されていない。レビュー役のプロンプト（`src/adapters/claude.ts`）が
-言うのは「読んだ commit の sha を述べる」ことだけで、`PROTECTED_PATH_FLOOR` の中に
-あるので、要求する側を足すことはできない。したがって名指しの行は、レビュー役が
-たまたまその形で書いたときだけ効く追加の経路であって、暗黙の契約を読む側で
-吸収し切ったわけではない。**数えるだけの規則が落とす出力——差分の比較元を完全形で
-併記する、`git log` の出力を1行引用する。どれも指示に従った書き方になる——は、
-大半のティックで依然として落ちる。** 落ち方は Fact を作らず `pending` に残す
-安全側で、待てばレビューを回し直せる。名指しを既定の規約にするにはプロンプト側に
-要求する1行が要り、それは `PROTECTED_PATH_FLOOR` を動かす話になる。ここで
-読む側だけを直して「吸収した」と書かない。
+sha を読む経路は2本ある。**先に見るのは `reviewed_sha:` の名指しで、いまはこちらが
+通常の経路になる。** 名指しが1つだけあればそれを採り、2つ以上あって値が食い違えば、
+数え直さずに `pending` に落とす——どれを読んだかを2通り述べた出力は、数えても
+決まらない。名指しが1つも無いときだけ、本文中の 40 桁を数える側へ落ちる。同じ sha を
+何度述べても1つと数え、違う sha が並んでいたら、どれを読んだ結果なのか決められないので
+`pending` にする。
+
+数える側が**当初の既定**で、名指しを見る経路はその手前に後から足したものになる。
+読む側を先に足したのは、当時のプロンプトが言うのが「読んだ commit の sha を述べる」
+ことだけで、**数えるだけの規則が落とす出力——差分の比較元を完全形で併記する、
+`git log` の出力を1行引用する。どれも指示に従った書き方になる——を拾える形が、
+読む側にしか置けなかった**ため（`src/adapters/claude.ts` は
+`PROTECTED_PATH_FLOOR` の中にあり、Actor には触れない）。
+
+いまはプロンプトの側でも名指しを要求している。レビュー役に `semantic-review` の
+skill を渡した（§4.2）ときに、あの出力形式が本文に base と head の2つの sha を
+並べるため、数えるだけの規則では毎回落ちるようになったからで、**人間が
+`REVIEW_PROMPT` を書き換えて足した。** 読む側の規則はそのまま残す。名指しが
+無い出力——プロンプトを差し替える前の Run、skill を使わなかった Run——を、
+待っても直らない失敗として扱う理由が無い。要求する側と拾う側の両方があり、
+片方が欠けても安全側（Fact を作らず `pending`）に倒れる。
 
 起動する側は DECIDE のプロンプトになる。選べる行動に `role: review` の ACT を1つ足し、
 `review.reviewed_sha` が `local.head_sha` と一致しているあいだは——実装が1行も
@@ -408,7 +456,8 @@ reconcile は `WAIT(review_pending)` から抜けられず、§9 の完了判定
 `.goals/assess-and-decide.yaml` の Goal で実際に踏んだ。
 
 経路そのものが誤りではない。`ApprovalPort` はレビュー承認と PR コメントの定型文の
-2つを signal にする（理由と判定順は §10-4）。
+2つを signal にする（理由と判定順は §10-4）。2つ目は作成者自身が書いても成立するので、
+1人運用でもここで承認待ちは解ける。
 
 ### 4.4 状態機械
 
@@ -428,6 +477,10 @@ Goal のライフサイクル
   WAITING_EXTERNAL(reason: usage_limit)     選択したLLM/Actorの使用量上限。resume_after を持つ
   BLOCKED(reason: budget_exhausted)         予算・回数・時間の上限に到達
 ```
+
+**依存待ち（§10-12）はこの一覧に無い。** `goal.depends_on` が揃わないティックは lease を
+取らずに `tick` の入口で return するので、Goal は ACTIVE のまま状態を1つも動かさない。
+理由は `ent run` の `skipped` にしか出ない（§3.6 の例外）。
 
 `AWAITING_CRITERIA_APPROVAL` は MVP では実装しない。§3.2 のとおり、Goal YAML の
 レビューがそのまま承認ゲートを担うので、`ent start` は `DRAFT` から `ACTIVE` に直行する。
@@ -471,12 +524,18 @@ Run           goal_id, intent, actor, role, worktree, attempt, status, started_a
 LlmCall       goal_id, purpose, tokens, log_ref, ok, called_at
 
 Criteria      未作成。criteria は Goal YAML が正
-Plan / Task   未作成。Plan の永続化を入れる Goal で足す
+Plan / Task   作らない。分解はサブ Goal の宣言が持つ（§10-12）
 Event         未作成。webhook を入れる Goal で足す
 ```
 
-`policies` と `budget` は Goal YAML が正で、DB には持たない。宣言部と実行時状態を
-混ぜないという §4.6 の分け方に従う。
+`policies` と `budget`、`goal.depends_on` は Goal YAML が正で、DB には持たない。
+宣言部と実行時状態を混ぜないという §4.6 の分け方に従う（依存の判定は、依存先 Goal の
+`status` を読むだけで足りる。§10-12）。
+
+`Plan / Task` だけは「まだ作っていない」ではなく**作らないと決めた**もので、
+`Criteria` や `Event` とは意味が違う。分解した1本ごとに Goal を立てる方針を採ったので
+（§10-12）、Plan にあたるものはサブ Goal の宣言そのものになる。DECIDE が選ぶ行動としての
+`REPLAN`（§1 / §5）は残るが、その結果を DB の別の層には持たない。
 
 `LlmCall` は当初この一覧に無かった。DECIDE を Actor 層経由に寄せた（§3.5）結果、
 Run を作らない LLM 呼び出しが生まれ、そのトークンを §7 のとおり残す場所が要るようになった。
@@ -485,6 +544,14 @@ Run を作らない LLM 呼び出しが生まれ、そのトークンを §7 の
 「Fact の不在に畳まれる」問題が DB 層で再発し、ASSESS が取りこぼしを読めなくなる。
 観測側は `Unresolved` の行として、検証側は `Verification.result` を
 `passed` / `failed` / `unresolved` の3値にして持つ（`unresolved` のときだけ `reason` が埋まる）。
+
+**`failed` の中身も残す。** `evidence.detail` に終了コードだけを入れていたころ、
+criteria が一度だけ落ちて次のティックで通る、という揺れを追えなかった。同じ
+worktree で手で流すと全件通り、残っていたのは `exit_code=1` だけだった。
+§3.1 が守っているのは「確かめられなかったこと」で、落ちていたのは**確かめた結果が
+不合格だったときの中身**になる。いまは落ちたときだけ出力の末尾を載せる
+（`describeCommandResult`。上限 2000 文字、切ったことを本文に書く）。生ログでは
+ないので、数十MBを SQLite に押し込まない（§4.6）。
 
 `Verification` 行と `criteria.<id>.passed` の Fact は同じ結果の二重表現になるが、
 前者が criteria 単位の索引、後者が ASSESS に渡る観測値という役割分担にする。
@@ -527,13 +594,15 @@ UPDATE goals
 .goals/<slug>.yaml            人間が編集。Git 管理。宣言部のみ
 .goals/.state/goals.db        SQLite。機械のみが書く。gitignore
 .goals/.state/runs/<run-id>/  Agent の生ログ・diff。DB にはパスだけ持つ
-.goals/.state/worktrees/<slug>/ Actor が読み書きする worktree（実装役とレビュー役。§4.2）
+.goals/.state/worktrees/<slug>/ 実装役とレビュー役が共有するworktree。実装役が書き、レビュー役が読む（§4.2）
 .goals/.state/worktrees/<slug>-investigate/ 調べる役の worktree
 ```
 
 人間が編集する宣言部と、機械が書き換える実行時状態を混ぜない。
 同じファイルに入れると reconcile のたびに diff が出て、人間の編集履歴が埋もれる。
 `ent get <slug>` が両者をマージした1枚を標準出力に吐くので、参照時は1ファイルに見える。
+`.goals/<slug>.yaml` を機械が書く経路を入れるかは §10-12 で決めた。**書き手が増えても
+宣言部と実行時状態を分ける線は動かない。動くのは「人間が編集」の側だけになる。**
 
 `.goals/<slug>.yaml` のスキーマは `src/domain/goal.ts` にある。slug は `goal.id` と
 一致させる（突き合わせは `src/domain/goal-parse.ts`）。ファイル名は Phase 番号ではなく
@@ -592,8 +661,12 @@ PRAGMA foreign_keys = ON;
   役割が増えた（§4.2）が、**1ティックで起動する Actor は
   1体のまま**で、Decision も1ティックに1行のままにしてある。協働は同時ではなく
   ティックをまたいだ交代で成立させる。同じティックに2体を走らせると、Run の確定・
-  lease・write-ahead の前提（§3.6 / §4.5）まで変わる
-- ~~Codex CLI の実装~~（`ENT_ACTOR=codex` で非対話JSONL Adapterを選ぶ）
+  lease・write-ahead の前提（§3.6 / §4.5）まで変わる。
+  **ここで言う並列は1ティックの内側の話になる。** Goal単位のleaseがあるためデータモデル上は
+  N本を別プロセスで扱えるが、同一ディレクトリでの並列実行は状態DBの指紋変化を
+  保護パス違反と誤検知するため現在未対応。README「複数のGoalを同時に回す」のとおり、
+  この制約が解けるまでは1本ずつ回す
+- ~~Codex CLI の実装~~（`ENT_ACTOR=codex`またはphase別指定で非対話JSONL Adapterを選ぶ）
 - L5 改善レイヤー（History は貯めるだけ、学習はしない）
 
 Notion と Slack を外したことで、MVP の外部依存が GitHub 1つになった。
@@ -677,8 +750,8 @@ engines のチェックを通ったうえで起動時にクラッシュする範
 Node 側もそれに合わせて mise タスクに寄せた。
 
 ```
-mise run typecheck / lint / test / verify   アプリケーション側
-mise run check                              サプライチェーンと workflow（baseline 由来）
+mise run typecheck / lint / build / test / verify   アプリケーション側
+mise run check                                      サプライチェーンと workflow（baseline 由来）
 ```
 
 ---
@@ -711,9 +784,21 @@ DECIDE の LLM 呼び出しは `LlmCall.tokens` に残す（§4.5）。あとか
   `resume_after` に遠い未来を返されれば Goal を無期限に止められる。LLM が返した
   `resume_after` は採らない。埋めてよいのは、使用量上限のリセット時刻を Port から
   受け取ったときだけになる（§10-3 / §10-5）
-- 経過時間の上限は、`activated_at` を解釈できなければ「上限に到達した」側に倒す。
-  0 秒として扱うと NaN との比較が常に false になり、`max_wall_clock` だけが
-  黙って無効化される。停止条件が消えるより人間を呼ぶほうがよい
+- **`max_wall_clock` が数えるのは、機械側が動けた実時間になる。** `WAIT` と、
+  予算切れ以外の `ESCALATE` で待っていた分は引く（`waitedSeconds`）。待てと
+  指示したのは controller の側で、次のティックが何をしても状態は変わらない。
+  その時間を Goal の予算から引くのは筋が通らない。実際、`type: human` の
+  criterion を1本だけ残して一晩承認を待った Goal が、承認が届いたあと
+  それを観測する前に `budget_exhausted` で `BLOCKED` になった。`ent complete` は
+  無い（§3.1）ので、その時点ではもう COMPLETED に到達できない（`budget` は Goal YAML が
+  正なので、人間が上限を書き足せば ACTIVE に戻せる）。
+  待ちの長さは Decision の履歴から導く。状態を1つ足して同期させると、
+  そこを書き損ねたティックだけ上限が黙って効かなくなる。
+  **材料が欠けたときは、どちらも上限が効く側に倒す。** `activated_at` を
+  解釈できなければ経過時間を Infinity にして「上限に到達した」とし、`decided_at` を
+  読めない Decision は待ちに数えない。0 秒として扱うと NaN との比較が常に false に
+  なり、`max_wall_clock` だけが黙って無効化される。逆に読めない時刻を待ちに数えると、
+  引いた分だけ上限が伸びる。どちらも停止条件が消えるので、人間を呼ぶ側に倒す
 - 同一 Task の再試行上限。達したら別 Actor か Replan、それも尽きたら ESCALATE
 - 観測が N 回連続で変わらなければ ESCALATE（ループ検知）。N は `budget.max_unchanged_reconciles`。
   判定の材料は Gap ではなく `Decision.observed_digest`（§10-2）
@@ -732,13 +817,17 @@ DECIDE の LLM 呼び出しは `LlmCall.tokens` に残す（§4.5）。あとか
 正当に触る対象になりうる。下の列挙は下限と、Goal ごとに足す分の両方を含む。
 **下限の全量は `PROTECTED_PATH_FLOOR` を正とする。** 下の箇条書きは基準を説明するための
 代表例で、網羅ではない。両方に同じ一覧を持たせると、片方だけ古くなったときに
-どちらが関門の実体なのか読む側から分からなくなる。
+どちらが関門の実体なのか読む側から分からなくなる。承認ゲートにも同じ形の下限があり、
+`APPROVAL_GATE_FLOOR` が `secret_access` と `external_send` をどの Goal にも混ぜる。
 
 - 関門そのもの（`src/domain/protected-paths.ts`）と、Agent の許可・拒否ツールを決める
   ファイル（`src/adapters/claude.ts`）。ここが開いていると、照合を常に false にするか
-  拒否リストを空にするだけで残りが全部外れる
+  拒否リストを空にするだけで残りが全部外れる。同じファイルが、役割ごとに見せる skill
+  （`SKILLS_FOR`）と、レビューの結論の契約（`REVIEW_PROMPT` が求める `verdict:` と
+  `reviewed_sha:` の2行。§4.3）も持つ。**Actor が自分に渡る観点と、自分の結論の
+  読まれ方を書き換えられる**ようになるので、下限から外せない
 - **guard が読む判断規則（`src/domain/guard-rules.ts`）。** 関門が差分を取る相手
-  （`guardBaseOf`）、未 commit の関門が見る述語（`claimsNothingLeft` / `observedValue`）、
+  （`guardBaseOf`）、未 commit の関門が見る述語（`leavesWorkUncommitted` / `observedValue`）、
   寝ている間かの判定（`sleepingUntil`）、経過時間と連続失敗の数え方がここにある。
   書き換えれば関門は毎ティック空の差分を見るし、壁時計の停止条件も黙って無効化できる。
   もとは `src/controller/**` の中にあって下限に覆われていた。**依存を持たない規則だから
@@ -748,6 +837,15 @@ DECIDE の LLM 呼び出しは `LlmCall.tokens` に残す（§4.5）。あとか
   読んで、その置き場が下限にあることまで見る。
   1ファイルに集めてあるのは保護の単位と揃えるためで、語彙ごとに配ると下限に何本も
   足すことになり、しかも Goal が正当に触りうる語彙と同じファイルになる
+- **合成ルート（`src/wiring/index.ts`）。** 規則を守っても、その規則へ渡る
+  **入力**が開いていれば関門は無力になる。ここは `localRepo` / `commandRunner` /
+  `gitWorktree` を注入する場所で、未 commit の関門と VERIFY が見る作業ツリーを決める
+  `verifyRoot`（§10-9）も同じファイルにある。`guardBaseOf` を1文字も触らずに、
+  関門が読む観測そのものを差し替えられる。**こちらは上とは逆で**、リファクタ前も
+  同じコードが `src/cli.ts` にあって下限の外だった。移設で開いた穴ではなく、
+  以前から開いていたものを移設のついでに閉じたことになる。
+  `tests/protected-floor.test.ts` が、
+  `tickPorts` と `verifyRoot` の置き場を `guard-rules.ts` と同じ方式で見る
 - 検証系（`mise.toml` / `mise-tasks/**` / `vitest.config.ts` / `biome.json` /
   `tsconfig*.json` / `.github/**`）。VERIFY は worktree で criteria のコマンドを
   流すので（§10-9）、ここを書き換えられると Agent が自分の Acceptance Criteria を
@@ -768,6 +866,13 @@ DECIDE の LLM 呼び出しは `LlmCall.tokens` に残す（§4.5）。あとか
 Agent SDK の `env` は「マージではなく置き換え」なので、`process.env` から
 `GITHUB_TOKEN` / `GH_TOKEN` を落として渡す。push と PR は controller だけが行うので、
 Actor 側にトークンが要る場面はそもそも無い。
+
+**落とすだけでは足りない。** `gh` はトークンの環境変数が無ければ
+`$HOME/.config/gh/hosts.yml` のログインに落ちる。`HOME` は渡すしかない
+（`mise` も `pnpm` も動かなくなる）ので、除去リストの届かないところに認証が
+残っていた。`NEUTRALIZED_ENV` が `GH_CONFIG_DIR` を実在しないディレクトリへ
+向けて、Actor と検証コマンドの中の `gh` を未認証にする。**消す側だけでなく、
+上書きして無効化する側も要る**（`src/domain/withheld-env.ts`。塞ぎたい経路は §10-4）。
 
 **git を argv 配列で叩く。** 外部コマンドをテンプレート文字列で組み立てると、
 引数のどれか1つでも controller の制御下に無ければシェルインジェクションになる。
@@ -909,11 +1014,12 @@ worktree の作業ツリーを見るので criteria は全部 passed になる�
 「ローカルは通っているのに PR だけが古い」に見え、`WAIT(review_pending)` で
 止まった。前の3つは controller の実装の誤りだったが、これは違う。push も VERIFY も
 DECIDE も契約どおりに動いていて、**「Actor が commit する」という前提を誰も
-要求していなかった**ことが原因になる。いまは「機械側にやることは残っていない」と
-言い切るティック（`COMPLETE` と `WAIT`）で、**今ティックの観測が worktree を見て
-作った** `local.dirty` を読み、それが VERIFIED で汚れていれば
-`ESCALATE(uncommitted_changes)` にする（§10-11）。確かめられなかったティックは
-違反にしない。
+要求していなかった**ことが原因になる。**いまはその前提そのものを置いていない。** 機械側の criteria
+（`command` 型）が全部通ったティックで、controller が Actor の書いたものを commit する。
+それでも commit されなかったティックは、「機械側にやることは残っていない」と言い切る
+ティックで **今ティックの観測が worktree を見て作った** `local.dirty` を読み、
+VERIFIED で汚れていれば `ESCALATE(uncommitted_changes)` にする（§10-11）。
+確かめられなかったティックは違反にしない。
 
 ### 自己ホストには制約が要る
 
@@ -984,6 +1090,9 @@ Phase 3 で取り直した（§8）。
 `/ent approve ac-6` を人間が書き、guard が `COMPLETE` を選んで `COMPLETED` へ遷移する
 ところまで通したため。下の実測は別の Goal のもので、承認前の承認待ちで止まっている。
 
+そのとき `/ent approve` を書いたのは PR の作成者本人にあたる。作成者を承認から外すと
+この確認が再現できなくなるので、コメントの側は作成者を数える側で固定してある（§10-4）。
+
 ### 通しで1周したときの実測
 
 `.goals/list-goals.yaml` を controller に実装させたときの記録。
@@ -1007,9 +1116,22 @@ cache_read / output）の合計を持つ。単価が違うので、合計1つか
 
 ## 10. 未決事項
 
-MVP を止める未確定は残っていない。ただし、他のリポジトリで回す前に決める必要があるものが
-2つある（8 の Goal YAML の移行方針と、9 の検証コマンドの実行権限）。
-以下は実運用で必要になった順に埋める。
+MVP を止める未確定は残っていない。**他のリポジトリで回す前に決める必要があるのは
+8 と 9 の2つ。** どちらも主題は Phase 3 で確定していて、隣にある問いが1つずつ
+開いている。**取り消し線は「その項目の主題は確定した」を意味し、そのうえで一部が
+開いているものに（一部）を付ける。**
+
+- **8（一部）** — `protected_paths` をどこに載せるかは確定した。開いているのは
+  Goal YAML のスキーマを変えたときの移行方針の側になる
+- **9（一部）** — VERIFY を Goal 専用の worktree で流すことは確定した。開いているのは
+  そのコマンドを controller の権限で実行している側になる
+
+12 が残す2つは、上の2件には数えない。1つは入った `goal.depends_on` の穴で、粗い
+タスクを複数の Goal に割って回すときに効く。自己ホストはまだ `depends_on` を
+使っていない。もう1つは、分解を機械にやらせる場合に criteria の変更を検知する
+指紋で、経路そのものがまだ無い。
+
+残りは他のリポジトリで回す前提を欠かないので、実運用で必要になった順に埋める。
 
 1. ~~**Goal YAML のスキーマ詳細**~~ — Phase 0 を1周して確定した。`src/domain/goal.ts` を参照。
    Phase 0 版からの差分は、`repository` と `setup` を足し、`verification` を
@@ -1050,21 +1172,42 @@ MVP を止める未確定は残っていない。ただし、他のリポジト�
    トークンで投稿されたコメントの中に承認の1行が成立する。Agent に `gh pr comment` を
    禁じて塞いだ経路を controller が迂回する形だった。進捗コメントには HTML コメントの
    目印を入れて除外し、`rationale` の改行も潰して二重にする。
-   以下は signal そのものの定義で、Phase 3 の2本目から変わっていない。
+   以下は signal **が2つであること**の定義で、そこは Phase 3 の2本目から
+   変わっていない（**誰の投稿を数えるかは MVP レビューで2度変えた。下記**）。
    signal は2つあり、どちらか一方でも成立すれば承認とみなす。
    GitHub のレビュー承認（他人が Approve を押す。仕事で使うときの本来の経路）と、
    PR コメントの定型文 `/ent approve <criterion-id>`。§4.3 が言うのは
    「`review_decision` *だけ* には頼れない」で、経路そのものが誤りではない。
+   **PR の作成者をどう扱うかは、2つの経路で逆にする。** レビュー承認は作成者自身の
+   Approve を数えない（GitHub 自体も自分の PR の Approve を許さない）。
+   **コメントの定型文は作成者も数える。** `GITHUB_TOKEN` は開発者自身のトークンなので
+   PR を立てるのもその人で、ここで作成者を除くと `/ent approve` の経路そのものが消える。
    **1人で開発しているあいだ成立しないのはレビュー承認の側だけで、コメントの定型文は
-   1人でも成立する。** レビュー承認は作成者自身の Approve を数えない（GitHub 自体も
-   自分の PR の Approve を許さない）が、コメントの側は作成者を除外していない。
-   `GITHUB_TOKEN` は開発者自身のトークンなので、そこで作成者を除いてしまうと
-   `/ent approve` の経路そのものが消える。自分のリポジトリなら
-   `author_association` は `OWNER` になるので、そのまま承認として数える。
+   1人でも成立する。** 自分のリポジトリなら `author_association` は `OWNER` になるので、
+   書き込み権限を確かめたうえでそのまま承認として数える。
+   一度は自己承認を塞ぐために作成者を除外したが、**塞ぎたかったのは「Agent が作成者
+   名義で定型文を書く」経路であって、人間の作成者ではなかった。** 承認できる人を
+   減らす形で塞ぐと、§9 の「完了判定」を通した手順そのものが再現できなくなる。
+   **その経路は資格情報を届かせない側で塞ぐ。** 拒否リストだけでは足りない。
+   コメント投稿を落とす `external_send` は `APPROVAL_GATE_FLOOR` にあって
+   どの Goal からも外せない（§7）が、中身は glob なので
+   `gh api -X POST`（`--method POST` の別綴り）にも `sh -c` 経由の間接呼び出しにも
+   一致しない。**書ける形を数え上げる統制は、1つ書き落とした時点で穴になる。**
+   しかも `WITHHELD_ENV` が落とすのはトークンの環境変数だけで、`HOME` は渡すしか
+   ないので、Actor の中の `gh` は controller を動かしている人間の認証で通っていた。
+   いまは `NEUTRALIZED_ENV` が `GH_CONFIG_DIR` を実在しないディレクトリへ向け、
+   **Actor と検証コマンドの両方で `gh` を未認証にする**
+   （`src/domain/withheld-env.ts`。VERIFY 側も塞ぐのは、Actor が書いたテストが
+   controller の権限で走るため。§10-9）。
+   そのうえで、controller 自身の進捗コメントは `PROGRESS_MARKER` が除外し、
+   role ごとのプロンプトにも「承認の定型文を書かない」を明記してある。
+   **残る前提は2つ。** 1つは、`gh` 以外の手段（生の HTTPS 要求）を書かれたら
+   届くこと。`Bash(curl *)` は拒否リストにあるが、これも書ける形の数え上げに
+   戻る。もう1つは、拒否リストもプロンプトも SDK の設定でしかないこと（§10-6）。
+   資格情報を渡さない側は SDK の外でも効くので、そこだけは層が違う。
    レビュー承認は PR 全体に対するものなので `type: human` の criteria すべてを満たす。
-   作成者自身の Approve は数えない。変更要求が最新として残っていれば、どちらの経路でも
-   承認しない。定型文は行全体で照合する。引用やコード例の中の同じ文字列を承認と読むと、
-   捏造した承認が作れてしまう
+   変更要求が最新として残っていれば、どちらの経路でも承認しない。定型文は行全体で
+   照合する。引用やコード例の中の同じ文字列を承認と読むと、捏造した承認が作れてしまう
 5. ~~**`resume_after` を誰が読むか**~~ — Phase 3 の3本目で確定した。`tick` が入口で
    判定し、過ぎるまで何もせずに return する。lease も取らない。取ると、寝ているだけの
    Goal が他のワーカーを塞ぐ。解釈できない値は「起きてよい」と読む。壊れた値のせいで
@@ -1167,9 +1310,14 @@ MVP を止める未確定は残っていない。ただし、他のリポジト�
    その場合に人間へ届くのは `ent get` と Decision の履歴だけになる。
    **残る穴を5つ書いておく。**
    (a) repoRoot の外（`~/.zshrc` や `~/.claude/**`）は git で観測できないので見えない。
-   (b) gitignore されたパスも見えない。`--ignored` を付ければ出るが、
-   controller 自身が `.goals/.state/**` に毎ティック書くので、自分の書き込みが
-   毎回違反として並ぶ。DB を直接書き換えられる経路がここに残る。
+   (b) git の観測に出ないものが2系統ある。gitignore されたパス（`.goals/.state/**`）と、
+   gitignore とは無関係に `git status` が原理的に出さないもの（`.git/hooks/**` と、
+   そもそもパスではない `core.hooksPath` の設定値）。前者は `--ignored` を付ければ出るが、
+   controller 自身が毎ティック書くので、自分の書き込みが毎回違反として並ぶ。
+   **どちらの系統も、実行に繋がる3つ——`.goals/.state/goals.db`・`.git/hooks/**`・
+   `core.hooksPath`——だけは `outOfSightState` が名指しで指紋を取り、ACT の前後で
+   比べる**（MVP レビューの SEC2 / SEC3）。残る穴は `goals.db` 以外の gitignore された
+   パスで、そこを書き換えられても検知しない。
    (c) 本体側の違反は、同じファイルが次のティックまで**そのまま**なら、
    その内容がベースラインに入るので鳴り止む。指紋で比べているので、同じファイルを
    もう一度書き換えれば再び鳴る。鳴り止むのは「1回の改変を放置した場合」に限る。
@@ -1184,7 +1332,7 @@ MVP を止める未確定は残っていない。ただし、他のリポジト�
    (c) と (d) は逆向きのトレードオフで、どちらも検知を永続化するか
    Actor プロセスと編集を紐付けないと同時には解けない。MVP では両方残す
 7. **Notion / Slack を足す時期** — 実環境ができてから
-8. ~~**`require_human_approval` にパス条件をどう載せるか**~~ — Phase 3 の4本目で確定した。
+8. ~~**`require_human_approval` にパス条件をどう載せるか**~~（一部） — Phase 3 の4本目で確定した。
    enum には載せず、`policies.protected_paths`（glob の配列）を別に持つ。
    enum の6値は「操作の種類」で、パスは「対象」なので軸が違う。1つの enum に混ぜると
    controller 側の照合が分岐だらけになる。
@@ -1199,7 +1347,7 @@ MVP を止める未確定は残っていない。ただし、他のリポジト�
    再実行しない Goal に手を入れても差分が増えるだけだが、「どの Goal がどこまで
    守られているか」は YAML を1本ずつ読まないと分からない。既定値をどこに置くかは
    まだ決めていない
-9. **VERIFY をどこで流すか** — Phase 3 の5本目で `repoRoot` から Goal 専用の worktree に
+9. ~~**VERIFY をどこで流すか**~~（一部） — Phase 3 の5本目で `repoRoot` から Goal 専用の worktree に
    変えたが、規則が「worktree があればそちら」という暗黙のものになっている。
    Goal YAML から指定できる方がよいかは決めていない。1ティック目は worktree が
    無いので `repoRoot` を見る、という非対称も残る。
@@ -1218,6 +1366,11 @@ MVP を止める未確定は残っていない。ただし、他のリポジト�
     金額は出ない（§9 の実測を参照）。内訳は生ログにあるので、§7 の「従量課金だったら
     いくらだったか」を出すには、そこから読む口が要る
 11. ~~**「Actor が commit する」という前提を誰が確かめるか**~~ — 確定した。
+    **いまはその前提そのものを置いていない。** 機械側の criteria が通ったティックで
+    **controller が commit する**（下の「前提を置くのをやめた」）。確かめる側の話は
+    その下に残す。commit されなかったときの受け皿として、いまも効いている。
+    **順序は、保護パスの関門 → controller の commit →（commit されなかったときだけ）
+    未 commit の関門になる。**
     controller が ACT の外側で確かめ、**未 commit の変更が残っていることを確かめたら**
     `ESCALATE(uncommitted_changes)` にする。確かめられなかったティックは違反にしない
     （下の「材料」を参照。§10-6 の `guard_unavailable` とは倒す向きが逆になる。
@@ -1234,9 +1387,12 @@ MVP を止める未確定は残っていない。ただし、他のリポジト�
     という前提をどこも要求していないことで、前提が満たされたかを確かめないまま
     満たされていることにして先へ進む形になっていた。§3.1 が Fact について避けたかった
     構図が、Fact ではなく前提の側で起きたことになる。
-    **関門を置くのは「機械側にやることは残っていない」と言い切るティックに限る。**
-    その形は `COMPLETE` と `WAIT` の2つで、前者は終端であとから取り消せず（§4.4）、
-    後者は次のティックまで機械側が何もしない。どちらのティックでも、worktree に
+    **関門を置くのは、書き残しを解消しないと分かっているティックに限る。**
+    その形は `COMPLETE` と `WAIT` と `VERIFY` の3つになる。前の2つは「機械側にやることは
+    残っていない」と言い切るティックで、前者は終端であとから取り消せず（§4.4）、
+    後者は次のティックまで機械側が何もしない。`VERIFY` は criteria のコマンドを流すだけで
+    worktree に1行も書かないので、やることは残っていても**残っているやることが書き残しを
+    解消しない**。判定は `leavesWorkUncommitted`（`src/domain/guard-rules.ts`）が正になる。いずれのティックでも、worktree に
     未 commit の変更が残っていてはいけない。差し替えないのは `WAIT(usage_limit)` だけで、
     あれは判断そのものを保留しただけなので、待てば続きがある（§10-5）。
     **材料は既にあった `local.dirty` を読む。** 観測を足していない。VERIFY と同じく
@@ -1262,7 +1418,7 @@ MVP を止める未確定は残っていない。ただし、他のリポジト�
     **逆向きの誤検知を2つ避ける。** 実装の途中で作業ツリーが汚れているのは正常なので、
     Gap が残っているティックは進む。ただし理由は「Gap があれば関門を通らない」では
     **ない**。Gap があるティックは LLM に渡り、LLM は `WAIT` を返せて、その `WAIT` は
-    ここで止まる。関門を通らないのは `ACT` / `VERIFY` / `REPLAN` に落ちたティックで、
+    ここで止まる。関門を通らないのは `ACT` / `REPLAN` に落ちたティックで、
     どれも「機械側にやることが残っている」と言っているティックになる。
     もう1つは、Actor がまだ1度も走っていない Goal をそもそも見ないこと。1ティック目は
     worktree が無く `local.*` は controller 自身のリポジトリを観測するので（§10-9）、
@@ -1280,8 +1436,9 @@ MVP を止める未確定は残っていない。ただし、他のリポジト�
     push まで止めるのは保護パスの関門だけで、こちらは止めない。commit された分は
     remote に出てよい。
     **その「出てよい」を実際に出せるようにするため、push の機会を Actor の実行から
-    外した。** この関門の解決手順は人間が commit することで、**その commit には Run が
-    付かない。** `publish` は「完了した Run が無いティックでは push しない」を条件に
+    外した。** この関門の解決手順は人間が commit することで（controller が commit するように
+    なったいまは、ここへ落ちるのは commit が成立しなかったティックに限る）、**その commit には
+    Run が付かない。** `publish` は「完了した Run が無いティックでは push しない」を条件に
     していたので、人間が片付けた差分は remote に出ないまま残った。PR が立ったあとの
     DECIDE は `WAIT(review_pending)` を選び続けて次の ACT も来ないため、ローカルは
     全部緑なのに remote には仕様テストだけが載って CI が赤い状態で固まる
@@ -1295,9 +1452,146 @@ MVP を止める未確定は残っていない。ただし、他のリポジト�
     正しいが、intent は LLM が生成するので「書いた」ことは確かめられても「従った」ことは
     確かめられない（§3.2）。従わなかったティックは、やはり黙って `WAIT` に落ちる。
     検証に還元できるのは controller 側の検知だけになる。
+    **これは実測で確かめた。** Actor の生ログを3本読み比べたところ、同じモデル
+    （`claude-opus-5[1m]`）・同じ `permissionMode`・どれも `subtype: success` で
+    打ち切られていないのに、**commit したティックとしなかったティックの両方が出た。**
+    commit した側は `git log -3 --format='%s%n%n%b---'` で既存のコミットメッセージの
+    書き方まで調べてから commit しており、誰にも言われずにそこまでやっている。
+    しなかった側は commit について何も述べていない。そのうちの1本は intent に
+    **「修正を push する」と明示されていた**。プロンプトの側も commit を求めておらず、
+    役割共通の末尾（`COMMON_TAIL`）が「push も含めて controller が行う」と書いている。
+    つまり commit していたのは指示されたからではなく Actor がそう判断したからで、
+    判断なので run ごとに変わる。**仕組みとして担保されていたことは1度も無かった。**
+    **前提を置くのをやめた。** 機械側の criteria が通ったティックで、controller が
+    Actor の書いたものを commit する（`WorktreePort.commit`）。判定は
+    `machineCriteriaSatisfied`（`src/domain/guard-rules.ts`）の純ロジックで、
+    保護パスの関門を通ったあと・publish の前に置く。関門が止めたティックでは
+    commit しない。違反した変更を履歴に載せると、あとから通常の変更として流れる
+    余地が生まれる（§10-6 が push を止めているのと同じ理由）。
+    **見るのは `command` 型の criteria だけにする。** `fact` 型には
+    `github.ci.conclusion` のように push されて初めて決まるものがあり、それを
+    commit の前提にすると「commit しないと CI が回らず、CI が通らないと commit
+    しない」で閉じる。`human` 型は定義上ここでは決まらない。実質は「push しなくても
+    確かめられる criteria が全部通ったら commit する」になる。`command` 型が1本も
+    無い Goal では commit しない。機械側で確かめたものが1つも無いのに commit すると、
+    Actor が書いただけのものが commit 済みとして push される。
+    **commit したティックでは未 commit の関門を見ない。** `local.dirty` は commit より
+    前の観測なので、読むと自分が片付けた汚れで自分を止めることになる。
+    何も commit されなかったとき（gitignore されたファイルだけが汚れている、commit
+    そのものが失敗した）は、これまでどおり関門が鳴る。**外したのではなく、鳴る条件が
+    1つ減っただけになる。**
     **残る穴。** 検知するのは「commit されていない」までで、「commit された内容が
     実装であること」は見ていない。Actor が空の commit を積めば関門は鳴らない。
     そこは CI（`github.ci.conclusion`）と `type: human` の criterion が受け持つ
+12. **タスク分解をどの粒度で持つか** — 方針を決めた。**分解した1本ごとに Goal を立て、
+    Goal 間に依存を宣言する。Goal の下に Task 層は切らない。**
+    **順序を宣言する側は入った。** `goal.depends_on`（`src/domain/goal.ts`）に id を
+    並べると、依存がすべて COMPLETED になるまで `tick` が回らない。判定は
+    `dependencyGate`（`src/domain/guard-rules.ts`）の純ロジックで、`resume_after` と
+    同じく **lease を取らずに** 入口で return する（理由は下の「依存の判定の置き場」）。
+    **まだ入っていないのは、分解そのものを機械が行う側になる。** いまサブ Goal を
+    書くのは人間で、controller は書かれた順序に従うだけになる。
+    §1 が「タスク分解も controller が決める」に但し書きを付けているのはここが理由になる。
+    成り立っているのは1つの Goal の内側（`intent` と `REPLAN`）だけで、**Goal をまたぐ
+    分解——1つの粗いタスクが、それぞれ自分の worktree と PR を持つ N 本に割れること——は
+    無い。** Phase 2 を4本、Phase 3 を5本に割ったのは人間の判断になる（§8）。
+    二択だった。(a) サブ Goal + 依存の宣言、(b) Goal の下に Task 層（§4.5 の `Plan / Task`）。
+    **コストの差ではなく成果物の形の差で決めた。** どちらも `PROTECTED_PATH_FLOOR` の
+    中を触るので、**どちらも ent 自身には実装させられない**。(a) は `goalSchema`
+    （`src/domain/goal.ts`）に依存の宣言を足し、依存が揃うまで進めない規則を guard に
+    置く。(b) は `guardBaseOf`（`src/domain/guard-rules.ts`）が Task 単位の base を
+    返す形になる。`src/domain/goal.ts` と `src/domain/guard-rules.ts` はどちらも下限に
+    入っている（全量は定数を正とする。§7）ので、`close-the-review-findings.yaml`
+    （§9 の「完了後のレビュー」で見つかった指摘を閉じる Goal。実装は ent の外側で行うと
+    宣言してある）と同じく、ent の外側で人が書く作業になる。「片方だけ自己ホストできる」
+    という差は無い。
+    決め手は、**1つの粗いタスクに対して人間が何本の PR をレビューするか**にした。
+    (a) は N 本、(b) は1本になる。(b) を採ると、いま揃っている
+    1 Goal = 1 worktree = 1 PR = 1 lease が全部 Task 単位に割れる。`GoalState` が
+    `leaseOwner` / `prNumber` / `guardBaseSha` を Goal の行に持ち、関門も push 先も
+    そこに乗っているので、§5 の「1ティックで起動する Actor は1体、Decision は1ティックに
+    1行」まで見直しになる。関門が立っている土台なので、動かすなら分解より先に関門を
+    作り直すことになる。(a) はこの揃い方を1つも崩さない。
+    **その帰結として、`design`（あるいは `plan`）を `ActorRole` に足さない。**
+    (a) の分解の成果物はサブ Goal の宣言、つまり `.goals/*.yaml` になる。`.goals/**` は
+    `PROTECTED_PATH_FLOOR` にあるので、**Actor が書いた瞬間に関門が鳴る**。役割を
+    足しても、その役割が出すべき成果物を出せない。§4.2 の3つの role は「worktree で
+    何かを書く・読む」ための区分で、宣言部を書くことはそこに属さない。役割の宣言だけを
+    先に置くと、`review` が配線済みのまま起動されずに残っているのと同じ形になる。
+    分解を機械にやらせるなら、置き場は Actor ではなく controller 側になる
+    （**以下この経路を planner と呼ぶ。`ActorRole` ではない**）。Gap の
+    埋め方を LLM に委ねるのは §3.5 の境界の内側なので、`LlmPort` を1回呼んで
+    （トークンは `LlmCall` に残る）サブ Goal の宣言を repoRoot に書く形になる。
+    **worktree に書かせない。** 実装役の作業ツリーに `.goals/*.yaml` が現れると、
+    毎ティック `protected_path_touched` になる（§10-6 が1度踏んだ形と同じ）。
+    **その経路を採ると `.goals/*.yaml` は §4.6 の「人間が編集」から外れ、§3.2 の
+    「YAML のレビューが承認ゲート」も人間が書いた分にしか掛からなくなる。**
+    **ここは planner に書かせる側で決めた。決めたのは方針で、コードは1行も無い**
+    （上の「まだ入っていない」はそのまま）。ループを回している最中に計画を直す必要が
+    出る以上、planner が YAML を書き換えられないと `REPLAN` が「もう一度考える」だけで
+    終わる。repoRoot 側の関門は ACT の前後の差だけを数える（§10-6）ので、DECIDE で
+    書く分が違反にならない読みになるが、**そこは経路を作るときに確かめる。**書ける範囲を宣言の一部に絞る——人間が書く分と planner が書く分を別のパスに
+    置く——案は**採らない**。関門はパスでしか効かない（`findViolations` が突き合わせるのは
+    git が観測した変更パスと glob）ので、同じファイルの中で「`desired_state` は書いてよいが
+    `acceptance_criteria` はだめ」を表現するには YAML の意味差分を取る別種の関門が要る。
+    それに見合う防御にならない。**criteria の完全性は元から絶対ではない**からで、
+    §7 が `tests/**` を下限に入れないと決めている以上、criteria の文字列を凍らせても
+    「確かめる中身」の側は開いている。planner には報酬信号も持続する目的関数も無く、
+    塞いでも得るものが薄い。
+    **守りたいのは偽装の防止ではなく、バーが動いたことに人間が気づけることになる。**
+    `acceptance_criteria` / `policies` / `budget` の指紋を `ent start` で1回だけ記録し
+    （置き方は `guardBaseSha` と同じ）、変わっていたら `AWAITING_CRITERIA_APPROVAL` に
+    落として人間に返す形が、いちばん安い。この状態は §4.4 が型に残したまま
+    「書き込むコードは無い」と書いているもので、受け皿がそのまま空いている。
+    LLM を呼ばないので決定論のままになる。ただし §4.4 の図に ACTIVE から戻る辺は無く、
+    `nextStatus` にもこの値を返す Action が無いので、辺を1本足すことになる。
+    **いまは作らない。** 実際に回してみて、planner が勝手に criteria を書き換える場面が
+    多いと分かってから入れる。理由が2つある。**1つは、捨ててしまえない側の理由。**
+    criteria が動いたことに気づけないと §3.2 の承認ゲートが形式だけになり、§4.5 の
+    Decision の履歴からも「収束したのか、バーが下がったのか」を区別できなくなる
+    （L5 が読むのはその履歴になる）。構造としては §10-11 の `intent` と同じで、
+    **確かめる対象を、確かめられる側が生成している**。悪意ではなく drift の話で、
+    ループの中から見れば「計画を改善する」と「達成できる基準に書き直す」は見分けが
+    つかない。**もう1つは、いま置けない側の理由。** 頻度が分からないうちに関門を先に
+    置くと、正当な計画の修正のたびに人間を呼ぶ側の失敗をする。
+    なお指紋が答えるのは「criteria が途中で動いたか」までで、**機械が新しく書いた
+    サブ Goal を誰が承認するか**は比べる相手が無いので答えられない。そちらは
+    `ent start` を打つ時点が人間の承認点になり、§3.2 のままになる。
+    **依存の判定の置き場は `tick` の入口にした**（§10-5 の `resume_after` と同じ位置）。`ent start`
+    の入口で「ACTIVE にしない」形にすると、依存先をまだ start していない順序で宣言を
+    書けなくなる。分解したサブ Goal をまとめて登録する使い方がそれに当たる。
+    **lease は取らない。** 並べる本数を決めるのは呼び出し側なので（README「複数の Goal を
+    同時に回す」）、依存待ちの1本が枠を持ち続けると、進める側の Goal まで cron の1周で
+    回らなくなる。
+    **依存待ちのあいだも `activated_at` は立っている。** `ent start` は `DRAFT` から
+    `ACTIVE` に直行する（§4.4）。依存関門が`skipped`を返し続ける間は予算判定そのものへ
+    到達しないため、循環依存では`max_wall_clock`でも止まらない。依存が解消した次のティックでは、
+    依存待ちがDecisionの`WAIT`ではないため待機時間を差し引けず、`activated_at`からの時間を
+    含めて`max_wall_clock`を評価する。まとめて登録するときは、後続のGoalに長めの上限を書く。
+    **依存先が終端に落ちた場合は、待ちと分けて数える。** `dependencyGate` は
+    `pending`（まだ COMPLETED でない。待てば進む）と `unreachable`（`FAILED` /
+    `ABANDONED`。待っても解けない）を別に返す（この `pending` は依存の分類で、§3.1 の
+    `Unresolved` の `pending` とは別物になる。あちらは1回の観測・検証の結果、こちらは
+    Goal 間の順序を指す）。後者では次の一手——依存側をやり直すか
+    `depends_on` を書き換えるか——まで `skipped` に書く。**登録されていない依存は
+    `pending` に入れる。** `ent start` を打ち忘れただけかもしれないので、無いことを
+    「もう終わらない」とは読まない（§3.1）。
+    **依存の関門に残っている穴が2つ。** 1つは、止まった理由が状態に残らないこと。lease を取らない
+    以上その場では書けないので、いまは `ent run` の `skipped` にしか出ない。§4.4 の
+    待機に理由を足して残す形にするかは決めていない。もう1つは循環で、`depends_on` に
+    自分自身を書くのはスキーマが弾くが、2本以上をまたぐ循環は Goal YAML 1本からは
+    見えないので、全員が `pending` のまま止まる。**回す前に読む側は塞いだ。**
+    `ent doctor` に `dependencies` の検査があり、宣言を全部読める立場から循環と
+    「依存先の `.goals/<id>.yaml` が無い」を名指しして failed にする（`src/usecase/doctor.ts`）。
+    菱形（`alpha → base` と `bravo → base`）は閉じていないので循環として数えない。
+    **それでも実行時には依然として掛からない。** doctor は読むだけで、`dependencyGate` は
+    循環を今までどおり `pending` として返す。doctor を叩かずに `ent run` を回せば、
+    lease も取らず何も書かないティックが続き、`max_reconciles` にも `max_wall_clock` にも
+    当たらないまま止まり続ける。実行時に止めるなら `dependencyGate` に
+    `unreachable` をもう1種類足す話になるが、そこは `PROTECTED_PATH_FLOOR` の中で
+    ent 自身には書かせられない。**読むだけで足りる分を先に取ってある。**
+    Plan / Task テーブルは**作らないと決めた**（§4.5 の表もそう直した）。(a) では
+    Plan にあたるものがサブ Goal の宣言そのものになるので、DB に別の層を作る理由が無い
 
 ---
 

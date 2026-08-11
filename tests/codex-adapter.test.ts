@@ -8,6 +8,7 @@ const NOW = new Date("2026-08-11T01:02:03.000Z");
 function invocation(role: ActorInvocation["role"] = "implement"): ActorInvocation {
   return {
     runId: "run-1",
+    goalId: "g",
     intent: "失敗しているテストを直す",
     role,
     worktree: { path: "/tmp/worktree", branch: "entelecheia/g" },
@@ -106,6 +107,15 @@ describe("codexActor", () => {
       expect(h.commands[0]?.args).toContain("read-only");
       expect(h.commands[0]?.prompt).toContain("ファイルは書き換えない");
     }
+  });
+
+  it("レビュー役へ Goal と検査対象 commit の出力契約を渡す", async () => {
+    const h = harness();
+    await codexActor(h.options).run(invocation("review"));
+
+    expect(h.commands[0]?.prompt).toContain(".goals/g.yaml");
+    expect(h.commands[0]?.prompt).toContain("reviewed_sha: <git rev-parse HEAD で得た40桁の sha>");
+    expect(h.commands[0]?.prompt).toContain("verdict: approved");
   });
 
   it("GitHub と別 provider の資格情報を子プロセスへ渡さない", async () => {

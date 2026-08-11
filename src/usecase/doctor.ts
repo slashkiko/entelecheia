@@ -35,6 +35,13 @@ export interface DoctorReport {
 export interface DoctorGoal {
   slug: string;
   error: string | null;
+  /**
+   * `goal.depends_on` に書かれた id。**読めなかった Goal では空になる。**
+   *
+   * 読めていない YAML から依存は取り出せないので、空であることを
+   * 「依存を書いていない」とは読まない。分けるのは `error` の側になる。
+   */
+  dependsOn: string[];
 }
 
 /**
@@ -46,7 +53,7 @@ export interface DoctorGoal {
 export interface DoctorProbes {
   /** GITHUB_TOKEN / GH_TOKEN。無ければ null */
   githubToken: () => string | null;
-  /** `.goals/*.yaml` を読んで、slug ごとの成否を返す */
+  /** `.goals/*.yaml` を読んで、slug ごとの成否と `depends_on` を返す */
   loadGoals: () => Promise<DoctorGoal[]>;
   /** state ディレクトリに書けるか */
   stateWritable: () => Promise<boolean>;
@@ -89,15 +96,21 @@ const MIN_NODE_MAJOR = 24;
  * 出力は JSON にする。ent get / ent list と同じく機械可読を保つ。
  */
 export async function doctorPayload(probes: DoctorProbes): Promise<DoctorReport> {
+  // `.goals/` は1度だけ読む。goals と dependencies は同じ1回の読み取りを見る。
+  // 別々に読むと、その間に書き換わった宣言について食い違った答えを出しうる。
+  const goals = await readGoals(probes);
+
   // 並びは「その場所で ent が動くか」から「その Goal を回せるか」の順にする。
   // Node が足りない環境では他の検査の結果を読んでも直す手が変わらない。
   const actorKinds = [...new Set(probes.actorKinds?.() ?? [probes.actorKind?.() ?? "claude-code"])];
+  // dependencies を goals の直後に置くのは、読めていることが前提になるから。
   const checks: DoctorCheck[] = [
     nodeVersionCheck(probes),
     await gitRepositoryCheck(probes),
     await stateIgnoredCheck(probes),
     githubTokenCheck(probes),
-    await goalsCheck(probes),
+    goalsCheck(goals),
+    dependenciesCheck(goals),
     await stateDirCheck(probes),
     ...actorKinds.map(actorLoginCheck),
   ];
@@ -202,24 +215,38 @@ function githubTokenCheck(probes: DoctorProbes): DoctorCheck {
   };
 }
 
-async function goalsCheck(probes: DoctorProbes): Promise<DoctorCheck> {
-  let goals: DoctorGoal[];
+/**
+ * `.goals/` を1度だけ読んだ結果。読めなかった理由も畳まずに持ち回る。
+ *
+ * goals と dependencies の2つの検査が同じ値を見るためにある。
+ */
+type GoalsRead =
+  | { readonly kind: "read"; readonly goals: DoctorGoal[] }
+  | { readonly kind: "unreadable"; readonly reason: string };
+
+async function readGoals(probes: DoctorProbes): Promise<GoalsRead> {
   try {
-    goals = await probes.loadGoals();
+    return { kind: "read", goals: await probes.loadGoals() };
   } catch (error) {
+    return { kind: "unreadable", reason: errorMessage(error) };
+  }
+}
+
+function goalsCheck(read: GoalsRead): DoctorCheck {
+  if (read.kind === "unreadable") {
     // 「読めなかった」で止めない。壊れているのか、まだ始めていないのかを
     // 読み分けられないと、次に何を叩けばよいかが README を読むまで分からない。
     return {
       name: "goals",
       result: "failed",
       detail:
-        `.goals/ を読めなかった: ${errorMessage(error)}。` +
+        `.goals/ を読めなかった: ${read.reason}。` +
         "このリポジトリでまだ始めていないなら ent init を叩く（.goals/ と雛形と gitignore の行を置く）",
     };
   }
 
   // どの slug が、なぜ読めなかったかを残す。件数だけでは直せない。
-  const broken = goals.filter((goal) => goal.error !== null);
+  const broken = read.goals.filter((goal) => goal.error !== null);
   if (broken.length > 0) {
     return {
       name: "goals",
@@ -231,8 +258,151 @@ async function goalsCheck(probes: DoctorProbes): Promise<DoctorCheck> {
   return {
     name: "goals",
     result: "ok",
-    detail: `.goals/*.yaml を ${goals.length} 件読めた`,
+    detail: `.goals/*.yaml を ${read.goals.length} 件読めた`,
   };
+}
+
+/**
+ * `goal.depends_on` の宣言が、回す前から壊れていないか。
+ *
+ * 依存の判定は `tick` の入口（`dependencyGate`）にあり、依存が揃わないティックは
+ * lease も取らずに return する。**そのティックは何も書かない。** reconciles は進まず
+ * Decision も残らないので、`max_reconciles` にも `max_wall_clock` にも当たらない。
+ * つまり depends_on の書き間違いは、どの停止条件にも掛からないまま永久に止まる。
+ *
+ * ここは読むだけで、実行時の判定は変えない。「先に進んでよいか」は停止条件なので
+ * `dependencyGate`（src/domain/guard-rules.ts）が持ち続ける。こちらが答えるのは
+ * 「回す前の宣言が壊れていないか」で、層が違う。
+ *
+ * 見るのは2つ。
+ *
+ *   不在  依存先の `.goals/<id>.yaml` が無い。実行時には「まだ始めていない」と
+ *         区別が付かない（どちらも pending）。宣言を全部読める doctor だけが分けられる
+ *   循環  a → b → a のように依存が閉じている。自己参照はスキーマが弾くが、
+ *         2本以上をまたぐ循環は Goal YAML 1本からは見えない
+ */
+function dependenciesCheck(read: GoalsRead): DoctorCheck {
+  if (read.kind === "unreadable") {
+    // `.goals/` ごと読めていない。goals の検査が failed にして次の一手も出している。
+    // ここまで failed にすると、原因が1つなのに検査が2つ鳴る。
+    return {
+      name: "dependencies",
+      result: "unknown",
+      detail: ".goals/ を読めていないので依存は確かめられない（goals の検査を先に読む）",
+    };
+  }
+
+  // 読めなかった Goal があるなら、その depends_on も読めていない。無いものを
+  // 「依存が不在」と読むと嘘になるし、欠けた辺を数えないまま「循環は無い」とも
+  // 言えない。分かるのは goals の側なので、ここは黙る。
+  const unreadable = read.goals.filter((goal) => goal.error !== null);
+  if (unreadable.length > 0) {
+    return {
+      name: "dependencies",
+      result: "unknown",
+      detail:
+        `読めなかった Goal が ${String(unreadable.length)} 件あり、その depends_on も読めていない。` +
+        "欠けた辺を含む宣言では不在も循環も確かめられないので、goals の検査を先に直す",
+    };
+  }
+
+  const goals = read.goals;
+  // 存在の基準は「`.goals/` に宣言があるか」にする。ステータスは見ない。
+  // 進んでいるかどうかは実行時の話で、ここが答えるのは宣言の壊れ方になる。
+  const declared = new Set(goals.map((goal) => goal.slug));
+
+  const problems: string[] = [];
+
+  // 不在。どの Goal のどの依存かまで名指しする。件数だけでは直せない。
+  const missing = goals
+    .map((goal) => ({ slug: goal.slug, absent: goal.dependsOn.filter((id) => !declared.has(id)) }))
+    .filter((entry) => entry.absent.length > 0);
+  if (missing.length > 0) {
+    problems.push(
+      "依存先の .goals/<id>.yaml が無い: " +
+        missing.map((entry) => `${entry.slug} → ${entry.absent.join(", ")}`).join(" / ") +
+        "。実行時は「まだ始めていない」と同じ pending にしか見えず、" +
+        "どの停止条件にも掛からないまま永久に止まる（綴りを直すか、依存先を ent start で立てる）",
+    );
+  }
+
+  // 循環。実在する依存だけを辺にする。不在の依存は上で名指し済みで、
+  // 辺として数えると同じ書き間違いが2度鳴る。
+  const edges = new Map<string, string[]>(
+    goals.map((goal) => [goal.slug, goal.dependsOn.filter((id) => declared.has(id))]),
+  );
+  const cycles = findCycles(edges);
+  if (cycles.length > 0) {
+    problems.push(
+      "depends_on が循環している: " +
+        cycles.map((cycle) => [...cycle, cycle[0] ?? ""].join(" → ")).join(" / ") +
+        "。閉じた輪の中は全員が依存の完了待ちのままで、どれも先に進まない" +
+        "（輪のうち1本の depends_on を外す）",
+    );
+  }
+
+  if (problems.length > 0) {
+    return { name: "dependencies", result: "failed", detail: problems.join(" / ") };
+  }
+
+  const declaredEdges = goals.reduce((total, goal) => total + goal.dependsOn.length, 0);
+  return {
+    name: "dependencies",
+    result: "ok",
+    detail:
+      declaredEdges === 0
+        ? "depends_on は1本も書かれていない"
+        : `depends_on を ${String(declaredEdges)} 本たどれた（依存先はすべて実在し、循環は無い）`,
+  };
+}
+
+/**
+ * 閉じた輪だけを取り出す。輪に入っていない Goal は返さない。
+ *
+ * 「複数の Goal が同じ依存先を指している」は循環ではない。菱形（alpha → base、
+ * bravo → base）は閉じていないので、訪問済みを数えるだけの実装だとここを誤検知する。
+ * 分解した本数が増えるほど当たるので、いま辿っている経路（`onPath`）に戻って
+ * きたときだけを循環として数える。
+ */
+function findCycles(edges: ReadonlyMap<string, readonly string[]>): string[][] {
+  const cycles: string[][] = [];
+  const seen = new Set<string>();
+  /** 辿り終えた頂点。ここから先に未発見の輪は無い */
+  const done = new Set<string>();
+  /** いま辿っている経路。ここに戻る辺だけが輪を閉じる */
+  const path: string[] = [];
+  const onPath = new Set<string>();
+
+  const walk = (id: string): void => {
+    if (onPath.has(id)) {
+      // 経路が自分に戻ってきた。閉じているのは戻り先から先端までで、
+      // そこへ入ってきただけの手前の頂点は輪の中にいない。
+      const cycle = path.slice(path.indexOf(id));
+      const key = [...cycle].sort().join(">");
+      if (!seen.has(key)) {
+        seen.add(key);
+        cycles.push(cycle);
+      }
+      return;
+    }
+    if (done.has(id)) {
+      return;
+    }
+
+    path.push(id);
+    onPath.add(id);
+    for (const next of edges.get(id) ?? []) {
+      walk(next);
+    }
+    onPath.delete(id);
+    path.pop();
+    done.add(id);
+  };
+
+  for (const id of edges.keys()) {
+    walk(id);
+  }
+  return cycles;
 }
 
 async function stateDirCheck(probes: DoctorProbes): Promise<DoctorCheck> {

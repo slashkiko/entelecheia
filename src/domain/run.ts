@@ -71,7 +71,7 @@ export const runIntentSchema = z.object({
    * Run の role が空のまま残り、どの作業ツリーの Run だったのかが読めなくなる。
    */
   role: actorRoleSchema,
-  /** 隔離に使う worktree の名前。role ごとに分かれる（`worktreeNameFor`） */
+  /** 隔離に使う worktree の名前。`investigate` だけが分かれる（`worktreeNameFor`） */
   worktree: z.string().min(1),
   /** 同じ intent の何回目の試行か */
   attempt: z.number().int().positive(),

@@ -222,7 +222,11 @@ export function githubCodeWriter(options: GitHubOptions): CodeWriterPort {
  *    自分が作った PR に Approve を押させないので、1人で開発しているあいだは
  *    永久に成立しない。逆に言えば、成立しないだけで誤りではない
  * 2. **PR コメントの定型文** `/ent approve <criterion-id>` — レビュアーが
- *    いない状況でも承認できる経路。criterion 単位で書ける
+ *    いない状況でも承認できる経路。criterion 単位で書ける。**こちらは PR の
+ *    作成者も数える。** 1人で開発しているあいだ 1. が成立しない以上、ここでも
+ *    作成者を外すと `type: human` の criterion を満たす経路が無くなる。
+ *    Agent が作成者名義で書く経路は、拒否リストではなく **Agent の中の `gh` を
+ *    未認証にすることで塞ぐ**（`NEUTRALIZED_ENV`。理由は design.md §10-4）
  *
  * 粒度が違うことに注意する。レビュー承認は PR 全体に対するもので、
  * criterion を選べない。したがって `type: human` の criteria すべてを満たす。
@@ -313,11 +317,16 @@ export function githubApproval(options: GitHubOptions & { prNumber: number | nul
           continue;
         }
         const login = comment.user?.login ?? "";
-        // 作成者自身のコメントは数えない。レビュー承認の側（1.）と揃える。
-        // `PROGRESS_MARKER` が弾くのは controller が書いたコメントだけなので、
-        // Agent が `gh pr comment` を持つ Goal では PR の作成者名義で定型文を
-        // 書けてしまう。承認ゲートの下限（`APPROVAL_GATE_FLOOR`）と二重にする。
-        if (login === author || !(await hasWriteAccess(login))) {
+        // **作成者自身のコメントも承認に数える。** レビュー承認の側（1.）とは
+        // 倒す向きが逆になる。`GITHUB_TOKEN` は開発者自身のトークンなので PR を
+        // 立てるのもその人で、ここで作成者を外すと1人で回しているリポジトリでは
+        // `type: human` の criterion を満たす経路が2つとも消える（design.md §10-4）。
+        //
+        // Agent が作成者名義で定型文を書く経路は、ここではなく拒否リストで塞ぐ。
+        // コメント投稿を落とす `external_send` は `APPROVAL_GATE_FLOOR` にあって
+        // どの Goal からも外せない（`src/adapters/claude.ts` の `DENIED_TOOLS`）。
+        // controller 自身の進捗コメントは `PROGRESS_MARKER` が上で弾いている。
+        if (!(await hasWriteAccess(login))) {
           continue;
         }
         return { approvedBy: login, approvedAt: comment.created_at };

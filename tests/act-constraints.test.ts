@@ -44,6 +44,7 @@ const GOAL: Goal = {
     id: "sample-goal",
     name: "サンプル",
     desired_state: "何かが完成している",
+    depends_on: [],
   },
   repository: {
     provider: "github",
@@ -89,6 +90,7 @@ function spy(): { deps: ActDeps; invocations: ActorInvocation[] } {
 
   const worktree: WorktreePort = {
     ensure: async (name) => ({ path: `/tmp/entelecheia/${name}`, branch: `entelecheia/${name}` }),
+    commit: async () => true,
     changedPaths: async () => [],
     repoDirtyState: async () => new Map(),
   };

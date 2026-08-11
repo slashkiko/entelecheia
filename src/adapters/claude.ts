@@ -1,15 +1,15 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { EffortLevel, Options } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
-import type { ActorPort, ActorResult } from "../act/index.js";
+import type { ActorInvocation, ActorPort, ActorResult } from "../act/index.js";
 import type { LlmPort } from "../decide/index.js";
 import type { ApprovalGate } from "../domain/goal.js";
 import type { LlmCall } from "../domain/llm-call.js";
 import { PortError } from "../domain/port-error.js";
 import type { ActorRole } from "../domain/run.js";
 import { CLAUDE_ACTOR_WITHHELD_ENV, withheldEnv } from "../domain/withheld-env.js";
-import { JSON_ONLY, parseJson, PROMPT_FOR } from "./agent-prompt.js";
 
 /**
  * 除去リストの置き場所は domain に移した。VERIFY 側（src/adapters/local.ts）も
@@ -96,7 +96,7 @@ export function claudeActor(options: ClaudeOptions): ActorPort {
 
       let outcome: Outcome;
       try {
-        outcome = await consumeAndLog(options, logRef, PROMPT_FOR[role](invocation.intent), {
+        outcome = await consumeAndLog(options, logRef, PROMPT_FOR[role](invocation), {
           // controller 本体のコードと Agent が編集するコードを物理的に分ける（§7）。
           cwd: invocation.worktree.path,
           abortController: aborter,
@@ -114,6 +114,8 @@ export function claudeActor(options: ClaudeOptions): ActorPort {
           // 省略すると user / project / local がすべて読まれ、controller が
           // 与えた拒否リスト以外の設定が Agent の挙動に混ざる。
           settingSources: [],
+          // 読ませたい skill だけを、controller の側から名指しで渡す（SKILLS_FOR）。
+          ...skillOptionsFor(role),
           // controller の資格情報を Agent のシェルに残さない。
           env: withheldEnv(options.env ?? process.env, CLAUDE_ACTOR_WITHHELD_ENV),
         });
@@ -520,6 +522,59 @@ const ACTOR_TOOLS: Record<ActorRole, readonly string[]> = {
 };
 
 /**
+ * レビュー役に読ませる skill を入れた plugin の置き場所。
+ *
+ * **`settingSources: []` は解かない。** ホストの `~/.claude` とリポジトリの
+ * `.claude` を読ませない判断（上の `run` を参照）はそのままで、controller が
+ * 名指しした plugin だけが Agent から見える。実際に叩いて確かめたところ、
+ * skill の一覧に出るのは `ent-review:semantic-review` の1件だけになる。
+ *
+ * パスは `import.meta.url` から引く。cwd 基準にすると、ent は対象リポジトリの
+ * ルートで叩かれる CLI なので（`repoRoot = process.cwd()`、src/cli.ts）、
+ * 対象リポジトリ側の `plugins/` を見に行って外れる。`src/adapters/` からも
+ * `dist/adapters/` からも、2つ上がリポジトリのルートになる。
+ */
+const REVIEW_PLUGIN_DIR = fileURLToPath(new URL("../../plugins/ent-review", import.meta.url));
+
+/**
+ * 役割ごとに読ませる skill。名前は SKILL.md の `name`（非修飾でよい）。
+ *
+ * 実装役には渡さない。レビューの観点は読む側にだけ要るもので、実装役に渡すと
+ * 「観点を満たすように書く」余地を与える。criteria を通すのに何を書けばよいかを
+ * Actor 側が知る形は、`src/act/index.ts` が避けている構図と同じになる。
+ *
+ * SDK は `skills` を `Skill(<name>)` に展開して `--allowedTools` へ足すので、
+ * `ACTOR_TOOLS` に `Skill` を書く必要は無い。渡した名前以外の skill は
+ * 一覧に出ず、Skill ツールからも拒否される。
+ *
+ * `ACTOR_TOOLS` と同じく役割を網羅した Record にしてある。役割を足したときに
+ * 「skill を渡すかどうか」を書かせる。省略できる形にすると、既定の側へ黙って
+ * 倒れる——安全な向きではあるが、決めた形跡が残らない。
+ */
+const SKILLS_FOR: Record<ActorRole, readonly string[]> = {
+  implement: [],
+  review: ["semantic-review"],
+  investigate: [],
+};
+
+/**
+ * その役割に渡す plugin と skill。要らない役割には**キーごと渡さない**。
+ *
+ * `skills: []` は「1つも有効にしない」であって「SDK の既定に任せる」ではない。
+ * 省略と空配列で意味が違うので、空のときはキーを作らない。
+ */
+function skillOptionsFor(role: ActorRole): Pick<Options, "plugins" | "skills"> {
+  const skills = SKILLS_FOR[role];
+  if (skills.length === 0) {
+    return {};
+  }
+  return {
+    plugins: [{ type: "local", path: REVIEW_PLUGIN_DIR }],
+    skills: [...skills],
+  };
+}
+
+/**
  * 承認が要る操作に対応する拒否ルール。
  *
  * パターンはグロブ形式（`Bash(git merge *)`）で書く。古い Claude Code の
@@ -597,6 +652,152 @@ const ALWAYS_DENIED = [
   "Bash(git config --local core.hooksPath *)",
   "Bash(git config --global core.hooksPath *)",
 ] as const;
+
+/**
+ * どの役割でも同じ末尾。承認と公開は controller の側に残す。
+ *
+ * Agent が PR コメントを書けると自分で自分を承認できてしまい、§7 の
+ * human approval が空文になる（拒否ルールと二重にする）。
+ */
+const COMMON_TAIL = `PR の作成とコメントの投稿はしない。push も含めて controller が行う。
+承認の定型文（/ent approve）を書くことは、どの理由があっても認められない。`;
+
+const IMPLEMENT_PROMPT = ({ intent }: ActorInvocation): string =>
+  `${intent}
+
+作業は現在のディレクトリの中だけで行う。終わったら何をしたかを1段落で述べる。
+
+${COMMON_TAIL}`;
+
+/**
+ * レビュー役のプロンプト。
+ *
+ * 権限だけ分けてプロンプトが同じだと、レビュー役は編集を試みて拒否され続け、
+ * ターンをそこに使い切る。読む側に何を求めるかを先に書いておく。
+ *
+ * 結論を1語に寄せるのは、`review.verdict`（src/domain/fact-keys.ts）に落とす
+ * ときに、読み手が本文を解釈しないで済むようにするため。どの commit を読んだか
+ * まで言わせるのは、実装が進んだあとの結論をそのまま完了判定に使わせないため。
+ * ただし**ここで言わせた文字列はまだ Fact ではない。** Fact にするのは
+ * 観測側の仕事で、確かめられなければ作らない（design.md §3.1）。
+ *
+ * ## 観点は skill が持ち、契約はこちらが持つ
+ *
+ * 何を見るかは `semantic-review`（`plugins/ent-review/`）に置いてある。あれは
+ * ent の外でも使う汎用の skill で、**GitHub の PR を読む前提で書かれている。**
+ * ent のレビュー役はそうではない——作業ツリーの中で HEAD を読み、`gh` には
+ * 資格情報を渡しておらず（`WITHHELD_ENV`）、WebFetch も MCP も持たない。
+ * その差は下の読み替えの表で吸収し、**skill 側には ent の語彙を入れない。**
+ * 別リポジトリへ切り出すときにコピーだけで済む形を保つ。
+ *
+ * 出力の契約もこちらが持つ。skill の出力形式（末尾が `<sub>` のフッタ）に
+ * 手を入れる必要は無い。観測側が求めているのは「`verdict:` の行が本文中に
+ * ちょうど1つ」と「`reviewed_sha:` のラベル行」で、どちらも最終行である必要は
+ * 無いため、skill の本文の**後ろに2行足す**だけで噛み合う
+ * （`soleVerdictIn` / `soleShaIn`、src/observe/index.ts）。
+ *
+ * `INSUFFICIENT_CONTEXT` を `changes_requested` に寄せるのは、確かめられな
+ * かったものを `approved` に倒せないため。ここで生む Gap は次のティックの
+ * 実装役に渡るが、`.goals/**` は保護パスなので宣言部そのものは直せない。
+ * その場合は保護パス違反か budget の枯渇で人間が呼ばれる——**黙って
+ * 回り続けはしない。** 宣言部を `ent start` より前に commit しておけば起きない。
+ */
+const REVIEW_PROMPT = ({ intent, goalId }: ActorInvocation): string =>
+  `${intent}
+
+あなたはレビュー役として起動している。**ファイルは書き換えない。**
+編集のツールは渡していないので、試みても拒否される。読むことと、
+コマンドを流して確かめることだけを行う。
+
+作業は現在のディレクトリの中だけで行う。
+
+## 何を使うか
+
+\`semantic-review\` の skill を Skill ツールで起動し、その観点と出力形式に従う。
+skill は GitHub の Pull Request を読む前提で書かれているが、**ここでは PR を
+読まない。** 次の読み替えを、skill の記述より優先する。
+
+| skill の前提 | ここでの読み替え |
+| --- | --- |
+| 対象は GitHub Pull Request | 現在の作業ツリーの HEAD と、その base からの差分 |
+| PR のタイトル・本文が「宣言された意図」 | \`.goals/${goalId}.yaml\` の desired_state・acceptance_criteria・context が「宣言された意図」 |
+| gh やコネクタでチケットや議論を読む | 使えない。リポジトリの中だけで確かめ、取れなかったものは「未取得」と書く |
+| PR コメントとして投稿する | 投稿しない。本文を返すだけ |
+
+\`gh\` には資格情報を渡していない。WebFetch も MCP も無い。使おうとしない。
+
+## 手順
+
+1. git rev-parse HEAD で、読む commit を確かめる
+2. \`.goals/${goalId}.yaml\` を読む。これが意図の一次情報になる。
+   context.references に挙がっているリポジトリ内のファイルも読む。
+   **読めなければ観点 A を評価せず、判定を INSUFFICIENT_CONTEXT にし、
+   「宣言部を読めなかった」ことを要対応の第1項目に書く**
+3. 差分と、その差分が壊しうる箇所を読む。必要ならテストを流して確かめる
+4. semantic-review の観点と出力形式で、レビュー本文を作る
+5. 本文の最後に、次の2行だけを足す
+
+reviewed_sha: <1 で確かめた40桁の sha>
+verdict: <approved か changes_requested のどちらか>
+
+判定の対応は次のとおり。
+
+| semantic-review の判定 | verdict |
+| --- | --- |
+| ALIGNED | approved |
+| MISALIGNED | changes_requested |
+| INSUFFICIENT_CONTEXT | changes_requested |
+
+\`verdict:\` で始まる行を、本文の他の場所に書かない。**本文全体でちょうど1つ**
+でなければ、結論として読まれない。\`reviewed_sha:\` も同じ理由で1つにする。
+
+確かめられなかったことを「問題なし」と書かない。
+
+${COMMON_TAIL}`;
+
+/**
+ * 調べる役のプロンプト。ツールはレビュー役と同じだが、結論の形が違う。
+ *
+ * レビュー役の文面を流用すると、調べただけの実行が `verdict:` の行を出す。
+ * それを観測側が拾えば、レビューを回していないティックの approved になる。
+ * 起動する側はまだ居ない（design.md §4.2）が、口を残す以上は分けておく。
+ */
+const INVESTIGATE_PROMPT = ({ intent }: ActorInvocation): string =>
+  `${intent}
+
+あなたは調べる役として起動している。**ファイルは書き換えない。**
+編集のツールは渡していないので、試みても拒否される。
+
+作業は現在のディレクトリの中だけで行う。分かったことと、その根拠
+（読んだファイル、流したコマンドとその出力）を述べる。確かめられなかったことは、
+確かめられなかったと書く。推測で埋めない。
+
+${COMMON_TAIL}`;
+
+/**
+ * 役割ごとのプロンプト。
+ *
+ * 受け取るのは intent だけではなく invocation そのものにしてある。レビュー役が
+ * 宣言部（`.goals/<goalId>.yaml`）を名指しするのに goalId が要り、役割ごとに
+ * 何が要るかは今後も変わる。ここで分岐を持たせず、使う側が自分で取り出す。
+ */
+const PROMPT_FOR: Record<ActorRole, (invocation: ActorInvocation) => string> = {
+  implement: IMPLEMENT_PROMPT,
+  review: REVIEW_PROMPT,
+  investigate: INVESTIGATE_PROMPT,
+};
+
+const JSON_ONLY = `JSON オブジェクトだけを返す。前置きも説明も付けない。`;
+
+/** コードフェンスで囲まれていても読めるようにする */
+function parseJson(text: string): unknown {
+  const fenced = /```(?:json)?\s*([\s\S]*?)```/.exec(text);
+  const body = (fenced?.[1] ?? text).trim();
+  if (body === "") {
+    throw new Error("LLM が空の出力を返した");
+  }
+  return JSON.parse(body) as unknown;
+}
 
 async function writeLogToFile(path: string, contents: string): Promise<void> {
   await mkdir(dirname(path), { recursive: true });

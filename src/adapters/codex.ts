@@ -2,9 +2,8 @@ import { spawn } from "node:child_process";
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { z } from "zod";
-import type { ActorPort, ActorResult } from "../act/index.js";
+import type { ActorInvocation, ActorPort, ActorResult } from "../act/index.js";
 import type { LlmPort } from "../decide/index.js";
-import type { ApprovalGate } from "../domain/goal.js";
 import type { LlmCall } from "../domain/llm-call.js";
 import { errorMessage } from "../domain/error-message.js";
 import { PortError } from "../domain/port-error.js";
@@ -78,7 +77,7 @@ export function codexActor(options: CodexOptions): ActorPort {
           args: argsFor(invocation.role, invocation.worktree.path, options),
           cwd: invocation.worktree.path,
           env: withheldEnv(options.env ?? process.env, CODEX_ACTOR_WITHHELD_ENV),
-          prompt: actorPrompt(invocation.role, invocation.intent, invocation.deniedOperations),
+          prompt: actorPrompt(invocation),
           signal: invocation.signal,
         });
       } catch (error) {
@@ -226,13 +225,9 @@ function argsFor(role: ActorRole, cwd: string, options: CodexOptions): string[] 
   return args;
 }
 
-function actorPrompt(
-  role: ActorRole,
-  intent: string,
-  deniedOperations: readonly ApprovalGate[],
-): string {
-  const denied = deniedOperations.map((operation) => `- ${operation}`).join("\n");
-  return `${PROMPT_FOR[role](intent)}
+function actorPrompt(invocation: ActorInvocation): string {
+  const denied = invocation.deniedOperations.map((operation) => `- ${operation}`).join("\n");
+  return `${PROMPT_FOR[invocation.role](invocation)}
 
 以下の操作は人間の承認が必要なので実行しない。
 ${denied === "" ? "- なし" : denied}`;

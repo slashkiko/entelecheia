@@ -25,8 +25,8 @@ function probes(over: Partial<DoctorProbes> = {}): DoctorProbes {
   return {
     githubToken: () => "gho_xxx",
     loadGoals: async () => [
-      { slug: "record-the-tick", error: null },
-      { slug: "list-goals", error: null },
+      { slug: "record-the-tick", error: null, dependsOn: [] },
+      { slug: "list-goals", error: null, dependsOn: [] },
     ],
     stateWritable: async () => true,
     // 別のリポジトリで回せるかを見るための3つ。ここを見ないと、対象リポジトリで
@@ -104,8 +104,12 @@ describe("doctorPayload", () => {
     const report = await doctorPayload(
       probes({
         loadGoals: async () => [
-          { slug: "record-the-tick", error: null },
-          { slug: "broken-goal", error: "budget.max_unchanged_reconciles が無い" },
+          { slug: "record-the-tick", error: null, dependsOn: [] },
+          {
+            slug: "broken-goal",
+            error: "budget.max_unchanged_reconciles が無い",
+            dependsOn: [],
+          },
         ],
       }),
     );
