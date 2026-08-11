@@ -38,6 +38,23 @@ export interface WorktreePort {
    */
   changedPaths(name: string, baseBranch: string): Promise<string[]>;
   /**
+   * その worktree の変更を1つの commit にまとめる。**controller が呼ぶ。**
+   *
+   * 何も commit するものが無ければ false を返す。呼び出し側が「commit した」と
+   * 「するものが無かった」を分けられるようにしてある。
+   *
+   * **「Actor が commit する」という前提を置くのをやめたのでここに来た**
+   * （design.md §10-11）。intent に書いてもプロンプトに書いても、従ったことは
+   * 確かめられない（§3.2）。実測でも、同じ設定の Actor が commit するティックと
+   * しないティックの両方が出た。push が送るのは commit 済みの差分だけなので、
+   * commit されないと criteria が全部通っていても remote には1行も出ない。
+   *
+   * 全部入れる（`add --all`）。Actor がどこを書いたかは呼び出し側が
+   * `changedPaths` で既に検査していて、保護パスに触れていればそもそもここへ
+   * 来ない。ここで選び直すと、検査した集合と commit する集合がずれる。
+   */
+  commit(name: string, message: string): Promise<boolean>;
+  /**
    * 本体リポジトリ側で汚れているパスと、その中身の指紋を返す。
    * 鍵は**絶対パス**で、worktree 配下は含めない。
    *

@@ -95,6 +95,7 @@ function deps(store: Store, options: Options): ControllerDeps {
         path: `${WORKTREE_ROOT}/${name}`,
         branch: `entelecheia/${name}`,
       }),
+      commit: async () => true,
       changedPaths: async () => [],
       // git が見える汚れは常に空。ここでは out-of-sight だけを動かす。
       repoDirtyState: async () => new Map(),

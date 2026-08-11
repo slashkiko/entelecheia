@@ -138,6 +138,11 @@ function deps(store: Store, options: Options = {}): ControllerDeps {
         path: `${WORKTREE_ROOT}/${name}`,
         branch: `entelecheia/${name}`,
       }),
+      // **ここは commit が効かなかった側を固定する。** criteria が通ったティックは
+      // controller が commit するようになった（tests/controller-commit.test.ts）が、
+      // 何も commit されないこと（gitignore されたファイルだけが汚れている、
+      // commit そのものが失敗した）はありうる。この関門はそのときの受け皿になる。
+      commit: async () => false,
       changedPaths: async () => [],
       repoDirtyState: async () => new Map(),
     },

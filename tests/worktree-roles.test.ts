@@ -112,6 +112,7 @@ function spy(): Spy {
       ensured.push({ name, baseBranch });
       return { path: `/tmp/entelecheia/worktrees/${name}`, branch: worktreeBranchFor(name) };
     },
+    commit: async () => true,
     changedPaths: async () => [],
     repoDirtyState: async () => new Map(),
   };

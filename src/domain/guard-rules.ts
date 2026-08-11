@@ -4,6 +4,7 @@ import type { Goal } from "./goal.js";
 import type { GoalState } from "./goal-state.js";
 import { type GoalStatus, isTerminal } from "./goal-state.js";
 import type { Run } from "./run.js";
+import type { Verification } from "./verification.js";
 
 /**
  * guard が読む判断規則。**依存を1つも持たない**（design.md §7）。
@@ -17,7 +18,7 @@ import type { Run } from "./run.js";
  * **1つのファイルに集めるのは、保護の単位と一致させるため。** ここに並ぶのは
  * どれも `PROTECTED_PATH_FLOOR` の基準——書き換えられると関門そのものが
  * 働かなくなるもの——に当たる。`guardBaseOf` を書き換えれば関門は毎ティック
- * 空の差分を見るし、`claimsNothingLeft` を書き換えれば未 commit の関門が
+ * 空の差分を見るし、`leavesWorkUncommitted` を書き換えれば未 commit の関門が
  * 一度も鳴らない。`elapsedSecondsSince` は `max_wall_clock` の停止条件そのもの。
  *
  * 語彙ごとに `action.ts` / `fact.ts` / `goal-state.ts` へ配ると、下限はファイル
@@ -336,4 +337,35 @@ export function describeDependencyGate(gate: DependencyGate): string | null {
     parts.push(`依存の完了待ち（${gate.pending.join(", ")}）`);
   }
   return parts.join("。");
+}
+
+/**
+ * 機械だけで確かめられる criteria が、このティックで全部通ったか。
+ *
+ * controller が Actor の書いたものを commit してよいかの判定になる
+ * （design.md §10-11）。**「Actor が commit する」という前提を置くのをやめた。**
+ * intent に書いても、プロンプトに書いても、従ったことは確かめられない（§3.2）。
+ * 実測でも、同じ設定・同じモデルの Actor が commit するティックとしないティックの
+ * 両方が出た。確かめられるのは controller 側の観測だけなので、判断もそちらに置く。
+ *
+ * **見るのは `command` 型の criteria だけにする。** `fact` 型には
+ * `github.ci.conclusion` のように push されて初めて決まるものがあり、
+ * それを commit の前提にすると「commit しないと CI が回らず、CI が通らないと
+ * commit しない」で閉じる。`human` 型は定義上ここでは決まらない。
+ *
+ * **1本も無ければ false。** 機械側で確かめたものが1つも無いのに commit すると、
+ * Actor が書いただけのものが commit 済みとして push される。criteria を
+ * 検証手段に落とすことを入口で強制している（§3.2）以上、`command` 型が
+ * 1本も無い Goal は「機械側では確かめない」と宣言しているのと同じになる。
+ */
+export function machineCriteriaSatisfied(
+  criteria: readonly { id: string; verification: { type: string } }[],
+  verifications: readonly Verification[],
+): boolean {
+  const byCriterion = new Map(verifications.map((v) => [v.criterionId, v.result]));
+  const machine = criteria.filter((c) => c.verification.type === "command");
+  if (machine.length === 0) {
+    return false;
+  }
+  return machine.every((c) => byCriterion.get(c.id) === "passed");
 }

@@ -100,6 +100,7 @@ function deps(store: Store, fixture: Fixture, sink: Sink): ControllerDeps {
         path: `${WORKTREE_ROOT}/${name}`,
         branch: `entelecheia/${name}`,
       }),
+      commit: async () => true,
       changedPaths: async (name) => {
         if (fixture.changedError !== undefined) {
           throw fixture.changedError;
