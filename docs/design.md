@@ -762,7 +762,7 @@ mise run check                                      サプライチェーンと 
 ## 7. 暴走とコストの制御
 
 自律実行させる以上、ここは機能要件と同格に扱う。予算と上限と承認ゲート、保護パスの選び方、
-資格情報と外部コマンドの3つを順に説明する。
+publish を宣言で止める口、資格情報と外部コマンドの4つを順に説明する。
 
 ### 予算と上限、承認が要る操作
 
@@ -906,7 +906,8 @@ PR の作成はレビュアーへの通知を伴う。「ブランチは出し�
 `ESCALATE(open_pull_request_declared_manual)` になり、状態は `WAITING_HUMAN` に移る。
 **COMPLETE も上書きする。** PR が1本も無いまま「終わった」と言い切ると完了判定が
 意味を失う。理由を段ごとに分けてあるのは、`ent list` が出すのが種別と理由だけだから
-（§4.4 のとおり `WAITING_HUMAN` には他の理由も畳まれる）。人間が何をすれば進むのかは
+（`WAITING_HUMAN` には §10-6 の `protected_path_touched` など他の理由も畳まれる）。
+人間が何をすれば進むのかは
 `decision.rationale` に書いて `ent get` と PR コメントの両方に出す。
 
 `open_pull_request` を止めた Goal は、**人間が PR を立てれば宣言を書き換えなくても進む**。
@@ -914,10 +915,12 @@ publish は作る前に必ず同じ head の PR を探すので（`findPullReque
 それを見つけて先へ行く。止めているのは「作る」ことだけで、既にある PR への進捗コメントは
 止めない。
 
-**`push_branch` にはその経路が無い。** 押さないと決めた口（`BranchPort.push`）が remote を
-知る唯一の経路なので、人間が手で押しても controller には見えない。宣言を `auto` に戻すまで
-毎ティック同じ理由で止まり、そのあいだ `max_reconciles` は減り続けて最後は `BLOCKED` に
-なる。`protected_path_touched` が worktree を掃除すれば解けるのとはここが違う。
+**`push_branch` にはその経路が無い。** publish が push の要否を決める材料は
+`BranchPort.push` の結果しかないので、人間が手で押しても publish の判断には入らない
+（remote そのものは `github.pr.head_sha` などで観測しているが、押すかどうかの判断は
+それを読まない）。宣言を `auto` に戻すまで毎ティック同じ理由で止まり、そのあいだ
+reconcile 回数だけが進んで `max_reconciles` に当たり `BLOCKED` になる。
+`protected_path_touched` が worktree を掃除すれば解けるのとはここが違う。
 **解けない関門であることを rationale に書く**（`publishHeldDecision`）。書かなければ、
 押したのに止まり続ける理由を人間がコードから探すことになる。
 
