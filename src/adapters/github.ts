@@ -199,9 +199,9 @@ export function githubCodeWriter(options: GitHubOptions): CodeWriterPort {
         title: pr.title,
         body: pr.body,
         // 宣言が無ければキーごと送らない。GitHub の既定は false なので `draft: false` を
-        // 常に送っても結果は同じだが、宣言を足していないリポジトリに対して
-        // 送る中身を変えない方を採る。draft が使えないプランでは、この1キーの有無が
-        // 422 と成功の差になりうる（issue #65）。
+        // 常に送っても結果は同じはずだが、**宣言を足していないリポジトリに対して
+        // 送る中身を1バイトも変えない**方を採る。「既定は現状維持」を、意味の側だけで
+        // なく通信の側でも成り立たせる（issue #65）。
         ...(pr.draft === undefined ? {} : { draft: pr.draft }),
       });
       // 捏造した番号を返さない。形が違えばここで throw する。

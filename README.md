@@ -463,6 +463,9 @@ draft で立てておくと、タイトル規約や PR テンプレートに合�
 通知より前に済ませられる。**そのタイトルと本文そのものを宣言で決める口はまだ無い。**
 タイトルは `goal.name` のまま、本文は ent 固定のテンプレートで作られる。
 
+> [!WARNING]
+> 対象リポジトリの workflow が draft の PR を除外している（`if: github.event.pull_request.draft == false` など）と、**CI が一度も走らない。** `github.ci.*` は unresolved のままなので、それを読む `type: fact` の criterion は解決せず、Goal は `max_unchanged_reconciles` に当たるまで同じところを回る。draft を宣言する前に、対象リポジトリの workflow が draft をどう扱うかを見る。
+
 ### 粗いタスクを複数の Goal に割る
 
 1つの粗いタスクを N 本の Goal に割ったら、順序は `goal.depends_on` に書く
