@@ -206,6 +206,8 @@ describe("依存が揃うまでティックを進めない", () => {
       store,
       owner: "worker-a",
       leaseSeconds: 300,
+      // レビュー役はまだ走っていない。Fact も unobserved も作らない側の既定。
+      review: { latest: async () => null },
       code: {
         getPullRequest: async () => null,
         getLatestCiRun: async () => null,
