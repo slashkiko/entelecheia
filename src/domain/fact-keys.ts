@@ -32,6 +32,21 @@ export const observedFactKeySchema = z.enum([
   "github.pr.mergeable",
   "github.pr.review_decision",
   "github.pr.requested_reviewers",
+  /**
+   * 未解決のレビュースレッドの件数（issue #64 の案1）。
+   *
+   * `github.pr.review_decision` では自動レビュー bot の指摘を拾えない。bot の
+   * レビューはたいてい COMMENTED で出るので、`reviewDecisionOf` の導出（承認でも
+   * 変更要求でもない）では `REVIEW_REQUIRED` のまま動かない。件数があれば
+   * Goal YAML が `verification: { type: fact, key: github.pr.unresolved_threads,
+   * equals: 0 }` と書けて、bot の指摘が収束条件になる。
+   *
+   * **`0` も観測できた結果として Fact にする。** ここが収束条件そのものなので、
+   * 0 を falsy として落とすと `equals: 0` は永久に成立しない。逆に「件数を
+   * 確かめられなかった」を 0 と読むと、指摘を残したまま収束する。後者は
+   * Port が null を返し、observe が Fact を作らないことで表す（§4.3）。
+   */
+  "github.pr.unresolved_threads",
 
   // CodeProviderPort.getLatestCiRun()
   "github.ci.status",

@@ -20,6 +20,19 @@ export interface PullRequestSnapshot {
   /** GitHub の reviewDecision。レビュー未要求なら null */
   reviewDecision: "APPROVED" | "CHANGES_REQUESTED" | "REVIEW_REQUIRED" | null;
   requestedReviewers: string[];
+  /**
+   * 未解決のレビュースレッドの件数。数え切れなければ null。
+   *
+   * **`0` と `null` を畳まない。** 0 は「未解決のスレッドが1つも無い」という
+   * 観測できた結果で、null は「いくつあるのか確かめられなかった」になる。
+   * 数え切れなかったぶんを 0 と読むと、指摘を残したまま
+   * `equals: 0` の criterion が成立する。
+   *
+   * 省略可能にしない。型チェックを通す最も安いやり方が「フィールドを埋めない
+   * Adapter を書く」になり、Port の契約が「数えたら入っているかもしれない」に
+   * 弱まるため。
+   */
+  unresolvedThreads: number | null;
 }
 
 export interface CiRunSnapshot {
@@ -255,6 +268,25 @@ export async function observe(target: ObserveTarget, deps: ObserveDeps): Promise
         prSource,
         `requested_reviewers=[${pr.requestedReviewers.join(", ")}]`,
       );
+      // 未解決スレッドの件数。**0 は Fact にする。** ここが
+      // `verification: { type: fact, key: github.pr.unresolved_threads, equals: 0 }`
+      // の収束条件そのものなので、0 を falsy として落とすと永久に成立しない。
+      //
+      // null は mergeable と同じ扱いにする。Fact も unobserved も作らない。
+      // 「いくつあるか確かめられなかった」ことと「未解決が 0 件」は別で、
+      // かつ、ここで unresolved を積むと Gap がゼロの Goal で DECIDE が
+      // COMPLETE ではなく WAIT を返すようになり（src/decide/index.ts）、
+      // このキーを1文字も参照していない Goal まで完了できなくなる。件数を
+      // 求めている Goal の側は、Fact が無ければ criteria が Gap(unknown) を
+      // 立てるので、待つ理由はそちらに残る。
+      if (pr.unresolvedThreads !== null) {
+        push(
+          "github.pr.unresolved_threads",
+          pr.unresolvedThreads,
+          prSource,
+          `unresolved_threads=${pr.unresolvedThreads}`,
+        );
+      }
 
       // CI は PR の head sha に紐づくので、PR を観測できたときだけ引ける。
       const ciSource = `CodeProviderPort.getLatestCiRun(${pr.headSha})`;

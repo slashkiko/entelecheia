@@ -65,6 +65,7 @@ describe("observe", () => {
             headSha: "c".repeat(40),
             reviewDecision: "CHANGES_REQUESTED",
             requestedReviewers: ["pr-author"],
+            unresolvedThreads: 2,
           }),
         },
       }),
@@ -87,6 +88,7 @@ describe("observe", () => {
             headSha: "d".repeat(40),
             reviewDecision: null,
             requestedReviewers: [],
+            unresolvedThreads: null,
           }),
           getLatestCiRun: async () => ({
             headSha: "d".repeat(40),
@@ -127,6 +129,7 @@ describe("observe", () => {
             headSha: "e".repeat(40),
             reviewDecision: "APPROVED",
             requestedReviewers: [],
+            unresolvedThreads: 0,
           }),
         },
       }),
@@ -181,6 +184,7 @@ describe("observe", () => {
             headSha: "f".repeat(40),
             reviewDecision: null,
             requestedReviewers: [],
+            unresolvedThreads: null,
           }),
           getLatestCiRun: async () => ({
             headSha: "f".repeat(40),

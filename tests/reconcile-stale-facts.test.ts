@@ -104,6 +104,7 @@ function pullRequest(headSha: string) {
     headSha,
     reviewDecision: null,
     requestedReviewers: [],
+    unresolvedThreads: null,
   };
 }
 

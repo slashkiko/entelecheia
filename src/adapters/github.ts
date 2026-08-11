@@ -122,6 +122,8 @@ export function githubCodeProvider(options: GitHubOptions): CodeProviderPort {
         headSha: pr.head.sha,
         reviewDecision: reviewDecisionOf(reviews, requestedReviewers),
         requestedReviewers,
+        // PR が読めたときだけ数えに行く。存在しない対象のスレッドは引かない。
+        unresolvedThreads: await unresolvedThreadsOf(octokit, options, prNumber),
       } satisfies PullRequestSnapshot;
     },
 
@@ -544,6 +546,94 @@ function reviewDecisionOf(
   // レビューを求めていなければ null。「未要求」という観測できた状態にあたる。
   return requestedReviewers.length > 0 ? "REVIEW_REQUIRED" : null;
 }
+
+/**
+ * 未解決のレビュースレッドを数える。数え切れなければ null。
+ *
+ * **ここだけ GraphQL を使う。** REST には「スレッドが解決済みか」を表すフィールドが
+ * 無く、`pulls/{n}/comments` が返すのは個々のレビューコメントだけで、解決状態は
+ * `pullRequest.reviewThreads.isResolved` にしか出ない。§4.3 は「GraphQL なら1回で
+ * 取れるが、ETag による conditional request が効くのは REST の GET だけ」という理由で
+ * `review_decision` を REST から導出しているが、こちらは REST に相当物が無いので
+ * 例外にあたる。ETag が効かないぶん、この読み取りだけは毎ティック実際に飛ぶ。
+ * `@octokit/rest` の Octokit が `graphql` を持っているので依存は増えず、
+ * テストが注入した fetch もそのまま通る。
+ *
+ * 満たすべき性質が2つある。
+ *
+ * 1. **数え切れなかったぶんを 0 と読まない。** 1ページ目が全部解決済みでも、
+ *    残りに未解決が混じっていれば答えは 0 ではない。`totalCount` に足りない
+ *    数え上げは件数を決めなかったことにする
+ * 2. **失敗を PR の観測全体に波及させない。** GraphQL が落ちても応答の形が
+ *    想定と違っても throw しない。throw すると observe が `github.pr` を
+ *    まとめて unobserved に落とし、このキーを1文字も参照していない Goal まで
+ *    PR が見えなくなる。`decode()` を通さないのはこのため（あれは
+ *    PortError(shape_mismatch) にする）
+ */
+async function unresolvedThreadsOf(
+  octokit: Octokit,
+  options: GitHubOptions,
+  prNumber: number,
+): Promise<number | null> {
+  let raw: unknown;
+  try {
+    raw = await octokit.graphql(REVIEW_THREADS_QUERY, {
+      owner: options.owner,
+      repo: options.repo,
+      number: prNumber,
+    });
+  } catch {
+    // 権限不足（HTTP 200 + errors）もネットワーク断もここに来る。どちらも
+    // 「いくつあるか確かめられなかった」で、件数を 0 と決める根拠にならない。
+    return null;
+  }
+
+  const parsed = reviewThreadsSchema.safeParse(raw);
+  if (!parsed.success) {
+    return null;
+  }
+
+  const threads = parsed.data.repository.pullRequest.reviewThreads;
+  // 全件を見られたときだけ数える。ページが残っている、あるいは取れたノードが
+  // totalCount に足りないなら、未解決が残っているかどうかを決められない。
+  if (threads.pageInfo.hasNextPage || threads.nodes.length < threads.totalCount) {
+    return null;
+  }
+  return threads.nodes.filter((thread) => !thread.isResolved).length;
+}
+
+/** 1ページ 100 件が GraphQL の上限。足りなければ `hasNextPage` で null に倒す */
+const REVIEW_THREADS_QUERY = `
+  query($owner: String!, $repo: String!, $number: Int!) {
+    repository(owner: $owner, name: $repo) {
+      pullRequest(number: $number) {
+        reviewThreads(first: 100) {
+          totalCount
+          nodes { isResolved }
+          pageInfo { hasNextPage }
+        }
+      }
+    }
+  }
+`;
+
+/**
+ * `reviewThreads` の応答。`decode()` ではなくこのスキーマを直に safeParse する。
+ *
+ * どのフィールドも必須にしてある。欠けた応答を「解決済みとみなす」形で読むと、
+ * GitHub がフィールド名を変えた日に未解決の指摘が 0 件として通る。
+ */
+const reviewThreadsSchema = z.object({
+  repository: z.object({
+    pullRequest: z.object({
+      reviewThreads: z.object({
+        totalCount: z.number(),
+        nodes: z.array(z.object({ isResolved: z.boolean() })),
+        pageInfo: z.object({ hasNextPage: z.boolean() }),
+      }),
+    }),
+  }),
+});
 
 async function failedJobsOf(
   get: (route: string, params: Record<string, unknown>) => Promise<unknown>,

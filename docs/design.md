@@ -359,7 +359,8 @@ roleは次の5箇所を通る。
 ### 4.3 OBSERVE が取得するもの
 
 ```
-PR        number, state, mergeable, head_sha, review_decision, requested_reviewers
+PR        number, state, mergeable, head_sha, review_decision, requested_reviewers,
+          unresolved_threads
 Review    state (APPROVED / CHANGES_REQUESTED / COMMENTED), author, submitted_at
 CI        workflow_run の conclusion、失敗時は失敗ジョブ名とログ URL
 Issue     state, labels, linked_pr
@@ -451,6 +452,13 @@ GraphQL なら1回で取れるが、ETag による conditional request（§3.4�
 GET だけなので、レビュアーごとに最後の1件を見て組み立てる。変更要求を承認より優先する。
 `github.issue.linked_pr` は「その Issue 自身が PR である」場合しか埋まらない。
 相互参照された PR は timeline API が要るので、まだ観測しない。
+
+`github.pr.unresolved_threads` だけは GraphQL の `pullRequest.reviewThreads` から取る。
+REST には「スレッドが解決済みか」を表すフィールドが無く、解決状態は `isResolved` にしか
+出ないので、ETag が効くのは REST の GET だけという上の理由の例外になる。ETag が効かない
+ぶんこの読み取りは毎ティック実際に飛ぶが、失敗しても throw せず件数だけを null にする。
+数え切れなかったぶんを 0 と読むと、bot の指摘を残したまま
+`verification: { type: fact, key: github.pr.unresolved_threads, equals: 0 }` が成立する。
 
 **`github.pr.review_decision` *だけ* を人間の承認の観測源にはできない。** GitHub は自分が
 作った PR に Approve を押させないので、controller が Goal の所有者と同じアカウントで PR を
