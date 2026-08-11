@@ -161,6 +161,7 @@ describe("保護パスの下限", () => {
 const GUARD_RULES = [
   "guardBaseOf",
   "claimsNothingLeft",
+  "leavesWorkUncommitted",
   "observedValue",
   "sleepingUntil",
   "elapsedSecondsSince",

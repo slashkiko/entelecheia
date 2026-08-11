@@ -79,6 +79,31 @@ export function claimsNothingLeft(decision: Decision): boolean {
   return !(decision.decidedBy === "guard" && action.reason === "usage_limit");
 }
 
+/**
+ * このティックでは Actor の書き残しが commit されない、と言い切れる Decision か。
+ *
+ * `claimsNothingLeft` に VERIFY を足したもので、未 commit の関門が見るのはこちらになる。
+ *
+ * **VERIFY を足すのは、実測した空転がそこだったから。** Actor が29ファイルを書いたまま
+ * commit せずに終えたあと、LLM は VERIFY を3ティック続けて選んだ。COMPLETE でも
+ * WAIT でもないので関門は鳴らず、`max_unchanged_reconciles` に向かって静かに
+ * 近づくだけだった。関門の rationale は「commit するのは人間」という解決手順を
+ * 案内する唯一の説明なので、それが一度も出ないと原因不明の停止に見える。
+ *
+ * VERIFY は criteria のコマンドを流して結果を読むだけで、worktree には1行も書かない。
+ * したがって「機械側にやることが残っている」の側ではあるが、**残っているやることは
+ * 書き残しを解消しない。** 関門が問うているのは「このティックで commit されるか」で、
+ * 答えは COMPLETE / WAIT と同じになる。
+ *
+ * ACT は足さない。実装の途中で作業ツリーが汚れているのは正常で、ここまで止めると
+ * Actor は1ティックも実装を進められない。REPLAN と ESCALATE も足さない。前者は
+ * 進め方を組み直す判断で、後者は既に別の理由で止まっている。より重い理由を
+ * 未 commit で塗り替えると、なぜ止まったのかが読めなくなる。
+ */
+export function leavesWorkUncommitted(decision: Decision): boolean {
+  return decision.action.type === "VERIFY" || claimsNothingLeft(decision);
+}
+
 /** 差し替えなければ何になっていたかを、人間が読む形にする */
 export function describeClaim(action: Action): string {
   switch (action.type) {
@@ -86,6 +111,8 @@ export function describeClaim(action: Action): string {
       return "COMPLETE にすると";
     case "WAIT":
       return `WAIT(${action.reason}) で待つと`;
+    case "VERIFY":
+      return "VERIFY を回しても worktree には1行も書かないので";
     default:
       return `${action.type} にすると`;
   }

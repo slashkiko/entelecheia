@@ -13,11 +13,11 @@ import type { Fact, Unresolved } from "../domain/fact.js";
 import type { Goal } from "../domain/goal.js";
 import { type GoalState, type GoalStatus, isTerminal, nextStatus } from "../domain/goal-state.js";
 import {
-  claimsNothingLeft,
   consecutiveFailuresOf,
   describeClaim,
   elapsedSecondsSince,
   guardBaseOf,
+  leavesWorkUncommitted,
   observedValue,
   sleepingUntil,
 } from "../domain/guard-rules.js";
@@ -769,9 +769,9 @@ function worktreePathFor(
  * 「実装が載った PR」なので永久に終わらない（design.md §10-11）。
  *
  * 満たすべき性質:
- * - 差し替えるのは「機械側にやることが残っていない」と言い切るティックだけにする。
- *   COMPLETE と WAIT の2つで、WAIT は LLM が返したものも guard が
- *   Gap ゼロから出したものも同じ意味を持つ
+ * - 差し替えるのは「このティックで書き残しが commit されない」と言い切れるティックに
+ *   する。COMPLETE と WAIT と VERIFY の3つで、WAIT は LLM が返したものも guard が
+ *   Gap ゼロから出したものも同じ意味を持つ。判定は `leavesWorkUncommitted` が正
  * - `WAIT(usage_limit)` は差し替えない。あれは判断そのものを保留しただけで、
  *   上限が明ければ続きがある（design.md §10-5）。待てば直る状態で人間を呼ばない
  * - ACT が出たティックは触らない。実装の途中で作業ツリーが汚れているのは正常で、
@@ -806,7 +806,7 @@ function uncommittedDecision(
   observedFacts: readonly Fact[],
   deps: ControllerDeps,
 ): Decision {
-  if (!claimsNothingLeft(decision)) {
+  if (!leavesWorkUncommitted(decision)) {
     return decision;
   }
 
