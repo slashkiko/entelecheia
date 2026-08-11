@@ -392,20 +392,29 @@ Fact が無い間は Gap が残り COMPLETE には届かない（§3.1）。guar
 「レビューを通れ」という条件は足していない。完了判定の境界（§7）を動かさずに済む
 形を選んである。
 
-**実装役が走ったティックでは、この照合を通さない。** 1ティックの中は
-OBSERVE → ACT → publish の順に進む（§3.6）ので、VERIFY が読む `local.head_sha` は
-ACT より前の観測になる。実装役が commit を積むと、ティックが終わる時点の HEAD は
-誰も読んでいない commit なのに、観測時点どうしの一致が「現在の HEAD へのレビュー」
-として残る。実際、実装が入ったティックだけ `review.verdict == approved` の criterion が
-🟢 になり、次のティックで 🔴 に戻った。そこで、実装役が走ったティックはレビュー系の
-criteria を判定せず、`pending` として `unresolved` に積む
-（`pendingReviewCriteria`、`src/domain/verification.ts`）。**不合格にはしない。**
-ACT のあとの HEAD を誰かが読んだかどうかは、そのティックでは確かめようがなく、
-確かめられないものを不合格として記録すると、観測の穴が実装の不備として PR に出る
-（§3.1）。鮮度の判定そのもの（`judgeReviewVerdict`）は触っていない。順序の問題で
-あって、判定ロジックの問題ではない。実装役が走らなかったティック——レビュー役は
-同じ木を読むだけ、`investigate` は別の木を使う——では HEAD が動かないので、
-これまでどおり判定する。
+**実装役が走ったティックでは、この照合を通さない。** OBSERVE はティックの先頭にあり
+（§3.6）、commit と publish はその後ろに来る（§10-11）ので、VERIFY が読む
+`local.head_sha` は ACT より前の観測になる。実装役が commit を積むと、ティックが
+終わる時点の HEAD は誰も読んでいない commit なのに、観測時点どうしの一致が
+「現在の HEAD へのレビュー」として残る。実際、実装が入ったティックだけ
+`review.verdict == approved` の criterion が `passed` になり、次のティックで `failed` に
+戻った。そこで、実装役が走ったティックはレビュー系の criteria を判定せず、`pending`
+として `unresolved` に積む（`pendingReviewCriteria`、`src/domain/verification.ts`）。
+**不合格にはしない。** ACT のあとの HEAD を誰かが読んだかどうかは、そのティックでは
+確かめようがなく、確かめられないものを不合格として記録すると、観測の穴が実装の不備と
+して PR に出る（§3.1）。
+
+あわせて、そのティックで作った `criteria.<id>.passed` の Fact は落とす。Fact は次の
+ティックへ引き継がれるので、残すと誰も読んでいない commit への合格が VERIFIED のまま
+生き続ける。落とすのは `criteria.<id>.passed` だけで、観測そのもの
+（`review.verdict` / `review.reviewed_sha`）は残す。鮮度の判定そのもの
+（`judgeReviewVerdict`）は触っていない。順序の問題であって、判定ロジックの問題ではない。
+
+実装役が走らなかったティックは、押す木を書く役割がいないので通常は HEAD が動かず
+（レビュー役は同じ木を読むだけ、`investigate` は別の木を使う）、これまでどおり判定する。
+ただし controller の commit（§10-11）は role で分岐しないので、前のティックの未 commit
+差分が残ったまま機械側の criteria が通ると、実装役が走っていなくても HEAD が動く経路が
+残る。そこは塞いでいない。
 
 作る側は `ReviewPort`（`src/observe/index.ts`）になる。`role: review` で走った Run の
 生ログ（§4.6 の `runs/<run-id>/log.jsonl`）から最終メッセージを読み、observe が
