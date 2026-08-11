@@ -48,9 +48,15 @@ git で見る。ただし見えるのはリポジトリの中の変更だけで�
 検証系**にあたる。選び方の基準は design.md §7 にある。
 
 controller が持つ資格情報（`GITHUB_TOKEN` / `GH_TOKEN` と、`gh auth token` から読んだ
-token）は Agent に渡さない。git は argv 配列で叩き、
+token）は Agent に渡さない。**環境変数を落とすだけでなく、Agent と検証コマンドの中の
+`gh` を未認証にする**（`GH_CONFIG_DIR` を実在しないディレクトリへ向ける）。
+`HOME` は渡すしかないので、落とすだけではホストのログインが残る。
+git は argv 配列で叩き、
 シェルを通すのは Goal YAML の `setup` と `verification.run` だけにする。
 `type: human` の承認は、リポジトリに書き込み権限がある人のものだけを数える。
+レビュー承認は PR の作成者を除くが、**コメントの定型文は作成者も数える**。
+1人で回すリポジトリではそこが唯一の承認経路になるので、Agent がその経路に
+届かないことが承認の前提になる（design.md §10-4）。
 
 Goal の状態（ACTIVE / COMPLETED など）は `.goals/.state/goals.db` が持つ。
 行動の `COMPLETE` と Goal の状態 `COMPLETED` は別のもので、前者が選ばれた結果として後者になる。
@@ -141,14 +147,22 @@ pnpm install --frozen-lockfile
 ## 検証
 
 ```sh
-mise run verify   # typecheck / lint / test をまとめて実行
+mise run verify   # typecheck / lint / build / test をまとめて実行
 mise run check    # サプライチェーンと workflow のチェック（baseline 由来）
 ```
 
-現時点では `typecheck` / `lint` / `test` / `check` の4つとも通る。
+`verify` に `build` が入っているのは、型が通ることと `dist/cli.js` が出来ることが
+別だから。`tsconfig.json` は `noEmit` で `tests/**` を含み、`bin` の実体を作るのは
+`tsconfig.build.json` の側になる。
 
-Acceptance Criteria を先に書く進め方なので、Goal に着手した直後は `test` が落ちる。
-それは進め方に由来する想定内の状態であって、環境の不備ではない。
+Acceptance Criteria を先に書く進め方なので、Goal に着手した直後は `typecheck` と
+`test` が落ちる。それは進め方に由来する想定内の状態であって、環境の不備ではない。
+落ちる件数まで含めて、その Goal の `desired_state` が着手時点の実測として宣言する。
+main の CI（`.github/workflows/verify.yml`）も、そのあいだは赤いままになる。
+
+**いまは `say-why-each-goal-is-stopped` に着手している状態で、`typecheck` と `test` が
+落ちる。** `lint` と `build` と `check` は通る（`build` は `tests/**` を見ないので、
+落ちているのが仕様テストだけなら影響を受けない）。
 
 ## ent を動かす
 
@@ -245,9 +259,12 @@ ent doctor          # その場所で回せるかを読み取り専用で調べ�
   指さない。上の項目が「対象リポジトリ側に同名のパスがあると誤検知する」話なのに
   対し、こちらは「ent 本体を守る用途には使えない」話になる。**関門が守るのは
   対象リポジトリの中であって、ent 自身のコードではない**（自己ホストのときだけ
-  両方が重なる）。対象リポジトリで意味を持つのは `.goals/**` と `.git/**` で、
-  `.goals/.state/**` は gitignore 済みなので git の観測にそもそも出ない
-  （design.md §10-6 の穴 (b)）
+  両方が重なる）。対象リポジトリで意味を持つのは `.goals/**` と `.git/**` と
+  `.goals/.state/**` の3つになる。後ろの2つは `git status` に出ないが、
+  `.goals/.state/goals.db` と `.git/hooks/**` と `core.hooksPath` は ACT の前後で
+  指紋を比べる別経路（`outOfSightState`）が見ており、そこから関門に繋がる。
+  見えないまま残るのは、`goals.db` 以外の gitignore されたパスと repoRoot の外に
+  なる（design.md §10-6 の穴 (a)(b)）
 
 ### 進捗を PR に投稿しない
 
@@ -331,7 +348,8 @@ cron から回すなら、Goal ごとに行を分ければよい（同じ分に�
 lease で決まるので、先に取れた側だけが進み、取れなかった側は
 「他のワーカーが lease を持っている」でスキップして exit 0 で終わる。二重に
 Actor が走ることも、状態が混ざることもない。ティックの途中で lease を失った側も、
-そのティックの記録を1つも書かずに降りる。
+snapshot / verifications / Decision / 状態遷移を1つも書かずに降りる（既に書いてある
+Run の行だけは残る。design.md §3.6）。
 
 並べる本数は機械の資源で決める。各ティックは Actor（Claude Code）と Goal の
 検証コマンド（このリポジトリなら `mise run verify`）を worktree の上で走らせるので、
@@ -365,7 +383,8 @@ src/domain/goal.ts        Goal YAML の Zod スキーマ
 src/domain/goal-parse.ts  Goal YAML の検証と、slug と goal.id の突き合わせ。ファイルは読まない
 src/domain/gap.ts         ASSESS が出す Gap と Assessment の型
 src/domain/action.ts      DECIDE が選ぶ Action と Decision の型
-src/domain/run.ts         Actor の実行記録の型と ActorRole（役割ごとに worktree が分かれる）
+src/domain/run.ts         Actor の実行記録の型と ActorRole（実装役とレビュー役は同じ
+                          worktree、investigate だけが分かれる。design.md §4.2）
 src/domain/goal-state.ts  Goal のライフサイクルと、Action から次の状態を決める遷移
 src/domain/port-error.ts  Port の失敗の種別（usage_limit / unavailable）
 src/domain/verification.ts criteria 単位の検証結果。§9 の完了判定が読む索引
@@ -384,14 +403,15 @@ src/reconcile/            OBSERVE → VERIFY → ASSESS → DECIDE を1ティッ
 src/publish/              PR の確保と進捗コメント。CodeWriterPort と BranchPort の定義
 src/store/port.ts         実行時状態の Port。使う側が所有する口で、実装は持たない
 src/store/sqlite.ts       その SQLite 実装（node:sqlite）。挿すのは合成ルートだけ
-src/controller/           1ティックの外側。lease → 回収 → reconcile → 永続化 → ACT → 遷移
+src/controller/           1ティックの外側。lease → 回収 → reconcile → ACT → 永続化 → 遷移
 src/adapters/local.ts     node:child_process で書ける Port（コマンド実行、git、worktree）
 src/adapters/goal-file.ts .goals/<slug>.yaml をファイルシステムから読む
 src/adapters/github.ts    CodeProviderPort。@octokit/rest + ETag
 src/adapters/claude.ts    ActorPort と LlmPort。Claude Agent SDK
                           role ごとの許可・拒否ツールとプロンプトもここ。編集の
                           ツールを持つのは実装役だけ（design.md §4.2）
-src/wiring/index.ts       合成ルート。どの Port にどの Adapter を挿すかを決める唯一の場所
+src/wiring/index.ts       合成ルート。どの Port にどの Adapter を挿すかを決める唯一の場所。
+                          関門への入力（Adapter の注入と verifyRoot）もここで決まる
 src/usecase/init.ts       ent init。.goals/ と gitignore の行と Goal の雛形を置く
 src/usecase/doctor.ts     ent doctor。回す前の前提を、書かずに調べる
 src/usecase/inspect.ts    ent get / ent list が出す payload。読むだけ

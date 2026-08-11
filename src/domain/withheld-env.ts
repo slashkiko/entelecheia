@@ -49,10 +49,41 @@ export const VERIFY_WITHHELD_ENV = [
 ] as const;
 
 /**
+ * 落とすだけでは足りず、**上書きして無効化する**もの。
+ *
+ * `gh` はトークンの環境変数が無ければ `$HOME/.config/gh/hosts.yml` のログインに
+ * 落ちる。除去リストは変数を消すことしかできず、`HOME` は渡すしかないので
+ * （渡さないと `mise` も `pnpm` も動かない）、**Actor と検証コマンドの中の `gh` は
+ * controller を動かしている人間の認証でそのまま通っていた。**
+ *
+ * それが効くのは、`type: human` の承認を PR コメントの定型文で行うため
+ * （design.md §10-4）。`/ent approve` は PR の作成者が書いても承認として数えるので、
+ * Agent が作成者名義でコメントを1件投稿できれば、自分で自分の criterion を通せる。
+ *
+ * 拒否リスト（`external_send`）だけでは塞げない。あれは glob なので
+ * `gh api -X POST`（`--method POST` の別綴り）や `sh -c` 経由の間接呼び出しを
+ * 1つ書き落とせば素通りする。**書ける形を数え上げる側ではなく、資格情報そのものを
+ * 届かせない側で塞ぐ。** 設定の置き場を実在しないディレクトリへ向けると、`gh` は
+ * 未認証として振る舞う。
+ *
+ * PR の作成もコメントの投稿も controller が行うので、Actor 側に認証済みの `gh` が
+ * 要る場面は無い（`COMMON_TAIL` が Agent にもそう書いている）。読み取りに使いたく
+ * なったら、それは controller 側の観測（`CodeProviderPort`）に足す話になる。
+ */
+export const NEUTRALIZED_ENV: Readonly<Record<string, string>> = {
+  // ディレクトリではないので、gh は設定を1つも読めない。実在するパスにしてあるのは、
+  // 「消し忘れた空文字」ではなく意図した無効化だと読めるようにするため。
+  GH_CONFIG_DIR: "/dev/null",
+};
+
+/**
  * 除去リストに載っているものを落とした環境変数を作る。
  *
  * 値が `undefined` のものも落とす。`Record<string, string>` を返すのは、
  * child_process の `env` がそれを取るため。
+ *
+ * 落としたあとに `NEUTRALIZED_ENV` を重ねる。呼び出し側が渡した値より後に置くのは、
+ * ホスト側に同じ変数が設定してあっても無効化が勝つようにするため。
  */
 export function withheldEnv(
   source: Record<string, string | undefined>,
@@ -65,5 +96,5 @@ export function withheldEnv(
       env[key] = value;
     }
   }
-  return env;
+  return { ...env, ...NEUTRALIZED_ENV };
 }
