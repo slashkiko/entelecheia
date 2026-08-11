@@ -392,6 +392,21 @@ Fact が無い間は Gap が残り COMPLETE には届かない（§3.1）。guar
 「レビューを通れ」という条件は足していない。完了判定の境界（§7）を動かさずに済む
 形を選んである。
 
+**実装役が走ったティックでは、この照合を通さない。** 1ティックの中は
+OBSERVE → ACT → publish の順に進む（§3.6）ので、VERIFY が読む `local.head_sha` は
+ACT より前の観測になる。実装役が commit を積むと、ティックが終わる時点の HEAD は
+誰も読んでいない commit なのに、観測時点どうしの一致が「現在の HEAD へのレビュー」
+として残る。実際、実装が入ったティックだけ `review.verdict == approved` の criterion が
+🟢 になり、次のティックで 🔴 に戻った。そこで、実装役が走ったティックはレビュー系の
+criteria を判定せず、`pending` として `unresolved` に積む
+（`pendingReviewCriteria`、`src/domain/verification.ts`）。**不合格にはしない。**
+ACT のあとの HEAD を誰かが読んだかどうかは、そのティックでは確かめようがなく、
+確かめられないものを不合格として記録すると、観測の穴が実装の不備として PR に出る
+（§3.1）。鮮度の判定そのもの（`judgeReviewVerdict`）は触っていない。順序の問題で
+あって、判定ロジックの問題ではない。実装役が走らなかったティック——レビュー役は
+同じ木を読むだけ、`investigate` は別の木を使う——では HEAD が動かないので、
+これまでどおり判定する。
+
 作る側は `ReviewPort`（`src/observe/index.ts`）になる。`role: review` で走った Run の
 生ログ（§4.6 の `runs/<run-id>/log.jsonl`）から最終メッセージを読み、observe が
 それを Fact にする。`ObserveTarget` ではなく Port を足す形にしたのは、
