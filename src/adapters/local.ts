@@ -4,6 +4,7 @@ import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { promisify } from "node:util";
 import { type Worktree, type WorktreePort, worktreeBranchFor } from "../act/index.js";
+import { CONTROLLER_STATE_DB_KEY } from "../domain/guard-rules.js";
 import { VERIFY_WITHHELD_ENV, withheldEnv } from "../domain/withheld-env.js";
 import type { LocalRepoPort } from "../observe/index.js";
 import type { BranchPort, PushResult } from "../publish/index.js";
@@ -425,7 +426,12 @@ async function outOfSightPaths(repoRoot: string, stateRoot: string): Promise<Map
   }
 
   // 状態 DB。gitignore 済みなので git status には出ない。
-  watched.set(".goals/.state/goals.db", join(stateRoot, "..", "goals.db"));
+  //
+  // キーは `CONTROLLER_STATE_DB_KEY` から取る。この観測は controller 自身の
+  // 書き込み先でもあり、関門は「その差分が自分の書き込みで説明できるか」を
+  // このキーで突き合わせる（`src/controller/index.ts` の `stateWitness`）。
+  // 文字列を2箇所に持つと、片方を直したときに説明だけが効かなくなる。
+  watched.set(CONTROLLER_STATE_DB_KEY, join(stateRoot, "..", "goals.db"));
 
   return watched;
 }

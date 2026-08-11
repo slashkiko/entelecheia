@@ -25,6 +25,7 @@ import {
   observedValue,
   sleepingUntil,
   waitedSeconds,
+  writtenByController,
 } from "../domain/guard-rules.js";
 import { describeViolations, findViolations } from "../domain/protected-paths.js";
 import { type ActorRole, DEFAULT_ACTOR_ROLE, type Run } from "../domain/run.js";
@@ -295,6 +296,11 @@ export async function tick(goal: Goal, deps: ControllerDeps): Promise<TickResult
   // いるかぎり lease が切れないので、design.md §3.6 の「どのティックも有限時間で
   // return する」が外から見て成立しなくなる。上限に達したら延長をやめ、lease は
   // 期限で切れる。走行中の ACT は続くが、次のティックには別プロセスが入れる。
+  //
+  // 延長は状態 DB への書き込みでもある。ACT の窓の中で走るので、前後の指紋を
+  // 控えないと、自分が起こした `goals.db` の変化を改竄として読む（`stateWitness`）。
+  // タイマーを張る前に控えの側を用意する。
+  const witness = stateWitness(deps);
   let renewals = 0;
   const heartbeat: NodeJS.Timeout = setInterval(
     () => {
@@ -303,14 +309,16 @@ export async function tick(goal: Goal, deps: ControllerDeps): Promise<TickResult
         clearInterval(heartbeat);
         return;
       }
-      try {
-        if (!deps.store.acquireLease(goalId, deps.owner, leaseUntil(), deps.now())) {
-          leaseLost.abort();
+      void witness.around(() => {
+        try {
+          if (!deps.store.acquireLease(goalId, deps.owner, leaseUntil(), deps.now())) {
+            leaseLost.abort();
+          }
+        } catch {
+          // 次の延長で取り返せる。取り返せなければ lease は期限で切れる。
+          // ここで abort しない。DB を1回読めなかったことと、奪われたことは違う。
         }
-      } catch {
-        // 次の延長で取り返せる。取り返せなければ lease は期限で切れる。
-        // ここで abort しない。DB を1回読めなかったことと、奪われたことは違う。
-      }
+      });
     },
     Math.max(1, Math.floor(deps.leaseSeconds / 2)) * 1000,
   );
@@ -379,12 +387,20 @@ export async function tick(goal: Goal, deps: ControllerDeps): Promise<TickResult
     // 編集中のファイルが最初から並んでいる。それを違反と読むと関門が毎回鳴り、
     // 鳴りっぱなしの関門は誰も見なくなる。差分だけを Actor の仕業として数える。
     const repoBefore = await repoBaseline(deps);
+    if (!("error" in repoBefore)) {
+      // 自分の書き込みを説明する連鎖の起点は、**このベースラインそのもの**にする。
+      // 最初の書き込みの直前に取り直すと、ベースラインからそこまでの間に
+      // 書き換えられた内容が控えに入り、改竄に説明が付いてしまう（`stateWitness`）。
+      witness.open(repoBefore.state);
+    }
 
     // 基準が読めなければ Actor を起動しない。関門は下で guard_unavailable に倒すが、
     // その前に1回分の予算を使ってしまうのは避ける。
     const base = guardBaseOf(goal, state);
     const run =
-      base === null ? null : await maybeAct(goal, result.decision, base, deps, actorSignal);
+      base === null
+        ? null
+        : await maybeAct(goal, result.decision, base, deps, actorSignal, witness);
 
     // ACT のあいだに奪われていないか。Run はもう確定している（中断は act が
     // interrupted として書く）ので、止めるのはここから下の書き込みだけになる。
@@ -396,7 +412,15 @@ export async function tick(goal: Goal, deps: ControllerDeps): Promise<TickResult
     // Agent が触ってはいけないものに触れていないかを、ACT の外で検査する
     // （design.md §7 / §10-6）。Agent 側の disallowedTools は Agent の設定で、
     // SDK の外から同じ操作をされれば素通りする。
-    const guarded = await guardedDecision(goal, result.decision, run, repoBefore, base, deps);
+    const guarded = await guardedDecision(
+      goal,
+      result.decision,
+      run,
+      repoBefore,
+      base,
+      deps,
+      witness,
+    );
     const actorGuarded = actorUsageLimitDecision(guarded, run);
 
     // 機械側の criteria が全部通ったら、controller が commit する
@@ -552,13 +576,23 @@ async function preview(goal: Goal, state: GoalState, deps: ControllerDeps): Prom
   // ACT を実行していないので、本体リポジトリ側の差分はこのティックには無い。
   // それでも検査を通すのは、前のティックが残した違反が worktree に残っている
   // 場合に、次のティックが ESCALATE になることまで含めて見せるため。
+  //
+  // 控え（`stateWitness`）も通常のティックと同じに作る。dry-run は1行も書かない
+  // ので説明が付く自分の書き込みは1件も無いが、ここだけ経路を変えると
+  // dry-run が「次に何が起きるか」を映さなくなる。
+  const witness = stateWitness(deps);
+  const repoBefore = await repoBaseline(deps);
+  if (!("error" in repoBefore)) {
+    witness.open(repoBefore.state);
+  }
   const guarded = await guardedDecision(
     goal,
     result.decision,
     null,
-    await repoBaseline(deps),
+    repoBefore,
     guardBaseOf(goal, state),
     deps,
+    witness,
   );
 
   // 未 commit の関門も通常のティックと同じに通す。ここを抜くと、worktree が
@@ -649,6 +683,11 @@ async function reachableCode(state: GoalState, deps: ControllerDeps): Promise<Un
  *   現れなかった。隔離が守るはずの当のファイルが検査から漏れていた
  * - 本体側は ACT 前の状態との差だけを数える。自己ホストなので人間の編集中の
  *   ファイルが最初から汚れている。それを違反にすると関門が毎回鳴る
+ * - **その差が controller 自身の書き込みで説明できるなら数えない。** 状態 DB は
+ *   この関門が指紋で見る保護対象でありながら、controller 自身の書き込み先でも
+ *   ある。ACT の窓の中で `startRun` / `finishRun` / lease の延長が走るので、
+ *   「外部からの改竄」と「自分の書き込み」が同じ指紋の差として現れていた。
+ *   保護対象から外すのではなく、指紋の連鎖で説明が付くかを見る（`stateWitness`）
  * - artifacts も併せて渡す。SDK が申告するパスは worktree の外を指すこともある
  * - 検査できなかったら ESCALATE(guard_unavailable)。「触っていない」と
  *   「確かめられなかった」を混ぜない（design.md §3.1）
@@ -664,6 +703,7 @@ async function guardedDecision(
   repoBefore: RepoBaseline,
   base: string | null,
   deps: ControllerDeps,
+  witness: StateWitness,
 ): Promise<Decision> {
   // act と同じ規則で worktree の場所を決める。ここがずれると、
   // 隔離の中の編集を「外に出た」と読んでしまう。
@@ -764,7 +804,19 @@ async function guardedDecision(
     // 前後どちらかにしか無いパスも変化として数える。after 側だけを走査すると、
     // 消された hook（before にあって after に無い）が差分に出ない。
     const paths = new Set([...repoBefore.state.keys(), ...after.keys()]);
-    escaped = [...paths].filter((path) => repoBefore.state.get(path) !== after.get(path));
+    escaped = [...paths].filter((path) => {
+      const now = after.get(path);
+      if (repoBefore.state.get(path) === now) {
+        return false;
+      }
+      // **controller 自身の書き込みで説明が付く差だけを落とす**（`stateWitness`）。
+      // 状態 DB はこの関門が指紋で見る保護対象でありながら、controller 自身の
+      // 書き込み先でもある。ACT の窓の中で `startRun` / `finishRun` / lease の
+      // 延長が走り、WAL の自動 checkpoint に当たった回だけ `goals.db` の中身が
+      // 変わる。落とす条件は「保護対象から外れているか」ではなく
+      // 「自分が最後に残した形のままか」になる。説明が付かなければ残す。
+      return !witness.explains(path, now);
+    });
   } catch (error) {
     return escalate(
       "guard_unavailable",
@@ -1000,6 +1052,131 @@ async function observedRepoState(deps: ControllerDeps): Promise<Map<string, stri
 }
 
 /**
+ * controller 自身が状態 DB に書いた分を、外部からの改竄と区別するための控え。
+ *
+ * `.goals/.state/goals.db` は `outOfSightState` が指紋で見る保護対象でありながら、
+ * **controller 自身の書き込み先でもある**。ACT の窓——ベースラインを控えてから
+ * 検査するまで——の中で、controller は必ずこの DB に書く。`startRun` と
+ * `finishRun`、そして lease の延長がそれにあたる。
+ *
+ * SQLite は WAL なので、その書き込みは普段 `goals.db-wal` に載るだけで
+ * `goals.db` の中身は動かない。ところが WAL が既定の閾値（1000 ページ）を
+ * 越えたコミットでは自動 checkpoint が走り、WAL の内容が `goals.db` へ
+ * 畳み込まれて中身が変わる。**同じ形のティックが、それまでに書いた量次第で
+ * 鳴ったり鳴らなかったりする。** 実測では、1回の `startRun` / `finishRun` では
+ * `goals.db` は1バイトも変わらず、同じ組を183回繰り返した時点で初めて変わった
+ * （`tests/state-db-wal-checkpoint.test.ts`）。
+ *
+ * **区別すべきは「保護するかどうか」ではない。** `.goals/.state/**` は
+ * `PROTECTED_PATH_FLOOR` に残す。外せば、DB を直接書き換えて状態を偽造されても
+ * 関門が鳴らなくなる。区別するのは「その差分が controller 自身の書き込みで
+ * 説明できるか」になる。
+ *
+ * 説明が付くと言えるのは、指紋の連鎖が1度も切れていないときだけになる。
+ * - ACT 前のベースラインを起点として控える（`open`）
+ * - 自分が書く**直前**に指紋を取り、控えと違えば説明をやめる。その差は
+ *   自分の書き込みより前に誰かが書いたということなので、説明してはいけない
+ * - 自分が書いた**直後**の指紋を、新しい控えにする
+ * - 検査時の指紋が控えと一致したときだけ、その差分を落とす
+ *
+ * **起点をベースラインにするのが要になる。** ここを「最初の書き込みの直前に
+ * 取り直す」形（issue #62 の案2をそのまま採った形）にすると、ベースラインから
+ * 最初の書き込みまでの間に書き換えられた内容が、そのまま自分の控えに入って
+ * 説明が付いてしまう。取り直すのではなく、ベースラインから連鎖を始める。
+ *
+ * **説明できないものは全部残す。** 指紋を取れなかった回（`outOfSightState` が
+ * 落ちた、実装が持っていない）も説明に使わない。捏造した違反で人間を呼ばないのと
+ * 同じくらい、本物の改竄を見逃さないことが重い。迷ったら鳴らす側へ倒す。
+ * 一度切れた連鎖はそのティックのあいだ戻さない。戻すと、書き続ける相手が
+ * 自分の書き込みを1回挟むたびに説明を取り戻せる。
+ *
+ * **残る穴を2つ書いておく。**
+ * - 自分の書き込みの直前と直後に取る指紋の間——ミリ秒の窓——に他の誰かが書くと、
+ *   その内容が控えに入って説明が付く。書き続ける相手は次の書き込みの直前で
+ *   必ず捕まるので、抜けられるのはこの窓に1回だけ当てた場合になる
+ * - もう1本の controller が同じディレクトリで回している場合、あちらの書き込みは
+ *   説明が付かないので `protected_path_touched` のまま止まる。あれは
+ *   「controller 自身の書き込み」ではないので、鳴るのが正しい。同じ DB を
+ *   2本で共有しないこと自体は CLAUDE.md が既に決めている
+ */
+interface StateWitness {
+  /** ACT 前のベースラインを、連鎖の起点として控える */
+  open(state: ReadonlyMap<string, string>): void;
+  /** controller 自身の書き込みを、前後の指紋で挟む */
+  around<T>(write: () => T): Promise<T>;
+  /** その変化が controller 自身の書き込みで説明できるか */
+  explains(key: string, after: string | undefined): boolean;
+}
+
+function stateWitness(deps: ControllerDeps): StateWitness {
+  /** 自分の書き込みの直後に控えた指紋。キーは `observedRepoState` と同じもの */
+  const witnessed = new Map<string, string>();
+  /** 説明に使わないと決めた印。取れなかった回も、控えと違う指紋を見た回もここへ倒す */
+  let blind = false;
+
+  const sample = async (): Promise<Map<string, string> | null> => {
+    try {
+      const observed = await deps.worktree.outOfSightState?.();
+      return observed === undefined
+        ? null
+        : new Map([...observed].filter(([key]) => writtenByController(key)));
+    } catch {
+      // 読めなかったことを「変わっていない」と読まない（design.md §3.1）。
+      return null;
+    }
+  };
+
+  return {
+    open(state) {
+      for (const [key, value] of state) {
+        if (writtenByController(key)) {
+          witnessed.set(key, value);
+        }
+      }
+    },
+
+    async around(write) {
+      if (!blind) {
+        const before = await sample();
+        if (before === null) {
+          blind = true;
+        } else {
+          for (const [key, left] of witnessed) {
+            if (before.get(key) !== left) {
+              // 自分が書く前に誰かが書いている。この差は自分では説明できない。
+              blind = true;
+            }
+          }
+        }
+      }
+
+      try {
+        return write();
+      } finally {
+        if (!blind) {
+          const after = await sample();
+          if (after === null) {
+            blind = true;
+          } else {
+            for (const [key, value] of after) {
+              witnessed.set(key, value);
+            }
+          }
+        }
+      }
+    },
+
+    explains(key, after) {
+      if (blind || !writtenByController(key)) {
+        return false;
+      }
+      const left = witnessed.get(key);
+      return left !== undefined && left === after;
+    },
+  };
+}
+
+/**
  * action が ACT のときだけ Actor を起動する。write-ahead は act 側が持つ。
  *
  * `signal` は deps.signal（SIGTERM）と lease の喪失を束ねたもの。act は
@@ -1012,6 +1189,7 @@ async function maybeAct(
   base: string,
   deps: ControllerDeps,
   signal: AbortSignal,
+  witness: StateWitness,
 ): Promise<Run | null> {
   if (decision.action.type !== "ACT") {
     return null;
@@ -1019,10 +1197,15 @@ async function maybeAct(
 
   const goalId = goal.goal.id;
   const intent = decision.action.intent;
+  // Run の write-ahead と確定は、ACT の窓の中で controller 自身が状態 DB へ書く
+  // 唯一の経路になる（もう1つは lease の延長）。前後の指紋を控えておかないと、
+  // 自分の書き込みが起こした `goals.db` の変化を改竄と読む（`stateWitness`）。
   const runs: RunRecorderPort = {
-    start: async (runIntent) => deps.store.startRun(goalId, runIntent),
+    start: async (runIntent) => witness.around(() => deps.store.startRun(goalId, runIntent)),
     finish: async (runId, outcome) => {
-      deps.store.finishRun(runId, outcome);
+      await witness.around(() => {
+        deps.store.finishRun(runId, outcome);
+      });
     },
   };
 

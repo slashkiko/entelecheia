@@ -32,6 +32,40 @@ import type { Verification } from "./verification.js";
 const SHA = /^[0-9a-f]{40}$/;
 
 /**
+ * 本体リポジトリ側の観測に現れる、状態 DB のキー。
+ *
+ * `outOfSightState`（`src/adapters/local.ts`）が指紋を取るときの表示用パスで、
+ * 実体のパスではない（`PathOrigin` の `repo_root`）。**観測を作る側とここが
+ * 同じ文字列を使う**ように、キーの文字列はこの1本だけにする。片方だけ変えると
+ * 「保護は効いているのに、controller 自身の書き込みが説明できない」形になり、
+ * ACT を含むティックが理由なく `protected_path_touched` で止まる。
+ */
+export const CONTROLLER_STATE_DB_KEY = ".goals/.state/goals.db";
+
+/**
+ * その観測のキーが、controller 自身の書き込み先かどうか。
+ *
+ * 状態 DB は関門が指紋で見る保護対象でありながら、controller 自身が毎ティック
+ * 書き込む先でもある。「外部からの改竄」と「controller 自身の書き込み」が
+ * 同じ指紋の差として現れるので、まずどのキーが自分の書き込み先なのかを
+ * 名指しで決める。
+ *
+ * **これは保護を外す判定ではない。** `.goals/.state/**` は
+ * `PROTECTED_PATH_FLOOR`（`src/domain/goal.ts`）に残る。外せば DB を直接
+ * 書き換えて状態を偽造されても関門が鳴らなくなる。ここが答えるのは
+ * 「その差分を controller 自身の書き込みで説明してよいか、まず検討する対象か」
+ * だけで、実際に説明が付くかは指紋の連鎖が決める（`src/controller/index.ts` の
+ * `stateWitness`）。
+ *
+ * 一致で見る。前方一致にすると `.goals/.state/goals.db.bak` のように名前を
+ * 寄せるだけで説明の対象を増やせる。増やしてよいものが出てきたら、そのとき
+ * ここに1本ずつ足す。
+ */
+export function writtenByController(key: string): boolean {
+  return key === CONTROLLER_STATE_DB_KEY;
+}
+
+/**
  * 関門が差分を取る相手。解決できなければ null。
  *
  * `ent start` を叩いた時点の repoRoot の HEAD（`GoalState.guardBaseSha`）を使う。
