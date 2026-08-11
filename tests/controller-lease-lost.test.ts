@@ -41,7 +41,12 @@ const AFTER_EXPIRY = new Date(NOW.getTime() + 3_600_000);
 
 const GOAL: Goal = {
   version: 1,
-  goal: { id: "sample-goal", name: "サンプル", desired_state: "何かが完成している" },
+  goal: {
+    id: "sample-goal",
+    name: "サンプル",
+    desired_state: "何かが完成している",
+    depends_on: [],
+  },
   repository: {
     provider: "github",
     owner: "slashkiko",

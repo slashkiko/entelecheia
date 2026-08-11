@@ -38,7 +38,7 @@ const WORKTREE_ROOT = "/tmp/entelecheia-guard-base";
 function goalFixture(id: string): Goal {
   return {
     version: 1,
-    goal: { id, name: "サンプル", desired_state: "何かが完成している" },
+    goal: { id, name: "サンプル", desired_state: "何かが完成している", depends_on: [] },
     repository: {
       provider: "github",
       owner: "slashkiko",

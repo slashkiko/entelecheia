@@ -15,7 +15,9 @@ import { type GoalState, type GoalStatus, isTerminal, nextStatus } from "../doma
 import {
   claimsNothingLeft,
   consecutiveFailuresOf,
+  dependencyGate,
   describeClaim,
+  describeDependencyGate,
   elapsedSecondsSince,
   guardBaseOf,
   observedValue,
@@ -212,6 +214,29 @@ export async function tick(goal: Goal, deps: ControllerDeps): Promise<TickResult
   const sleeping = sleepingUntil(state.resumeAfter, deps.now());
   if (sleeping !== null) {
     return idle(state.status, `resume_after まで寝ている: ${sleeping}`);
+  }
+
+  // 依存する Goal が揃うまで進めない（design.md §10-12）。
+  //
+  // **lease は取らない。** resume_after と同じ理由で、待っているだけの Goal が
+  // 他のワーカーを塞ぐ。並べる本数を決めるのは呼び出し側なので（README
+  // 「複数の Goal を同時に回す」）、依存待ちの1本が枠を持ち続けると、
+  // 進める側の Goal まで cron の1周で回らなくなる。
+  //
+  // **`ent start` の入口ではなくここで見る。** あちらで「ACTIVE にしない」形に
+  // すると、依存先をまだ start していない順序で宣言を書けなくなる。分解した
+  // サブ Goal をまとめて登録する使い方（§10-12）がそれに当たる。
+  //
+  // 状態は動かさない。ここで書けば止まった理由が DB に残るが、そのためには
+  // lease を取ることになり、上の理由と衝突する。理由は `skipped` に載せて
+  // `ent run` の出力に出す。
+  const gate = dependencyGate(
+    goal.goal.depends_on,
+    (dependencyId) => deps.store.getState(dependencyId)?.status ?? null,
+  );
+  const blocked = describeDependencyGate(gate);
+  if (blocked !== null) {
+    return idle(state.status, blocked);
   }
 
   // 見るだけのティック。ここから下（lease・回収・永続化・ACT・publish）は

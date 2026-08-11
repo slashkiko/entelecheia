@@ -30,7 +30,7 @@ design.md §9 の完了条件9項目はすべて確認した。**MVP は完了�
 | 確かめられなかったことを黙って落とさない | 「対象が無い」と「対象を確かめられなかった」を区別し、後者は `unobserved` / `unverified` に理由付きで残す | 済 |
 | 検証に還元できない Goal は受け付けない | Acceptance Criteria を検証手段（コマンド / Fact 参照 / 人間の承認）に落とせない Goal は ACTIVE にしない | 済 |
 | 待機はプロセスではなく状態 | reconcile はどのティックも有限時間で return する。常駐して sleep しない | 済 |
-| 宣言と収束の分離 | 人間が書くのは Desired State と Acceptance Criteria。タスク分解も Actor 選択も controller が決める | 済 |
+| 宣言と収束の分離 | 人間が書くのは Desired State と Acceptance Criteria。タスク分解も Actor 選択も controller が決める | 一部（分解は1つの Goal の内側だけが済で、Goal をまたぐ分解は順序の宣言（`goal.depends_on`）まで。割る判断は人間が持つ（design.md §10-12）。Actor 選択は controller が決める形だが、選べる先は実装役1つに固定されている（§4.2 / §4.3）） |
 | write-ahead | 副作用の前に意図を DB へ書く。任意の瞬間に kill されても次ティックで回収できる | 済 |
 | 隔離は場所だけでは足りない | worktree でファイルを分けるだけでなく、Agent の出力を controller のシェルに流さない・Agent が書いたものを controller の権限で実行しない | 一部（シェルに流さない側は design.md §7 で対応済み、controller の権限で実行しない側は §10-9 が未決） |
 
@@ -77,8 +77,8 @@ Phase 3 は自己ホストで、5本に割った。1本目で1ティックの記
 進捗をコメントに積み、承認待ちで止まった（`COMPLETED` への遷移そのものは別の Goal で
 確認済み。design.md §9）。
 
-**実際に回すまで、配管は繋がっていると見なせない。** Phase 3 で見つかった断線は
-どれもテストでは通っていた。`git branch --format` の引用符不足で worktree の作成が
+**実際に回すまで、配管は繋がっていると見なせない。** Phase 3 とその直後に見つかった
+断線は、どれもテストでは通っていた。`git branch --format` の引用符不足で worktree の作成が
 Phase 2 からずっと失敗していたこと、VERIFY が worktree ではなく controller 自身の
 リポジトリでコマンドを流していたこと、PR がある間 push しなくなっていたこと、
 そして **Actor が実装を書き切ったまま commit していなかった**こと。
@@ -155,11 +155,14 @@ mise run check    # サプライチェーンと workflow のチェック（basel
 別だから。`tsconfig.json` は `noEmit` で `tests/**` を含み、`bin` の実体を作るのは
 `tsconfig.build.json` の側になる。
 
-現時点では `typecheck` / `lint` / `build` / `test` / `check` の5つとも通る。
-
 Acceptance Criteria を先に書く進め方なので、Goal に着手した直後は `typecheck` と
 `test` が落ちる。それは進め方に由来する想定内の状態であって、環境の不備ではない。
 落ちる件数まで含めて、その Goal の `desired_state` が着手時点の実測として宣言する。
+main の CI（`.github/workflows/verify.yml`）も、そのあいだは赤いままになる。
+
+**いまは `say-why-each-goal-is-stopped` に着手している状態で、`typecheck` と `test` が
+落ちる。** `lint` と `build` と `check` は通る（`build` は `tests/**` を見ないので、
+落ちているのが仕様テストだけなら影響を受けない）。
 
 ## ent を動かす
 
@@ -211,6 +214,8 @@ Actor の編集として並ぶ）。
 いまは alias か `node dist/cli.js` で呼ぶ。
 
 常駐しない。`run` はどのティックも有限時間で終了し、待ちは Goal の状態として残る。
+ただし `goal.depends_on` の依存待ちだけは lease を取らないので状態に残らず、
+`ent run` の `skipped` にしか出ない（design.md §10-12）。
 継続して回すなら cron から `run` を叩く。
 
 ### この repo の外のリポジトリで使う
@@ -283,6 +288,41 @@ criteria の pass 状況で、試走のたびにレビュー中の PR を伸ば�
 本文は `report.body` に入る。受け取るのは `run` だけで、`--dry-run` とは併用できない。
 JSON に何が入るか、書けなかったときにどうなるかは `.claude/skills/ent/SKILL.md` にある。
 
+### 粗いタスクを複数の Goal に割る
+
+1つの粗いタスクを N 本の Goal に割ったら、順序は `goal.depends_on` に書く
+（design.md §10-12）。
+
+```yaml
+goal:
+  id: wire-it-up
+  name: 配線する
+  desired_state: |
+    …
+  depends_on:
+    - build-the-thing
+```
+
+依存がすべて COMPLETED になるまで、`ent run` はそのティックを回さずに終了する。
+**lease も取らない。** 待っているだけの Goal が枠を持ち続けると、進める側の Goal まで
+cron の1周で回らなくなる。判定は `ent start` ではなくティックの入口で行うので、
+依存先をまだ start していない順序で宣言を書いてよい。割った分をまとめて登録して、
+上から `ent run` を並べれば、進める本だけが進む（並べ方は次節）。
+
+進めなかった理由は `ent run` の `skipped` に出る。依存が `FAILED` か `ABANDONED` に
+落ちた場合は、待っても解けないことと次の一手（依存側をやり直すか `depends_on` を
+書き換えるか）まで書く。まだ登録されていない依存は「待てば進む」側に数える。
+`ent start` を打ち忘れただけかもしれないので、無いことを終端とは読まない。
+**この待ちは Goal の状態には残らないので、`skipped` にしか出ない**（design.md §10-12
+の残る穴）。自分自身への依存はスキーマが弾くが、**2本以上をまたぐ循環は YAML 1本からは
+見えない**ので、全員が待ちのまま止まる。
+
+依存の判定も端末ごとの状態 DB を読む。別の端末では依存の `COMPLETED` が見えないので、
+未登録＝待ち扱いになる（上の lease と同じ制約）。
+
+**割る判断そのものは人間が持つ。** controller は書かれた順序に従うだけで、
+粗いタスクを自分で N 本に割ることはしない（design.md §10-12）。
+
 ### 複数の Goal を同時に回す
 
 `ent run` は複数のプロセスから同時に叩いてよい。まとめて回す口（`ent run --all` や
@@ -351,6 +391,8 @@ src/domain/verification.ts criteria 単位の検証結果。§9 の完了判定�
 src/domain/digest.ts      観測値のダイジェスト。ループ検知の材料になる
 src/domain/protected-paths.ts 保護パスの検査。制御ループ自体への編集を止める
 src/domain/guard-rules.ts guard（純ロジック）が読む判断規則。関門の基準と停止条件
+src/domain/withheld-env.ts Agent と検証コマンドの環境から落とす資格情報の除去リスト
+src/domain/error-message.ts 例外から人間が読める1行を取り出す
 src/domain/llm-call.ts    LlmPort を1回呼んだ記録。Run を作らない分のトークン
 src/observe/              Observe と、依存する Port の定義
 src/verify/               Verify と、依存する Port の定義
