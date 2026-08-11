@@ -156,7 +156,17 @@ export function doctorProbes(repoRoot: string, stateDir: string): DoctorProbes {
   };
 }
 
-/** `.goals/*.yaml` を1本ずつ読む。1本落ちても残りは読む。どれが落ちたかが要るので */
+/**
+ * `.goals/*.yaml` を1本ずつ読む。1本落ちても残りは読む。どれが落ちたかが要るので。
+ *
+ * 読めた分は `goal.depends_on` も写す。doctor が「依存先が実在するか」と
+ * 「循環していないか」を見る材料になる。**読む口だけを足す。** 落ちた分の
+ * `dependsOn` は空にするが、`error` が付いているので読む側が依存の検査から外せる。
+ *
+ * `parseGoal` が `goal.id` とファイル名の一致を強制しているので
+ * （`src/domain/goal-parse.ts`）、ここで返す slug は `depends_on` に書く id と
+ * 同じものになる。
+ */
 function loadGoalSummaries(goalsDir: string): DoctorGoal[] {
   return readdirSync(goalsDir)
     .filter((name) => name.endsWith(".yaml") || name.endsWith(".yml"))
@@ -164,10 +174,10 @@ function loadGoalSummaries(goalsDir: string): DoctorGoal[] {
     .map((name) => {
       const slug = basename(name, extnameOf(name));
       try {
-        loadGoalFile(join(goalsDir, name));
-        return { slug, error: null };
+        const goal = loadGoalFile(join(goalsDir, name));
+        return { slug, error: null, dependsOn: [...goal.goal.depends_on] };
       } catch (error) {
-        return { slug, error: errorMessage(error) };
+        return { slug, error: errorMessage(error), dependsOn: [] };
       }
     });
 }

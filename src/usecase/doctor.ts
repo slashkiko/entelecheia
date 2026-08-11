@@ -34,6 +34,13 @@ export interface DoctorReport {
 export interface DoctorGoal {
   slug: string;
   error: string | null;
+  /**
+   * `goal.depends_on` に書かれた id。**読めなかった Goal では空になる。**
+   *
+   * 読めていない YAML から依存は取り出せないので、空であることを
+   * 「依存を書いていない」とは読まない。分けるのは `error` の側になる。
+   */
+  dependsOn: string[];
 }
 
 /**
@@ -45,7 +52,7 @@ export interface DoctorGoal {
 export interface DoctorProbes {
   /** GITHUB_TOKEN / GH_TOKEN。無ければ null */
   githubToken: () => string | null;
-  /** `.goals/*.yaml` を読んで、slug ごとの成否を返す */
+  /** `.goals/*.yaml` を読んで、slug ごとの成否と `depends_on` を返す */
   loadGoals: () => Promise<DoctorGoal[]>;
   /** state ディレクトリに書けるか */
   stateWritable: () => Promise<boolean>;

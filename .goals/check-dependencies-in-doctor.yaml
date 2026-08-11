@@ -1,25 +1,9 @@
 version: 1
 
 goal:
-  id: find-broken-dependencies-before-running
-  name: 依存の書き間違いを、回す前に doctor が見つける
+  id: check-dependencies-in-doctor
+  name: 依存の書き間違いを、回す前に doctor が見つける（配線済み）
   desired_state: |
-    **この Goal は ABANDONED。`check-dependencies-in-doctor` に引き継いだ。**
-
-    切り方を誤った。下の 4 が「`loadGoals` の実装は合成ルート（`src/wiring/index.ts`）に
-    ある」と書いて Actor にそこを触らせているが、そのパスは PR #40 で
-    `PROTECTED_PATH_FLOOR` に入っている。1ティック目で
-    `ESCALATE(protected_path_touched)` になった。関門は正しく働いていて、
-    誤っていたのはこの宣言のほう。
-
-    doctor に依存を見せるには `DoctorProbes.loadGoals` が `depends_on` を返すしかなく、
-    その組み立ては合成ルートにしか置けない。**配線だけは人間が書く。** 書いたうえで
-    立て直したのが `check-dependencies-in-doctor` で、中身の要件はそちらが引き継いでいる。
-
-    以下は当時の記述をそのまま残す。
-
-    ---
-
     `goal.depends_on` が入って順序を宣言できるようになったが、**書き間違えたときの
     壊れ方が悪い。**
 
@@ -68,21 +52,18 @@ goal:
       読むと、原因が1つなのに検査が2つ鳴る。既存の `goals` の検査が先に failed に
       するので、こちらは黙る。
 
-    4. `DoctorGoal` に依存を載せる
+    4. 材料はもう届いている
 
-      いまの `DoctorGoal` は `{ slug, error }` だけで、依存を見る材料が無い。
-      `dependsOn` を足して `loadGoals` が返す形にする。**読む口だけを足す。**
-      `DoctorProbes` は読み取りだけを並べてあり、「調べるついでに直す」を実装
-      できないようにしてある。その性質は変えない。
+      `DoctorGoal` は既に `dependsOn` を持ち、合成ルートが `goal.depends_on` を
+      写して渡している。**そこは人間が先に commit してある。** 合成ルート
+      （`src/wiring/index.ts`）は `PROTECTED_PATH_FLOOR` の中で、Actor には書けない。
+      前身の `find-broken-dependencies-before-running` はそこを Actor に触らせて
+      1ティック目で `ESCALATE(protected_path_touched)` になった。
 
-      既存の `tests/cli-doctor.test.ts` の `loadGoals` スタブにも `dependsOn` を
-      足すことになる。これは項目を広げるだけで、検査を弱めるものではない。
-
-      `DoctorGoal` を `src/cli.ts` から再エクスポートする。仕様テストがこの型を
-      使うのに、いま出ているのは `DoctorProbes` と `DoctorReport` だけになっている。
-
-      `loadGoals` の実装は合成ルート（`src/wiring/index.ts`）にある。読んだ Goal から
-      `goal.depends_on` を写すのはそちら側の仕事になる。
+      **したがって、この Goal で触るのは `src/usecase/doctor.ts` だけで足りる。**
+      `DoctorGoal` の再エクスポートも `tests/cli-doctor.test.ts` のスタブも入っている。
+      `src/wiring/index.ts` を触る必要が出たら、それは設計が変わったということなので
+      人間を呼ぶ（下限にあるので、触った時点で関門が鳴る）。
 
     テストは tests/doctor-dependencies.test.ts に書いてある。着手時点では落ちる。
     仕様はテストが正で、この記述と食い違ったらテストに合わせる。
@@ -155,8 +136,9 @@ context:
   constraints:
     - テストから実際の GitHub と Claude API を叩かない
     - tests/doctor-dependencies.test.ts は仕様なので変更しない。通らないなら実装側を直す
-    - 既存の tests/ も弱めない。tests/cli-doctor.test.ts のスタブに dependsOn を
-      足すのは、項目を広げるだけなので構わない
+    - 既存の tests/ も弱めない
+    - 触るのは src/usecase/doctor.ts だけで足りる。合成ルート（src/wiring/index.ts）は
+      人間が先に commit してあり、下限にあるので触ると関門が鳴る
     - 実行時の判定を変えない。src/domain/guard-rules.ts は触らない
     - DoctorProbes に書き込む口を足さない。読むだけに保つ
     - doctor は常に JSON を出す。--json は受け取らない、という既存の契約を変えない
