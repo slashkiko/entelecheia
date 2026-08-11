@@ -7,7 +7,8 @@
 順序の宣言 `goal.depends_on` を入れた。分解を機械にやらせる場合の宣言部の書き手も決めた。
 実装は保留。あわせて、実装と食い違っていた記述を揃え、2つ実装を変えた — `/ent approve` は
 PR の作成者が書いても承認として数え、その代わり Agent の中の `gh` を未認証にする（§10-4）、
-合成ルートを保護パスの下限に足した（§7））
+合成ルートを保護パスの下限に足した（§7）。さらに、レビュー役にだけ semantic-review の skill を
+渡し、宣言部を goalId で、読んだ commit を `reviewed_sha:` で名指しさせた（§4.2・§4.3））
 
 ---
 
@@ -274,7 +275,7 @@ MVP では `claude-code` だけを実装し、3つの role をすべて持たせ
 Codex を足すときに Planner 側のコードを変えなくて済む形にしておけば十分。
 
 `ActorRole` の実体は `src/domain/run.ts` の `actorRoleSchema` にある。`Actor` の方は
-まだ切っていない（`ActorPort` が `kind` を持つだけ）が、role は次の4箇所を通る。
+まだ切っていない（`ActorPort` が `kind` を持つだけ）が、role は次の5箇所を通る。
 
 - **role が Agent の許可・拒否ツールを決める**（`src/adapters/claude.ts` の `ACTOR_TOOLS`）。
   編集のツール（Edit / Write / NotebookEdit）を持つのは `implement` だけで、`review` と
@@ -286,6 +287,19 @@ Codex を足すときに Planner 側のコードを変えなくて済む形に�
   そのまま落とす（レビュー役だからといって merge や force push を許さない）。
   プロンプトも role ごとに分ける。権限だけ分けて文面が同じだと、レビュー役は編集を
   試みて拒否され続け、ターンをそこに使い切る
+- **role が Agent に見せる skill を決める**（`src/adapters/claude.ts` の `SKILLS_FOR`）。
+  レビュー役にだけ `semantic-review` を渡す。実装役に渡すと「観点を満たすように書く」
+  余地ができ、§3.1 が criteria で避けている構図がレビュー側で再発する。
+  **`settingSources: []` は解かない。** ホストの `~/.claude` とリポジトリの `.claude` を
+  読ませない判断はそのままで、controller が名指しした plugin（`plugins/ent-review/`）
+  だけが Agent から見える。skill の一覧に出るのはその1件になる。
+  中身は ent の外でも使う汎用の skill で、**Goal も criteria も verdict も知らない。**
+  PR ではなく作業ツリーの HEAD を見ること、意図の一次情報が `.goals/<goal.id>.yaml` で
+  あること、本文の後ろに `reviewed_sha:` と `verdict:` の2行を足すことは、すべて
+  `REVIEW_PROMPT` の側に書く。観点は skill が持ち、契約は controller が持つ。
+  そのために `ActorInvocation` が `goalId` を運ぶ——宣言部は作業ツリーに commit 済みで
+  入っているので、**どのファイルを読めばよいかだけを渡せば意図が届く**
+  （`intent` に載るのは constraints だけで、`desired_state` は載らない）
 - **worktree の名前が (goal.id, role) から決まる**（`worktreeNameFor`）。
   **`review` は `implement` と同じ作業ツリーを見て、`investigate` だけが分かれる。**
   当初は3つとも分けていたが、分けると**レビューの対象が実装に永久に追いつかない**。
@@ -367,19 +381,27 @@ Fact が無い間は Gap が残り COMPLETE には届かない（§3.1）。guar
 レビュー役は毎回同じ出力を返すとは限らない。レビュー役を1度も起動していない
 ティックでは、Fact も `unobserved` も作らない。
 
-sha は本文中の 40 桁を数える。同じ sha を何度述べても1つと数え、違う sha が並んで
-いたら、どれを読んだ結果なのか決められないので `pending` に落とす。**これが既定の
-経路になる。** その手前に `reviewed_sha:` の行を1つだけ見る経路を置いてあるが、
-この綴りはどこからも要求されていない。レビュー役のプロンプト（`src/adapters/claude.ts`）が
-言うのは「読んだ commit の sha を述べる」ことだけで、`PROTECTED_PATH_FLOOR` の中に
-あるので、要求する側を足すことはできない。したがって名指しの行は、レビュー役が
-たまたまその形で書いたときだけ効く追加の経路であって、暗黙の契約を読む側で
-吸収し切ったわけではない。**数えるだけの規則が落とす出力——差分の比較元を完全形で
-併記する、`git log` の出力を1行引用する。どれも指示に従った書き方になる——は、
-大半のティックで依然として落ちる。** 落ち方は Fact を作らず `pending` に残す
-安全側で、待てばレビューを回し直せる。名指しを既定の規約にするにはプロンプト側に
-要求する1行が要り、それは `PROTECTED_PATH_FLOOR` を動かす話になる。ここで
-読む側だけを直して「吸収した」と書かない。
+sha を読む経路は2本ある。**先に見るのは `reviewed_sha:` の名指しで、いまはこちらが
+通常の経路になる。** 名指しが1つだけあればそれを採り、2つ以上あって値が食い違えば、
+数え直さずに `pending` に落とす——どれを読んだかを2通り述べた出力は、数えても
+決まらない。名指しが1つも無いときだけ、本文中の 40 桁を数える側へ落ちる。同じ sha を
+何度述べても1つと数え、違う sha が並んでいたら、どれを読んだ結果なのか決められないので
+`pending` にする。
+
+数える側が**当初の既定**で、名指しを見る経路はその手前に後から足したものになる。
+読む側を先に足したのは、当時のプロンプトが言うのが「読んだ commit の sha を述べる」
+ことだけで、**数えるだけの規則が落とす出力——差分の比較元を完全形で併記する、
+`git log` の出力を1行引用する。どれも指示に従った書き方になる——を拾える形が、
+読む側にしか置けなかった**ため（`src/adapters/claude.ts` は
+`PROTECTED_PATH_FLOOR` の中にあり、Actor には触れない）。
+
+いまはプロンプトの側でも名指しを要求している。レビュー役に `semantic-review` の
+skill を渡した（§4.2）ときに、あの出力形式が本文に base と head の2つの sha を
+並べるため、数えるだけの規則では毎回落ちるようになったからで、**人間が
+`REVIEW_PROMPT` を書き換えて足した。** 読む側の規則はそのまま残す。名指しが
+無い出力——プロンプトを差し替える前の Run、skill を使わなかった Run——を、
+待っても直らない失敗として扱う理由が無い。要求する側と拾う側の両方があり、
+片方が欠けても安全側（Fact を作らず `pending`）に倒れる。
 
 起動する側は DECIDE のプロンプトになる。選べる行動に `role: review` の ACT を1つ足し、
 `review.reviewed_sha` が `local.head_sha` と一致しているあいだは——実装が1行も
@@ -764,7 +786,10 @@ DECIDE の LLM 呼び出しは `LlmCall.tokens` に残す（§4.5）。あとか
 
 - 関門そのもの（`src/domain/protected-paths.ts`）と、Agent の許可・拒否ツールを決める
   ファイル（`src/adapters/claude.ts`）。ここが開いていると、照合を常に false にするか
-  拒否リストを空にするだけで残りが全部外れる
+  拒否リストを空にするだけで残りが全部外れる。同じファイルが、役割ごとに見せる skill
+  （`SKILLS_FOR`）と、レビューの結論の契約（`REVIEW_PROMPT` が求める `verdict:` と
+  `reviewed_sha:` の2行。§4.3）も持つ。**Actor が自分に渡る観点と、自分の結論の
+  読まれ方を書き換えられる**ようになるので、下限から外せない
 - **guard が読む判断規則（`src/domain/guard-rules.ts`）。** 関門が差分を取る相手
   （`guardBaseOf`）、未 commit の関門が見る述語（`claimsNothingLeft` / `observedValue`）、
   寝ている間かの判定（`sleepingUntil`）、経過時間と連続失敗の数え方がここにある。

@@ -59,6 +59,7 @@ const SUCCESS = {
 
 const INVOCATION: ActorInvocation = {
   runId: "42",
+  goalId: "sample",
   intent: "テストの失敗を直す",
   role: "implement",
   worktree: { path: "/tmp/entelecheia/worktrees/sample", branch: "entelecheia/sample" },

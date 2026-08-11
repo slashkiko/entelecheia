@@ -104,6 +104,20 @@ export interface ActorInvocation {
    */
   runId: string;
   /**
+   * どの Goal の実行か。Actor 側が宣言部（`.goals/<goalId>.yaml`）を名指しするのに使う。
+   *
+   * レビュー役は「宣言された意図」と差分を突き合わせる。その意図の一次情報は
+   * PR 本文ではなく Goal の `desired_state` と `acceptance_criteria` で、
+   * `intent` には載っていない（`withConstraints` が足すのは constraints だけ）。
+   * 作業ツリーには宣言部が commit 済みで入っているので、**どのファイルを読めば
+   * よいかだけを渡せば届く。**
+   *
+   * ブランチ名（`worktreeBranchFor` が作る `entelecheia/<goalId>`）から引くことも
+   * できるが、それだとプロンプトが命名規則に依存する。id は既にここにあるので、
+   * 素直に渡す。
+   */
+  goalId: string;
+  /**
    * DECIDE が決めた intent に Goal の制約を足したもの。そのまま Actor への
    * プロンプトになる。組み立ては `withConstraints` が持つ。
    */
@@ -317,6 +331,8 @@ async function runActor(
   try {
     const result = await deps.actor.run({
       runId,
+      // 宣言部の置き場所を Actor に名指しさせるために渡す（`ActorInvocation.goalId`）。
+      goalId: goal.goal.id,
       intent: withConstraints(intent, goal),
       // 使ってよいツールは Actor 側が role から決める（design.md §4.2）。
       role,
