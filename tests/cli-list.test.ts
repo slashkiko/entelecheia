@@ -83,6 +83,8 @@ describe("listPayload", () => {
     store.upsertGoal(goalWith("alpha", "1番目"));
     store.setStatus("alpha", "ACTIVE", null, AT);
 
+    // stopped / criteria / lastDecidedAt は say-why-each-goal-is-stopped で足す分。
+    // 何も起きていない Goal では3つとも null になる（tests/list-progress.test.ts）。
     expect(listPayload(store)).toEqual([
       {
         id: "alpha",
@@ -91,6 +93,9 @@ describe("listPayload", () => {
         reconciles: 0,
         prNumber: null,
         resumeAfter: null,
+        stopped: null,
+        criteria: null,
+        lastDecidedAt: null,
       },
       {
         id: "bravo",
@@ -99,6 +104,9 @@ describe("listPayload", () => {
         reconciles: 0,
         prNumber: null,
         resumeAfter: null,
+        stopped: null,
+        criteria: null,
+        lastDecidedAt: null,
       },
     ]);
   });
