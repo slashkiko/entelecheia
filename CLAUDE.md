@@ -18,9 +18,9 @@ Actor が新しい行動を実装して commit しても、回している contr
 task の実体は `node dist/cli.js` に `build` への依存を足しただけで、出力も終了コードも
 変わらない。mise の進捗は stderr に出るので、stdout は JSON だけのまま `jq` に渡せる。
 
-cron と並列で回すときは、この task を使わない。毎回ビルドが走るので、同時に何本も
-立てるとビルド同士がぶつかる。回す前に `mise run build` を1回叩いてから、
-README.md の並列のレシピどおり `ent run` を直に叩く。
+cron から回すときは、この task を使わない。毎回ビルドが走るので、分が重なると
+ビルド同士がぶつかる。回す前に `mise run build` を1回叩いてから、`ent run` を直に叩く。
+並べ方は次の節の制約に従う。
 
 ## 同じディレクトリから ent を並列で回さない
 
@@ -33,12 +33,9 @@ README.md の並列のレシピどおり `ent run` を直に叩く。
 いた側が `ESCALATE(protected_path_touched)` で止まる。触ったのは Actor ではなく、
 もう1本の controller になる。
 
-README.md が勧めている並列のレシピと cron の書き方はどちらもこの形にあたる。
+README.md が載せている並列のレシピと cron の書き方はどちらもこの形にあたるので、
+いまは使えない。分けるなら worktree ごとにする。ただし lease も分かれるので、
+別 worktree で同じ Goal を回すと両方が PR を立てる。
+
 直すには関門の側に手を入れる必要があり、`PROTECTED_PATH_FLOOR` の中なので
 ent 自身には回させられない。それまでは1本ずつ回す。
-
-## 変更を出すとき
-
-`mise run verify`（typecheck / lint / build / test）と `mise run check`
-（サプライチェーンと workflow）を通す。Goal に着手した直後は、仕様を先に書く
-進め方なので `test` が落ちる。それは環境の不備ではない。

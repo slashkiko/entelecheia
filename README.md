@@ -141,11 +141,11 @@ pnpm install --frozen-lockfile
 ## 検証
 
 ```sh
-mise run verify   # typecheck / lint / test をまとめて実行
+mise run verify   # typecheck / lint / build / test をまとめて実行
 mise run check    # サプライチェーンと workflow のチェック（baseline 由来）
 ```
 
-現時点では `typecheck` / `lint` / `test` / `check` の4つとも通る。
+現時点では `typecheck` / `lint` / `build` / `test` / `check` の5つとも通る。
 
 Acceptance Criteria を先に書く進め方なので、Goal に着手した直後は `test` が落ちる。
 それは進め方に由来する想定内の状態であって、環境の不備ではない。
@@ -247,9 +247,10 @@ ent doctor          # その場所で回せるかを読み取り専用で調べ�
   指さない。上の項目が「対象リポジトリ側に同名のパスがあると誤検知する」話なのに
   対し、こちらは「ent 本体を守る用途には使えない」話になる。**関門が守るのは
   対象リポジトリの中であって、ent 自身のコードではない**（自己ホストのときだけ
-  両方が重なる）。対象リポジトリで意味を持つのは `.goals/**` と `.git/**` で、
-  `.goals/.state/**` は gitignore 済みなので git の観測にそもそも出ない
-  （design.md §10-6 の穴 (b)）
+  両方が重なる）。対象リポジトリで意味を持つのは `.goals/**` と `.git/**` と
+  `.goals/.state/**` になる。後ろの2つは gitignore 済みで git status には出ないが、
+  ACT の前後で指紋を取って見ている（`outOfSightState`）。git の観測に出ないことと、
+  関門が見ていないことは別になる（design.md §10-6 の穴 (b)）
 
 ### 進捗を PR に投稿しない
 
@@ -275,20 +276,25 @@ JSON に何が入るか、書けなかったときにどうなるかは `.claude
 
 ### 複数の Goal を同時に回す
 
-`ent run` は複数のプロセスから同時に叩いてよい。まとめて回す口（`ent run --all` や
-常駐する watch）は用意しない。何本並べるかを決めるのは呼び出し側で、`ent` は
-「同時に叩かれても壊れない」ところまでを受け持つ。
+設計としては、`ent run` は複数のプロセスから同時に叩いてよい。まとめて回す口
+（`ent run --all` や常駐する watch）は用意しない。何本並べるかを決めるのは呼び出し側で、
+`ent` は「同時に叩かれても壊れない」ところまでを受け持つ。
 
-> **いまは1本ずつ回すこと。** 同じディレクトリから複数プロセスを立てると、保護パスの
-> 関門が `ESCALATE(protected_path_touched)` で止まる。状態 DB は WAL なので、別プロセスの
+> [!WARNING]
+> **いまは1本ずつ回すこと。以下のレシピは、この制約が解けるまで使えない。**
+> 同じディレクトリから複数プロセスを立てると、保護パスの関門が
+> `ESCALATE(protected_path_touched)` で止まる。状態 DB は WAL なので、別プロセスの
 > 書き込みや接続の切断で checkpoint が走り、`goals.db` の中身が変わる。関門は ACT の
 > 前後でこのファイルを sha256 で比べるため、先に ACT へ入っていた側が巻き添えになる。
-> 触ったのは Actor ではなく、もう1本の controller になる。`.goals/.state/` は
-> `process.cwd()` の下にできるので、**worktree を分ければぶつからない**（そのかわり
-> Goal の一覧も lease も分かれる）。詳しくは `CLAUDE.md`。
+> 触ったのは Actor ではなく、もう1本の controller になる。
+> `.goals/.state/` は `process.cwd()` の下にできるので、worktree を分ければぶつからない。
+> ただし lease も分かれるので、**別 worktree では同じ Goal を回さない**（下の
+> 「同じ slug を2つのプロセスに渡しても安全」が効かず、両方が PR を立てる）。
+> 直すには関門の側に手を入れる必要がある。詳しくは `CLAUDE.md`。
 
 ```sh
 # ワーカーを並べる側の例。slug ごとに1プロセス立てて、全部の終了を待つ
+# （同じディレクトリなので、上の制約が解けるまでは使えない）
 for slug in goal-a goal-b goal-c; do
   ent run "$slug" &
 done
@@ -296,11 +302,15 @@ wait
 ```
 
 cron から回すなら、Goal ごとに行を分ければよい（同じ分に並んでも構わない）。
+こちらも同じディレクトリを指すので、上の制約が解けるまでは分を1本にずらすか、
+Goal ごとに worktree を分ける。
 
 ```cron
 */10 * * * * cd /path/to/repo && node dist/cli.js run goal-a
 */10 * * * * cd /path/to/repo && node dist/cli.js run goal-b
 ```
+
+以下は、同じディレクトリで並べられるようになったときの前提になる。
 
 同じ slug を2つのプロセスに渡しても安全に扱える。Goal の所有権は期限付きの
 lease で決まるので、先に取れた側だけが進み、取れなかった側は
