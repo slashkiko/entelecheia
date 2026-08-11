@@ -37,6 +37,25 @@ export const observedFactKeySchema = z.enum([
   "github.ci.status",
   "github.ci.conclusion",
   "github.ci.failed_jobs",
+  /**
+   * head sha に紐づく**全 workflow run**を横断して数えた、落ちている job の数。
+   *
+   * `github.ci.conclusion` とは見ている範囲が違う。あちらは最新の run 1本の結論で、
+   * workflow を複数持つリポジトリでは lint の run が落ちていても test の run が
+   * 後から success で終われば `equals: success` が通る（issue #58）。
+   * 「この head sha で落ちている job が1つも無い」は
+   * `{ key: github.ci.failed_job_count, equals: 0 }` の側で書く。
+   *
+   * `github.ci.failed_jobs` があるのに数を別に持つのは、`verification.type: fact` の
+   * `equals` が `string | number | boolean` しか受けず、「配列が空」を書けないため。
+   *
+   * **0 は観測できた 0 で、未観測ではない。** 1件以上のときだけ push する
+   * `failed_jobs` の形をここで真似ると `equals: 0` が永久に届かない。逆に、まだ
+   * 回っている run が1本でもあるあいだは Fact にしない。実行中の run の
+   * `conclusion` を Fact にしないのと同じ規則で、push した直後の「いま 0 件」を
+   * 掴ませないため。
+   */
+  "github.ci.failed_job_count",
 
   // CodeProviderPort.getIssue()
   "github.issue.number",

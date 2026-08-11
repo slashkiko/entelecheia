@@ -126,28 +126,46 @@ export function githubCodeProvider(options: GitHubOptions): CodeProviderPort {
     },
 
     async getLatestCiRun(headSha) {
+      // **1本ではなく全部引く。** その sha に紐づく run は workflow の数だけあり、
+      // 最新の1本だけを見た結論は「CI が通っている」を意味しない。lint の run が
+      // 落ちていても test の run が後から success で終われば、最新は success に
+      // なる（issue #58）。GitHub は新しい順に返すので、先頭が最新のまま。
       const raw = await get("GET /repos/{owner}/{repo}/actions/runs", {
         head_sha: headSha,
-        per_page: 1,
+        per_page: 100,
       });
       if (raw === null) {
         return null;
       }
-      const run = decode(runsSchema, raw, "GET /actions/runs").workflow_runs[0];
-      if (run === undefined) {
+      const runs = decode(runsSchema, raw, "GET /actions/runs").workflow_runs;
+      const latest = runs[0];
+      if (latest === undefined) {
+        // run が1本も無い。「まだ push していない」を「落ちている job は 0 件」と
+        // 読まないために、数の側も作らずに null を返す。
         return null;
       }
 
       // 失敗ジョブ名とログ URL まで取る。「CI が落ちた」だけでは
-      // 次の ACT に渡す材料がない（design.md §4.3）。
-      const failedJobs =
-        run.conclusion === "failure" ? await failedJobsOf(get, run.id) : ([] as const);
+      // 次の ACT に渡す材料がない（design.md §4.3）。数だけを出して名前を
+      // 出さないと、2件落ちているのにどれを直せばよいか分からない状態になる。
+      const failedJobs: { name: string; logUrl: string }[] = [];
+      for (const run of runs) {
+        if (!settled(run.status) || !mayHaveFailedJobs(run.conclusion)) {
+          continue;
+        }
+        failedJobs.push(...(await failedJobsOf(get, run.id)));
+      }
 
       return {
-        headSha: run.head_sha,
-        status: statusOf(run.status),
-        conclusion: conclusionOf(run.conclusion),
-        failedJobs: [...failedJobs],
+        // status / conclusion / headSha は最新の run のもの。**意味を変えない。**
+        // 既存の Goal は `github.ci.conclusion == success` を書いている。
+        headSha: latest.head_sha,
+        status: statusOf(latest.status),
+        conclusion: conclusionOf(latest.conclusion),
+        failedJobs,
+        // まだ終わっていない run が1本でもあれば数は確定しない。ここで
+        // 「いま時点の 0」を返すと、押した直後の緑を掴む（`CiRunSnapshot` 参照）。
+        failedJobCount: runs.every((run) => settled(run.status)) ? failedJobs.length : null,
       } satisfies CiRunSnapshot;
     },
 
@@ -575,6 +593,33 @@ function linkedPrOf(htmlUrl: string | undefined): number | null {
   }
   const matched = /\/pull\/(\d+)$/.exec(htmlUrl);
   return matched === null ? null : Number(matched[1]);
+}
+
+/**
+ * その run が終わっているか。**失敗ジョブの数を確定してよいか**の判定に使う。
+ *
+ * `statusOf` と違って生の値を厳密に見る。あちらは知らない語を `completed` に
+ * 畳むが、それは Fact にする status の表示のための既定であって、「終わった」と
+ * 確かめた結果ではない。`waiting`（環境の承認待ち）や `pending` をここで
+ * 終わったと読むと、まだ1つも job が走っていない run について 0 件を出す。
+ *
+ * 未知の語は「終わっていない」側に倒す。数が決まらないあいだ criterion は
+ * 埋まらないままになるが、埋まらないのは外から見て分かる。誤って 0 を出すと
+ * 直そうとしている誤収束（issue #58）をそのまま作り直すことになる。
+ */
+function settled(status: string | null): boolean {
+  return status === "completed";
+}
+
+/**
+ * その結論の run から失敗ジョブを取りに行くか。
+ *
+ * `failure` だけを見ると、時間切れや途中で止められた workflow の失敗ジョブが
+ * 数から漏れる。逆に `success` と `skipped` の run には落ちた job が無いので、
+ * 引くだけ API を1往復増やす（ETag が効くのは引いた後の話になる）。
+ */
+function mayHaveFailedJobs(conclusion: string | null): boolean {
+  return conclusion !== "success" && conclusion !== "skipped";
 }
 
 function statusOf(status: string | null): CiRunSnapshot["status"] {

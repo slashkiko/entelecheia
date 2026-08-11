@@ -22,13 +22,31 @@ export interface PullRequestSnapshot {
   requestedReviewers: string[];
 }
 
+/**
+ * head sha に紐づく CI の状態。
+ *
+ * `status` / `conclusion` / `headSha` は**最新の run 1本**のもので、
+ * `failedJobs` / `failedJobCount` は**その sha の全 run を横断**したものになる。
+ * 見ている範囲が違うので、片方を読んでもう片方を推し量らない（issue #58）。
+ */
 export interface CiRunSnapshot {
   /** 対応する PR の head sha */
   headSha: string;
+  /** 最新の run の status */
   status: "queued" | "in_progress" | "completed";
+  /** 最新の run の conclusion。実行中なら null */
   conclusion: "success" | "failure" | "cancelled" | "timed_out" | null;
-  /** conclusion が failure のときだけ埋まる */
+  /** 全 run を横断して集めた失敗ジョブ。次の ACT が何を直すかを決める材料になる */
   failedJobs: { name: string; logUrl: string }[];
+  /**
+   * 全 run を横断して数えた失敗ジョブの数。まだ終わっていない run が
+   * 1本でもあれば null。
+   *
+   * **null と 0 を混ぜない。** 0 は「数え切って1件も無かった」で、
+   * null は「まだ数が決まらない」にあたる。混ぜると push した直後の
+   * queued な状態が「落ちている job は 0 件」に見える。
+   */
+  failedJobCount: number | null;
 }
 
 export interface IssueSnapshot {
@@ -267,6 +285,21 @@ export async function observe(target: ObserveTarget, deps: ObserveDeps): Promise
         // 実行中の run は conclusion が null。まだ結論が出ていないだけなので Fact にしない。
         if (ci.conclusion !== null) {
           push("github.ci.conclusion", ci.conclusion, ciSource, `conclusion=${ci.conclusion}`);
+        }
+        // 落ちている job の数。**0 件でも Fact にする。** 下の failed_jobs と
+        // 違って「1件以上あるとき」だけにすると、`equals: 0` が永久に届かず
+        // 「この head sha で落ちている job が1つも無い」を criteria に書けない。
+        //
+        // 逆に、まだ回っている run があるあいだ（null）は Fact にしない。
+        // conclusion が null の run を Fact にしないのと同じ規則で、そこで 0 を
+        // 出すと push した直後の queued な状態で criterion が通る。
+        if (ci.failedJobCount !== null) {
+          push(
+            "github.ci.failed_job_count",
+            ci.failedJobCount,
+            ciSource,
+            `failed_job_count=${ci.failedJobCount} (head sha の全 workflow run を横断)`,
+          );
         }
         // 失敗ジョブ名とログ URL。ここまで載せないと次の ACT が何を直すか決められない。
         if (ci.failedJobs.length > 0) {
