@@ -42,6 +42,18 @@ run = "pnpm exec biome check ."
 description = "Run the Acceptance Criteria (Vitest)"
 run = "pnpm exec vitest run"
 
+[tasks.ent]
+description = "Build to dist/ first, then run the ent CLI"
+# **dist/ を先に作るのが本体で、CLI を呼ぶのはその後になる。**
+# `bin` が指すのは dist/cli.js で、tsc を通すまで HEAD の実装は1行も反映されない。
+# ent が ent 自身を直す Goal では、実装が commit 済みでも古い controller が
+# 回り続ける形になり、「実装したのに動かない」の原因が実装ではなくビルドにある。
+# 外からは区別が付かないので、回す口の側で毎回作り直す。
+#
+# 引数は `--` の後ろに置く（`mise run ent -- run <slug>`）。
+depends = ["build"]
+run = "node dist/cli.js"
+
 [tasks.verify]
 description = "Everything a Goal's Acceptance Criteria may depend on"
 # build を入れるのは、typecheck が通ることと dist/cli.js が出来ることが別だから。

@@ -726,9 +726,21 @@ DECIDE の LLM 呼び出しは `LlmCall.tokens` に残す（§4.5）。あとか
   `resume_after` に遠い未来を返されれば Goal を無期限に止められる。LLM が返した
   `resume_after` は採らない。埋めてよいのは、使用量上限のリセット時刻を Port から
   受け取ったときだけになる（§10-3 / §10-5）
-- 経過時間の上限は、`activated_at` を解釈できなければ「上限に到達した」側に倒す。
-  0 秒として扱うと NaN との比較が常に false になり、`max_wall_clock` だけが
-  黙って無効化される。停止条件が消えるより人間を呼ぶほうがよい
+- **`max_wall_clock` が数えるのは、機械側が動けた実時間になる。** `WAIT` と、
+  予算切れ以外の `ESCALATE` で待っていた分は引く（`waitedSeconds`）。待てと
+  指示したのは controller の側で、次のティックが何をしても状態は変わらない。
+  その時間を Goal の予算から引くのは筋が通らない。実際、`type: human` の
+  criterion を1本だけ残して一晩承認を待った Goal が、承認が届いたあと
+  それを観測する前に `budget_exhausted` で `BLOCKED` になった。`ent complete` は
+  無い（§3.1）ので、その時点ではもう COMPLETED に到達できない（`budget` は Goal YAML が
+  正なので、人間が上限を書き足せば ACTIVE に戻せる）。
+  待ちの長さは Decision の履歴から導く。状態を1つ足して同期させると、
+  そこを書き損ねたティックだけ上限が黙って効かなくなる。
+  **材料が欠けたときは、どちらも上限が効く側に倒す。** `activated_at` を
+  解釈できなければ経過時間を Infinity にして「上限に到達した」とし、`decided_at` を
+  読めない Decision は待ちに数えない。0 秒として扱うと NaN との比較が常に false に
+  なり、`max_wall_clock` だけが黙って無効化される。逆に読めない時刻を待ちに数えると、
+  引いた分だけ上限が伸びる。どちらも停止条件が消えるので、人間を呼ぶ側に倒す
 - 同一 Task の再試行上限。達したら別 Actor か Replan、それも尽きたら ESCALATE
 - 観測が N 回連続で変わらなければ ESCALATE（ループ検知）。N は `budget.max_unchanged_reconciles`。
   判定の材料は Gap ではなく `Decision.observed_digest`（§10-2）
