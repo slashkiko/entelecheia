@@ -192,12 +192,17 @@ export function githubCodeWriter(options: GitHubOptions): CodeWriterPort {
       return found?.number ?? null;
     },
 
-    async createPullRequest(draft) {
+    async createPullRequest(pr) {
       const response = await request(octokit, "POST /repos/{owner}/{repo}/pulls", options, {
-        head: draft.head,
-        base: draft.base,
-        title: draft.title,
-        body: draft.body,
+        head: pr.head,
+        base: pr.base,
+        title: pr.title,
+        body: pr.body,
+        // 宣言が無ければキーごと送らない。GitHub の既定は false なので `draft: false` を
+        // 常に送っても結果は同じだが、宣言を足していないリポジトリに対して
+        // 送る中身を変えない方を採る。draft が使えないプランでは、この1キーの有無が
+        // 422 と成功の差になりうる（issue #65）。
+        ...(pr.draft === undefined ? {} : { draft: pr.draft }),
       });
       // 捏造した番号を返さない。形が違えばここで throw する。
       return decode(createdPullSchema, response, "POST /pulls").number;
