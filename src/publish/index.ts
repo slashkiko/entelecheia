@@ -4,6 +4,7 @@ import { errorMessage } from "../domain/error-message.js";
 import type { Goal } from "../domain/goal.js";
 import { DEFAULT_ACTOR_ROLE, type Run } from "../domain/run.js";
 import type { Verification } from "../domain/verification.js";
+import type { ReviewPort } from "../observe/index.js";
 
 /**
  * PR を確保して進捗を書く。design.md §9 の「PR と通知」にあたる。
@@ -86,6 +87,18 @@ export interface PublishDeps {
    * 指定されたら PR には**投稿しない**。両方に出すと「投稿しない」を満たさない。
    */
   report?: ProgressSink | undefined;
+  /**
+   * 直近のレビュー役の Run を読む口（issue #59）。
+   *
+   * 読むのは `report` があるティックだけになる。PR コメントには載せないので、
+   * 付けないティックで開くと、使わない本文のために毎回生ログを開くことになる。
+   * 失敗する口が1つ増えるだけで、誰も読まない。
+   *
+   * 任意にしてあるのは、publish を単体で呼ぶ経路（既存のテストを含む）を
+   * 壊さないため。controller からは `ControllerDeps`（`ObserveDeps` を継承する）
+   * がそのまま渡るので、実運用では常に入っている。
+   */
+  review?: ReviewPort | undefined;
 }
 
 /** PR の外に進捗を書いた結果。`--report` が無ければ null になる */
@@ -142,7 +155,13 @@ export async function publish(target: PublishTarget, deps: PublishDeps): Promise
   // ダイジェストが前ティックと同じでも書く。PR コメントを飛ばすのは、同じ通知が
   // 積まれると人間が読むのをやめるため。1回叩いて1回出す宛先では、黙って何も
   // 出さない方が読めない（「回したのに出ない」と「回っていない」が同じ見た目になる）。
-  const report = deps.report === undefined ? null : await deliver(deps.report, body);
+  //
+  // レビュー役の本文は**この宛先にだけ**足す（issue #59 の案1）。読みに行くのも
+  // ここだけになるので、`--report` を付けないティックでは生ログを開かない。
+  const report =
+    deps.report === undefined
+      ? null
+      : await deliver(deps.report, await withReviewMessage(body, deps.review));
 
   const nothing = (skipped: string): PublishResult => ({
     prNumber: target.prNumber,
@@ -247,6 +266,83 @@ async function deliver(sink: ProgressSink, body: string): Promise<ReportResult> 
   } catch (error) {
     return { destination: sink.destination, written: false, error: errorMessage(error) };
   }
+}
+
+/**
+ * レビュー役の本文の節の見出し。
+ *
+ * 宛先の本文のどこに足したかを、読む側が探せるようにする。文言を変えると
+ * 探し方が変わるので、`tests/publish-review-body.test.ts` と対にしてある。
+ */
+const REVIEW_HEADING = "## レビュー役の本文";
+
+/**
+ * `--report` の宛先の本文に、レビュー役の最終メッセージを足す（issue #59 の案1）。
+ *
+ * 満たすべき性質:
+ * - **いまの本文の後ろに足す。** criteria の表の位置を動かさない。前に割り込ませると、
+ *   14,000 字の本文を読み飛ばさないと pass 状況に辿り着けなくなる
+ * - **本文はそのまま出す。** `flatten` も `oneLine` も通さない。改行・表・コード
+ *   ブロックが落ちれば、要約を読ませることになって取り返した意味が消える
+ * - **読めなかったときも黙らない。** 理由を節に出す。黙って落とすと、この Goal が
+ *   直そうとしている壊れ方（本文が verdict の1語に畳まれて消える）をもう1つ作る
+ * - **どの経路でも throw しない。** publish の既存の性質を、この節のために崩さない。
+ *   ここで throw すると、レビューの生ログが1つ壊れているだけでティックが落ちる
+ *
+ * 1度もレビュー役を起動していない（`latest()` が null）ときだけ、節そのものを
+ * 出さない。書くことが無いのと、書けなかったのを同じ見た目にしない。
+ */
+async function withReviewMessage(body: string, review: ReviewPort | undefined): Promise<string> {
+  const section = await reviewSection(review);
+  return section === null ? body : `${body}\n\n${section}`;
+}
+
+/** レビュー役の本文の節。出すものが無ければ null */
+async function reviewSection(review: ReviewPort | undefined): Promise<string | null> {
+  if (review === undefined) {
+    return null;
+  }
+
+  let snapshot: Awaited<ReturnType<ReviewPort["latest"]>>;
+  try {
+    snapshot = await review.latest();
+  } catch (error) {
+    // 理由をそのまま出す。Adapter は「どの Run の、どのファイルを、なぜ」を
+    // 詰めて投げてくる（`src/adapters/review-run.ts`）ので、ここで畳むと
+    // 生ログに戻る道が消える。
+    return [
+      REVIEW_HEADING,
+      "",
+      "> [!WARNING]",
+      "> レビュー役の本文を読めなかった。理由は次のとおり。",
+      "",
+      errorMessage(error),
+    ].join("\n");
+  }
+
+  // 1度も走っていない。書くことが無いので節を出さない。
+  if (snapshot === null) {
+    return null;
+  }
+
+  // 途中で切れた Run。Adapter は空文字で返す。「本文が空だった」と
+  // 「レビューを回していない」を同じ見た目にしないので、読んだ Run の id は出す。
+  if (snapshot.finalMessage.trim() === "") {
+    return [
+      REVIEW_HEADING,
+      "",
+      `直近のレビュー役の Run \`${snapshot.runId}\` を読んだが、本文が残っていなかった。`,
+    ].join("\n");
+  }
+
+  return [
+    REVIEW_HEADING,
+    "",
+    `直近のレビュー役の Run \`${snapshot.runId}\` が最後に返した本文。`,
+    "",
+    // ここだけは加工しない。取り返したいのは本文そのものになる。
+    snapshot.finalMessage,
+  ].join("\n");
 }
 
 /**
