@@ -87,6 +87,7 @@ interface SpyOptions {
   ensureError?: Error;
   startError?: Error;
   signal?: AbortSignal;
+  actorKindFor?: ActorPort["kindFor"];
 }
 
 function spy(options: SpyOptions = {}): Spy {
@@ -111,6 +112,7 @@ function spy(options: SpyOptions = {}): Spy {
 
   const actor: ActorPort = {
     kind: "claude-code",
+    kindFor: options.actorKindFor,
     run: async (invocation) => {
       events.push("actor.run");
       invocations.push(invocation);
@@ -205,6 +207,17 @@ describe("act", () => {
         startedAt: NOW.toISOString(),
       });
       expect(s.started[0]?.worktree.length).toBeGreaterThan(0);
+    });
+
+    it("role 別 router が返す実際の Actor 実装を Run に記録する", async () => {
+      const s = spy({ actorKindFor: (role) => (role === "review" ? "codex" : "claude-code") });
+      await act(
+        target({ decision: decision({ type: "ACT", intent: ACT_INTENT, role: "review" }) }),
+        s.deps,
+      );
+
+      expect(s.started[0]?.actor).toBe("codex");
+      expect(s.started[0]?.role).toBe("review");
     });
 
     it("正常終了したら completed で確定する", async () => {

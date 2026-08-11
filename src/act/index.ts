@@ -1,5 +1,6 @@
 import type { Decision } from "../domain/action.js";
 import { errorMessage } from "../domain/error-message.js";
+import { type PortErrorKind, portErrorKindOf, resumeAfterOf } from "../domain/port-error.js";
 import type { ApprovalGate, Goal } from "../domain/goal.js";
 import {
   type ActorKind,
@@ -132,10 +133,19 @@ export interface ActorResult {
   tokens: number;
   /** 変更したファイル、作った PR など */
   artifacts: string[];
+  /** Port が分類できた失敗。controller の guard が再試行方針を決める */
+  errorKind?: PortErrorKind | undefined;
+  /** usage_limit の再開時刻。分からなければ null */
+  resumeAfter?: string | null | undefined;
+  /** Adapter が取得した具体的な失敗理由 */
+  detail?: string | undefined;
 }
 
 export interface ActorPort {
+  /** 後方互換の既定値。role 別 router では implement の実装を指す */
   kind: ActorKind;
+  /** role ごとに実装を切り替える場合、その Run に記録する実際の実装を返す */
+  kindFor?: ((role: ActorRole) => ActorKind) | undefined;
   run(invocation: ActorInvocation): Promise<ActorResult>;
 }
 
@@ -229,7 +239,7 @@ export async function act(target: ActTarget, deps: ActDeps): Promise<ActResult> 
   const startedAt = deps.now().toISOString();
   const intent: RunIntent = {
     intent: action.intent,
-    actor: deps.actor.kind,
+    actor: deps.actor.kindFor?.(role) ?? deps.actor.kind,
     role,
     worktree: worktreeName,
     attempt: target.attempt,
@@ -293,7 +303,12 @@ async function runActor(
   base: string,
   deps: ActDeps,
 ): Promise<RunOutcome> {
-  const failed = (detail: string, exitCode: number | null): RunOutcome => ({
+  const failed = (
+    detail: string,
+    exitCode: number | null,
+    errorKind?: PortErrorKind | null,
+    resumeAfter?: string | null,
+  ): RunOutcome => ({
     // 中断が原因なら failed にはしない。意図して止めたものを「Actor が失敗した」と
     // 読むと、次ティックが再試行上限を無駄に消費する。
     status: deps.signal?.aborted === true ? "interrupted" : "failed",
@@ -303,6 +318,8 @@ async function runActor(
     tokens: null,
     artifacts: [],
     detail,
+    ...(errorKind == null ? {} : { errorKind }),
+    ...(errorKind === "usage_limit" ? { resumeAfter: resumeAfter ?? null } : {}),
   });
 
   let worktree: Worktree;
@@ -347,10 +364,17 @@ async function runActor(
       logRef: result.logRef,
       tokens: result.tokens,
       artifacts: [...result.artifacts],
-      detail: `Actor が exit_code=${result.exitCode} で終了した`,
+      detail: result.detail ?? `Actor が exit_code=${result.exitCode} で終了した`,
+      ...(result.errorKind === undefined ? {} : { errorKind: result.errorKind }),
+      ...(result.errorKind === "usage_limit" ? { resumeAfter: result.resumeAfter ?? null } : {}),
     };
   } catch (error) {
-    return failed(`Actor の実行に失敗した: ${errorMessage(error)}`, null);
+    return failed(
+      `Actor の実行に失敗した: ${errorMessage(error)}`,
+      null,
+      portErrorKindOf(error),
+      resumeAfterOf(error),
+    );
   }
 }
 

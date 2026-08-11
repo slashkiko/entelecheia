@@ -263,6 +263,9 @@ export const PROTECTED_PATH_FLOOR = [
   "src/domain/goal.ts",
   // Agent の許可・拒否ツールを決める場所。
   "src/adapters/claude.ts",
+  "src/adapters/codex.ts",
+  // Provider 間で共有する役割と出力の指示。
+  "src/adapters/agent-prompt.ts",
   // シェルを起動する唯一の場所。setup と verification.run が通る。
   "src/adapters/local.ts",
   // 資格情報の除去リスト。

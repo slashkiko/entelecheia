@@ -308,6 +308,26 @@ describe("store", () => {
       expect(run?.artifacts).toEqual(["src/foo.ts"]);
     });
 
+    it("Actor の失敗分類と再開時刻を往復する", () => {
+      const runId = store.startRun("sample-goal", RUN_INTENT);
+      store.finishRun(runId, {
+        status: "failed",
+        finishedAt: NOW.toISOString(),
+        exitCode: 1,
+        logRef: "usage-limit.jsonl",
+        tokens: 42,
+        artifacts: [],
+        detail: "usage limit reached",
+        errorKind: "usage_limit",
+        resumeAfter: "2026-08-09T06:00:00.000Z",
+      });
+
+      expect(store.listRuns("sample-goal")[0]).toMatchObject({
+        errorKind: "usage_limit",
+        resumeAfter: "2026-08-09T06:00:00.000Z",
+      });
+    });
+
     it("starting のまま残った Run を interrupted で回収する", () => {
       // 任意の瞬間に kill されても、次ティックが orphan として回収する。
       store.startRun("sample-goal", RUN_INTENT);

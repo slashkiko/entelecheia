@@ -101,6 +101,8 @@ describe("保護パスの下限", () => {
     expect(PROTECTED_PATH_FLOOR).toContain("src/domain/protected-paths.ts");
     expect(PROTECTED_PATH_FLOOR).toContain("src/domain/goal.ts");
     expect(PROTECTED_PATH_FLOOR).toContain("src/adapters/claude.ts");
+    expect(PROTECTED_PATH_FLOOR).toContain("src/adapters/codex.ts");
+    expect(PROTECTED_PATH_FLOOR).toContain("src/adapters/agent-prompt.ts");
     expect(PROTECTED_PATH_FLOOR).toContain("src/adapters/local.ts");
     expect(PROTECTED_PATH_FLOOR).toContain("src/domain/withheld-env.ts");
     expect(PROTECTED_PATH_FLOOR).toContain("src/domain/guard-rules.ts");

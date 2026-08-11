@@ -17,6 +17,31 @@ ent agent-context
 サブコマンド・引数・フラグの型・環境変数・終了コードを JSON で出す。
 `--help` の散文を読む必要は無い。以下の手順が古くなっていたら、こちらが正。
 
+## Actor を選ぶ
+
+既定はClaude Code。全phaseをCodexにするなら、同じコマンドに`ENT_ACTOR=codex`を付ける。
+provider・model・effortは`DECIDE`、`IMPLEMENT`、`REVIEW`、`INVESTIGATE`ごとにも選べる。
+`ENT_<PHASE>_ACTOR` / `ENT_<PHASE>_MODEL` / `ENT_<PHASE>_EFFORT`がphase固有の指定で、
+無ければ`ENT_ACTOR` / `ENT_MODEL` / `ENT_EFFORT`へ落ちる。
+effortの有効値はClaude Codeが`low / medium / high / xhigh / max`、Codexが
+`none / minimal / low / medium / high / xhigh`。providerに合わない値は引数エラーになる。
+
+```sh
+ENT_ACTOR=codex ent doctor
+ENT_ACTOR=codex ent run <slug>
+
+ENT_DECIDE_ACTOR=codex \
+ENT_IMPLEMENT_ACTOR=claude-code \
+ENT_REVIEW_MODEL=<model> \
+ent run <slug>
+```
+
+選んだ値はティックをまたいでDBに固定されない。cronでも毎回同じ環境変数を渡す。
+Codexを含むphaseが1つでもあれば、先に`codex login status`でログインを確かめる。
+Actorが使用量上限で止まった場合は、失敗分類とトークンをRunへ保存し、guardが元のACTを
+`WAIT(usage_limit)`へ差し替える。Goalは`WAITING_EXTERNAL(usage_limit)`へ遷移し、
+`resume_after`までは再実行しない。
+
 ## まだ `.goals/` が無いリポジトリ
 
 `.goals/` が無い場所では、`ent doctor` の `goals` と `state_ignored` が同時に failed になる。
@@ -97,7 +122,8 @@ doctor の `github_token` が落ちるのは、3つとも読めなかったと�
 
 終了コードだけは他のサブコマンドと意味が違う。0 は「failed が1件も無い」で、
 1 は「failed が1件以上」を指す。実行時エラーではない。unknown は数えない。
-Claude のログイン状態はトークンを消費せずに確かめられないので、常に unknown で出る。
+選んだproviderのログイン状態は、`claude_login`または`codex_login`としてunknownで出る。
+phase間でproviderが混ざる場合は両方が出る。
 詳細は stderr ではなく stdout の JSON の `checks[].detail` にある。
 
 `ent run` は**1ティックで必ず終了する**。常駐しないし、完了まで待つフラグも無い。

@@ -79,6 +79,24 @@ export function claimsNothingLeft(decision: Decision): boolean {
   return !(decision.decidedBy === "guard" && action.reason === "usage_limit");
 }
 
+/**
+ * Actor が利用上限で止まった ACT を、次ティックで再度 LLM に判断させない。
+ *
+ * 保護パス検査が ACT を ESCALATE に差し替えた場合は、そちらを優先する。
+ * そのため呼び出し側は `guardedDecision` の後でこの規則を適用する。
+ */
+export function actorUsageLimitDecision(decision: Decision, run: Run | null): Decision {
+  if (decision.action.type !== "ACT" || run?.errorKind !== "usage_limit") {
+    return decision;
+  }
+  return {
+    decidedAt: run.finishedAt ?? decision.decidedAt,
+    action: { type: "WAIT", reason: "usage_limit", resumeAfter: run.resumeAfter ?? null },
+    rationale: `Actor が使用量上限で停止したため、利用可能になるまで待つ（元の判断: ${decision.rationale}）`,
+    decidedBy: "guard",
+  };
+}
+
 /** 差し替えなければ何になっていたかを、人間が読む形にする */
 export function describeClaim(action: Action): string {
   switch (action.type) {

@@ -3,7 +3,7 @@
 > Declare the end state; the controller converges to it.
 
 人間はプロジェクトの完了状態（Desired State）を宣言する。controller は現在状態を観測し、
-ギャップが埋まるまでティックを回し、埋め方を決める段で Claude Code を起動する。
+ギャップが埋まるまでティックを回し、埋め方を決める段で Claude Code または Codex を起動する。
 
 エンテレケイア（ἐντελέχεια）はアリストテレスの用語で、「可能態が現実態に至った状態」を指す。
 このツールが Goal に対して実現しようとする状態そのものを指す言葉にあたる。CLI 名は `ent`。
@@ -15,8 +15,8 @@
 
 controller は OBSERVE / ASSESS / DECIDE / ACT / VERIFY を回し、PR を自分で立てて
 進捗をコメントに積み、人間の承認を検知して COMPLETED まで進む。
-本文で **Actor** と呼ぶのは controller が起動する実行主体の抽象で、いまの実装は
-Claude Code にあたる。その走っている実体を指すときは **Agent** と書く。
+本文で **Actor** と呼ぶのは controller が起動する実行主体の抽象で、Claude Code と
+Codex CLI の実装がある。その走っている実体を指すときは **Agent** と書く。
 design.md §9 の完了条件9項目はすべて確認した。**MVP は完了している。**
 
 完了後にレビューを1周かけ、自己ホストの安全装置とテストの穴を埋めた。§9 の完了条件は
@@ -30,7 +30,7 @@ design.md §9 の完了条件9項目はすべて確認した。**MVP は完了�
 | 確かめられなかったことを黙って落とさない | 「対象が無い」と「対象を確かめられなかった」を区別し、後者は `unobserved` / `unverified` に理由付きで残す | 済 |
 | 検証に還元できない Goal は受け付けない | Acceptance Criteria を検証手段（コマンド / Fact 参照 / 人間の承認）に落とせない Goal は ACTIVE にしない | 済 |
 | 待機はプロセスではなく状態 | reconcile はどのティックも有限時間で return する。常駐して sleep しない | 済 |
-| 宣言と収束の分離 | 人間が書くのは Desired State と Acceptance Criteria。タスク分解も Actor 選択も controller が決める | 済 |
+| 宣言と収束の分離 | 人間が書くのは Desired State と Acceptance Criteria。Actor 実装は起動時に選び、タスク分解も Actor role の選択も controller が決める | 済 |
 | write-ahead | 副作用の前に意図を DB へ書く。任意の瞬間に kill されても次ティックで回収できる | 済 |
 | 隔離は場所だけでは足りない | worktree でファイルを分けるだけでなく、Agent の出力を controller のシェルに流さない・Agent が書いたものを controller の権限で実行しない | 一部（シェルに流さない側は design.md §7 で対応済み、controller の権限で実行しない側は §10-9 が未決） |
 
@@ -48,7 +48,8 @@ git で見る。ただし見えるのはリポジトリの中の変更だけで�
 検証系**にあたる。選び方の基準は design.md §7 にある。
 
 controller が持つ資格情報（`GITHUB_TOKEN` / `GH_TOKEN` と、`gh auth token` から読んだ
-token）は Agent に渡さない。git は argv 配列で叩き、
+token）は Agent に渡さない。Claude CodeにはOpenAI/Codexの資格情報を、Codexには
+Anthropic/Claude Codeの資格情報を渡さず、選んだprovider自身の認証だけを残す。git は argv 配列で叩き、
 シェルを通すのは Goal YAML の `setup` と `verification.run` だけにする。
 `type: human` の承認は、リポジトリに書き込み権限がある人のものだけを数える。
 
@@ -176,8 +177,41 @@ ent agent-context                  # CLI の構造を機械可読な JSON で出
 `--limit <n>` は `get` / `list` の件数を絞る。既定でも上限で切り、切れたときだけ
 絞り込み方が stderr に出る。エージェント向けの手順は `.claude/skills/ent/SKILL.md` に置いてある。
 
-`ENT_MODEL` と `ENT_EFFORT` で Actor と LLM のモデルを上書きできる。
-1ティックごとに使用量を消費するので、試走は安いモデルで回せる。
+provider・model・effort は `DECIDE`、`IMPLEMENT`、`REVIEW`、`INVESTIGATE` ごとに選べる。
+`ENT_<PHASE>_ACTOR` / `ENT_<PHASE>_MODEL` / `ENT_<PHASE>_EFFORT` がphase固有の指定で、
+無ければ共通の `ENT_ACTOR` / `ENT_MODEL` / `ENT_EFFORT` へ落ちる。providerの未指定時は、
+既存の挙動を保つため `claude-code` になる。
+effortの有効値はproviderごとに異なる。Claude Codeは`low / medium / high / xhigh / max`、
+Codexは`none / minimal / low / medium / high / xhigh`を受け付ける。
+
+```sh
+ENT_ACTOR=codex ent doctor
+ENT_ACTOR=codex ent run <slug>
+
+# DECIDEだけCodex、実装はClaude Code、レビューは別モデル
+ENT_DECIDE_ACTOR=codex \
+ENT_IMPLEMENT_ACTOR=claude-code \
+ENT_REVIEW_MODEL=<model> \
+ent run <slug>
+```
+
+Codexを含むphaseが1つでもあれば、先に `codex login status` でログインを確かめる。
+`ent doctor` は選択結果にClaude CodeとCodexが混ざる場合、両方のログイン前提を出す。
+
+Codex Adapter は公式の非対話モード `codex exec --json` を使う。実装役は
+`workspace-write`、レビュー役と調査役は `read-only` に固定し、ユーザーの
+`config.toml` と execpolicy rules は読み込まない。Codexの非対話CLIにはClaude Agent
+SDKと同じcommand単位のallow/deny設定が無いため、禁止操作はsandbox、プロンプト、
+資格情報の除去、ティック末尾のgit関門を重ねて止める。完全に同じ権限制御ではないので、
+Codexは自動選択せず明示的なopt-inにしてある。
+CodexのJSONLに最終メッセージがあっても、その後に`turn.failed`または`error`が来た実行は
+失敗として扱う。stdoutに加えてstderrもRunの生ログへ残す。Actorが使用量上限で止まった場合は、
+失敗分類とトークンをRunへ保存したうえで、guardが当該ACTを`WAIT(usage_limit)`へ差し替える。
+その結果、Goalは`WAITING_EXTERNAL(usage_limit)`へ遷移する。
+
+Codexには公式のTypeScript SDKもあるが、現行SDKはCodex CLIをJSONLで起動するラッパーで、
+このAdapterが隔離契約に使う `--ephemeral`、`--ignore-user-config`、`--ignore-rules` を
+公開オプションから渡せない。そのため、現時点では `codex exec` を直接起動する。
 
 `ent start` は、そのとき叩いたディレクトリの HEAD を**関門の基準**として記録する。
 Actor の worktree はその commit から切られ、関門が worktree の差分を取る
@@ -296,7 +330,7 @@ lease で決まるので、先に取れた側だけが進み、取れなかっ�
 Actor が走ることも、状態が混ざることもない。ティックの途中で lease を失った側も、
 そのティックの記録を1つも書かずに降りる。
 
-並べる本数は機械の資源で決める。各ティックは Actor（Claude Code）と Goal の
+並べる本数は機械の資源で決める。各ティックは Actor（Claude Code または Codex）と Goal の
 検証コマンド（このリポジトリなら `mise run verify`）を worktree の上で走らせるので、
 1本あたり CPU コア1〜2本を見込むとよい。目安としてコア数の半分までにしておくと、
 検証コマンドがタイムアウト側に倒れにくい。
@@ -310,7 +344,9 @@ GitHub の観測には token が要る。`GITHUB_TOKEN`（または `GH_TOKEN`�
 gh のトークンが黙って使われないようにする。**いずれの経路でも token を読めなければ**観測は `unobserved` に
 `port_failed` として残り、ASSESS も「PR は無い」とは読まない。読めた token は
 `process.env` に書き戻さないので、Agent と検証コマンドの環境から落とす扱いは変わらない。
-Actor と LLM は Claude Code の OAuth をそのまま使う。
+Actor と LLM は、選んだCLIの保存済みログインをそのまま使う。APIキーを使う場合も、
+検証コマンドには `ANTHROPIC_*` / `CLAUDE_CODE_*` / `OPENAI_API_KEY` / `CODEX_API_KEY`
+を渡さない。
 
 ## ディレクトリ
 
@@ -352,6 +388,8 @@ src/adapters/github.ts    CodeProviderPort。@octokit/rest + ETag
 src/adapters/claude.ts    ActorPort と LlmPort。Claude Agent SDK
                           role ごとの許可・拒否ツールとプロンプトもここ。編集の
                           ツールを持つのは実装役だけ（design.md §4.2）
+src/adapters/codex.ts     ActorPort と LlmPort。Codex CLI の非対話JSONLを変換する
+src/adapters/agent-prompt.ts Claude Code / Codex 共通のrole別プロンプトと出力契約
 src/wiring/index.ts       合成ルート。どの Port にどの Adapter を挿すかを決める唯一の場所
 src/usecase/init.ts       ent init。.goals/ と gitignore の行と Goal の雛形を置く
 src/usecase/doctor.ts     ent doctor。回す前の前提を、書かずに調べる
@@ -361,6 +399,7 @@ src/cli/present.ts        出力の整形。stdout は JSON 専用、診断は s
 src/cli/agent-context.ts  ent agent-context が出す CLI の構造
 src/cli.ts                ent コマンドの入口。サブコマンドごとの手順と終了コードの契約
 .claude/skills/ent/SKILL.md  エージェントが手順として読むもの。叩く順と、人の承認で止まる場所
+.agents/skills/ent          Codex の探索先。上の正本を指す symlink
 AGENTS.md                 上の SKILL.md を指すだけの入口。手順は二重に書かない
 tests/                    Acceptance Criteria の実体と、実 git / 実 SQLite を叩く統合テスト
 ```

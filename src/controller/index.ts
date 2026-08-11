@@ -13,6 +13,7 @@ import type { Fact, Unresolved } from "../domain/fact.js";
 import type { Goal } from "../domain/goal.js";
 import { type GoalState, type GoalStatus, isTerminal, nextStatus } from "../domain/goal-state.js";
 import {
+  actorUsageLimitDecision,
   claimsNothingLeft,
   consecutiveFailuresOf,
   describeClaim,
@@ -364,6 +365,7 @@ export async function tick(goal: Goal, deps: ControllerDeps): Promise<TickResult
     // （design.md §7 / §10-6）。Agent 側の disallowedTools は Agent の設定で、
     // SDK の外から同じ操作をされれば素通りする。
     const guarded = await guardedDecision(goal, result.decision, run, repoBefore, base, deps);
+    const actorGuarded = actorUsageLimitDecision(guarded, run);
 
     // 未 commit の変更を残したまま「機械側の番は終わった」と言い切らせない
     // （design.md §10-11）。差し替えはここまでで、書き込むのは下の1行のまま。
@@ -371,7 +373,7 @@ export async function tick(goal: Goal, deps: ControllerDeps): Promise<TickResult
     // 渡すのは今ティックの観測が作った Fact だけにする。merge 済みの result.facts には
     // 前ティックの local.* が残るので、観測に失敗したティックを「汚れている」と
     // 読んでしまう（design.md §3.1）。
-    const decided = uncommittedDecision(goal, guarded, result.observedFacts, deps);
+    const decided = uncommittedDecision(goal, actorGuarded, result.observedFacts, deps);
 
     // ここから下がこのティックの書き込みになる。直前にもう一度確かめる。
     // guardedDecision は git を叩くので、ACT 直後の確認から時間が空く。

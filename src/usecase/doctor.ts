@@ -1,4 +1,5 @@
 import { errorMessage } from "../domain/error-message.js";
+import type { ActorKind } from "../domain/run.js";
 
 /**
  * `ent doctor` の本体。回す前の前提が揃っているかを、**書かずに**調べる。
@@ -55,6 +56,10 @@ export interface DoctorProbes {
   gitRepository: () => Promise<boolean>;
   /** `.goals/.state/` が gitignore されているか。確かめられなければ null */
   stateIgnored: () => Promise<boolean | null>;
+  /** 後方互換用。共通のENT_ACTORだけを選ぶ呼び出し側が使う */
+  actorKind?: (() => Exclude<ActorKind, "human">) | undefined;
+  /** phase 別指定を含め、この実行で使いうる実行主体 */
+  actorKinds?: (() => readonly Exclude<ActorKind, "human">[]) | undefined;
 }
 
 /**
@@ -86,6 +91,7 @@ const MIN_NODE_MAJOR = 24;
 export async function doctorPayload(probes: DoctorProbes): Promise<DoctorReport> {
   // 並びは「その場所で ent が動くか」から「その Goal を回せるか」の順にする。
   // Node が足りない環境では他の検査の結果を読んでも直す手が変わらない。
+  const actorKinds = [...new Set(probes.actorKinds?.() ?? [probes.actorKind?.() ?? "claude-code"])];
   const checks: DoctorCheck[] = [
     nodeVersionCheck(probes),
     await gitRepositoryCheck(probes),
@@ -93,7 +99,7 @@ export async function doctorPayload(probes: DoctorProbes): Promise<DoctorReport>
     githubTokenCheck(probes),
     await goalsCheck(probes),
     await stateDirCheck(probes),
-    claudeLoginCheck(),
+    ...actorKinds.map(actorLoginCheck),
   ];
 
   return {
@@ -258,13 +264,15 @@ async function stateDirCheck(probes: DoctorProbes): Promise<DoctorCheck> {
  * 確かめるには query() を1回呼ぶことになり、それ自体がフルセッションのトークンを消費する。
  * 副作用のない doctor でそれはできないので、分からないまま unknown として出す。
  */
-function claudeLoginCheck(): DoctorCheck {
+function actorLoginCheck(actor: Exclude<ActorKind, "human">): DoctorCheck {
+  const label = actor === "codex" ? "Codex CLI" : "Claude Code";
+  const command = actor === "codex" ? "codex login status" : "claudeを起動して/login";
   return {
-    name: "claude_login",
+    name: actor === "codex" ? "codex_login" : "claude_login",
     result: "unknown",
     detail:
-      "Claude Code のログイン状態はトークンを消費せずには確かめられないので unknown にする。" +
-      "未ログインだと DECIDE が PortError(unavailable) で ESCALATE(invalid_decision) になる。" +
-      "疑わしければ claude コマンドで /login を確かめる",
+      `${label} のログイン状態は ent doctor から確定しないので unknown にする。` +
+      "未ログインだと、そのproviderを選んだphaseの呼び出しが失敗する。" +
+      `疑わしければ ${command} で確かめる`,
   };
 }

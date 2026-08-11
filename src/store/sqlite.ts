@@ -9,6 +9,7 @@ import { errorMessage } from "../domain/error-message.js";
 import { type Fact, unresolvedSchema } from "../domain/fact.js";
 import { goalStatusSchema } from "../domain/goal-state.js";
 import { llmCallSchema } from "../domain/llm-call.js";
+import { portErrorKindSchema } from "../domain/port-error.js";
 import {
   actorKindSchema,
   actorRoleSchema,
@@ -428,7 +429,7 @@ export function openStore(path: string): Store {
       db.prepare(
         `UPDATE runs
             SET status = ?, finished_at = ?, exit_code = ?, log_ref = ?, tokens = ?,
-                artifacts = ?, detail = ?
+                artifacts = ?, detail = ?, error_kind = ?, actor_resume_after = ?
           WHERE id = ?`,
       ).run(
         outcome.status,
@@ -438,6 +439,8 @@ export function openStore(path: string): Store {
         outcome.tokens,
         JSON.stringify(outcome.artifacts),
         outcome.detail,
+        outcome.errorKind ?? null,
+        outcome.resumeAfter ?? null,
         Number(runId),
       );
     },
@@ -477,6 +480,8 @@ export function openStore(path: string): Store {
         tokens: row.tokens,
         artifacts: parseArtifacts(row.artifacts, "listRuns"),
         detail: row.detail,
+        ...(row.error_kind === null ? {} : { errorKind: row.error_kind }),
+        ...(row.actor_resume_after === null ? {} : { resumeAfter: row.actor_resume_after }),
       }));
     },
 
@@ -732,6 +737,8 @@ const runRowSchema = z.object({
   tokens: z.number().nullable(),
   artifacts: z.string(),
   detail: z.string().nullable(),
+  error_kind: portErrorKindSchema.nullable(),
+  actor_resume_after: z.string().nullable(),
 });
 
 /**
@@ -842,7 +849,9 @@ CREATE TABLE IF NOT EXISTS runs (
   log_ref     TEXT,
   tokens      INTEGER,
   artifacts   TEXT NOT NULL,
-  detail      TEXT
+  detail      TEXT,
+  error_kind  TEXT,
+  actor_resume_after TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_snapshots_goal ON snapshots(goal_id, id);
@@ -865,6 +874,12 @@ function migrate(db: DatabaseSync): void {
   if (!columns.some((column) => column.name === "role")) {
     // 埋め込むのは自前の定数だけ。外から来た値は入らない。
     db.exec(`ALTER TABLE runs ADD COLUMN role TEXT NOT NULL DEFAULT '${DEFAULT_ACTOR_ROLE}'`);
+  }
+  if (!columns.some((column) => column.name === "error_kind")) {
+    db.exec("ALTER TABLE runs ADD COLUMN error_kind TEXT");
+  }
+  if (!columns.some((column) => column.name === "actor_resume_after")) {
+    db.exec("ALTER TABLE runs ADD COLUMN actor_resume_after TEXT");
   }
 
   // 人間が「もう追わない」と宣言した理由（`ent abandon --reason`）。

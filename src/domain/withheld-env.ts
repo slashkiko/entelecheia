@@ -14,7 +14,7 @@
  */
 
 /**
- * Actor（Claude Code）に渡さないもの。
+ * Actor（Claude Code / Codex）に渡さないもの。
  *
  * SDK の `env` は「マージではなく置き換え」なので、`process.env` を広げてから落とす。
  * Bash を許している以上、`printenv` も `echo $GITHUB_TOKEN` も実行できる。
@@ -27,6 +27,21 @@ export const WITHHELD_ENV = [
   "GH_TOKEN",
   "GH_ENTERPRISE_TOKEN",
   "GITHUB_ENTERPRISE_TOKEN",
+] as const;
+
+/** Claude Actor には不要な OpenAI / Codex 側の資格情報も渡さない。 */
+export const CLAUDE_ACTOR_WITHHELD_ENV = [
+  ...WITHHELD_ENV,
+  "OPENAI_API_KEY",
+  "CODEX_API_KEY",
+] as const;
+
+/** Codex Actor には不要な Anthropic / Claude Code 側の資格情報も渡さない。 */
+export const CODEX_ACTOR_WITHHELD_ENV = [
+  ...WITHHELD_ENV,
+  "ANTHROPIC_API_KEY",
+  "ANTHROPIC_AUTH_TOKEN",
+  "CLAUDE_CODE_OAUTH_TOKEN",
 ] as const;
 
 /**
@@ -42,10 +57,8 @@ export const WITHHELD_ENV = [
  * GitHub と Claude API を叩かない」と書いている。
  */
 export const VERIFY_WITHHELD_ENV = [
-  ...WITHHELD_ENV,
-  "ANTHROPIC_API_KEY",
-  "ANTHROPIC_AUTH_TOKEN",
-  "CLAUDE_CODE_OAUTH_TOKEN",
+  ...CLAUDE_ACTOR_WITHHELD_ENV,
+  ...CODEX_ACTOR_WITHHELD_ENV,
 ] as const;
 
 /**

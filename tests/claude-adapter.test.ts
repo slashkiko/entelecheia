@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 import type { ActorInvocation } from "../src/act/index.js";
-import { type AgentQuery, claudeActor, claudeLlm, WITHHELD_ENV } from "../src/adapters/claude.js";
+import {
+  type AgentQuery,
+  CLAUDE_ACTOR_WITHHELD_ENV,
+  claudeActor,
+  claudeLlm,
+} from "../src/adapters/claude.js";
 import { PortError } from "../src/domain/port-error.js";
 
 /**
@@ -179,9 +184,11 @@ describe("claudeActor", () => {
     // Bash を許している以上 printenv も echo $GITHUB_TOKEN も実行できる。
     // どちらも secret_access の拒否パターンに一致しないので、拒否リストでは塞げない。
     //
-    // 落とすキーは WITHHELD_ENV から組み立てる。テスト側に同じ一覧を書き写すと、
+    // 落とすキーは CLAUDE_ACTOR_WITHHELD_ENV から組み立てる。テスト側に同じ一覧を書き写すと、
     // 実装からキーが1つ減っても緑のまま通る。
-    const secrets = Object.fromEntries(WITHHELD_ENV.map((key) => [key, `secret-${key}`]));
+    const secrets = Object.fromEntries(
+      CLAUDE_ACTOR_WITHHELD_ENV.map((key) => [key, `secret-${key}`]),
+    );
     const kept = { PATH: "/usr/bin", HOME: "/home/x" };
     const sink = recorded([SUCCESS]);
     await claudeActor({ ...deps(sink), env: { ...kept, ...secrets } }).run(INVOCATION);
@@ -189,8 +196,8 @@ describe("claudeActor", () => {
     const options = sink.options[0] as { env?: Record<string, string> };
     expect(options.env).toEqual(kept);
     // 一覧が空になっていないことも見る。空なら上の toEqual は素通りする。
-    expect(WITHHELD_ENV).toContain("GITHUB_TOKEN");
-    expect(WITHHELD_ENV).toContain("GH_TOKEN");
+    expect(CLAUDE_ACTOR_WITHHELD_ENV).toContain("GITHUB_TOKEN");
+    expect(CLAUDE_ACTOR_WITHHELD_ENV).toContain("OPENAI_API_KEY");
   });
 
   it("トークンを記録する", async () => {

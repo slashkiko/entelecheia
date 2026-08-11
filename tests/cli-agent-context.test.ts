@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { agentContextPayload, parseCommand } from "../src/cli.js";
@@ -14,9 +14,9 @@ import { agentContextPayload, parseCommand } from "../src/cli.js";
  * 文言そのものは実装が決めてよいので、ここで固定するのは構造だけにする。
  *
  * Layer 3 の置き場所は、読む側が拾える場所に合わせる。Claude Code は
- * `.claude/skills/<name>/SKILL.md` を frontmatter 付きで拾い、Codex は
- * リポジトリ直下の `AGENTS.md` を読む。本体は前者に置き、後者からは指すだけにする。
- * 同じ手順を2箇所に書くと、片方だけ古くなったときにどちらが正か分からなくなる。
+ * `.claude/skills/<name>/SKILL.md`、Codex は `.agents/skills/<name>/SKILL.md` を拾う。
+ * 本体は前者に置き、Codex の探索先は symlink で同じ正本を指す。手順をコピーすると、
+ * 片方だけ古くなったときにどちらが正か分からなくなる。
  */
 
 const REPO_ROOT = join(import.meta.dirname, "..");
@@ -84,8 +84,13 @@ describe("agentContextPayload", () => {
     const names = agentContextPayload().env.map((variable) => variable.name);
 
     expect(names).toContain("GITHUB_TOKEN");
+    expect(names).toContain("ENT_ACTOR");
     expect(names).toContain("ENT_MODEL");
     expect(names).toContain("ENT_EFFORT");
+    expect(names).toContain("ENT_DECIDE_ACTOR");
+    expect(names).toContain("ENT_IMPLEMENT_MODEL");
+    expect(names).toContain("ENT_REVIEW_EFFORT");
+    expect(names).toContain("ENT_INVESTIGATE_ACTOR");
   });
 
   it("終了コードの意味を並べる", () => {
@@ -125,10 +130,12 @@ describe("SKILL.md（Layer 3）", () => {
     expect(description?.[1]).toContain("ent");
   });
 
-  it("Codex 向けに AGENTS.md から指す。手順は二重に書かない", () => {
+  it("Codex の探索先から同じ Skill を拾い、手順は二重に書かない", () => {
     const agents = readFileSync(join(REPO_ROOT, "AGENTS.md"), "utf8");
+    const codexSkill = join(REPO_ROOT, ".agents", "skills", "ent", "SKILL.md");
 
     expect(agents).toContain(".claude/skills/ent/SKILL.md");
+    expect(realpathSync(codexSkill)).toBe(realpathSync(SKILL_PATH));
     // 直下の SKILL.md を残すと、同じ手順が3箇所に散る。
     expect(existsSync(join(REPO_ROOT, "SKILL.md"))).toBe(false);
   });

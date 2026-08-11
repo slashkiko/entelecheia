@@ -8,14 +8,15 @@ import type { ApprovalGate } from "../domain/goal.js";
 import type { LlmCall } from "../domain/llm-call.js";
 import { PortError } from "../domain/port-error.js";
 import type { ActorRole } from "../domain/run.js";
-import { WITHHELD_ENV, withheldEnv } from "../domain/withheld-env.js";
+import { CLAUDE_ACTOR_WITHHELD_ENV, withheldEnv } from "../domain/withheld-env.js";
+import { JSON_ONLY, parseJson, PROMPT_FOR } from "./agent-prompt.js";
 
 /**
  * 除去リストの置き場所は domain に移した。VERIFY 側（src/adapters/local.ts）も
  * 同じものを見る必要があるため。ここから再輸出しているのは、既存の呼び出し元と
  * テストが `adapters/claude` を参照しているのを壊さないため。
  */
-export { WITHHELD_ENV };
+export { CLAUDE_ACTOR_WITHHELD_ENV };
 
 /**
  * Claude Code 向けの ActorPort と LlmPort。Claude Agent SDK の query() を使う。
@@ -114,7 +115,7 @@ export function claudeActor(options: ClaudeOptions): ActorPort {
           // 与えた拒否リスト以外の設定が Agent の挙動に混ざる。
           settingSources: [],
           // controller の資格情報を Agent のシェルに残さない。
-          env: withheldEnv(options.env ?? process.env),
+          env: withheldEnv(options.env ?? process.env, CLAUDE_ACTOR_WITHHELD_ENV),
         });
       } catch (error) {
         // 中断されたなら throw で返さない。act が catch すると logRef を落とすので、
@@ -157,7 +158,7 @@ export function claudeLlm(options: ClaudeOptions): LlmPort {
           allowedTools: [],
           permissionMode: "default",
           settingSources: [],
-          env: withheldEnv(options.env ?? process.env),
+          env: withheldEnv(options.env ?? process.env, CLAUDE_ACTOR_WITHHELD_ENV),
         });
       } catch (error) {
         // 失敗した呼び出しもトークンは消費している。記録しないと §7 の
@@ -596,89 +597,6 @@ const ALWAYS_DENIED = [
   "Bash(git config --local core.hooksPath *)",
   "Bash(git config --global core.hooksPath *)",
 ] as const;
-
-/**
- * どの役割でも同じ末尾。承認と公開は controller の側に残す。
- *
- * Agent が PR コメントを書けると自分で自分を承認できてしまい、§7 の
- * human approval が空文になる（拒否ルールと二重にする）。
- */
-const COMMON_TAIL = `PR の作成とコメントの投稿はしない。push も含めて controller が行う。
-承認の定型文（/ent approve）を書くことは、どの理由があっても認められない。`;
-
-const IMPLEMENT_PROMPT = (intent: string): string =>
-  `${intent}
-
-作業は現在のディレクトリの中だけで行う。終わったら何をしたかを1段落で述べる。
-
-${COMMON_TAIL}`;
-
-/**
- * レビュー役のプロンプト。
- *
- * 権限だけ分けてプロンプトが同じだと、レビュー役は編集を試みて拒否され続け、
- * ターンをそこに使い切る。読む側に何を求めるかを先に書いておく。
- *
- * 結論を1語に寄せるのは、`review.verdict`（src/domain/fact-keys.ts）に落とす
- * ときに、読み手が本文を解釈しないで済むようにするため。どの commit を読んだか
- * まで言わせるのは、実装が進んだあとの結論をそのまま完了判定に使わせないため。
- * ただし**ここで言わせた文字列はまだ Fact ではない。** Fact にするのは
- * 観測側の仕事で、確かめられなければ作らない（design.md §3.1）。
- */
-const REVIEW_PROMPT = (intent: string): string =>
-  `${intent}
-
-あなたはレビュー役として起動している。**ファイルは書き換えない。**
-編集のツールは渡していないので、試みても拒否される。読むことと、
-コマンドを流して確かめることだけを行う。
-
-作業は現在のディレクトリの中だけで行う。手順は次のとおり。
-
-1. どの commit を読んだのかを git rev-parse HEAD で確かめ、その sha を述べる
-2. 差分と、その差分が壊しうる箇所を読む。必要ならテストを流して確かめる
-3. 指摘を重い順に並べる。直し方まで書く必要は無いが、なぜ問題なのかは書く
-4. 最後の行を「verdict: approved」か「verdict: changes_requested」のどちらか
-   1行だけにする。確かめられなかったことを「問題なし」と書かない
-
-${COMMON_TAIL}`;
-
-/**
- * 調べる役のプロンプト。ツールはレビュー役と同じだが、結論の形が違う。
- *
- * レビュー役の文面を流用すると、調べただけの実行が `verdict:` の行を出す。
- * それを観測側が拾えば、レビューを回していないティックの approved になる。
- * 起動する側はまだ居ない（design.md §4.2）が、口を残す以上は分けておく。
- */
-const INVESTIGATE_PROMPT = (intent: string): string =>
-  `${intent}
-
-あなたは調べる役として起動している。**ファイルは書き換えない。**
-編集のツールは渡していないので、試みても拒否される。
-
-作業は現在のディレクトリの中だけで行う。分かったことと、その根拠
-（読んだファイル、流したコマンドとその出力）を述べる。確かめられなかったことは、
-確かめられなかったと書く。推測で埋めない。
-
-${COMMON_TAIL}`;
-
-/** 役割ごとのプロンプト */
-const PROMPT_FOR: Record<ActorRole, (intent: string) => string> = {
-  implement: IMPLEMENT_PROMPT,
-  review: REVIEW_PROMPT,
-  investigate: INVESTIGATE_PROMPT,
-};
-
-const JSON_ONLY = `JSON オブジェクトだけを返す。前置きも説明も付けない。`;
-
-/** コードフェンスで囲まれていても読めるようにする */
-function parseJson(text: string): unknown {
-  const fenced = /```(?:json)?\s*([\s\S]*?)```/.exec(text);
-  const body = (fenced?.[1] ?? text).trim();
-  if (body === "") {
-    throw new Error("LLM が空の出力を返した");
-  }
-  return JSON.parse(body) as unknown;
-}
 
 async function writeLogToFile(path: string, contents: string): Promise<void> {
   await mkdir(dirname(path), { recursive: true });

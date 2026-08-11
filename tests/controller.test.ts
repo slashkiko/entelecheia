@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { ActorPort, WorktreePort } from "../src/act/index.js";
+import type { ActorPort, ActorResult, WorktreePort } from "../src/act/index.js";
 import { type ControllerDeps, tick } from "../src/controller/index.js";
 import type { LlmPort } from "../src/decide/index.js";
 import type { Goal } from "../src/domain/goal.js";
@@ -50,6 +50,7 @@ interface Options {
   owner?: string;
   /** Actor が長引く状況を作る。解決するまで ACT が返らない */
   actorGate?: Promise<void>;
+  actorResult?: ActorResult;
   leaseSeconds?: number;
 }
 
@@ -71,7 +72,7 @@ function deps(options: Options = {}): ControllerDeps {
         throw new Error("claude が起動できない");
       }
       await options.actorGate;
-      return { exitCode: 0, logRef: "log.txt", tokens: 10, artifacts: [] };
+      return options.actorResult ?? { exitCode: 0, logRef: "log.txt", tokens: 10, artifacts: [] };
     },
   };
 
@@ -409,6 +410,42 @@ describe("tick", () => {
       expect(result.ran).toBe(true);
       expect(result.run?.status).toBe("failed");
       expect(store.getState("sample-goal")?.leaseOwner).toBeNull();
+    });
+
+    it("Actor の usage_limit を guard の WAIT として永続化する", async () => {
+      const result = await tick(
+        GOAL,
+        deps({
+          exitCode: 1,
+          actorResult: {
+            exitCode: 1,
+            logRef: "usage-limit.jsonl",
+            tokens: 42,
+            artifacts: [],
+            errorKind: "usage_limit",
+            resumeAfter: "2026-08-09T06:00:00.000Z",
+            detail: "usage limit reached",
+          },
+        }),
+      );
+
+      expect(result.decision).toMatchObject({
+        action: {
+          type: "WAIT",
+          reason: "usage_limit",
+          resumeAfter: "2026-08-09T06:00:00.000Z",
+        },
+        decidedBy: "guard",
+      });
+      expect(result.status).toBe("WAITING_EXTERNAL");
+      expect(result.run).toMatchObject({
+        status: "failed",
+        errorKind: "usage_limit",
+        resumeAfter: "2026-08-09T06:00:00.000Z",
+        logRef: "usage-limit.jsonl",
+        tokens: 42,
+      });
+      expect(store.getState("sample-goal")?.resumeAfter).toBe("2026-08-09T06:00:00.000Z");
     });
   });
 
