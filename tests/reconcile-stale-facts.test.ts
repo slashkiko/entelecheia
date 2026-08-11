@@ -32,7 +32,12 @@ const NEW_SHA = "b".repeat(40);
 
 const GOAL: Goal = {
   version: 1,
-  goal: { id: "sample-goal", name: "サンプル", desired_state: "何かが完成している" },
+  goal: {
+    id: "sample-goal",
+    name: "サンプル",
+    desired_state: "何かが完成している",
+    depends_on: [],
+  },
   repository: {
     provider: "github",
     owner: "slashkiko",

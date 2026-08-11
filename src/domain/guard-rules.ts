@@ -2,6 +2,7 @@ import type { Action, Decision } from "./action.js";
 import type { Fact } from "./fact.js";
 import type { Goal } from "./goal.js";
 import type { GoalState } from "./goal-state.js";
+import { type GoalStatus, isTerminal } from "./goal-state.js";
 import type { Run } from "./run.js";
 
 /**
@@ -155,4 +156,79 @@ export function consecutiveFailuresOf(runs: readonly Run[]): number {
     count += 1;
   }
   return count;
+}
+
+/**
+ * 依存する Goal が揃っているか（design.md §10-12）。
+ *
+ * 分解した1本ごとに Goal を立てる方針を採ったので、順序の判定はここに来る。
+ * 純ロジックにしてあるのは、これが**停止条件**だから。「先に進んでよいか」を
+ * LLM に決めさせない境界（§7）の内側にある。
+ *
+ * 3値に分けるのは §3.1 と同じ理由になる。「まだ終わっていない」と
+ * 「もう終わらない」を1つに畳むと、待っても解けない待ちを永久に待つ。
+ *
+ * - `pending`     — まだ COMPLETED でない。待てば進む可能性がある。
+ *                   **登録されていない依存もここに入れる。** `ent start` を
+ *                   打ち忘れただけかもしれないので、無いことを「もう終わらない」
+ *                   とは読まない
+ * - `unreachable` — 終端に落ちたが COMPLETED ではない（FAILED / ABANDONED）。
+ *                   待っても解けないので、待ち側は人間を呼ぶ側に倒す
+ */
+export interface DependencyGate {
+  /** 依存がすべて COMPLETED なら true。depends_on が空なら常に true */
+  ready: boolean;
+  /** COMPLETED になっていない依存。宣言順を保つ */
+  pending: string[];
+  /** 終端だが COMPLETED ではない依存。宣言順を保つ */
+  unreachable: string[];
+}
+
+/**
+ * `statusOf` は「登録されていない」を null で返す。Store を引く側の都合を
+ * ここに持ち込まないための引数で、この関数自体は DB も時計も知らない。
+ */
+export function dependencyGate(
+  dependsOn: readonly string[],
+  statusOf: (goalId: string) => GoalStatus | null,
+): DependencyGate {
+  const pending: string[] = [];
+  const unreachable: string[] = [];
+
+  for (const id of dependsOn) {
+    const status = statusOf(id);
+    if (status === "COMPLETED") {
+      continue;
+    }
+    if (status !== null && isTerminal(status)) {
+      unreachable.push(id);
+      continue;
+    }
+    pending.push(id);
+  }
+
+  return { ready: pending.length === 0 && unreachable.length === 0, pending, unreachable };
+}
+
+/**
+ * なぜ進めないかの1行。人間に届く唯一の説明になるので、次の一手まで書く。
+ *
+ * 揃っているときに呼ぶと null。呼び出し側が「進めない理由」としてしか使わない
+ * ことを、戻り値の型で示しておく。
+ */
+export function describeDependencyGate(gate: DependencyGate): string | null {
+  if (gate.ready) {
+    return null;
+  }
+  const parts: string[] = [];
+  if (gate.unreachable.length > 0) {
+    parts.push(
+      `依存が終端に落ちている（${gate.unreachable.join(", ")}）。待っても解けないので、` +
+        "依存側をやり直すか depends_on を書き換える",
+    );
+  }
+  if (gate.pending.length > 0) {
+    parts.push(`依存の完了待ち（${gate.pending.join(", ")}）`);
+  }
+  return parts.join("。");
 }

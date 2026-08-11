@@ -31,7 +31,7 @@ const GOAL_ID = "sample-goal";
 
 const GOAL: Goal = {
   version: 1,
-  goal: { id: GOAL_ID, name: "サンプル", desired_state: "何かが完成している" },
+  goal: { id: GOAL_ID, name: "サンプル", desired_state: "何かが完成している", depends_on: [] },
   repository: {
     provider: "github",
     owner: "slashkiko",
