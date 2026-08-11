@@ -185,14 +185,47 @@ Phase 3 を完了した時点で、ティックの起動にも人間の判断は
 書くことと、PR に `/ent approve <criterion-id>` と書くこと（あるいは GitHub のレビューで
 Approve を押すこと）の2つになる。
 
-## セットアップ
+## 入れる
 
-[mise](https://mise.jdx.dev/) と [gh](https://cli.github.com/) が入っていること。
-Node と pnpm のバージョンは `mise.toml` で固定してあるので、個別に入れる必要はない。
+**読み手が2種類いる。** ent を「使うだけ」の人と、ent 自身を直す人になる。
+必要なものが違うので、入口も分ける。
+
+### 使う側のセットアップ
+
+**ent の実行に mise も pnpm も tsc も要らない。** `src/` に mise への参照は1つも無く、
+`ent doctor` が見るものにも入っていない。残るのは Node 24 以上と
+[gh](https://cli.github.com/) と Actor（Claude Code / Codex）のログインの3つになる。
+
+ビルド済みの `dist/cli.js` を持つ checkout が1つあれば、そこから PATH に `ent` を張れる。
+
+```sh
+cd /path/to/entelecheia
+pnpm link --global    # package.json の bin（dist/cli.js）を global の bin に張る
+```
+
+`dist/cli.js` には shebang があるので、張った symlink をそのまま叩ける。
+`"private": true` のままで効く（npm への公開とは別の話になる）。剥がすときは
+`pnpm uninstall --global entelecheia` を叩く。
+
+**張る先は checkout の中の `dist/cli.js` で、コピーではない。** ent 本体を作り直せば
+`ent` が指す実体も入れ替わる。逆に、`dist/` がまだ無い checkout に張ると symlink の先に
+何も無い状態になるので、その checkout では下の「作る側のセットアップ」を1度だけ通す。
+
+起動する Node は shebang の `/usr/bin/env node` が選ぶ。mise や nvm を効かせた shell から
+叩くと対象リポジトリ側の Node が使われるので、24 未満だと `node:sqlite` の import で落ちる。
+どの Node で動いているかは `ent doctor` の `node` が出す。symlink を経由せず、Node の絶対
+パスを固定して `dist/cli.js` を直に呼ぶ形でもよい（「ent を動かす」の節にその例がある）。
+
+### 作る側のセットアップ
+
+ent 自身を直すなら、[mise](https://mise.jdx.dev/) と [gh](https://cli.github.com/) が
+入っていること。Node と pnpm のバージョンは `mise.toml` で固定してあるので、個別に
+入れる必要はない。
 
 ```sh
 mise install --locked
 pnpm install --frozen-lockfile
+mise run build    # dist/cli.js を作る。使う側に渡すのはこの成果物になる
 ```
 
 ## 検証
@@ -314,7 +347,9 @@ Actor の編集として並ぶ）。
 ### 起動の仕方と、ent 自身を直すときの例外
 
 `package.json` の `bin` に `ent` を登録してあるが、npm へ公開していない。
-いまはNode 24以上の絶対パスを使うaliasか、同じNodeで`dist/cli.js`を呼ぶ
+PATH に通すだけなら `pnpm link --global` で足りる（「入れる」の節）。
+ここから先はNode 24以上の絶対パスを使うaliasか、同じNodeで`dist/cli.js`を呼ぶ形で書く。
+起動するNodeを自分で決められるので、mise や nvm が効く shell でも取り違えが起きない
 （ent 自身を直す Goal だけは下の task を通す）。
 
 常駐しない。`run` はどのティックも有限時間で終了し、待ちは Goal の状態として残る。

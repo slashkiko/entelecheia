@@ -75,8 +75,12 @@ export interface DoctorProbes {
  * 足りない Node で叩かれると import が例外になり、ent の話であることが
  * メッセージから読み取れない。対象リポジトリ側の Node が使われる構成——
  * shebang の `/usr/bin/env node`、mise や nvm を効かせた shell——では必ず起きる。
+ *
+ * `package.json` の `engines.node` も同じ下限を宣言する。2箇所に別々の数字を書くと
+ * 「入るのに動かない」か「動くのに入らない」のどちらかになるので、突き合わせられるよう
+ * export する。根拠は `node:sqlite` の側にあり、doctor が出す detail が正になる。
  */
-const MIN_NODE_MAJOR = 24;
+export const MIN_NODE_MAJOR = 24;
 
 /**
  * `ent doctor` が出すもの。ティックを回す前に、前提が揃っているかを読み取り専用で確かめる。
