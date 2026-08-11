@@ -1,0 +1,5 @@
+{
+  "name": "ent-review",
+  "description": "controller がレビュー役にだけ読ませる skill を入れる。ent 側の包み紙で、中の skill は ent に依存しない",
+  "version": "0.1.0"
+}
