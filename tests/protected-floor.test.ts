@@ -194,9 +194,11 @@ function codeownerPaths(): string[] {
 const GUARD_RULES = [
   "guardBaseOf",
   "claimsNothingLeft",
+  "leavesWorkUncommitted",
   "observedValue",
   "sleepingUntil",
   "elapsedSecondsSince",
+  "waitedSeconds",
   "consecutiveFailuresOf",
 ] as const;
 

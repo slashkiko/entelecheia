@@ -211,12 +211,16 @@ Goal は、従来どおり `default_branch` を基準にする（そのときは
 Actor の編集として並ぶ）。
 
 `package.json` の `bin` に `ent` を登録してあるが、npm へ公開していないので
-いまは alias か `node dist/cli.js` で呼ぶ。
+いまは alias か `node dist/cli.js` で呼ぶ（ent 自身を直す Goal だけは下の task を通す）。
 
 常駐しない。`run` はどのティックも有限時間で終了し、待ちは Goal の状態として残る。
 ただし `goal.depends_on` の依存待ちだけは lease を取らないので状態に残らず、
 `ent run` の `skipped` にしか出ない（design.md §10-12）。
 継続して回すなら cron から `run` を叩く。
+
+**ent 自身を直す Goal を回すときは `mise run ent -- run <slug>` を使う。**
+`tsc` を通すまで HEAD の実装は `dist/cli.js` に入らないので、直に叩くと古い
+controller が回り続ける。理由と例外は `CLAUDE.md` にある。
 
 ### この repo の外のリポジトリで使う
 
@@ -307,7 +311,8 @@ goal:
 **lease も取らない。** 待っているだけの Goal が枠を持ち続けると、進める側の Goal まで
 cron の1周で回らなくなる。判定は `ent start` ではなくティックの入口で行うので、
 依存先をまだ start していない順序で宣言を書いてよい。割った分をまとめて登録して、
-上から `ent run` を並べれば、進める本だけが進む（並べ方は次節）。
+上から `ent run` を並べれば、進める本だけが進む（並べ方と、いま同時に並べられない
+理由は次節）。
 
 進めなかった理由は `ent run` の `skipped` に出る。依存が `FAILED` か `ABANDONED` に
 落ちた場合は、待っても解けないことと次の一手（依存側をやり直すか `depends_on` を
@@ -325,12 +330,25 @@ cron の1周で回らなくなる。判定は `ent start` ではなくティッ�
 
 ### 複数の Goal を同時に回す
 
-`ent run` は複数のプロセスから同時に叩いてよい。まとめて回す口（`ent run --all` や
-常駐する watch）は用意しない。何本並べるかを決めるのは呼び出し側で、`ent` は
-「同時に叩かれても壊れない」ところまでを受け持つ。
+設計としては、`ent run` は複数のプロセスから同時に叩いてよい。まとめて回す口
+（`ent run --all` や常駐する watch）は用意しない。何本並べるかを決めるのは呼び出し側で、
+`ent` は「同時に叩かれても壊れない」ところまでを受け持つ。
+
+> [!WARNING]
+> **いまは1本ずつ回すこと。以下のレシピは、この制約が解けるまで使えない。**
+> 同じディレクトリから複数プロセスを立てると、保護パスの関門が
+> `ESCALATE(protected_path_touched)` で止まる。状態 DB は WAL なので、別プロセスの
+> 書き込みや接続の切断で checkpoint が走り、`goals.db` の中身が変わる。関門は ACT の
+> 前後でこのファイルを sha256 で比べるため、先に ACT へ入っていた側が巻き添えになる。
+> 触ったのは Actor ではなく、もう1本の controller になる。
+> `.goals/.state/` は `process.cwd()` の下にできるので、worktree を分ければぶつからない。
+> ただし lease も分かれるので、**別 worktree では同じ Goal を回さない**（下の
+> 「同じ slug を2つのプロセスに渡しても安全」が効かず、両方が PR を立てる）。
+> 直すには関門の側に手を入れる必要がある。詳しくは `CLAUDE.md`。
 
 ```sh
 # ワーカーを並べる側の例。slug ごとに1プロセス立てて、全部の終了を待つ
+# （同じディレクトリなので、上の制約が解けるまでは使えない）
 for slug in goal-a goal-b goal-c; do
   ent run "$slug" &
 done
@@ -338,11 +356,16 @@ wait
 ```
 
 cron から回すなら、Goal ごとに行を分ければよい（同じ分に並んでも構わない）。
+こちらも同じディレクトリを指すので、上の制約が解けるまでは分を1本にずらすか、
+Goal ごとに worktree を分ける。
 
 ```cron
 */10 * * * * cd /path/to/repo && node dist/cli.js run goal-a
 */10 * * * * cd /path/to/repo && node dist/cli.js run goal-b
 ```
+
+次の2段落（lease と本数の目安）は、同じディレクトリで並べられるようになったときの
+前提になる。その先の token の話は、1本だけ回すときも同じに効く。
 
 同じ slug を2つのプロセスに渡しても安全に扱える。Goal の所有権は期限付きの
 lease で決まるので、先に取れた側だけが進み、取れなかった側は

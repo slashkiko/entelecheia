@@ -90,6 +90,7 @@ const SUCCESS = {
 function invocation(over: Partial<ActorInvocation> = {}): ActorInvocation {
   return {
     runId: "42",
+    goalId: "sample",
     intent: "実装をレビューする",
     role: "implement",
     worktree: { path: "/tmp/entelecheia/worktrees/sample", branch: "entelecheia/sample" },

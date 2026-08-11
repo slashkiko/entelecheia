@@ -13,16 +13,17 @@ import type { Fact, Unresolved } from "../domain/fact.js";
 import type { Goal } from "../domain/goal.js";
 import { type GoalState, type GoalStatus, isTerminal, nextStatus } from "../domain/goal-state.js";
 import {
-  claimsNothingLeft,
   consecutiveFailuresOf,
   dependencyGate,
   describeClaim,
   describeDependencyGate,
   elapsedSecondsSince,
   guardBaseOf,
+  leavesWorkUncommitted,
   machineCriteriaSatisfied,
   observedValue,
   sleepingUntil,
+  waitedSeconds,
 } from "../domain/guard-rules.js";
 import { describeViolations, findViolations } from "../domain/protected-paths.js";
 import { type ActorRole, DEFAULT_ACTOR_ROLE, type Run } from "../domain/run.js";
@@ -864,9 +865,9 @@ async function commitVerifiedWork(
  * 「実装が載った PR」なので永久に終わらない（design.md §10-11）。
  *
  * 満たすべき性質:
- * - 差し替えるのは「機械側にやることが残っていない」と言い切るティックだけにする。
- *   COMPLETE と WAIT の2つで、WAIT は LLM が返したものも guard が
- *   Gap ゼロから出したものも同じ意味を持つ
+ * - 差し替えるのは「このティックで書き残しが commit されない」と言い切れるティックに
+ *   する。COMPLETE と WAIT と VERIFY の3つで、WAIT は LLM が返したものも guard が
+ *   Gap ゼロから出したものも同じ意味を持つ。判定は `leavesWorkUncommitted` が正
  * - `WAIT(usage_limit)` は差し替えない。あれは判断そのものを保留しただけで、
  *   上限が明ければ続きがある（design.md §10-5）。待てば直る状態で人間を呼ばない
  * - ACT が出たティックは触らない。実装の途中で作業ツリーが汚れているのは正常で、
@@ -901,7 +902,7 @@ function uncommittedDecision(
   observedFacts: readonly Fact[],
   deps: ControllerDeps,
 ): Decision {
-  if (!claimsNothingLeft(decision)) {
+  if (!leavesWorkUncommitted(decision)) {
     return decision;
   }
 
@@ -1038,7 +1039,15 @@ function usageOf(state: GoalState, goal: Goal, deps: ControllerDeps): BudgetUsag
   // 解釈できない activated_at を 0 秒として扱うと、max_wall_clock だけが
   // 黙って無効化される（NaN との比較は常に false になる）。停止条件が消えるより、
   // 人間を呼ぶ側に倒す。decide の durationSeconds が上限を読めなかったときと同じ扱い。
-  const elapsedSeconds = elapsedSecondsSince(state.activatedAt, deps.now());
+  //
+  // 人間か外部を待っていた分は引く。待てと指示したのは controller の側なので、
+  // その時間を Goal の予算から引くのは筋が通らない（`waitedSeconds`）。
+  const now = deps.now();
+  const elapsedSeconds = Math.max(
+    0,
+    elapsedSecondsSince(state.activatedAt, now) -
+      waitedSeconds(deps.store.listDecisions(goal.goal.id), state.activatedAt, now),
+  );
 
   // 直近まで同じ観測が続いていた回数。今回のティックは含まない。
   // 含めると、DECIDE が「今回は変わった」を判定できなくなる。
