@@ -87,6 +87,8 @@ function deps(options: Options = {}): ControllerDeps {
     owner: options.owner ?? "worker-a",
     leaseSeconds: options.leaseSeconds ?? 300,
     signal: options.signal,
+    // レビュー役はまだ走っていない。Fact も unobserved も作らない側の既定。
+    review: { latest: async () => null },
     code: {
       getPullRequest: async () => {
         events.push("code.getPullRequest");

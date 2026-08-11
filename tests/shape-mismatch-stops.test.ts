@@ -66,6 +66,8 @@ const FAILED: Unresolved = {
 function target(unresolved: Unresolved[], gaps: Gap[]): DecideTarget {
   return {
     criteria: CRITERIA,
+    // レビュー役を起動してよいかを見る材料。この fixture では観測が無い。
+    facts: [],
     assessment: { assessedAt: NOW.toISOString(), gaps, satisfied: gaps.length === 0 },
     unresolved,
     observedDigest: "digest-1",

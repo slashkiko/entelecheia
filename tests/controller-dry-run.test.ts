@@ -94,6 +94,8 @@ function deps(options: Options = {}): ControllerDeps {
     owner: "worker-a",
     leaseSeconds: 300,
     dryRun: options.dryRun ?? false,
+    // レビュー役はまだ走っていない。Fact も unobserved も作らない側の既定。
+    review: { latest: async () => null },
     code: {
       getPullRequest: async () => {
         events.push("code.getPullRequest");
