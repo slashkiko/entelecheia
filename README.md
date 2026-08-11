@@ -170,6 +170,23 @@ ent doctor                         # 回す前の前提が揃っているかを�
 ent agent-context                  # CLI の構造を機械可読な JSON で出す
 ```
 
+### ent 自身を直す Goal を回すとき
+
+`bin` が指すのは `dist/cli.js` で、`tsc` を通すまで HEAD の実装は1行も反映されない。
+**ent が ent 自身を直す Goal では、これが黙って効く。** Actor が新しい行動を実装して
+commit しても、回している controller は古いままなので、その行動は選択肢に出ない。
+「実装したのに動かない」の原因が実装ではなくビルドにあるので、外からは区別が付かない。
+
+回す口の側で毎回作り直す。
+
+```sh
+mise run ent -- run <slug>         # dist/ を作り直してから1ティック回す
+mise run ent -- list               # 引数は `--` の後ろに置く
+```
+
+`node dist/cli.js` を直に叩くのと出力は変わらない。mise の進捗は stderr に出るので、
+stdout は JSON だけのまま `jq` に渡せる。
+
 `--json` は出力を JSON にする（`run` / `get` / `list` は既定で JSON。`start` と `abandon` と
 `init` は `--json` を付けたときだけ JSON になる）。
 `doctor` と `agent-context` は常に JSON で、`--json` は受け取らない。

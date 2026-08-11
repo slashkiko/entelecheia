@@ -43,6 +43,17 @@ ent get <slug>              # 宣言部と実行時状態をまとめて読む
 ent list                    # 登録済みの Goal を一覧する
 ```
 
+**ent 自身を直す Goal では、`ent` を直に叩かない。** `bin` が指すのは `dist/cli.js` で、
+`tsc` を通すまで HEAD の実装は反映されない。Actor が新しい行動を実装して commit しても、
+回している controller は古いままなので、その行動は選択肢に出ない。実装が原因なのか
+ビルドが原因なのかは、外からは区別が付かない。回す口の側で毎回作り直す。
+
+```
+mise run ent -- run <slug>  # dist/ を作り直してから1ティック回す
+```
+
+出力は変わらない。mise の進捗は stderr に出るので、stdout は JSON だけのまま読める。
+
 `ent start` は、叩いたディレクトリの HEAD を関門の基準として記録する。Actor の
 worktree はその commit から切られ、関門が worktree の差分を取る相手も同じ commit になる。
 **Goal の宣言と仕様は `ent start` より前に commit しておく。** そうすれば人間が書いた分は
