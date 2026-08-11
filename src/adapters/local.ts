@@ -292,7 +292,8 @@ export function gitWorktree(repoRoot: string, root: string): WorktreePort {
      *   ここから先は git ベースの検査では原理的に届かない
      * - gitignore されたパス。`--ignored` を付ければ出るが、controller 自身が
      *   `.goals/.state/**` に毎ティック書くので、自分の書き込みが毎回違反として
-     *   並ぶ。DB を直接書き換えられる経路がここに残る
+     *   並ぶ。ただし状態 DB そのものは相方の `outOfSightState` が指紋で見るので、
+     *   ここに残るのは `goals.db` 以外の gitignore されたパスになる
      * - commit 済みの変更。本体側のブランチは controller が動かさないので
      *   作業ツリーの汚れだけを見ているが、`git -C ../../../.. commit` や
      *   `git -C ../../../.. stash` は拒否リストに無い。本体側で書いてから commit されると、

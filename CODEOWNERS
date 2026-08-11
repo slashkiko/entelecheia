@@ -15,6 +15,9 @@
 # 保護パスの下限（src/domain/goal.ts の PROTECTED_PATH_FLOOR）と同じで、
 # ここもパスのリテラルなので、リファクタで場所が動くとレビュー必須の範囲から外れる。
 /src/domain/guard-rules.ts @slashkiko
+# 合成ルート。関門の入力を作る Adapter の注入と、未 commit の関門が見る観測先
+# （verifyRoot）が1箇所に集まる。規則を触らずに関門への入力を差し替えられる。
+/src/wiring/ @slashkiko
 /src/domain/protected-paths.ts @slashkiko
 /src/domain/goal.ts @slashkiko
 /src/adapters/claude.ts @slashkiko

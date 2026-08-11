@@ -14,7 +14,9 @@ import type { Goal } from "../domain/goal.js";
 import { type GoalState, type GoalStatus, isTerminal, nextStatus } from "../domain/goal-state.js";
 import {
   consecutiveFailuresOf,
+  dependencyGate,
   describeClaim,
+  describeDependencyGate,
   elapsedSecondsSince,
   guardBaseOf,
   leavesWorkUncommitted,
@@ -30,8 +32,8 @@ import { type ReconcileDeps, reconcile } from "../reconcile/index.js";
 import type { Store } from "../store/port.js";
 
 /**
- * 1ティックの外側。lease を取り、reconcile を回し、結果を書き、ACT を実行し、
- * 状態を遷移させる。
+ * 1ティックの外側。lease を取り、reconcile を回し、ACT を実行し、結果を書き、
+ * 状態を遷移させる。書き込みを ACT の後に置く理由は design.md §3.6。
  *
  * reconcile と act 自体は変更しない。あの2つを純粋に保ったまま、
  * 副作用と永続化をこの層に集める（design.md §8）。
@@ -213,6 +215,29 @@ export async function tick(goal: Goal, deps: ControllerDeps): Promise<TickResult
   const sleeping = sleepingUntil(state.resumeAfter, deps.now());
   if (sleeping !== null) {
     return idle(state.status, `resume_after まで寝ている: ${sleeping}`);
+  }
+
+  // 依存する Goal が揃うまで進めない（design.md §10-12）。
+  //
+  // **lease は取らない。** resume_after と同じ理由で、待っているだけの Goal が
+  // 他のワーカーを塞ぐ。並べる本数を決めるのは呼び出し側なので（README
+  // 「複数の Goal を同時に回す」）、依存待ちの1本が枠を持ち続けると、
+  // 進める側の Goal まで cron の1周で回らなくなる。
+  //
+  // **`ent start` の入口ではなくここで見る。** あちらで「ACTIVE にしない」形に
+  // すると、依存先をまだ start していない順序で宣言を書けなくなる。分解した
+  // サブ Goal をまとめて登録する使い方（§10-12）がそれに当たる。
+  //
+  // 状態は動かさない。ここで書けば止まった理由が DB に残るが、そのためには
+  // lease を取ることになり、上の理由と衝突する。理由は `skipped` に載せて
+  // `ent run` の出力に出す。
+  const gate = dependencyGate(
+    goal.goal.depends_on,
+    (dependencyId) => deps.store.getState(dependencyId)?.status ?? null,
+  );
+  const blocked = describeDependencyGate(gate);
+  if (blocked !== null) {
+    return idle(state.status, blocked);
   }
 
   // 見るだけのティック。ここから下（lease・回収・永続化・ACT・publish）は
@@ -778,7 +803,7 @@ function worktreePathFor(
  * - ACT が出たティックは触らない。実装の途中で作業ツリーが汚れているのは正常で、
  *   ここまで止めると Actor は1ティックも実装を進められない
  * - **Actor がまだ1度も走っていない Goal では見ない。** 1ティック目は worktree が
- *   無く、`local.*` は controller 自身のリポジトリを観測する（`src/cli.ts` の
+ *   無く、`local.*` は controller 自身のリポジトリを観測する（`src/wiring/index.ts` の
  *   `verifyRoot`）。自己ホストでは人間の編集で汚れているのが普通なので、そこを
  *   Actor の書き残しと読むと、どの Goal も最初のティックから進まなくなる
  * - **worktree を観測した dirty だけを見る。** 「Run が1件でもあれば worktree を
@@ -822,7 +847,7 @@ function uncommittedDecision(
   // 書き残しではない。controller 自身のリポジトリの汚れで人間を呼ばない。
   //
   // 突き合わせる相手は**実装役の作業ツリー**に固定する。`local.*` を観測する
-  // のも criteria のコマンドを流すのも実装役の側で（`src/cli.ts` の
+  // のも criteria のコマンドを流すのも実装役の側で（`src/wiring/index.ts` の
   // `verifyRoot`）、PR に載るのもそのブランチだからになる。役割が増えても
   // ここを review 側にすると、レビュー中の作業ツリーの汚れを実装の書き残しと
   // 読む一方で、実装役が書き残したものを見落とす。
