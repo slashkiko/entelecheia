@@ -1,0 +1,190 @@
+version: 1
+
+goal:
+  id: check-dependencies-in-doctor
+  name: 依存の書き間違いを、回す前に doctor が見つける（配線済み）
+  desired_state: |
+    `goal.depends_on` が入って順序を宣言できるようになったが、**書き間違えたときの
+    壊れ方が悪い。**
+
+    依存の判定は `tick` の入口にあり、揃わないティックは lease も取らずに return する
+    （design.md §10-12）。そのティックは**何も書かない**。reconciles は進まず
+    Decision も残らないので、`max_reconciles` にも `max_wall_clock` にも当たらない。
+    つまり depends_on の書き間違いは、**どの停止条件にも掛からないまま永久に止まる**。
+    ent が持っている暴走の停止条件は、どれもティックが回ることを前提にしている。
+
+    壊れ方は2つある。
+
+      循環   a → b → a のように依存が閉じている。全員が待ちのまま進まない。
+             自己参照はスキーマが弾くが、2本以上をまたぐ循環は Goal YAML 1本
+             からは見えない
+      不在   依存先の `.goals/<id>.yaml` が無い。`ent start` を打ち忘れただけの
+             「待てば進む」と実行時には区別が付かない（どちらも `pending` に入る）。
+             宣言を全部読める doctor だけが分けられる
+
+    どちらも「回す前に読めば分かる」ので、`ent doctor` に検査を1つ足す。
+
+    **実行時の判定は変えない。** 「先に進んでよいか」は停止条件なので
+    `dependencyGate`（`src/domain/guard-rules.ts`）が持ち続ける。doctor が答えるのは
+    「回す前の宣言が壊れていないか」で、層が違う。あちらは
+    `PROTECTED_PATH_FLOOR` の中にあり、この Goal では触らない。
+
+    どう作るかは Actor が決める。以下は「何が満たされていればよいか」を書く。
+
+    1. `dependencies` という名前の検査を1つ足す
+
+      循環も不在も無ければ ok。どちらかがあれば failed にして、終了コードを 0 以外に
+      する。doctor の既存の検査と同じ形に揃える。
+
+    2. どこが壊れているかを名指しする
+
+      件数だけでは直せない。不在なら「どの Goal のどの依存が無いか」、循環なら
+      「どの id が閉じているか」を `detail` に出す。**巻き込まない。** 実在する依存や、
+      循環に入っていない Goal を名指しに混ぜると、読む側がどれを直せばよいか
+      分からなくなる。
+
+      菱形（`alpha → base` と `bravo → base`）は循環ではない。ここを failed に
+      すると、分解した本数が増えるほど誤検知する。
+
+    3. 読めなかった Goal は依存の検査に持ち込まない
+
+      YAML が読めなかった時点で depends_on も読めていない。無いものを「依存が不在」と
+      読むと、原因が1つなのに検査が2つ鳴る。既存の `goals` の検査が先に failed に
+      するので、こちらは黙る。
+
+    4. 材料はもう届いている
+
+      `DoctorGoal` は既に `dependsOn` を持ち、合成ルートが `goal.depends_on` を
+      写して渡している。**そこは人間が先に commit してある。** 合成ルート
+      （`src/wiring/index.ts`）は `PROTECTED_PATH_FLOOR` の中で、Actor には書けない。
+      前身の `find-broken-dependencies-before-running` はそこを Actor に触らせて
+      1ティック目で `ESCALATE(protected_path_touched)` になった。
+
+      **したがって、この Goal で触るのは `src/usecase/doctor.ts` だけで足りる。**
+      `DoctorGoal` の再エクスポートも `tests/cli-doctor.test.ts` のスタブも入っている。
+      `src/wiring/index.ts` を触る必要が出たら、それは設計が変わったということなので
+      人間を呼ぶ（下限にあるので、触った時点で関門が鳴る）。
+
+    テストは tests/doctor-dependencies.test.ts に書いてある。着手時点では落ちる。
+    仕様はテストが正で、この記述と食い違ったらテストに合わせる。
+
+    あわせて design.md §10-12 の「残っている穴」のうち循環の項を、doctor で
+    見つけられるようになった分だけ書き直す。**実行時には依然として掛からない**ことは
+    残す。消すと、doctor を叩かない人にとっての壊れ方が読めなくなる。
+
+repository:
+  provider: github
+  owner: slashkiko
+  name: entelecheia
+  default_branch: main
+
+setup:
+  - pnpm install --frozen-lockfile
+
+acceptance_criteria:
+  - id: ac-1
+    description: doctor-dependencies のテストが通る（着手時点では落ちている）
+    verification: { type: command, run: mise run test }
+
+  - id: ac-2
+    description: 型チェックが通る
+    verification: { type: command, run: mise run typecheck }
+
+  - id: ac-3
+    description: lint と format が通る
+    verification: { type: command, run: mise run lint }
+
+  - id: ac-4
+    description: サプライチェーンと workflow のチェックが通る（baseline 由来）
+    verification: { type: command, run: mise run check }
+
+  - id: ac-5
+    description: 変更を載せた PR の CI が成功している
+    verification: { type: fact, key: github.ci.conclusion, equals: success }
+
+  - id: ac-6
+    description: 層を跨いでいないこと、誤検知しないことを人間が確認する
+    verification:
+      type: human
+      prompt: |
+        この Goal は「回す前に読めば分かること」を doctor に足すもので、
+        実行時の判定は変えません。次を確認してください。
+
+        1. `src/domain/guard-rules.ts` を触っていないか。実行時の
+           `dependencyGate` の挙動が変わっていないか
+        2. `DoctorProbes` が読み取りだけのままか。書き込む口が増えていないか
+        3. 循環の検出が菱形（同じ Goal を2本が指す）を failed にしていないか
+        4. 名指しに、実在する依存や循環に入っていない Goal が混ざっていないか
+        5. 読めなかった Goal のときに `dependencies` が黙るか
+
+context:
+  background: |
+    `goal.depends_on` は前の Goal で入った。順序は宣言できるようになったが、
+    宣言を書き間違えたときに気づく手段が無い。
+
+    ent の暴走の停止条件（`max_reconciles` / `max_wall_clock` /
+    `max_unchanged_reconciles`）は、どれもティックが回ることを前提にしている。
+    依存待ちのティックは lease も取らず何も書かずに return するので、
+    そのどれにも当たらない。**止める仕組みが1つも効かない経路**がここにある。
+
+    実行時に止める形（`ESCALATE` を足す）も考えられるが、それは
+    `src/domain/guard-rules.ts` と `src/controller/**` を動かす話で、どちらも
+    `PROTECTED_PATH_FLOOR` の中にある。ent 自身には実装させられない。
+    **読むだけで足りる分を先に取る。** doctor は `src/usecase/doctor.ts` にあり、
+    下限を1つも踏まない。
+
+  constraints:
+    - テストから実際の GitHub と Claude API を叩かない
+    - tests/doctor-dependencies.test.ts は仕様なので変更しない。通らないなら実装側を直す
+    - 既存の tests/ も弱めない
+    - 触るのは src/usecase/doctor.ts だけで足りる。合成ルート（src/wiring/index.ts）は
+      人間が先に commit してあり、下限にあるので触ると関門が鳴る
+    - 実行時の判定を変えない。src/domain/guard-rules.ts は触らない
+    - DoctorProbes に書き込む口を足さない。読むだけに保つ
+    - doctor は常に JSON を出す。--json は受け取らない、という既存の契約を変えない
+    - 依存パッケージを増やさない
+    - mise run check（サプライチェーン検査）を壊さない
+    - PR の作成とコメントの投稿はしない。controller が行う
+
+  references:
+    - title: 設計ドキュメント
+      path: docs/design.md
+    - title: いまの doctor
+      path: src/usecase/doctor.ts
+    - title: 実行時の依存の判定（触らない側）
+      path: src/domain/guard-rules.ts
+    - title: 依存の宣言
+      path: src/domain/goal.ts
+
+policies:
+  require_human_approval:
+    - merge
+    - force_push
+    - push_to_default_branch
+    - deploy
+    - secret_access
+    - external_send
+  protected_paths:
+    # 下限（PROTECTED_PATH_FLOOR）は Zod が読み込み時に混ぜるので書かない。
+    # ここに並べるのは、この Goal で追加する分だけにする。
+    # 検証系。ここを書き換えられると Agent が自分の criteria を通せる。
+    - mise.toml
+    - mise-tasks/**
+    - vitest.config.ts
+    - biome.json
+    - tsconfig*.json
+    - .github/**
+    # 依存の追加は人間が通す。
+    - package.json
+    - pnpm-lock.yaml
+    # 実行時の判定はこの Goal の範囲外。触るなら設計が変わったということなので
+    # 人間を呼ぶ（guard-rules.ts は下限にあるので、こちらは controller の外側）。
+    - src/reconcile/**
+    - src/decide/**
+
+budget:
+  max_actor_runs: 6
+  max_reconciles: 12
+  max_wall_clock: 3h
+  max_consecutive_failures: 3
+  max_unchanged_reconciles: 4

@@ -45,7 +45,12 @@ import {
 export { agentContextPayload } from "./cli/agent-context.js";
 export { type Command, parseCommand, type ReportTarget } from "./cli/parse.js";
 export { type ReportRecord, reportSink } from "./cli/present.js";
-export { type DoctorProbes, type DoctorReport, doctorPayload } from "./usecase/doctor.js";
+export {
+  type DoctorGoal,
+  type DoctorProbes,
+  type DoctorReport,
+  doctorPayload,
+} from "./usecase/doctor.js";
 export {
   type LimitOptions,
   listPayload,
