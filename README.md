@@ -170,23 +170,6 @@ ent doctor                         # 回す前の前提が揃っているかを�
 ent agent-context                  # CLI の構造を機械可読な JSON で出す
 ```
 
-### ent 自身を直す Goal を回すとき
-
-`bin` が指すのは `dist/cli.js` で、`tsc` を通すまで HEAD の実装は1行も反映されない。
-**ent が ent 自身を直す Goal では、これが黙って効く。** Actor が新しい行動を実装して
-commit しても、回している controller は古いままなので、その行動は選択肢に出ない。
-「実装したのに動かない」の原因が実装ではなくビルドにあるので、外からは区別が付かない。
-
-回す口の側で毎回作り直す。
-
-```sh
-mise run ent -- run <slug>         # dist/ を作り直してから1ティック回す
-mise run ent -- list               # 引数は `--` の後ろに置く
-```
-
-`node dist/cli.js` を直に叩くのと出力は変わらない。mise の進捗は stderr に出るので、
-stdout は JSON だけのまま `jq` に渡せる。
-
 `--json` は出力を JSON にする（`run` / `get` / `list` は既定で JSON。`start` と `abandon` と
 `init` は `--json` を付けたときだけ JSON になる）。
 `doctor` と `agent-context` は常に JSON で、`--json` は受け取らない。
@@ -214,10 +197,31 @@ Goal は、従来どおり `default_branch` を基準にする（そのときは
 Actor の編集として並ぶ）。
 
 `package.json` の `bin` に `ent` を登録してあるが、npm へ公開していないので
-いまは alias か `node dist/cli.js` で呼ぶ。
+いまは alias か `node dist/cli.js` で呼ぶ（ent 自身を直す Goal だけは下の task を通す）。
 
 常駐しない。`run` はどのティックも有限時間で終了し、待ちは Goal の状態として残る。
 継続して回すなら cron から `run` を叩く。
+
+### ent 自身を直す Goal を回すとき
+
+ここだけは、`ent` を直に叩かずに mise の task を通す。
+
+```sh
+mise run ent -- run <slug>         # dist/ を作り直してから1ティック回す
+mise run ent -- list               # 引数は `--` の後ろに置く。サブコマンドはどれでもよい
+```
+
+`bin` が指すのは `dist/cli.js` で、`tsc` を通すまで HEAD の実装は1行も反映されない。
+Actor が新しい行動を実装して commit しても、回している controller は古いままなので、
+その行動は選択肢に出ない。「実装したのに動かない」の原因が実装ではなくビルドにあるので、
+外からは区別が付かない。
+
+task の実体は `node dist/cli.js` に `build` への依存を足しただけで、出力も終了コードも
+変わらない。mise の進捗は stderr に出るので、stdout は JSON だけのまま `jq` に渡せる。
+
+**cron と並列で回すときは、この task を使わない。** 毎回ビルドが走るので、同時に
+何本も立てるとビルド同士がぶつかる。回す前に `mise run build` を1回叩いてから、
+下の並列のレシピどおり `ent run` を直に叩く。
 
 ### この repo の外のリポジトリで使う
 

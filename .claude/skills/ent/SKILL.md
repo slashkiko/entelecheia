@@ -43,16 +43,23 @@ ent get <slug>              # 宣言部と実行時状態をまとめて読む
 ent list                    # 登録済みの Goal を一覧する
 ```
 
-**ent 自身を直す Goal では、`ent` を直に叩かない。** `bin` が指すのは `dist/cli.js` で、
-`tsc` を通すまで HEAD の実装は反映されない。Actor が新しい行動を実装して commit しても、
-回している controller は古いままなので、その行動は選択肢に出ない。実装が原因なのか
-ビルドが原因なのかは、外からは区別が付かない。回す口の側で毎回作り直す。
+**ent 自身を直す Goal では、上の5つを `ent` で直に叩かない。** `mise run ent -- ` を
+前に付ける。付ける先はサブコマンドを問わない。
 
 ```
-mise run ent -- run <slug>  # dist/ を作り直してから1ティック回す
+mise run ent -- doctor
+mise run ent -- start <slug>
+mise run ent -- run <slug>
 ```
 
-出力は変わらない。mise の進捗は stderr に出るので、stdout は JSON だけのまま読める。
+`bin` が指すのは `dist/cli.js` で、`tsc` を通すまで HEAD の実装は反映されない。
+Actor が新しい行動を実装して commit しても、回している controller は古いままなので、
+その行動は選択肢に出ない。実装が原因なのかビルドが原因なのかは、外からは区別が付かない。
+
+task の実体は `node dist/cli.js` に `build` への依存を足しただけなので、出力も終了コードも
+このドキュメントの記述どおりになる。mise の進捗は stderr に出るので、stdout は JSON
+だけのまま読める。`mise run ent` はサブコマンドではないので `ent agent-context` には
+出てこない。cron と並列で回すときの扱いは README.md の側にある。
 
 `ent start` は、叩いたディレクトリの HEAD を関門の基準として記録する。Actor の
 worktree はその commit から切られ、関門が worktree の差分を取る相手も同じ commit になる。
