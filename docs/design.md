@@ -316,9 +316,10 @@ roleは次の5箇所を通る。
   読ませない判断はそのままで、controller が名指しした plugin（`plugins/ent-review/`）
   だけが Agent から見える。skill の一覧に出るのはその1件になる。
   中身は ent の外でも使う汎用の skill で、**Goal も criteria も verdict も知らない。**
-  PR ではなく作業ツリーの HEAD を見ること、意図の一次情報が `.goals/<goal.id>.yaml` で
+  PR の差分ではなく作業ツリーの HEAD を見ること、意図の一次情報が `.goals/<goal.id>.yaml` で
   あること、本文の後ろに `reviewed_sha:` と `verdict:` の2行を足すことは、すべて
   `REVIEW_PROMPT` の側に書く。観点は skill が持ち、契約は controller が持つ。
+  **PR のタイトルと本文は、意図の一次情報ではなくレビューの対象として渡す**（§4.3）。
   そのために `ActorInvocation` が `goalId` を運ぶ——宣言部は作業ツリーに commit 済みで
   入っているので、**どのファイルを読めばよいかだけを渡せば意図が届く**
   （`intent` に載るのは constraints だけで、`desired_state` は載らない）
@@ -370,20 +371,21 @@ CI の失敗内容まで取るのが要点。「CI が落ちた」だけでは�
 失敗ジョブ名とログがあれば、そのまま Claude Code に渡して修正させられる。
 
 **PR の `title` と `body` は完了判定のためではなく、レビュー役に渡すために取る。**
-レビュー役の Actor には資格情報を渡していない（§7 の `WITHHELD_ENV`、§10-4）ので
+レビュー役の Actor には資格情報を渡していない（§7 の `NEUTRALIZED_ENV`、§10-4）ので
 `gh` は未認証で、「宣言部の制約が PR 本文に反映されているか」のような観点は向こう側で
 確かめようがなく、毎回「未取得」で終わっていた。足りないのは資格情報ではなく、
 controller が既に読んでいる情報を渡す口になる。`act` が今ティックの観測から
-タイトルと本文を取り出し（`pullRequestTextFrom`）、レビュー役のプロンプトに載せる
-（`renderPullRequestText`）。**読むのは controller、書くのも controller、Actor へ渡すのは
-その観測結果だけ**という分担は変えていない。
+タイトルと本文（`github.pr.title` / `github.pr.body`）を取り出し（`pullRequestTextFrom`）、
+レビュー役のプロンプトに載せる（`renderPullRequestText`）。**読むのは controller、
+書くのも controller、Actor へ渡すのはその観測結果だけ**という分担は変えていない。
 
 渡すのは**今ティックの観測が作った Fact だけ**にする。持ち越しを混ぜた集合を渡すと、
 GitHub を読めなかったティックにも前回のタイトルと本文が届き、観測の失敗が古い値で
 埋まって見えなくなる。渡っていないことと本文が空であることも、プロンプトの文面で
-分ける。前者は「未取得」と書かせ、後者は「本文は空」として観測できた結果になる（§3.1）。
-本文の中に `verdict:` / `reviewed_sha:` の行があると、レビュー役が引用したときに結論の行が
-2つになって観測が pending に落ちる（§10-6）ので、渡す側で印を付けて潰す。
+分ける。前者は「未取得」、後者は「本文は空」と書かせる。空であることは、確かめられ
+なかったのではなく観測できた結果にあたる（§3.1）。本文の中に `verdict:` /
+`reviewed_sha:` の行があると、レビュー役が引用したときに結論の行が2つになって観測が
+pending に落ちる（この節の下、`ReviewPort` の段落）ので、渡す側で印を付けて潰す。
 
 観測キーの実体は `src/domain/fact-keys.ts` に列挙してある。上の表は論理リソース側の
 呼び名で、Fact のキーは `github.pr.review_decision` のようなドット区切りの snake_case になる。
