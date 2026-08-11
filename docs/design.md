@@ -1464,7 +1464,16 @@ MVP を止める未確定は残っていない。**他のリポジトリで回�
     以上その場では書けないので、いまは `ent run` の `skipped` にしか出ない。§4.4 の
     待機に理由を足して残す形にするかは決めていない。もう1つは循環で、`depends_on` に
     自分自身を書くのはスキーマが弾くが、2本以上をまたぐ循環は Goal YAML 1本からは
-    見えないので、全員が `pending` のまま止まる。
+    見えないので、全員が `pending` のまま止まる。**回す前に読む側は塞いだ。**
+    `ent doctor` に `dependencies` の検査があり、宣言を全部読める立場から循環と
+    「依存先の `.goals/<id>.yaml` が無い」を名指しして failed にする（`src/usecase/doctor.ts`）。
+    菱形（`alpha → base` と `bravo → base`）は閉じていないので循環として数えない。
+    **それでも実行時には依然として掛からない。** doctor は読むだけで、`dependencyGate` は
+    循環を今までどおり `pending` として返す。doctor を叩かずに `ent run` を回せば、
+    lease も取らず何も書かないティックが続き、`max_reconciles` にも `max_wall_clock` にも
+    当たらないまま止まり続ける。実行時に止めるなら `dependencyGate` に
+    `unreachable` をもう1種類足す話になるが、そこは `PROTECTED_PATH_FLOOR` の中で
+    ent 自身には書かせられない。**読むだけで足りる分を先に取ってある。**
     Plan / Task テーブルは**作らないと決めた**（§4.5 の表もそう直した）。(a) では
     Plan にあたるものがサブ Goal の宣言そのものになるので、DB に別の層を作る理由が無い
 
