@@ -153,9 +153,10 @@ describe("githubApproval", () => {
       }).fetch,
     });
 
-  // 既定の login を PR の作成者（`pr-author`）と別にしてある。作成者自身のコメントは
-  // 承認に数えないので、既定を作成者のままにすると、定型文の解釈を見たいテストが
-  // 「作成者だから弾かれた」で赤くなり、何を確かめていたのか読めなくなる。
+  // 既定の login を PR の作成者（`pr-author`）と別にしてある。作成者のコメントも
+  // 承認に数えるので既定でも通るが、別にしておけば「作成者だから通った」のか
+  // 「定型文の解釈が正しいから通った」のかを取り違えずに読める。作成者の側は
+  // 専用のテスト（「PR の作成者自身が書いた定型文も承認になる」）で見る。
   const comment = (body: string, login = "teammate", association = "OWNER") => ({
     body,
     user: { login },
@@ -343,14 +344,29 @@ describe("githubApproval", () => {
       }
     });
 
-    it("PR の作成者自身のコメントは承認にしない", async () => {
-      // レビュー承認の側は既に作成者を弾いていたが、コメントの側は見ていなかった。
-      // `PROGRESS_MARKER` が弾くのは controller が書いたコメントだけなので、
-      // Agent が `gh pr comment` を持つ Goal では、PR の作成者名義で定型文を
-      // 書けば `type: human` の criteria が VERIFIED になる。
+    it("PR の作成者自身が書いた定型文も承認になる", async () => {
+      // 一時は作成者を弾いていたが、`GITHUB_TOKEN` の持ち主が PR を立てるので、
+      // それだと1人で回しているリポジトリでは承認の signal が2つとも成立せず、
+      // `type: human` の criterion を持つ Goal が永久に COMPLETED へ届かない。
+      //
+      // 自己承認を Agent にさせない側は、ここではなく拒否リストが受け持つ。
+      // コメント投稿を落とす `external_send` は `APPROVAL_GATE_FLOOR` にあって
+      // どの Goal からも外せない（`tests/protected-floor.test.ts`）。
       const approval = await approvalPort({
         author: "pr-author",
         comments: [comment("/ent approve ac-6", "pr-author")],
+      }).getApproval("ac-6");
+
+      expect(approval?.approvedBy).toBe("pr-author");
+    });
+
+    it("作成者でも、書き込み権限が無ければ承認にしない", async () => {
+      // 作成者を通すようにしたぶん、権限の検査が唯一のふるいになる。
+      // fork から PR を出した外部の人が、自分の PR を自分で通せてはいけない。
+      const approval = await approvalPort({
+        author: "outsider",
+        comments: [comment("/ent approve ac-6", "outsider")],
+        permissions: { outsider: "read" },
       }).getApproval("ac-6");
 
       expect(approval).toBeNull();
