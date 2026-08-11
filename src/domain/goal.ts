@@ -267,6 +267,12 @@ export const PROTECTED_PATH_FLOOR = [
   "src/adapters/local.ts",
   // 資格情報の除去リスト。
   "src/domain/withheld-env.ts",
+  // 合成ルート。どの Port にどの Adapter を挿すかを決める唯一の場所で、
+  // 関門の入力を作る Adapter（`localRepo` / `commandRunner` / `gitWorktree`）の
+  // 注入と、未 commit の関門が突き合わせる観測先（`verifyRoot`）がここに集まる。
+  // 規則（`guard-rules.ts`）を1文字も触らずに、関門へ流れる観測そのものを
+  // 差し替えられるので、規則と同じ扱いにする。
+  "src/wiring/index.ts",
   // git が観測しないが、書き換えられると controller の権限でコードが走る場所。
   // `repoDirtyState` が指紋で見るので、ここに glob を置いて関門に繋ぐ。
   // hooks は linked worktree でも共通の .git を共有し、push のたびに走る。
@@ -335,7 +341,7 @@ export const TEMPLATE_SLUG = "example-goal";
  * 決める（`DENIED_TOOLS`）ので、雛形が緩いゲートを配れば、そこから始めた
  * リポジトリはすべて緩いところから始まる。`PROTECTED_PATH_FLOOR` と
  * `APPROVAL_GATE_FLOOR` の隣に置いて、下限と同じ関門として扱う。
- * `src/cli.ts` は文字列を受け取って書くだけにする。
+ * `src/usecase/init.ts` は文字列を受け取って書くだけにする。
  *
  * そのまま `ent start` に渡せる必要は無い（`desired_state` と criteria は人間が
  * 書くもの）が、**スキーマとしては妥当**にする。埋める前に「何が悪いのか」を
