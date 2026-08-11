@@ -1,0 +1,163 @@
+version: 1
+
+goal:
+  id: trust-mise-before-the-first-command
+  name: clone 直後の README の手順が、1行目で止まらない
+  desired_state: |
+    clone 直後に README「作る側のセットアップ」の手順をそのまま叩くと、1行目の
+    `mise install --locked` が trust エラーで止まる。
+
+    ```console
+    $ git clone ... && cd entelecheia
+    $ mise install --locked
+    mise ERROR error parsing config file: /path/to/entelecheia/mise.toml
+    mise ERROR Config files in /path/to/entelecheia/mise.toml are not trusted.
+    mise ERROR Trust them with `mise trust`.
+    ```
+
+    `mise trust` を1回叩けば通り、そのあとは README のとおりに進む。
+
+    ## なぜ手順に載せるか
+
+    mise を日常的に使っていれば「trust を求められた」で読める。ただしこの
+    リポジトリは mise を入口の前提に置いているので、手順どおりに叩いて止まった
+    とき、**環境の不備なのか手順の欠落なのかが外からは区別が付かない。**
+
+    README には「Acceptance Criteria を先に書く進め方なので typecheck と test は
+    落ちる」と、想定内の赤を先に宣言する書き方が既にある。trust もそこと同じ
+    扱いにできる。
+
+    ## 何が満たされていればよいか
+
+    `mise trust` が `mise install --locked` と同じコードブロックの中、その前に
+    並んでいること。散文で「先に trust してください」と書くのではなく、**コピー
+    してそのまま流せる並び**にする。間にコードブロックの区切りが挟まると、読む側は
+    2回に分けて拾うことになり、1つ目を飛ばす経路が残る。
+
+    説明の文言は決めない。順序と位置だけを仕様として固定してある。
+
+    ## 踏むのは作る側だけになる
+
+    使う側は `pnpm link --global` の側を通るので、mise には行き当たらない。
+    README を使う側と作る側で分けたのは別の Goal
+    （`install-ent-from-a-built-checkout`）で、その分割はこの Goal の base に
+    既に入っている。**作る側の節だけを直す。**
+
+    ## 仕様は既にテストとして枝の上にある
+
+    `tests/readme-setup.test.ts` は、人間が先に書いてこのブランチへ commit して
+    ある。着手時点で3件落ちる。**Actor がやるのはテストを緑にすることで、
+    テストを書くことではない。** テストを弱めて緑にすることは失敗にあたる。
+
+repository:
+  provider: github
+  owner: slashkiko
+  name: entelecheia
+  default_branch: main
+
+setup:
+  - pnpm install --frozen-lockfile
+
+acceptance_criteria:
+  - id: ac-1
+    description: 先に置いた readme-setup の仕様テストが通り、既存のテストも通ったままになる
+    verification: { type: command, run: mise run test }
+
+  - id: ac-2
+    description: 型チェックが通る
+    verification: { type: command, run: mise run typecheck }
+
+  - id: ac-3
+    description: lint と format が通る
+    verification: { type: command, run: mise run lint }
+
+  - id: ac-4
+    description: サプライチェーンと workflow のチェックが通る（baseline 由来）
+    verification: { type: command, run: mise run check }
+
+  - id: ac-5
+    description: 変更を載せた PR の CI が成功している
+    verification: { type: fact, key: github.ci.conclusion, equals: success }
+
+  - id: ac-6
+    description: clone 直後の手順が実際に通るかを、人間が手で確かめる
+    verification:
+      type: human
+      prompt: |
+        この Goal の成否は「clone 直後の人が止まらずに進めるか」で、この repo の
+        テストが緑になったことはその証明になりません。手で確かめてください。
+
+        1. clone 直後の手順
+
+           - 別の場所へ clone し直して、README の「作る側のセットアップ」の
+             コードブロックを上から順に叩く。1行目で止まらないか
+           - `mise trust` を入れた位置が、コピーしてそのまま流せる並びになって
+             いるか
+
+        2. 触っていないはずのところ
+
+           - 「使う側のセットアップ」に mise が戻っていないか。使う側は
+             `pnpm link --global` の側を通るので、mise には行き当たらない
+           - docs/** と src/** に差分が無いか。これは README だけの話になる
+
+        3. テストを弱めて通していないか
+
+           - `tests/readme-setup.test.ts` の assert が、先に置いた時点から
+             緩められていないか
+
+context:
+  background: |
+    issue #48 にあたる。README を書き換えていた別の worktree の作業が main に
+    入る（PR #53）まで着手を止めていたので、いまが着手のタイミングになる。
+
+    base には、README を使う側と作る側で分けた分（`install-ent-from-a-built-checkout`）
+    も入っている。この Goal が直すのは作る側の節だけで、分割そのものには触らない。
+
+  constraints:
+    - README.md だけを直す。src/** と docs/** と設定ファイルには手を入れない
+    - 使う側の節に mise を戻さない。使う側は `pnpm link --global` の側を通る
+    - 行頭が `ent <語>` の行の集合を変えない。`tests/docs-contract.test.ts` が実装側の集合と網羅で突き合わせる
+    - "`tests/readme-setup.test.ts` は仕様なので変更しない。通らないなら README を直す"
+    - 既存の tests/ も弱めない
+    - 依存を足さない
+    - 下書きや調査用のファイルを worktree の外（`/tmp` など）に置かない。関門は worktree の外への書き込みを一律に `escaped_worktree` として止めるので、そこで人間待ちになる
+    - "`.claude/**` を編集しようとしない。Actor の Edit はそこで permission_denied になるので、必要になったら人間に投げる"
+
+  references:
+    - title: 仕様。着手時点では落ちている
+      path: tests/readme-setup.test.ts
+    - title: 直す対象。「作る側のセットアップ」の節
+      path: README.md
+    - title: trust を要求している当のもの
+      path: mise.toml
+    - title: README / SKILL.md とサブコマンドの網羅集合の突き合わせ
+      path: tests/docs-contract.test.ts
+
+policies:
+  require_human_approval:
+    - merge
+    - force_push
+    - push_to_default_branch
+    - deploy
+    - secret_access
+    - external_send
+  # 下限（PROTECTED_PATH_FLOOR）はスキーマが必ず混ぜるので、ここには足す分だけ書く。
+  # **README.md はここに書かない。** この Goal はそこを直すのが仕事になる。
+  protected_paths:
+    - docs/**
+    - src/**
+    - mise.toml
+    - mise-tasks/**
+    - vitest.config.ts
+    - biome.json
+    - tsconfig*.json
+    - .github/**
+    - package.json
+    - pnpm-lock.yaml
+
+budget:
+  max_actor_runs: 6
+  max_reconciles: 15
+  max_wall_clock: 2h
+  max_consecutive_failures: 3
+  max_unchanged_reconciles: 4
