@@ -18,7 +18,7 @@ import type { Verification } from "./verification.js";
  * **1つのファイルに集めるのは、保護の単位と一致させるため。** ここに並ぶのは
  * どれも `PROTECTED_PATH_FLOOR` の基準——書き換えられると関門そのものが
  * 働かなくなるもの——に当たる。`guardBaseOf` を書き換えれば関門は毎ティック
- * 空の差分を見るし、`claimsNothingLeft` を書き換えれば未 commit の関門が
+ * 空の差分を見るし、`leavesWorkUncommitted` を書き換えれば未 commit の関門が
  * 一度も鳴らない。`elapsedSecondsSince` は `max_wall_clock` の停止条件そのもの。
  *
  * 語彙ごとに `action.ts` / `fact.ts` / `goal-state.ts` へ配ると、下限はファイル

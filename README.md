@@ -89,9 +89,20 @@ Phase 2 からずっと失敗していたこと、VERIFY が worktree ではな�
 worktree の作業ツリーを見るので、criteria は全部通るのに remote には何も出ず、
 controller は承認待ちで止まった。人間が待っているのは実装が載った PR なので、
 その待ちは永久に終わらない。**「Actor が commit する」という前提を、どこも
-要求していなかった。** いまは「機械側にやることは残っていない」と言い切るティックで
-未 commit の変更を検知し、`ESCALATE(uncommitted_changes)` で人間を呼ぶ
-（design.md §10-11）。読むのは**今ティックの観測が worktree を見て作った**
+要求していなかった。**
+
+**いまはその前提を置いていない。** 機械側の criteria（`command` 型）が**全部**通った
+ティックで、controller が Actor の書いたものを commit する。Actor に commit を
+求めても従ったことは確かめられず、実測でも同じ設定の Actor が commit する
+ティックとしないティックの両方が出た（design.md §10-11）。保護パスの関門が
+止めたティックでは commit しない。違反した変更を履歴に載せない。
+
+**commit したティックでは未 commit の関門を見ない。** `local.dirty` は commit より
+前の観測なので、読むと自分が片付けた汚れで自分を止めることになる。受け皿として
+残るのは何も commit されなかったティック（gitignore されたファイルだけが汚れて
+いる、commit そのものが失敗した）で、「機械側にやることは残っていない」と
+言い切るティックに未 commit の変更が残っていれば、`ESCALATE(uncommitted_changes)`
+で人間を呼ぶ。読むのは**今ティックの観測が worktree を見て作った**
 `local.dirty` だけで、観測に失敗したティックや worktree がまだ無いティックでは
 止まらない。役割が増えた（design.md §4.2）あとも、突き合わせるのは
 **実装役のブランチ**に固定してある。検証コマンドと `local.*` を観測する先が

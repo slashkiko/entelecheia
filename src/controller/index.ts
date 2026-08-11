@@ -563,7 +563,18 @@ async function preview(goal: Goal, state: GoalState, deps: ControllerDeps): Prom
   // 汚れていて完了 Run が履歴にある状態で、実ティックが WAITING_HUMAN になるのに
   // dry-run は COMPLETED を予告する。「1行も push せず COMPLETED」を防ぐために
   // 足した関門を、それを覗くための道具が見ていないことになる（design.md §10-11）。
-  const decided = uncommittedDecision(goal, guarded, result.observedFacts, deps);
+  //
+  // **ただし commit する条件は書かずに判定する。** 実ティックは機械側の criteria が
+  // 通っていれば先に commit するので、そのティックで関門は鳴らない。dry-run は
+  // 書かない側なので commit は起こせないが、**起こしていたら鳴らなかった**ことは
+  // 同じ純ロジックで分かる。ここを見ないと、実ティックが commit して進むはずの
+  // ティックを dry-run だけが `ESCALATE(uncommitted_changes)` と予告する。
+  const wouldCommit =
+    guarded.action.type !== "ESCALATE" &&
+    machineCriteriaSatisfied(goal.acceptance_criteria, verifications);
+  const decided = wouldCommit
+    ? guarded
+    : uncommittedDecision(goal, guarded, result.observedFacts, deps);
 
   return {
     ran: false,
