@@ -20,6 +20,7 @@ import {
   leavesWorkUncommitted,
   observedValue,
   sleepingUntil,
+  waitedSeconds,
 } from "../domain/guard-rules.js";
 import { describeViolations, findViolations } from "../domain/protected-paths.js";
 import { type ActorRole, DEFAULT_ACTOR_ROLE, type Run } from "../domain/run.js";
@@ -943,7 +944,15 @@ function usageOf(state: GoalState, goal: Goal, deps: ControllerDeps): BudgetUsag
   // 解釈できない activated_at を 0 秒として扱うと、max_wall_clock だけが
   // 黙って無効化される（NaN との比較は常に false になる）。停止条件が消えるより、
   // 人間を呼ぶ側に倒す。decide の durationSeconds が上限を読めなかったときと同じ扱い。
-  const elapsedSeconds = elapsedSecondsSince(state.activatedAt, deps.now());
+  //
+  // 人間か外部を待っていた分は引く。待てと指示したのは controller の側なので、
+  // その時間を Goal の予算から引くのは筋が通らない（`waitedSeconds`）。
+  const now = deps.now();
+  const elapsedSeconds = Math.max(
+    0,
+    elapsedSecondsSince(state.activatedAt, now) -
+      waitedSeconds(deps.store.listDecisions(goal.goal.id), state.activatedAt, now),
+  );
 
   // 直近まで同じ観測が続いていた回数。今回のティックは含まない。
   // 含めると、DECIDE が「今回は変わった」を判定できなくなる。

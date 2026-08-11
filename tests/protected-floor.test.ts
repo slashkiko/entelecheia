@@ -165,6 +165,7 @@ const GUARD_RULES = [
   "observedValue",
   "sleepingUntil",
   "elapsedSecondsSince",
+  "waitedSeconds",
   "consecutiveFailuresOf",
 ] as const;
 
