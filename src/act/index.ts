@@ -1,7 +1,7 @@
 import type { Decision } from "../domain/action.js";
 import { errorMessage } from "../domain/error-message.js";
-import { type PortErrorKind, portErrorKindOf, resumeAfterOf } from "../domain/port-error.js";
 import type { ApprovalGate, Goal } from "../domain/goal.js";
+import { type PortErrorKind, portErrorKindOf, resumeAfterOf } from "../domain/port-error.js";
 import {
   type ActorKind,
   type ActorRole,

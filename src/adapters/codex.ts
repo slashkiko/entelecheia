@@ -4,12 +4,12 @@ import { dirname, join } from "node:path";
 import { z } from "zod";
 import type { ActorInvocation, ActorPort, ActorResult } from "../act/index.js";
 import type { LlmPort } from "../decide/index.js";
-import type { LlmCall } from "../domain/llm-call.js";
 import { errorMessage } from "../domain/error-message.js";
+import type { LlmCall } from "../domain/llm-call.js";
 import { PortError } from "../domain/port-error.js";
 import type { ActorRole } from "../domain/run.js";
 import { CODEX_ACTOR_WITHHELD_ENV, withheldEnv } from "../domain/withheld-env.js";
-import { JSON_ONLY, parseJson, PROMPT_FOR } from "./agent-prompt.js";
+import { JSON_ONLY, PROMPT_FOR, parseJson } from "./agent-prompt.js";
 
 /** Codex CLI の model_reasoning_effort に渡す値。 */
 export type CodexEffort = "none" | "minimal" | "low" | "medium" | "high" | "xhigh";

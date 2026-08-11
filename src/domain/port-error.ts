@@ -1,3 +1,5 @@
+import { z } from "zod";
+
 /**
  * Port が外部に触れて失敗したときに投げるエラー。
  *
@@ -89,4 +91,3 @@ export function resumeAfterOf(error: unknown): string | null {
   const resumeAfter = (error as { resumeAfter?: unknown }).resumeAfter;
   return typeof resumeAfter === "string" ? resumeAfter : null;
 }
-import { z } from "zod";

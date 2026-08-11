@@ -1,9 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
-import { act, type ActorPort } from "../src/act/index.js";
+import { type ActorPort, act } from "../src/act/index.js";
 import { actionSchema } from "../src/domain/action.js";
 import type { Goal } from "../src/domain/goal.js";
 import { openStore } from "../src/store/sqlite.js";
-import { agentSelectionFrom, type AgentFactories, tickPorts } from "../src/wiring/index.js";
+import { type AgentFactories, agentSelectionFrom, tickPorts } from "../src/wiring/index.js";
 
 const GOAL: Goal = {
   version: 1,
