@@ -13,13 +13,16 @@ import type { Fact, Unresolved } from "../domain/fact.js";
 import type { Goal } from "../domain/goal.js";
 import { type GoalState, type GoalStatus, isTerminal, nextStatus } from "../domain/goal-state.js";
 import {
-  claimsNothingLeft,
   consecutiveFailuresOf,
+  dependencyGate,
   describeClaim,
+  describeDependencyGate,
   elapsedSecondsSince,
   guardBaseOf,
+  leavesWorkUncommitted,
   observedValue,
   sleepingUntil,
+  waitedSeconds,
 } from "../domain/guard-rules.js";
 import { describeViolations, findViolations } from "../domain/protected-paths.js";
 import { type ActorRole, DEFAULT_ACTOR_ROLE, type Run } from "../domain/run.js";
@@ -29,8 +32,8 @@ import { type ReconcileDeps, reconcile } from "../reconcile/index.js";
 import type { Store } from "../store/port.js";
 
 /**
- * 1ティックの外側。lease を取り、reconcile を回し、結果を書き、ACT を実行し、
- * 状態を遷移させる。
+ * 1ティックの外側。lease を取り、reconcile を回し、ACT を実行し、結果を書き、
+ * 状態を遷移させる。書き込みを ACT の後に置く理由は design.md §3.6。
  *
  * reconcile と act 自体は変更しない。あの2つを純粋に保ったまま、
  * 副作用と永続化をこの層に集める（design.md §8）。
@@ -212,6 +215,29 @@ export async function tick(goal: Goal, deps: ControllerDeps): Promise<TickResult
   const sleeping = sleepingUntil(state.resumeAfter, deps.now());
   if (sleeping !== null) {
     return idle(state.status, `resume_after まで寝ている: ${sleeping}`);
+  }
+
+  // 依存する Goal が揃うまで進めない（design.md §10-12）。
+  //
+  // **lease は取らない。** resume_after と同じ理由で、待っているだけの Goal が
+  // 他のワーカーを塞ぐ。並べる本数を決めるのは呼び出し側なので（README
+  // 「複数の Goal を同時に回す」）、依存待ちの1本が枠を持ち続けると、
+  // 進める側の Goal まで cron の1周で回らなくなる。
+  //
+  // **`ent start` の入口ではなくここで見る。** あちらで「ACTIVE にしない」形に
+  // すると、依存先をまだ start していない順序で宣言を書けなくなる。分解した
+  // サブ Goal をまとめて登録する使い方（§10-12）がそれに当たる。
+  //
+  // 状態は動かさない。ここで書けば止まった理由が DB に残るが、そのためには
+  // lease を取ることになり、上の理由と衝突する。理由は `skipped` に載せて
+  // `ent run` の出力に出す。
+  const gate = dependencyGate(
+    goal.goal.depends_on,
+    (dependencyId) => deps.store.getState(dependencyId)?.status ?? null,
+  );
+  const blocked = describeDependencyGate(gate);
+  if (blocked !== null) {
+    return idle(state.status, blocked);
   }
 
   // 見るだけのティック。ここから下（lease・回収・永続化・ACT・publish）は
@@ -769,15 +795,15 @@ function worktreePathFor(
  * 「実装が載った PR」なので永久に終わらない（design.md §10-11）。
  *
  * 満たすべき性質:
- * - 差し替えるのは「機械側にやることが残っていない」と言い切るティックだけにする。
- *   COMPLETE と WAIT の2つで、WAIT は LLM が返したものも guard が
- *   Gap ゼロから出したものも同じ意味を持つ
+ * - 差し替えるのは「このティックで書き残しが commit されない」と言い切れるティックに
+ *   する。COMPLETE と WAIT と VERIFY の3つで、WAIT は LLM が返したものも guard が
+ *   Gap ゼロから出したものも同じ意味を持つ。判定は `leavesWorkUncommitted` が正
  * - `WAIT(usage_limit)` は差し替えない。あれは判断そのものを保留しただけで、
  *   上限が明ければ続きがある（design.md §10-5）。待てば直る状態で人間を呼ばない
  * - ACT が出たティックは触らない。実装の途中で作業ツリーが汚れているのは正常で、
  *   ここまで止めると Actor は1ティックも実装を進められない
  * - **Actor がまだ1度も走っていない Goal では見ない。** 1ティック目は worktree が
- *   無く、`local.*` は controller 自身のリポジトリを観測する（`src/cli.ts` の
+ *   無く、`local.*` は controller 自身のリポジトリを観測する（`src/wiring/index.ts` の
  *   `verifyRoot`）。自己ホストでは人間の編集で汚れているのが普通なので、そこを
  *   Actor の書き残しと読むと、どの Goal も最初のティックから進まなくなる
  * - **worktree を観測した dirty だけを見る。** 「Run が1件でもあれば worktree を
@@ -806,7 +832,7 @@ function uncommittedDecision(
   observedFacts: readonly Fact[],
   deps: ControllerDeps,
 ): Decision {
-  if (!claimsNothingLeft(decision)) {
+  if (!leavesWorkUncommitted(decision)) {
     return decision;
   }
 
@@ -821,7 +847,7 @@ function uncommittedDecision(
   // 書き残しではない。controller 自身のリポジトリの汚れで人間を呼ばない。
   //
   // 突き合わせる相手は**実装役の作業ツリー**に固定する。`local.*` を観測する
-  // のも criteria のコマンドを流すのも実装役の側で（`src/cli.ts` の
+  // のも criteria のコマンドを流すのも実装役の側で（`src/wiring/index.ts` の
   // `verifyRoot`）、PR に載るのもそのブランチだからになる。役割が増えても
   // ここを review 側にすると、レビュー中の作業ツリーの汚れを実装の書き残しと
   // 読む一方で、実装役が書き残したものを見落とす。
@@ -943,7 +969,15 @@ function usageOf(state: GoalState, goal: Goal, deps: ControllerDeps): BudgetUsag
   // 解釈できない activated_at を 0 秒として扱うと、max_wall_clock だけが
   // 黙って無効化される（NaN との比較は常に false になる）。停止条件が消えるより、
   // 人間を呼ぶ側に倒す。decide の durationSeconds が上限を読めなかったときと同じ扱い。
-  const elapsedSeconds = elapsedSecondsSince(state.activatedAt, deps.now());
+  //
+  // 人間か外部を待っていた分は引く。待てと指示したのは controller の側なので、
+  // その時間を Goal の予算から引くのは筋が通らない（`waitedSeconds`）。
+  const now = deps.now();
+  const elapsedSeconds = Math.max(
+    0,
+    elapsedSecondsSince(state.activatedAt, now) -
+      waitedSeconds(deps.store.listDecisions(goal.goal.id), state.activatedAt, now),
+  );
 
   // 直近まで同じ観測が続いていた回数。今回のティックは含まない。
   // 含めると、DECIDE が「今回は変わった」を判定できなくなる。

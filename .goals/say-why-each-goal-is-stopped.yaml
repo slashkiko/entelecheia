@@ -1,0 +1,210 @@
+version: 1
+
+goal:
+  id: say-why-each-goal-is-stopped
+  name: 一覧を見れば、どの Goal が誰の番で止まっているかが分かる
+  desired_state: |
+    `ent list` は id / name / status / reconciles / prNumber / resumeAfter を返すが、
+    **status だけでは誰の番かが決まらない。** `nextStatus` は
+    `ESCALATE(protected_path_touched)` も `WAIT(review_pending)` も同じ
+    `WAITING_HUMAN` にする。前者は人間が worktree を掃除しないと二度と進まず、
+    後者は PR に承認の1行を書けば進む。読む側からその2つが同じに見えるので、
+    一覧を数え上げても次の一手が決まらない。
+
+    複数の Goal を並べて回す構成（README「複数の Goal を同時に回す」）では、
+    止まった1本を見つけるのに `ent get` を Goal の本数ぶん叩くことになる。
+    足りないのは集計ではなく、1件あたりの手がかりになる。
+
+    **見張る主体は作らない。** design.md §7 の境界は「完了判定と暴走の停止条件を
+    LLM に決めさせない」で、監査に相当するものは既に純ロジックの関門として
+    動いている（`src/domain/guard-rules.ts` は `PROTECTED_PATH_FLOOR` の中にある）。
+    ここで作るのは、その関門が出した結論を Goal をまたいで読むための材料で、
+    判断は1つも足さない。
+
+    どう作るかは Actor が決める。以下は「何が満たされていればよいか」を書く。
+
+    1. 止まっている理由を1件ごとに出す
+
+      直近の Decision の action が `WAIT` か `ESCALATE` なら、その種別と理由を
+      `stopped` に載せる。`ACT` / `VERIFY` / `REPLAN` / `COMPLETE` と、判断が
+      1件も無い Goal では null にする。`COMPLETE` を止まりに数えると、
+      終わった Goal が毎回一覧の上で人を呼ぶ。
+
+      **種別と理由を1本の文字列に畳まない。** いまは名前が重なっていないが、
+      重なった瞬間に「待てば進む」と「人が動かないと進まない」が同じ値になる。
+
+    2. criteria がどこまで通っているかを出す
+
+      直近ティックの `Verification` を passed / failed / unresolved の3値のまま
+      数えて `criteria` に載せる。1度も検証していなければ null にする。
+      ゼロ件を `{ passed: 0, failed: 0, unresolved: 0 }` にすると、
+      「まだ回していない」が「全部落ちている」と同じ見た目になる。
+
+      3値を畳まないのは design.md §3.1 と同じ理由で、「落ちた」と
+      「確かめられなかった」を混ぜないため。
+
+    3. 最後に判断した時刻を出す
+
+      `lastDecidedAt`。止まってから何日経ったかは、これが無いと読めない。
+
+    4. 読む先を増やさない
+
+      材料は既にある Store の口（`latestVerifications` / `listDecisions`）だけで
+      揃う。**`Store.listGoals()` の戻り値は変えない。** あちらは
+      `tests/store-list.test.ts` が固定していて、goals テーブルの1行をそのまま
+      写す役目になっている。組み立ては usecase 層（`src/usecase/inspect.ts`）が
+      行う。
+
+      具体的には、`GoalListItem` を拡げた型（例: `GoalProgress`）を
+      `src/domain/goal-state.ts` に立て、`listPayload` の戻り値をそちらにする。
+      `listGoals()` が返すのはこれまでどおり `GoalListItem` のままで、
+      広げるのは組み立てた後の型だけになる。**`src/store/**` はこの Goal の
+      保護パスに入れてあるので、触るとテストが落ちるのではなく
+      `ESCALATE(protected_path_touched)` になる。** 触りたくなったら、それは
+      設計が変わったということなので人間を呼ぶ。
+
+      1件ごとに Store を2回引くので、**上限で切ってから読む**。切る前に読むと
+      登録数に比例してクエリが増える。
+
+    テストは tests/list-progress.test.ts に書いてある。あわせて
+    tests/cli-list.test.ts の `listPayload` の期待値を新しい形に直してある。
+    着手時点では両方落ちる。仕様はテストが正で、この記述と食い違ったら
+    テストに合わせる。
+
+    **`ent start` の前に2つ揃える。**
+
+    1つ目は順番で、**start-the-review-we-wired が緑になってからにする。** いまの
+    main は `mise run test` も `mise run typecheck` も落ちる。あちらの仕様テスト
+    （tests/review-*.test.ts）が実装より先に入っているためで、この Goal とは
+    無関係の赤になる。先に start すると ac-1 と ac-2 に永久に届かない。
+    collaborate-in-separate-worktrees.yaml が同じ形で1度踏んでいる。
+
+    2つ目は commit で、**この YAML と tests/list-progress.test.ts、および
+    tests/cli-list.test.ts の変更を commit してから start する。** `ent start` は
+    そのときの repoRoot の HEAD を関門の基準（`guardBaseSha`）として記録し、
+    worktree もそこから切られる。commit 前に start すると、人間が書いたこの3つが
+    基準の側に入らず、worktree の差分に Actor の編集として並ぶ。`.goals/**` は
+    `PROTECTED_PATH_FLOOR` にあるので、Actor が何もしていないティックでも
+    `protected_path_touched` になる（design.md §10-6）。
+
+repository:
+  provider: github
+  owner: slashkiko
+  name: entelecheia
+  default_branch: main
+
+setup:
+  - pnpm install --frozen-lockfile
+
+acceptance_criteria:
+  - id: ac-1
+    description: list-progress と cli-list のテストが通る（着手時点では落ちている）
+    verification: { type: command, run: mise run test }
+
+  - id: ac-2
+    description: 型チェックが通る
+    verification: { type: command, run: mise run typecheck }
+
+  - id: ac-3
+    description: lint と format が通る
+    verification: { type: command, run: mise run lint }
+
+  - id: ac-4
+    description: サプライチェーンと workflow のチェックが通る（baseline 由来）
+    verification: { type: command, run: mise run check }
+
+  - id: ac-5
+    description: 変更を載せた PR の CI が成功している
+    verification: { type: fact, key: github.ci.conclusion, equals: success }
+
+  - id: ac-6
+    description: 判断を足していないこと、読む先を増やしていないことを人間が確認する
+    verification:
+      type: human
+      prompt: |
+        この Goal は「見張るための材料」を出すもので、見張る主体は作りません。
+        次を確認してください。
+
+        1. LLM を呼ぶ経路が1本も増えていないか。集計も判定も純ロジックか
+        2. `Store.listGoals()` の戻り値が変わっていないか
+           （tests/store-list.test.ts が緑のままか）
+        3. `src/store/port.ts` と `src/store/sqlite.ts` を触っていないか。
+           触っているなら、なぜ usecase 層で組み立てられなかったのかが読めるか
+        4. `stopped` の種別と理由が別のフィールドのままか。
+           1本の文字列に畳まれていないか
+        5. `criteria` が passed / failed / unresolved の3値のままか
+
+context:
+  background: |
+    当初の構想では「全体の進捗管理と監査エージェントがモニタリングする」ことに
+    なっていたが、いまの ent には集約する視点も、それを見張る主体も無い。
+    このうち**監査をエージェントにしない判断は既に構造として固まっている**
+    （guard の判断規則が `src/domain/guard-rules.ts` の1ファイルにまとまり、
+    `PROTECTED_PATH_FLOOR` に入っている）。
+
+    残るのは「読むための材料」で、そこは読むだけの層に閉じる。
+    `src/usecase/inspect.ts` は Store だけを受け取って読むだけの形をしていて、
+    controller にも関門にも触らずに足せる。**この Goal は保護パスの下限を
+    1つも踏まない**ので、ent 自身に実装させられる。
+
+    分解（サブ Goal や Task 層）を入れる案とは切り離してある。あちらは
+    Goal YAML のスキーマ（`src/domain/goal.ts`）か guard の判断規則を動かす
+    ので、どちらも下限の中に入る。こちらを先に出しておけば、分解を入れる前でも
+    複数 Goal を並べたときの見通しが良くなる。
+
+  constraints:
+    - テストから実際の GitHub と Claude API を叩かない
+    - tests/list-progress.test.ts は仕様なので変更しない。通らないなら実装側を直す
+    - tests/cli-list.test.ts の期待値も仕様として更新済み。こちらも変更しない
+    - tests/store-list.test.ts は緑のまま保つ。Store.listGoals() の戻り値を変えない
+    - 既存の tests/ も弱めない
+    - 判断を足さない。LLM を呼ぶ経路を1本も増やさない
+    - ent list の出力はトップレベルが配列のままにする。
+      オブジェクトに変えると agent-context と SKILL.md まで波及する
+    - 出力は JSON にする。ent get と同じく機械可読を保つ
+    - docs/design.md の「3. 中核の設計判断」を勝手に変えない
+    - 依存パッケージを増やさない
+    - mise run check（サプライチェーン検査）を壊さない
+    - PR の作成とコメントの投稿はしない。controller が行う
+
+  references:
+    - title: 設計ドキュメント
+      path: docs/design.md
+    - title: いまの一覧の組み立て
+      path: src/usecase/inspect.ts
+    - title: 一覧が返す型
+      path: src/domain/goal-state.ts
+    - title: 読む先の口
+      path: src/store/port.ts
+
+policies:
+  require_human_approval:
+    - merge
+    - force_push
+    - push_to_default_branch
+    - deploy
+    - secret_access
+    - external_send
+  protected_paths:
+    # 下限（PROTECTED_PATH_FLOOR）は Zod が読み込み時に混ぜるので書かない。
+    # ここに並べるのは、この Goal で追加する分だけにする。
+    # 検証系。ここを書き換えられると Agent が自分の criteria を通せる。
+    - mise.toml
+    - mise-tasks/**
+    - vitest.config.ts
+    - biome.json
+    - tsconfig*.json
+    - .github/**
+    # 依存の追加は人間が通す。constraints にも「増やさない」と書いてある。
+    - package.json
+    - pnpm-lock.yaml
+    # この Goal は読むだけの層に閉じる。永続化の口と実装を触る必要は無い。
+    # 触りたくなったら、それは設計が変わったということなので人間を呼ぶ。
+    - src/store/**
+
+budget:
+  max_actor_runs: 6
+  max_reconciles: 12
+  max_wall_clock: 2h
+  max_consecutive_failures: 3
+  max_unchanged_reconciles: 4

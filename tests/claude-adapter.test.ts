@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { ActorInvocation } from "../src/act/index.js";
 import { type AgentQuery, claudeActor, claudeLlm, WITHHELD_ENV } from "../src/adapters/claude.js";
 import { PortError } from "../src/domain/port-error.js";
+import { NEUTRALIZED_ENV } from "../src/domain/withheld-env.js";
 
 /**
  * テストから実際の Claude Code を起動しない。query() を注入して差し替える。
@@ -188,10 +189,27 @@ describe("claudeActor", () => {
     await claudeActor({ ...deps(sink), env: { ...kept, ...secrets } }).run(INVOCATION);
 
     const options = sink.options[0] as { env?: Record<string, string> };
-    expect(options.env).toEqual(kept);
+    expect(options.env).toEqual({ ...kept, ...NEUTRALIZED_ENV });
     // 一覧が空になっていないことも見る。空なら上の toEqual は素通りする。
     expect(WITHHELD_ENV).toContain("GITHUB_TOKEN");
     expect(WITHHELD_ENV).toContain("GH_TOKEN");
+  });
+
+  it("Agent の中の gh を未認証にする", async () => {
+    // トークンを落としても `HOME` は渡すので、`gh` はホストのログインで通る。
+    // `/ent approve` は PR の作成者が書いても承認になる（design.md §10-4）ため、
+    // Agent がコメントを1件投稿できれば自分の criterion を自分で通せる。
+    // 拒否リストは glob なので `gh api -X POST` のような別綴りで抜けられる。
+    // 資格情報そのものを届かせない側で塞ぐ。
+    const sink = recorded([SUCCESS]);
+    await claudeActor({
+      ...deps(sink),
+      env: { HOME: "/home/x", GH_CONFIG_DIR: "/home/x/.config/gh" },
+    }).run(INVOCATION);
+
+    const options = sink.options[0] as { env?: Record<string, string> };
+    expect(options.env?.GH_CONFIG_DIR).toBe(NEUTRALIZED_ENV.GH_CONFIG_DIR);
+    expect(options.env?.HOME).toBe("/home/x");
   });
 
   it("トークンを記録する", async () => {

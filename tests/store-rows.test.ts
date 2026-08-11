@@ -41,7 +41,12 @@ function seed(): void {
   try {
     store.upsertGoal({
       version: 1,
-      goal: { id: "rows-goal", name: "サンプル", desired_state: "何かが完成している" },
+      goal: {
+        id: "rows-goal",
+        name: "サンプル",
+        desired_state: "何かが完成している",
+        depends_on: [],
+      },
       repository: {
         provider: "github",
         owner: "slashkiko",

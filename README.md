@@ -30,7 +30,7 @@ design.md §9 の完了条件9項目はすべて確認した。**MVP は完了�
 | 確かめられなかったことを黙って落とさない | 「対象が無い」と「対象を確かめられなかった」を区別し、後者は `unobserved` / `unverified` に理由付きで残す | 済 |
 | 検証に還元できない Goal は受け付けない | Acceptance Criteria を検証手段（コマンド / Fact 参照 / 人間の承認）に落とせない Goal は ACTIVE にしない | 済 |
 | 待機はプロセスではなく状態 | reconcile はどのティックも有限時間で return する。常駐して sleep しない | 済 |
-| 宣言と収束の分離 | 人間が書くのは Desired State と Acceptance Criteria。タスク分解も Actor 選択も controller が決める | 済 |
+| 宣言と収束の分離 | 人間が書くのは Desired State と Acceptance Criteria。タスク分解も Actor 選択も controller が決める | 一部（分解は1つの Goal の内側だけが済で、Goal をまたぐ分解は順序の宣言（`goal.depends_on`）まで。割る判断は人間が持つ（design.md §10-12）。Actor 選択は controller が決める形だが、選べる先は実装役1つに固定されている（§4.2 / §4.3）） |
 | write-ahead | 副作用の前に意図を DB へ書く。任意の瞬間に kill されても次ティックで回収できる | 済 |
 | 隔離は場所だけでは足りない | worktree でファイルを分けるだけでなく、Agent の出力を controller のシェルに流さない・Agent が書いたものを controller の権限で実行しない | 一部（シェルに流さない側は design.md §7 で対応済み、controller の権限で実行しない側は §10-9 が未決） |
 
@@ -48,9 +48,15 @@ git で見る。ただし見えるのはリポジトリの中の変更だけで�
 検証系**にあたる。選び方の基準は design.md §7 にある。
 
 controller が持つ資格情報（`GITHUB_TOKEN` / `GH_TOKEN` と、`gh auth token` から読んだ
-token）は Agent に渡さない。git は argv 配列で叩き、
+token）は Agent に渡さない。**環境変数を落とすだけでなく、Agent と検証コマンドの中の
+`gh` を未認証にする**（`GH_CONFIG_DIR` を実在しないディレクトリへ向ける）。
+`HOME` は渡すしかないので、落とすだけではホストのログインが残る。
+git は argv 配列で叩き、
 シェルを通すのは Goal YAML の `setup` と `verification.run` だけにする。
 `type: human` の承認は、リポジトリに書き込み権限がある人のものだけを数える。
+レビュー承認は PR の作成者を除くが、**コメントの定型文は作成者も数える**。
+1人で回すリポジトリではそこが唯一の承認経路になるので、Agent がその経路に
+届かないことが承認の前提になる（design.md §10-4）。
 
 Goal の状態（ACTIVE / COMPLETED など）は `.goals/.state/goals.db` が持つ。
 行動の `COMPLETE` と Goal の状態 `COMPLETED` は別のもので、前者が選ばれた結果として後者になる。
@@ -71,8 +77,8 @@ Phase 3 は自己ホストで、5本に割った。1本目で1ティックの記
 進捗をコメントに積み、承認待ちで止まった（`COMPLETED` への遷移そのものは別の Goal で
 確認済み。design.md §9）。
 
-**実際に回すまで、配管は繋がっていると見なせない。** Phase 3 で見つかった断線は
-どれもテストでは通っていた。`git branch --format` の引用符不足で worktree の作成が
+**実際に回すまで、配管は繋がっていると見なせない。** Phase 3 とその直後に見つかった
+断線は、どれもテストでは通っていた。`git branch --format` の引用符不足で worktree の作成が
 Phase 2 からずっと失敗していたこと、VERIFY が worktree ではなく controller 自身の
 リポジトリでコマンドを流していたこと、PR がある間 push しなくなっていたこと、
 そして **Actor が実装を書き切ったまま commit していなかった**こと。
@@ -141,14 +147,22 @@ pnpm install --frozen-lockfile
 ## 検証
 
 ```sh
-mise run verify   # typecheck / lint / test をまとめて実行
+mise run verify   # typecheck / lint / build / test をまとめて実行
 mise run check    # サプライチェーンと workflow のチェック（baseline 由来）
 ```
 
-現時点では `typecheck` / `lint` / `test` / `check` の4つとも通る。
+`verify` に `build` が入っているのは、型が通ることと `dist/cli.js` が出来ることが
+別だから。`tsconfig.json` は `noEmit` で `tests/**` を含み、`bin` の実体を作るのは
+`tsconfig.build.json` の側になる。
 
-Acceptance Criteria を先に書く進め方なので、Goal に着手した直後は `test` が落ちる。
-それは進め方に由来する想定内の状態であって、環境の不備ではない。
+Acceptance Criteria を先に書く進め方なので、Goal に着手した直後は `typecheck` と
+`test` が落ちる。それは進め方に由来する想定内の状態であって、環境の不備ではない。
+落ちる件数まで含めて、その Goal の `desired_state` が着手時点の実測として宣言する。
+main の CI（`.github/workflows/verify.yml`）も、そのあいだは赤いままになる。
+
+**いまは `say-why-each-goal-is-stopped` に着手している状態で、`typecheck` と `test` が
+落ちる。** `lint` と `build` と `check` は通る（`build` は `tests/**` を見ないので、
+落ちているのが仕様テストだけなら影響を受けない）。
 
 ## ent を動かす
 
@@ -197,10 +211,16 @@ Goal は、従来どおり `default_branch` を基準にする（そのときは
 Actor の編集として並ぶ）。
 
 `package.json` の `bin` に `ent` を登録してあるが、npm へ公開していないので
-いまは alias か `node dist/cli.js` で呼ぶ。
+いまは alias か `node dist/cli.js` で呼ぶ（ent 自身を直す Goal だけは下の task を通す）。
 
 常駐しない。`run` はどのティックも有限時間で終了し、待ちは Goal の状態として残る。
+ただし `goal.depends_on` の依存待ちだけは lease を取らないので状態に残らず、
+`ent run` の `skipped` にしか出ない（design.md §10-12）。
 継続して回すなら cron から `run` を叩く。
+
+**ent 自身を直す Goal を回すときは `mise run ent -- run <slug>` を使う。**
+`tsc` を通すまで HEAD の実装は `dist/cli.js` に入らないので、直に叩くと古い
+controller が回り続ける。理由と例外は `CLAUDE.md` にある。
 
 ### この repo の外のリポジトリで使う
 
@@ -243,9 +263,12 @@ ent doctor          # その場所で回せるかを読み取り専用で調べ�
   指さない。上の項目が「対象リポジトリ側に同名のパスがあると誤検知する」話なのに
   対し、こちらは「ent 本体を守る用途には使えない」話になる。**関門が守るのは
   対象リポジトリの中であって、ent 自身のコードではない**（自己ホストのときだけ
-  両方が重なる）。対象リポジトリで意味を持つのは `.goals/**` と `.git/**` で、
-  `.goals/.state/**` は gitignore 済みなので git の観測にそもそも出ない
-  （design.md §10-6 の穴 (b)）
+  両方が重なる）。対象リポジトリで意味を持つのは `.goals/**` と `.git/**` と
+  `.goals/.state/**` の3つになる。後ろの2つは `git status` に出ないが、
+  `.goals/.state/goals.db` と `.git/hooks/**` と `core.hooksPath` は ACT の前後で
+  指紋を比べる別経路（`outOfSightState`）が見ており、そこから関門に繋がる。
+  見えないまま残るのは、`goals.db` 以外の gitignore されたパスと repoRoot の外に
+  なる（design.md §10-6 の穴 (a)(b)）
 
 ### 進捗を PR に投稿しない
 
@@ -269,14 +292,63 @@ criteria の pass 状況で、試走のたびにレビュー中の PR を伸ば�
 本文は `report.body` に入る。受け取るのは `run` だけで、`--dry-run` とは併用できない。
 JSON に何が入るか、書けなかったときにどうなるかは `.claude/skills/ent/SKILL.md` にある。
 
+### 粗いタスクを複数の Goal に割る
+
+1つの粗いタスクを N 本の Goal に割ったら、順序は `goal.depends_on` に書く
+（design.md §10-12）。
+
+```yaml
+goal:
+  id: wire-it-up
+  name: 配線する
+  desired_state: |
+    …
+  depends_on:
+    - build-the-thing
+```
+
+依存がすべて COMPLETED になるまで、`ent run` はそのティックを回さずに終了する。
+**lease も取らない。** 待っているだけの Goal が枠を持ち続けると、進める側の Goal まで
+cron の1周で回らなくなる。判定は `ent start` ではなくティックの入口で行うので、
+依存先をまだ start していない順序で宣言を書いてよい。割った分をまとめて登録して、
+上から `ent run` を並べれば、進める本だけが進む（並べ方と、いま同時に並べられない
+理由は次節）。
+
+進めなかった理由は `ent run` の `skipped` に出る。依存が `FAILED` か `ABANDONED` に
+落ちた場合は、待っても解けないことと次の一手（依存側をやり直すか `depends_on` を
+書き換えるか）まで書く。まだ登録されていない依存は「待てば進む」側に数える。
+`ent start` を打ち忘れただけかもしれないので、無いことを終端とは読まない。
+**この待ちは Goal の状態には残らないので、`skipped` にしか出ない**（design.md §10-12
+の残る穴）。自分自身への依存はスキーマが弾くが、**2本以上をまたぐ循環は YAML 1本からは
+見えない**ので、全員が待ちのまま止まる。
+
+依存の判定も端末ごとの状態 DB を読む。別の端末では依存の `COMPLETED` が見えないので、
+未登録＝待ち扱いになる（上の lease と同じ制約）。
+
+**割る判断そのものは人間が持つ。** controller は書かれた順序に従うだけで、
+粗いタスクを自分で N 本に割ることはしない（design.md §10-12）。
+
 ### 複数の Goal を同時に回す
 
-`ent run` は複数のプロセスから同時に叩いてよい。まとめて回す口（`ent run --all` や
-常駐する watch）は用意しない。何本並べるかを決めるのは呼び出し側で、`ent` は
-「同時に叩かれても壊れない」ところまでを受け持つ。
+設計としては、`ent run` は複数のプロセスから同時に叩いてよい。まとめて回す口
+（`ent run --all` や常駐する watch）は用意しない。何本並べるかを決めるのは呼び出し側で、
+`ent` は「同時に叩かれても壊れない」ところまでを受け持つ。
+
+> [!WARNING]
+> **いまは1本ずつ回すこと。以下のレシピは、この制約が解けるまで使えない。**
+> 同じディレクトリから複数プロセスを立てると、保護パスの関門が
+> `ESCALATE(protected_path_touched)` で止まる。状態 DB は WAL なので、別プロセスの
+> 書き込みや接続の切断で checkpoint が走り、`goals.db` の中身が変わる。関門は ACT の
+> 前後でこのファイルを sha256 で比べるため、先に ACT へ入っていた側が巻き添えになる。
+> 触ったのは Actor ではなく、もう1本の controller になる。
+> `.goals/.state/` は `process.cwd()` の下にできるので、worktree を分ければぶつからない。
+> ただし lease も分かれるので、**別 worktree では同じ Goal を回さない**（下の
+> 「同じ slug を2つのプロセスに渡しても安全」が効かず、両方が PR を立てる）。
+> 直すには関門の側に手を入れる必要がある。詳しくは `CLAUDE.md`。
 
 ```sh
 # ワーカーを並べる側の例。slug ごとに1プロセス立てて、全部の終了を待つ
+# （同じディレクトリなので、上の制約が解けるまでは使えない）
 for slug in goal-a goal-b goal-c; do
   ent run "$slug" &
 done
@@ -284,17 +356,23 @@ wait
 ```
 
 cron から回すなら、Goal ごとに行を分ければよい（同じ分に並んでも構わない）。
+こちらも同じディレクトリを指すので、上の制約が解けるまでは分を1本にずらすか、
+Goal ごとに worktree を分ける。
 
 ```cron
 */10 * * * * cd /path/to/repo && node dist/cli.js run goal-a
 */10 * * * * cd /path/to/repo && node dist/cli.js run goal-b
 ```
 
+次の2段落（lease と本数の目安）は、同じディレクトリで並べられるようになったときの
+前提になる。その先の token の話は、1本だけ回すときも同じに効く。
+
 同じ slug を2つのプロセスに渡しても安全に扱える。Goal の所有権は期限付きの
 lease で決まるので、先に取れた側だけが進み、取れなかった側は
 「他のワーカーが lease を持っている」でスキップして exit 0 で終わる。二重に
 Actor が走ることも、状態が混ざることもない。ティックの途中で lease を失った側も、
-そのティックの記録を1つも書かずに降りる。
+snapshot / verifications / Decision / 状態遷移を1つも書かずに降りる（既に書いてある
+Run の行だけは残る。design.md §3.6）。
 
 並べる本数は機械の資源で決める。各ティックは Actor（Claude Code）と Goal の
 検証コマンド（このリポジトリなら `mise run verify`）を worktree の上で走らせるので、
@@ -328,13 +406,16 @@ src/domain/goal.ts        Goal YAML の Zod スキーマ
 src/domain/goal-parse.ts  Goal YAML の検証と、slug と goal.id の突き合わせ。ファイルは読まない
 src/domain/gap.ts         ASSESS が出す Gap と Assessment の型
 src/domain/action.ts      DECIDE が選ぶ Action と Decision の型
-src/domain/run.ts         Actor の実行記録の型と ActorRole（役割ごとに worktree が分かれる）
+src/domain/run.ts         Actor の実行記録の型と ActorRole（実装役とレビュー役は同じ
+                          worktree、investigate だけが分かれる。design.md §4.2）
 src/domain/goal-state.ts  Goal のライフサイクルと、Action から次の状態を決める遷移
 src/domain/port-error.ts  Port の失敗の種別（usage_limit / unavailable）
 src/domain/verification.ts criteria 単位の検証結果。§9 の完了判定が読む索引
 src/domain/digest.ts      観測値のダイジェスト。ループ検知の材料になる
 src/domain/protected-paths.ts 保護パスの検査。制御ループ自体への編集を止める
 src/domain/guard-rules.ts guard（純ロジック）が読む判断規則。関門の基準と停止条件
+src/domain/withheld-env.ts Agent と検証コマンドの環境から落とす資格情報の除去リスト
+src/domain/error-message.ts 例外から人間が読める1行を取り出す
 src/domain/llm-call.ts    LlmPort を1回呼んだ記録。Run を作らない分のトークン
 src/observe/              Observe と、依存する Port の定義
 src/verify/               Verify と、依存する Port の定義
@@ -345,14 +426,15 @@ src/reconcile/            OBSERVE → VERIFY → ASSESS → DECIDE を1ティッ
 src/publish/              PR の確保と進捗コメント。CodeWriterPort と BranchPort の定義
 src/store/port.ts         実行時状態の Port。使う側が所有する口で、実装は持たない
 src/store/sqlite.ts       その SQLite 実装（node:sqlite）。挿すのは合成ルートだけ
-src/controller/           1ティックの外側。lease → 回収 → reconcile → 永続化 → ACT → 遷移
+src/controller/           1ティックの外側。lease → 回収 → reconcile → ACT → 永続化 → 遷移
 src/adapters/local.ts     node:child_process で書ける Port（コマンド実行、git、worktree）
 src/adapters/goal-file.ts .goals/<slug>.yaml をファイルシステムから読む
 src/adapters/github.ts    CodeProviderPort。@octokit/rest + ETag
 src/adapters/claude.ts    ActorPort と LlmPort。Claude Agent SDK
                           role ごとの許可・拒否ツールとプロンプトもここ。編集の
                           ツールを持つのは実装役だけ（design.md §4.2）
-src/wiring/index.ts       合成ルート。どの Port にどの Adapter を挿すかを決める唯一の場所
+src/wiring/index.ts       合成ルート。どの Port にどの Adapter を挿すかを決める唯一の場所。
+                          関門への入力（Adapter の注入と verifyRoot）もここで決まる
 src/usecase/init.ts       ent init。.goals/ と gitignore の行と Goal の雛形を置く
 src/usecase/doctor.ts     ent doctor。回す前の前提を、書かずに調べる
 src/usecase/inspect.ts    ent get / ent list が出す payload。読むだけ
