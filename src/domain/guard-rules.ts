@@ -43,6 +43,17 @@ const SHA = /^[0-9a-f]{40}$/;
 export const CONTROLLER_STATE_DB_KEY = ".goals/.state/goals.db";
 
 /**
+ * 指紋の代わりに置く値。読めなかった（削除された、ディレクトリになった）ことを表す。
+ *
+ * 実体は `fingerprint`（`src/adapters/local.ts`）が返す。ここに定数として置くのは、
+ * **controller 自身の書き込みでは決してこの値にならない**という判断を関門が
+ * するためになる。DB を消されたり読めなくされたりした差分は、たとえそれが
+ * controller の書き込みと同じ瞬間に起きても「自分が残した形」ではない。
+ * 判断する側と値を作る側で文字列が分かれると、その判断が黙って効かなくなる。
+ */
+export const UNREADABLE_FINGERPRINT = "unreadable";
+
+/**
  * その観測のキーが、controller 自身の書き込み先かどうか。
  *
  * 状態 DB は関門が指紋で見る保護対象でありながら、controller 自身が毎ティック

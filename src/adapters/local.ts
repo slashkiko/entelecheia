@@ -4,7 +4,7 @@ import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { promisify } from "node:util";
 import { type Worktree, type WorktreePort, worktreeBranchFor } from "../act/index.js";
-import { CONTROLLER_STATE_DB_KEY } from "../domain/guard-rules.js";
+import { CONTROLLER_STATE_DB_KEY, UNREADABLE_FINGERPRINT } from "../domain/guard-rules.js";
 import { VERIFY_WITHHELD_ENV, withheldEnv } from "../domain/withheld-env.js";
 import type { LocalRepoPort } from "../observe/index.js";
 import type { BranchPort, PushResult } from "../publish/index.js";
@@ -463,7 +463,9 @@ function fingerprint(path: string): string {
   try {
     return createHash("sha256").update(readFileSync(path)).digest("hex");
   } catch {
-    return "unreadable";
+    // 値は `UNREADABLE_FINGERPRINT` から取る。関門は「controller 自身の書き込みでは
+    // この値にならない」を根拠に、読めなくなった差分を説明の対象から外す。
+    return UNREADABLE_FINGERPRINT;
   }
 }
 

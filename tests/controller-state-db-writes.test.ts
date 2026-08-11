@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { type ControllerDeps, tick } from "../src/controller/index.js";
 import type { Goal } from "../src/domain/goal.js";
-import { CONTROLLER_STATE_DB_KEY } from "../src/domain/guard-rules.js";
+import { CONTROLLER_STATE_DB_KEY, UNREADABLE_FINGERPRINT } from "../src/domain/guard-rules.js";
 import type { Store } from "../src/store/port.js";
 import { openStore } from "../src/store/sqlite.js";
 
@@ -94,6 +94,8 @@ interface Fixture {
   checkpointOnControllerWrite?: boolean;
   /** `.git/hooks/pre-push` を ACT のあいだに置く */
   tamperHook?: boolean;
+  /** controller の書き込みと同じ瞬間に DB が読めなくなる（削除された） */
+  unreadableOnControllerWrite?: boolean;
   state: StateFile;
 }
 
@@ -104,8 +106,18 @@ function deps(store: Store, fixture: Fixture): ControllerDeps {
   /**
    * controller 自身の書き込み。WAL の自動 checkpoint に当たったティックを模して、
    * 書くたびに `goals.db` の中身が変わる形にする。
+   *
+   * `inActWindow` は「ベースラインを控えたあとの書き込みか」になる。lease の取得は
+   * ティックの入口——ベースラインより前——にも1回あるので、そこまで巻き込むと
+   * ACT の窓の中で起きた出来事を模せない。
    */
-  const controllerWrote = (): void => {
+  const controllerWrote = (inActWindow: boolean): void => {
+    if (fixture.unreadableOnControllerWrite === true && inActWindow) {
+      // 自分の書き込みの直前と直後に取る指紋の**間**で DB が読めなくなる。
+      // 控えを取る側から見ると、自分の書き込みの結果と見分けが付かない位置になる。
+      state.content = UNREADABLE_FINGERPRINT;
+      return;
+    }
     if (fixture.checkpointOnControllerWrite === true) {
       state.content = `${CONTROLLER_WROTE}:${state.content}`;
     }
@@ -115,16 +127,16 @@ function deps(store: Store, fixture: Fixture): ControllerDeps {
     ...store,
     startRun: (goalId, intent) => {
       const id = store.startRun(goalId, intent);
-      controllerWrote();
+      controllerWrote(true);
       return id;
     },
     finishRun: (runId, outcome) => {
       store.finishRun(runId, outcome);
-      controllerWrote();
+      controllerWrote(true);
     },
     acquireLease: (goalId, owner, until, now) => {
       const got = store.acquireLease(goalId, owner, until, now);
-      controllerWrote();
+      controllerWrote(false);
       return got;
     },
   };
@@ -268,6 +280,21 @@ describe("controller 自身の書き込みと外部からの改竄を分ける",
     });
 
     expect(result.decision?.action).toMatchObject({ reason: "guard_unavailable" });
+  });
+
+  it("DB が読めなくなった差分は、控えに入っていても説明しない", async () => {
+    // 自分の書き込みの直前と直後に取る指紋の間——ミリ秒の窓——に消されると、
+    // 「読めない」が控えに入り、検査時の指紋と一致してしまう。**controller の
+    // 書き込みが「読めない」を作ることはない**ので、この値だけは控えに入って
+    // いても説明に使わない。消す側は一度当てれば状態が残り続けるため、
+    // 窓に当たったかどうかで結果が変わってはいけない。
+    const result = await runTick({ unreadableOnControllerWrite: true });
+
+    expect(result.decision?.action).toEqual({
+      type: "ESCALATE",
+      reason: "protected_path_touched",
+    });
+    expect(result.decision?.rationale).toContain(CONTROLLER_STATE_DB_KEY);
   });
 
   it("状態 DB 以外のキーは controller の書き込みとして説明しない", async () => {

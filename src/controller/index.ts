@@ -24,6 +24,7 @@ import {
   machineCriteriaSatisfied,
   observedValue,
   sleepingUntil,
+  UNREADABLE_FINGERPRINT,
   waitedSeconds,
   writtenByController,
 } from "../domain/guard-rules.js";
@@ -1063,9 +1064,9 @@ async function observedRepoState(deps: ControllerDeps): Promise<Map<string, stri
  * `goals.db` の中身は動かない。ところが WAL が既定の閾値（1000 ページ）を
  * 越えたコミットでは自動 checkpoint が走り、WAL の内容が `goals.db` へ
  * 畳み込まれて中身が変わる。**同じ形のティックが、それまでに書いた量次第で
- * 鳴ったり鳴らなかったりする。** 実測では、1回の `startRun` / `finishRun` では
- * `goals.db` は1バイトも変わらず、同じ組を183回繰り返した時点で初めて変わった
- * （`tests/state-db-wal-checkpoint.test.ts`）。
+ * 鳴ったり鳴らなかったりする。** `tests/state-db-wal-checkpoint.test.ts` が
+ * 「1組の `startRun` / `finishRun` では変わらない」「書き続ければ変わる」の2つを
+ * 固定している。何回で変わるかは SQLite の既定値に依存するので固定しない。
  *
  * **区別すべきは「保護するかどうか」ではない。** `.goals/.state/**` は
  * `PROTECTED_PATH_FLOOR` に残す。外せば、DB を直接書き換えて状態を偽造されても
@@ -1171,7 +1172,15 @@ function stateWitness(deps: ControllerDeps): StateWitness {
         return false;
       }
       const left = witnessed.get(key);
-      return left !== undefined && left === after;
+      if (left === undefined || left === UNREADABLE_FINGERPRINT) {
+        // **controller の書き込みが「読めない」を作ることはない。** DB を消されたり
+        // 読めなくされたりした差分は、それが自分の書き込みと同じ瞬間に起きて
+        // 控えに入ってしまっても、自分が残した形ではない。上の窓（前後の指紋の
+        // 間のミリ秒）をこの値についてだけ塞ぐ。消す側は一度当てれば状態が
+        // 残り続けるので、窓に当たったかどうかで結果が変わってはいけない。
+        return false;
+      }
+      return left === after;
     },
   };
 }
