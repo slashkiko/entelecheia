@@ -914,6 +914,18 @@ publish は作る前に必ず同じ head の PR を探すので（`findPullReque
 それを見つけて先へ行く。止めているのは「作る」ことだけで、既にある PR への進捗コメントは
 止めない。
 
+**`push_branch` にはその経路が無い。** 押さないと決めた口（`BranchPort.push`）が remote を
+知る唯一の経路なので、人間が手で押しても controller には見えない。宣言を `auto` に戻すまで
+毎ティック同じ理由で止まり、そのあいだ `max_reconciles` は減り続けて最後は `BLOCKED` に
+なる。`protected_path_touched` が worktree を掃除すれば解けるのとはここが違う。
+**解けない関門であることを rationale に書く**（`publishHeldDecision`）。書かなければ、
+押したのに止まり続ける理由を人間がコードから探すことになる。
+
+`--dry-run` にはこの停止は映らない。publish を回さないティックなので、`wouldTransitionTo` は
+止める前の判断のまま返る。`push_branch` の側は宣言だけから決まるので予告もできるが、
+そうすると同じ関門の判定が publish と preview の2箇所に分かれる。判定は publish に1本化して、
+映らないことを `preview` の性質として書いてある。
+
 ### 資格情報と外部コマンド
 
 **トークンは Agent に渡さない。** Bash を許している以上、`printenv` も

@@ -188,6 +188,28 @@ describe("宣言で publish を止めたティック", () => {
     expect(decision?.rationale).toContain("policies.publish.push_branch");
   });
 
+  it("push_branch: manual は、宣言を書き換えるまで毎ティック止まり続ける", async () => {
+    // 人間が手で push しても controller には見えない。押さないと決めた口
+    // （BranchPort.push）が remote を知る唯一の経路になるため。
+    // `open_pull_request` は findPullRequest が人間の PR を拾って解けるが、
+    // こちらにその経路は無い。**解けないことを仕様として固定する。**
+    // 止まっているのに毎ティック押し始めたら、宣言が効かなくなっている。
+    const goal = goalWith({ push_branch: "manual", open_pull_request: "auto" });
+    activate(goal);
+
+    await tick(goal, deps(store));
+    const second = await tick(goal, deps(store));
+
+    expect(pushes).toEqual([]);
+    expect(second.status).toBe("WAITING_HUMAN");
+    expect(second.decision?.action).toEqual({
+      type: "ESCALATE",
+      reason: "push_branch_declared_manual",
+    });
+    // 進むには宣言を戻すしかない。それを rationale が言っていること。
+    expect(second.decision?.rationale).toContain("auto に戻す");
+  });
+
   it("1ティックに書く Decision は1行のまま", async () => {
     // 差し替えた分をもう1行足すと、countTrailingDigest が数える行が増えて
     // max_unchanged_reconciles が余計に進む。

@@ -526,6 +526,15 @@ function holdsLease(goalId: string, deps: ControllerDeps): boolean {
  *   dry-run が「次に何が起きるか」を映さなくなる。検査そのものは触っていない
  * - 書いていたらどの状態に移っていたかを返す。状態は動かさないので、
  *   nextStatus の結果を wouldTransitionTo として別に返す
+ * - **`policies.publish` で止まる分は映らない。** publish を回さないので、宣言で
+ *   止めたときの `WAITING_HUMAN`（`publishHeldDecision`）はここでは出ず、
+ *   `wouldTransitionTo` は止める前の判断のまま返る。`open_pull_request` が止まるのは
+ *   「差分があり、まだ PR が無い」ティックだけで、それを知るには push して探すしかない。
+ *   dry-run は書かないティックなので、押してから判定することはできない。
+ *   `push_branch` だけは宣言から決まるので先に読めるが、ここだけ予告すると
+ *   同じ関門の判定が publish と preview の2箇所に分かれる。**片方が古くなったときに
+ *   どちらが実体なのか読む側から分からなくなる**ので、判定は publish に1本化して、
+ *   映らないことをこの行で明示する側を採る
  * - GitHub の読み口が生きているかを確かめる（reachableCode）。dry-run は
  *   「配管が繋がっているか」を見るためのものなので、observe が触らなかった
  *   Port をそのままにすると用を成さない
@@ -982,6 +991,13 @@ function uncommittedDecision(
  * - 止めた理由と、人間が何をすれば進むのかを rationale に書く。ここが
  *   `ent get`（`decision.rationale`）にも PR の進捗コメントにも出る唯一の説明になる
  * - 元の rationale を残す。何をしようとしていたのかが読めなくなる
+ *
+ * **2つの段は、解け方が違う。** `open_pull_request` は人間が PR を立てれば次のティックの
+ * `findPullRequest` が見つけるので、宣言を書き換えなくても進む。`push_branch` にはその
+ * 経路が無い——押さないと決めた口（`BranchPort.push`）が remote を知る唯一の経路なので、
+ * 人間が手で押しても controller には見えない。宣言を `auto` に戻すまで毎ティック同じ
+ * 理由で止まり、予算だけが減る。**その非対称を rationale に書く。** 書かないと、
+ * 押したのに止まり続ける理由を人間がコードから探すことになる。
  */
 function publishHeldDecision(
   goal: Goal,
@@ -1006,7 +1022,10 @@ function publishHeldDecision(
         `worktree（${worktreePath}、ブランチ ${branch}）に commit 済みの差分が残っていても ` +
         `remote には1行も出ない。進めるには、人間が中身を確かめてから自分で押す` +
         `（\`git -C ${worktreePath} push -u origin HEAD:${branch}\`）。` +
-        `以降を controller に任せるなら ${declaration} を auto に戻す` +
+        `**押しても controller はここを通り続ける。** 押さないと決めた口が remote を知る` +
+        `唯一の経路なので、人間が押したことを観測できない。${declaration} を auto に戻すまで` +
+        `毎ティック同じ理由で止まり、そのあいだ reconcile の予算は減り続ける。` +
+        `もう追わないなら \`ent abandon ${goal.goal.id} --reason <理由>\` で終端にする` +
         `（元の判断: ${decision.rationale}）`
       : `policies.publish.open_pull_request: manual を宣言しているので、controller は PR を` +
         `作らなかった。push は済んでいるので、ブランチ ${branch} は remote にある。` +

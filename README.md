@@ -80,9 +80,13 @@ policies:
 
 書かなければ、これまでどおり push も PR 作成も自動で進む。`manual` にした段は controller が
 行わず、そのティックは `WAITING_HUMAN` で止まる。止めた段と、人間が何をすれば進むのかは
-`ent get <slug>` の `decision` に出る。`open_pull_request` を止めた場合は、人間が PR を
-立てれば次のティックがそれを見つけて先へ進む（宣言はそのままでよい）。名前を
-`require_human_approval` と分けた理由は design.md §7 にある。
+`ent get <slug>` の `decision` に出る。
+
+2つの段は解け方が違う。`open_pull_request` を止めた場合は、人間が PR を立てれば次のティックが
+それを見つけて先へ進む（宣言はそのままでよい）。`push_branch` はそうならない。押さないと決めた
+口が remote を知る唯一の経路なので、人間が手で押しても controller には見えず、宣言を `auto` に
+戻すまで毎ティック止まり続ける。名前を `require_human_approval` と分けた理由は design.md §7 に
+ある。
 
 ### Agent に渡さない資格情報
 
