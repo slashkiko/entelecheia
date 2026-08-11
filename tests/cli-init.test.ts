@@ -43,6 +43,8 @@ const IDENTITY = ["-c", "user.email=t@example.com", "-c", "user.name=t"];
 let repoRoot: string;
 let cwd: string;
 let stdout: string[];
+let home: string;
+let realHome: string | undefined;
 
 /** `.goals/` にある Goal YAML のファイル名 */
 function goalFiles(): string[] {
@@ -76,6 +78,13 @@ async function makeGitRepo(dir: string): Promise<void> {
 
 beforeEach(() => {
   cwd = process.cwd();
+  // `ent init` は user scope（`~/.claude/skills/ent`）にも書く。`$HOME` を
+  // 差し替えないと、テストが実行した人の実際の `~/.claude/` を書き換える。
+  // `os.homedir()` は `HOME` を見るので、これで隔離できる。
+  realHome = process.env.HOME;
+  home = mkdtempSync(join(tmpdir(), "ent-init-home-"));
+  process.env.HOME = home;
+
   repoRoot = mkdtempSync(join(tmpdir(), "ent-init-"));
   process.chdir(repoRoot);
 
@@ -93,7 +102,13 @@ beforeEach(() => {
 afterEach(() => {
   vi.restoreAllMocks();
   process.chdir(cwd);
+  if (realHome === undefined) {
+    delete process.env.HOME;
+  } else {
+    process.env.HOME = realHome;
+  }
   rmSync(repoRoot, { recursive: true, force: true });
+  rmSync(home, { recursive: true, force: true });
 });
 
 describe("引数の解釈", () => {
