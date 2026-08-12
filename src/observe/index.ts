@@ -1,6 +1,8 @@
 import { errorMessage } from "../domain/error-message.js";
 import type { Fact, ObserveResult, Unresolved, VerifiedFact } from "../domain/fact.js";
 import {
+  GITHUB_PR_BODY_KEY,
+  GITHUB_PR_TITLE_KEY,
   REVIEW_REVIEWED_SHA_KEY,
   REVIEW_VERDICT_KEY,
   REVIEW_VERDICTS,
@@ -20,6 +22,24 @@ export interface PullRequestSnapshot {
   /** GitHub の reviewDecision。レビュー未要求なら null */
   reviewDecision: "APPROVED" | "CHANGES_REQUESTED" | "REVIEW_REQUIRED" | null;
   requestedReviewers: string[];
+  /**
+   * PR のタイトル。**応答に無ければ null。**
+   *
+   * `mergeable` と同じく緩く読む。タイトルと本文はレビュー役に渡すためだけの値で、
+   * 完了判定には使わない。ここを必須にすると、タイトルの欠けた応答1回で
+   * `github.pr` の読み取りごと `shape_mismatch` になり、`state` も `head_sha` も
+   * 落ちたうえで、guard が「待っても直らない」失敗として人間を呼ぶ。
+   * **プロンプトに載せるためだけの項目に、Goal を止める力を持たせない。**
+   */
+  title: string | null;
+  /**
+   * PR の本文。**本文が無い PR では null になる。**
+   *
+   * 空文字ではなく null にしてあるのは、読む側が「空だった」と「取れなかった」を
+   * 取り違えないようにするため。ここが null なのは前者で、後者は PR そのものが
+   * 観測できていない（この Snapshot が作られない）。
+   */
+  body: string | null;
 }
 
 /**
@@ -285,6 +305,24 @@ export async function observe(target: ObserveTarget, deps: ObserveDeps): Promise
         [...pr.requestedReviewers],
         prSource,
         `requested_reviewers=[${pr.requestedReviewers.join(", ")}]`,
+      );
+      // タイトルと本文は、完了判定ではなくレビュー役に渡すために観測する
+      // （`GITHUB_PR_TITLE_KEY` の注記）。body の null は「本文が空」という
+      // 観測できた状態なので、review_decision と同じく Fact にする。
+      //
+      // evidence には本文を写さない。あれは追跡の手がかりで本文の控えではなく、
+      // PR 本文は数百行になりうる。長さだけ残せば、値と食い違ったときに気づける。
+      push(
+        GITHUB_PR_TITLE_KEY,
+        pr.title,
+        prSource,
+        pr.title === null ? "title=null (応答に無し)" : `title=${pr.title}`,
+      );
+      push(
+        GITHUB_PR_BODY_KEY,
+        pr.body,
+        prSource,
+        pr.body === null ? "body=null (本文が空)" : `body=${pr.body.length}文字`,
       );
 
       // CI は PR の head sha に紐づくので、PR を観測できたときだけ引ける。

@@ -55,6 +55,8 @@ function deps(over: {
         headSha: SHA,
         reviewDecision: null,
         requestedReviewers: [],
+        title: "サンプル PR",
+        body: "本文",
       }),
       getLatestCiRun: async () => null,
       getIssue: async () => null,

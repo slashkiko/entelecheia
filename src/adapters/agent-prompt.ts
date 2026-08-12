@@ -1,4 +1,4 @@
-import type { ActorInvocation } from "../act/index.js";
+import { type ActorInvocation, renderPullRequestText } from "../act/index.js";
 import type { ActorRole } from "../domain/run.js";
 
 /**
@@ -16,6 +16,14 @@ const IMPLEMENT_PROMPT = (invocation: ActorInvocation): string =>
 
 ${COMMON_TAIL}`;
 
+/**
+ * レビュー役の指示。
+ *
+ * PR のタイトルと本文は controller が観測して渡す（`renderPullRequestText`）。
+ * 資格情報は渡さないままなので、レビュー役が自分で `gh` を叩くことはできない。
+ * 「宣言された意図」の一次情報は `.goals/<id>.yaml` のままで、PR の本文は
+ * **レビューの対象**として読む。
+ */
 const REVIEW_PROMPT = (invocation: ActorInvocation): string =>
   `${invocation.intent}
 
@@ -26,11 +34,15 @@ const REVIEW_PROMPT = (invocation: ActorInvocation): string =>
 
 1. .goals/${invocation.goalId}.yaml と差分を読み、何を満たすべきかを確かめる
 2. git rev-parse HEAD で、どの commit を読んだのかを確かめる
-3. 指摘を重い順に並べる。直し方まで書く必要は無いが、なぜ問題なのかは書く
-4. 必要ならテストを流して確かめる。確かめられなかったことを「問題なし」と書かない
-5. 最後の2行を、次の形式にする
+3. 下の「PR のタイトルと本文」を読む。渡っていれば、宣言部の制約が本文に
+   反映されているかもここで見る。渡っていなければ、その観点は「未取得」と書く
+4. 指摘を重い順に並べる。直し方まで書く必要は無いが、なぜ問題なのかは書く
+5. 必要ならテストを流して確かめる。確かめられなかったことを「問題なし」と書かない
+6. 最後の2行を、次の形式にする
 reviewed_sha: <git rev-parse HEAD で得た40桁の sha>
 verdict: approved または verdict: changes_requested
+
+${renderPullRequestText(invocation.pullRequest ?? null)}
 
 ${COMMON_TAIL}`;
 

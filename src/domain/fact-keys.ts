@@ -32,6 +32,23 @@ export const observedFactKeySchema = z.enum([
   "github.pr.mergeable",
   "github.pr.review_decision",
   "github.pr.requested_reviewers",
+  /**
+   * PR のタイトルと本文。
+   *
+   * 他の `github.pr.*` と違い、完了判定のためではなく**レビュー役に渡すため**に
+   * 観測する。レビュー役の Actor には資格情報を渡していない（`WITHHELD_ENV`）ので
+   * `gh` は未認証で、「宣言部の制約が PR 本文に反映されているか」のような観点は
+   * 向こう側では永久に確かめられない。足りないのは資格情報ではなく、controller が
+   * 既に読んでいる情報を渡す口になる。読むのは controller、渡すのはその結果だけ、
+   * という分担は変えない。
+   *
+   * 本文は空でありうる。GitHub は本文の無い PR に `null` を返すので、Fact の値も
+   * `string | null` になる。**`null` は「本文が空だと観測できた」であって
+   * 「取れなかった」ではない。** 取れなかったティックは Fact を作らず、
+   * `unobserved` に理由付きで残る（design.md §3.1）。
+   */
+  "github.pr.title",
+  "github.pr.body",
 
   // CodeProviderPort.getLatestCiRun()
   "github.ci.status",
@@ -117,6 +134,17 @@ export type ObservedFactKey = z.infer<typeof observedFactKeySchema>;
 export const REVIEW_VERDICT_KEY = "review.verdict" satisfies ObservedFactKey;
 export const REVIEW_REVIEWED_SHA_KEY = "review.reviewed_sha" satisfies ObservedFactKey;
 export const LOCAL_HEAD_SHA_KEY = "local.head_sha" satisfies ObservedFactKey;
+
+/**
+ * レビュー役に渡す PR の本文。OBSERVE が作り、`act` が読んで Actor へ載せる。
+ *
+ * 名前で配るのは `REVIEW_VERDICT_KEY` と同じ理由になる。作る側（observe）と
+ * 読む側（act）が別々に文字列を書いていると、片方の綴りを直しただけで
+ * レビュー役への受け渡しが黙って止まる。止まっても Fact は作られ続けるので、
+ * 「渡っていない」ことに気づく手段がプロンプトの目視しか無くなる。
+ */
+export const GITHUB_PR_TITLE_KEY = "github.pr.title" satisfies ObservedFactKey;
+export const GITHUB_PR_BODY_KEY = "github.pr.body" satisfies ObservedFactKey;
 
 /**
  * レビュー役が返してよい結論。ここに無い語は Fact にしない。
