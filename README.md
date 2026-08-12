@@ -20,7 +20,8 @@ Claude Code または Codex を起動する。CLI 名は `ent` になる。
 
 設計の中核は、**完了判定と暴走の停止条件を LLM に決めさせない**ことにある。LLM に委ねるのは
 Gap の埋め方だけになる。以下、1ティックの流れと用語、設計原則と実装状況、guard と LLM の境界、
-保護パスの関門、Agent に渡さない資格情報、Goal の状態の置き場所を順に説明する。
+保護パスの関門、push と PR 作成を人間の手に残す口、Agent に渡さない資格情報、
+Goal の状態の置き場所を順に説明する。
 
 ### 1ティックの流れと用語
 
@@ -63,6 +64,39 @@ git で見る。ただし見えるのはリポジトリの中の変更だけで�
 守るのは、制御ループ本体（`src/controller/**`）と Goal の宣言部（`.goals/**`）に加えて、
 **関門そのもの（Agent の拒否リストを決めるファイルを含む）と検証系**になる。選び方の基準は
 design.md §7 にある。
+
+### push と PR 作成を人間の手に残す
+
+`policies.require_human_approval` が止めるのは Agent の操作で、controller 自身の push と
+PR 作成には効かない。そちらを止めるのは `policies.publish` になる。
+
+```yaml
+policies:
+  publish:
+    push_branch: auto
+    # チームで使うリポジトリではこう書く。PR の作成はレビュアーへの
+    # 通知を伴い、取り消しても通知は戻らない。
+    open_pull_request: manual
+```
+
+書かなければ、これまでどおり push も PR 作成も自動で進む。`manual` にした段は controller が
+行わず、そのティックは `WAITING_HUMAN` で止まる。止めた段と、人間が何をすれば進むのかは
+`ent get <slug>` の `decision` に出る。
+
+止めたことは `ent run` の出力にも構造で出る。宣言で止めたティックにだけ `publishHold` が
+載る。**PR の作成（`open_pull_request`）を止めたときにかぎり**、ティックを叩いている
+エージェントが `publishHold` を読んで代わりに PR を立てられる。push を止めた段はブランチが
+remote に無いので代行できない。キーの内訳と代行の手順は `.claude/skills/ent/SKILL.md` に
+ある。宣言を書いていない Goal ではこのキーは出ないので、いま回している `jq` は1つも変わらない。
+
+2つの段は解け方が違う。`open_pull_request` を止めた場合は、人間が PR を立てれば次のティックが
+それを見つけて先へ進む（宣言はそのままでよい）。`push_branch` はそうならない。押さないと決めた
+口（`BranchPort.push`）が remote を知る唯一の経路なので、人間が手で押しても controller は
+それを観測できない。宣言を `auto` に戻すまで毎ティック止まり続ける。**そのうち予算切れで
+`BLOCKED` に落ちて気づく、ということも起きない。** 止めた理由が `budget_exhausted` を
+上書きするので、状態は `WAITING_HUMAN` のままになる。止めた段は PR コメントにも出るので、
+そちらで気づける（PR がまだ無い `open_pull_request` の側は `ent get` と `ent list` で見る）。
+名前を `require_human_approval` と分けた理由は design.md §7 にある。
 
 ### Agent に渡さない資格情報
 

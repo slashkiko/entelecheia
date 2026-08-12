@@ -60,6 +60,19 @@ describe("人間や外部を待っていた分は max_wall_clock から引く", 
     expect(waitedSeconds(decisions, ACTIVATED, new Date(at(6)))).toBe(5 * 3600);
   });
 
+  it("宣言で publish を止めた ESCALATE も待ちに数える", () => {
+    // `policies.publish` で止めたティックも、人間が宣言を書き換えるまで解けない。
+    // **`max_wall_clock` は隠れるのではなく止まる。** 止めているあいだ経過時間は
+    // まるごと引かれるので、宣言を `auto` に戻したところで壁時計が上限に達している
+    // ことはない。進み続けるのは `max_actor_runs` と `max_reconciles` だけになる。
+    const decisions = [
+      decision(at(0), { type: "ESCALATE", reason: "push_branch_declared_manual" }),
+      decision(at(5), { type: "ESCALATE", reason: "open_pull_request_declared_manual" }),
+    ];
+
+    expect(waitedSeconds(decisions, ACTIVATED, new Date(at(7)))).toBe(7 * 3600);
+  });
+
   it("budget_exhausted の ESCALATE は引かない", () => {
     // そこに至った時点で上限の判定は済んでいる。引く相手にならない。
     const decisions = [decision(at(0), { type: "ESCALATE", reason: "budget_exhausted" })];

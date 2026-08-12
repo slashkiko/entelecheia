@@ -7,10 +7,10 @@ import {
   worktreeNameFor,
 } from "../act/index.js";
 import type { BudgetUsage } from "../decide/index.js";
-import type { Decision } from "../domain/action.js";
+import type { Decision, EscalateReason } from "../domain/action.js";
 import { errorMessage } from "../domain/error-message.js";
 import type { Fact, Unresolved } from "../domain/fact.js";
-import type { Goal } from "../domain/goal.js";
+import type { Goal, PublishStep } from "../domain/goal.js";
 import { type GoalState, type GoalStatus, isTerminal, nextStatus } from "../domain/goal-state.js";
 import {
   actorUsageLimitDecision,
@@ -33,7 +33,7 @@ import {
   toVerifications,
   type Verification,
 } from "../domain/verification.js";
-import { type PublishDeps, publish } from "../publish/index.js";
+import { type PublishDeps, type PublishHold, publish } from "../publish/index.js";
 import { type ReconcileDeps, reconcile } from "../reconcile/index.js";
 import type { Store } from "../store/port.js";
 
@@ -130,6 +130,19 @@ export interface TickResult {
   run: Run | null;
   /** ティック後の Goal の状態 */
   status: GoalStatus;
+  /**
+   * 宣言（`policies.publish`）で publish を止めた場合だけ入る。止めていなければ**キーごと入らない**。
+   *
+   * ティックを叩くのは人間だけではない。エージェントが回している構成では、controller が
+   * 作らなかった PR をそのエージェントが代わりに立てる。そのためには「作らなかった」と
+   * 「作るなら head と base はこれ」が、`decision.rationale` の散文を読まずに分かる
+   * 必要がある。理由と段は `decision.action.reason` にも出るが、あちらは
+   * `EscalateReason` の1語なので押す先を持てない。
+   *
+   * 止めていないティックで `null` を置かないのは、`dryRun` と同じ理由になる。
+   * 既存の `.goals/*.yaml`（宣言を1本も書いていない）を回している側の出力を変えない。
+   */
+  publishHold?: PublishHold;
   /** dry-run で回した場合だけ true。通常のティックでは入らない */
   dryRun?: boolean;
   /**
@@ -455,12 +468,6 @@ export async function tick(goal: Goal, deps: ControllerDeps): Promise<TickResult
     deps.store.saveSnapshot(goalId, snapshot);
     deps.store.saveVerifications(goalId, verifications);
 
-    // Decision は1ティックに1行だけ書く。以前は先に result.decision を書き、
-    // 差し替えたときにもう1行足していたので、保護パス違反のティックだけ
-    // decisions が2行になった。countTrailingDigest は行を数えるので、
-    // max_unchanged_reconciles がそのぶん余計に進んでいた。
-    deps.store.saveDecision(goalId, digest, decided);
-
     // PR を確保して進捗を書く。ここは throw しないので、通知の失敗で
     // ティック全体を落とさない（design.md §9 の「PR と通知」）。
     // 保護パスに触れていたら PR は作らない。通常の変更として流れてしまう。
@@ -482,8 +489,21 @@ export async function tick(goal: Goal, deps: ControllerDeps): Promise<TickResult
       deps.store.setObserveTarget(goalId, published.prNumber, state.issueNumber);
     }
 
-    const status = nextStatus(state.status, decided.action);
-    const action = decided.action;
+    // 宣言（`policies.publish`）で publish を止めたなら、このティックは人間待ちで
+    // 終わる。**判断の差し替えを publish の後ろに置く。** 止めた段が確定するのは
+    // publish の中で、`open_pull_request` は「差分があり、まだ PR が無い」ティックに
+    // しか成立しない。宣言だけを先に読んで差し替えると、押すものが無いティックまで
+    // 人間を呼ぶことになる。
+    const settled = publishHeldDecision(goal, decided, published.held, deps);
+
+    // Decision は1ティックに1行だけ書く。以前は先に result.decision を書き、
+    // 差し替えたときにもう1行足していたので、保護パス違反のティックだけ
+    // decisions が2行になった。countTrailingDigest は行を数えるので、
+    // max_unchanged_reconciles がそのぶん余計に進んでいた。
+    deps.store.saveDecision(goalId, digest, settled);
+
+    const status = nextStatus(state.status, settled.action);
+    const action = settled.action;
     deps.store.setStatus(
       goalId,
       status,
@@ -491,7 +511,16 @@ export async function tick(goal: Goal, deps: ControllerDeps): Promise<TickResult
       deps.now().toISOString(),
     );
 
-    return { ran: true, skipped: null, reclaimed, decision: decided, run, status };
+    return {
+      ran: true,
+      skipped: null,
+      reclaimed,
+      decision: settled,
+      run,
+      // 止めていないティックにはキーを足さない。既存の出力の形を変えない。
+      ...(published.held === null ? {} : { publishHold: published.held }),
+      status,
+    };
   } finally {
     // 例外で抜けても解放する。残すと lease の期限までどのワーカーも動けない。
     clearInterval(heartbeat);
@@ -555,6 +584,15 @@ function holdsLease(goalId: string, deps: ControllerDeps): boolean {
  *   dry-run が「次に何が起きるか」を映さなくなる。検査そのものは触っていない
  * - 書いていたらどの状態に移っていたかを返す。状態は動かさないので、
  *   nextStatus の結果を wouldTransitionTo として別に返す
+ * - **`policies.publish` で止まる分は映らない。** publish を回さないので、宣言で
+ *   止めたときの `WAITING_HUMAN`（`publishHeldDecision`）はここでは出ず、
+ *   `wouldTransitionTo` は止める前の判断のまま返る。`open_pull_request` が止まるのは
+ *   「差分があり、まだ PR が無い」ティックだけで、それを知るには push して探すしかない。
+ *   dry-run は書かないティックなので、押してから判定することはできない。
+ *   `push_branch` だけは宣言から決まるので先に読めるが、ここだけ予告すると
+ *   同じ関門の判定が publish と preview の2箇所に分かれる。**片方が古くなったときに
+ *   どちらが実体なのか読む側から分からなくなる**ので、判定は publish に1本化して、
+ *   映らないことをこの行で明示する側を採る
  * - GitHub の読み口が生きているかを確かめる（reachableCode）。dry-run は
  *   「配管が繋がっているか」を見るためのものなので、observe が触らなかった
  *   Port をそのままにすると用を成さない
@@ -996,6 +1034,96 @@ function uncommittedDecision(
     decidedBy: "guard",
   };
 }
+
+/**
+ * 宣言（`policies.publish`）で publish を止めたティックの判断。止めていなければそのまま返す。
+ *
+ * 満たすべき性質:
+ * - 止めた段ごとに別の理由にする。`ent list` が出すのは種別と理由だけなので
+ *   （`stoppedReason`）、1つに畳むと「push を止めたのか PR を止めたのか」を
+ *   読む側がもう一度調べることになる
+ * - 状態は `WAITING_HUMAN` になる（`nextStatus`）。**COMPLETE を上書きする。**
+ *   PR が1本も無いまま「終わった」と言い切ると、完了判定が意味を失う。
+ *   ここで止めなければ、宣言した Goal ほど静かに COMPLETED へ抜ける
+ * - 判断したのは LLM ではないので decidedBy は "guard"（design.md §7）
+ * - 止めた理由と、人間が何をすれば進むのかを rationale に書く。ここが
+ *   `ent get`（`decision.rationale`）と `ent list` に出る唯一の説明になる
+ * - 元の rationale を残す。何をしようとしていたのかが読めなくなる
+ *
+ * **この rationale は PR には出ない。** 差し替えるのは publish の**後ろ**なので、
+ * `publish` が進捗コメントに載せた `decision` は差し替え前のものになる。同じファイルの
+ * `uncommittedDecision` は publish の前で差し替わるため PR と `ent get` に同じ文字列が
+ * 出るが、こちらはその規約から外れる。**差し替えを前へ動かす形は採れない。**
+ * `open_pull_request` を止めるかどうかは「push が通り、まだ PR が無い」を確かめたあと
+ * ——つまり publish の中——でしか決まらない。
+ *
+ * 代わりに、PR に要る分は `heldNotes`（`src/publish/index.ts`）が NOTE として書く。
+ * 文字列は別でも**同じ事実**を言う（手で押しても解けないこと、`auto` に戻すか
+ * `ent abandon` で終端にすること）。片方を直すときはもう片方も見る。
+ *
+ * **2つの段は、解け方が違う。** `open_pull_request` は人間が PR を立てれば次のティックの
+ * `findPullRequest` が見つけるので、宣言を書き換えなくても進む。`push_branch` にはその
+ * 経路が無い——押さないと決めた口（`BranchPort.push`）が remote を知る唯一の経路なので、
+ * 人間が手で押しても controller には見えない。宣言を `auto` に戻すまで毎ティック同じ
+ * 理由で止まり、予算だけが減る。**その非対称を rationale に書く。** 書かないと、
+ * 押したのに止まり続ける理由を人間がコードから探すことになる。
+ */
+function publishHeldDecision(
+  goal: Goal,
+  decision: Decision,
+  held: PublishHold | null,
+  deps: ControllerDeps,
+): Decision {
+  if (held === null) {
+    return decision;
+  }
+
+  // 案内するのは実装役の作業ツリーに揃える。押すのも commit もそちらで
+  // （`pushWorktree` / `commitVerifiedWork`）、人間が手で押す先も同じになる。
+  const worktreePath = worktreePathFor(goal, DEFAULT_ACTOR_ROLE, null, deps);
+  // ブランチと base は `PublishHold` から取る。**ここで組み立て直さない。**
+  // 同じ2つを機械可読なキー（`publishHold`）にも出しているので、別々に作ると
+  // 文面と payload が食い違いうる。読む側は同じティックの出力の中で矛盾を見る。
+  const branch = held.branch;
+  const base = held.base;
+  const declaration = `.goals/${goal.goal.id}.yaml の policies.publish.${held.step}`;
+
+  const rationale =
+    held.step === "push_branch"
+      ? `policies.publish.push_branch: manual を宣言しているので、controller は push しなかった。` +
+        `worktree（${worktreePath}、ブランチ ${branch}）に commit 済みの差分が残っていても ` +
+        `remote には1行も出ない。進めるには、人間が中身を確かめてから自分で押す` +
+        `（\`git -C ${worktreePath} push -u origin HEAD:${branch}\`）。` +
+        `**押しても controller はここを通り続ける。** 押さないと決めた口が remote を知る` +
+        `唯一の経路なので、人間が押したことを観測できない。${declaration} を auto に戻すまで` +
+        `毎ティック同じ理由で止まり、そのあいだ reconcile の予算は減り続ける。` +
+        `もう追わないなら \`ent abandon ${goal.goal.id} --reason <理由>\` で終端にする` +
+        `（元の判断: ${decision.rationale}）`
+      : `policies.publish.open_pull_request: manual を宣言しているので、controller は PR を` +
+        `作らなかった。push は済んでいるので、ブランチ ${branch} は remote にある。` +
+        `進めるには、人間が中身を確かめてから PR を立てる` +
+        `（\`gh pr create --head ${branch} --base ${base}\`）。` +
+        `次のティックはその PR を見つけて先へ進むので、${declaration} はそのままでよい` +
+        `（元の判断: ${decision.rationale}）`;
+
+  return {
+    decidedAt: deps.now().toISOString(),
+    action: { type: "ESCALATE", reason: HELD_REASONS[held.step] },
+    rationale,
+    decidedBy: "guard",
+  };
+}
+
+/**
+ * 止めた段と、人間を呼ぶ理由の対応。
+ *
+ * 宣言部のキー名をそのまま理由にしてある。`ent get` を読んだ人間が、
+ * `.goals/<slug>.yaml` のどの行を書き換えれば挙動が変わるのかを翻訳表なしで辿れる。
+ */
+const HELD_REASONS = {
+  push_branch: "push_branch_declared_manual",
+  open_pull_request: "open_pull_request_declared_manual",
+} as const satisfies Record<PublishStep, EscalateReason>;
 
 /**
  * ACT 前の本体リポジトリの汚れ。
