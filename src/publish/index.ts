@@ -1,9 +1,10 @@
-import { worktreeNameFor } from "../act/index.js";
+import { worktreeBranchFor, worktreeNameFor } from "../act/index.js";
 import type { Decision } from "../domain/action.js";
 import { errorMessage } from "../domain/error-message.js";
-import type { Goal } from "../domain/goal.js";
+import { type Goal, type PublishStep, publishPolicyOf } from "../domain/goal.js";
 import { DEFAULT_ACTOR_ROLE, type Run } from "../domain/run.js";
 import type { Verification } from "../domain/verification.js";
+import type { ReviewPort } from "../observe/index.js";
 
 /**
  * PR を確保して進捗を書く。design.md §9 の「PR と通知」にあたる。
@@ -94,6 +95,18 @@ export interface PublishDeps {
    * 指定されたら PR には**投稿しない**。両方に出すと「投稿しない」を満たさない。
    */
   report?: ProgressSink | undefined;
+  /**
+   * 直近のレビュー役の Run を読む口（issue #59）。
+   *
+   * 読むのは `report` があるティックだけになる。PR コメントには載せないので、
+   * 付けないティックで開くと、使わない本文のために毎回生ログを開くことになる。
+   * 失敗する口が1つ増えるだけで、誰も読まない。
+   *
+   * 任意にしてあるのは、publish を単体で呼ぶ経路（既存のテストを含む）を
+   * 壊さないため。controller からは `ControllerDeps`（`ObserveDeps` を継承する）
+   * がそのまま渡るので、実運用では常に入っている。
+   */
+  review?: ReviewPort | undefined;
 }
 
 /** PR の外に進捗を書いた結果。`--report` が無ければ null になる */
@@ -105,6 +118,42 @@ export interface ReportResult {
   error: string | null;
 }
 
+/**
+ * 宣言（`policies.publish`）で止めた段と、代わりに動く側が要る事実。
+ *
+ * `ReportResult` と同じ形にしてある。あちらも「その口を使ったティックにだけ載る、
+ * publish の結果」で、`destination` / `written` / `error` という**行った先と結果**を
+ * 構造で返している。ここも同じく、止めた段と、続きをやるのに要る宛先
+ * （head と base）を構造で返す。
+ *
+ * `skipped` や `decision.rationale` の文面と別に持つ。あちらは人間が読む1行で、
+ * 文面は直る。停止条件や「代わりに PR を立てるか」を文字列の部分一致に載せると、
+ * 文面を直した瞬間に読む側の分岐が黙って消える。
+ */
+export interface PublishHold {
+  /** 止めた段 */
+  step: PublishStep;
+  /**
+   * 止めた理由の種別。いまは宣言だけ。
+   *
+   * `step` に畳まない。段が増えるより先に「別の事情で止める」が増える方があり得るので、
+   * 「宣言で止めた」を読む側が名指しで確かめられるようにしておく。
+   */
+  reason: "declared_manual";
+  /**
+   * controller が push を済ませたか。`branch` が remote にあるかと同義。
+   *
+   * **`step` から導けるが、それでも別に持つ。** remote に無いブランチに PR は
+   * 立てられないので、代わりに立てる側はここを見てから動く。導出に頼らせると、
+   * publish の順序が変わったときに読む側のコードが静かに間違う。
+   */
+  pushed: boolean;
+  /** PR の head になるブランチ。押していない段でも、押す先はこの名前になる */
+  branch: string;
+  /** PR の base */
+  base: string;
+}
+
 export interface PublishResult {
   /** 確保できた PR 番号。作れなかった、あるいは作る段でなければ null */
   prNumber: number | null;
@@ -114,6 +163,8 @@ export interface PublishResult {
   commented: boolean;
   /** PR の外に進捗を書いた結果。宛先の指定が無ければ null */
   report: ReportResult | null;
+  /** 宣言で止めた段。止めていなければ null */
+  held: PublishHold | null;
   /** 何もしなかった理由。した場合は null */
   skipped: string | null;
 }
@@ -131,16 +182,40 @@ export interface PublishResult {
  * - どの経路でも throw しない。失敗は skipped の理由として返す。
  *   通知に失敗しただけでティック全体を落とさない
  * - `deps.report` があれば、進捗は PR ではなくそちらに書く（`ent run --report`）。
- *   push と PR の確保は止めない。移すのは通知の宛先だけになる
+ *   push と PR の確保は止めない。移るのは通知の宛先で、そこにレビュー役の本文が
+ *   1節ぶん増える（`withReviewMessage`）
+ * - `policies.publish` で `manual` と宣言された段は行わない。行わなかったことを
+ *   `held` に載せて返す。**黙って何もしない経路は作らない。** 押せなかったのと
+ *   押さないと決めていたのが同じ見た目になると、人間はどちらかを確かめに
+ *   ログを掘ることになる（design.md §7）
  */
 export async function publish(target: PublishTarget, deps: PublishDeps): Promise<PublishResult> {
-  // 本文は宛先に関わらず1つ。宛先で内容が変わると、PR で読んだ人と手元で
-  // 読んだ人が別のものを見ることになる。
+  // ここで組み立てる本文は、宛先を問わず1つになる。criteria の pass 状況が
+  // PR で読んだ人と手元で読んだ人で食い違わないのは、この1本を両方に渡すため。
+  //
+  // **ただし `--report` の宛先にだけ、この後ろにレビュー役の本文が1節付く**
+  // （issue #59 の案1）。したがって「本文は宛先に関わらず完全に同じ」は、
+  // もう成り立たない。事故ではなく判断で、issue #59 の3案のうち案3（PR に
+  // 投稿する）を採らなかった結果になる。PR コメントは人間が購読していて、
+  // 毎ティック 14,000 字が積まれると読むのをやめる。`--report stdout` は
+  // 1回叩いて1回出すので、長い本文を置いても積み上がらない。
+  //
+  // **`--report <path>` は積み上がる。** あちらは追記で（`src/cli/present.ts` の
+  // `reportSink`）、追記なのは cron から回したときに最後の1ティックしか残らない
+  // のを避けるための選択になる。しかも `ReviewPort.latest()` が返すのは直近の
+  // 完了したレビュー役の Run なので、次のレビューが終わるまで毎ティック同じ本文が
+  // 返る（`WAIT(review_pending)` が続く区間がこれにあたる）。**案3 を退けた理由は、
+  // 採った案1のこの宛先でそのまま再現する。** 畳む口はまだ無い——前ティックに
+  // どの Run を出したかを publish は持っておらず、渡すには `PublishTarget` を
+  // 足すことになる。作るのは controller で、そちらは PROTECTED_PATH_FLOOR の中になる。
+  //
+  // 動かさないのは criteria の表の位置で、節は必ずこの本文の**後ろ**に足す
+  // （`withReviewMessage`）。宛先が違っても、表は同じ位置で読める。
   //
   // 末尾に入る時刻は、以前は push と PR 作成の往復を終えてから取っていた。ここに
   // 移したので、その往復ぶん（数秒）だけ早くなる。示したいのは「このティックが
   // いつ判断したか」なので、通信の所要時間を含まない方がむしろ近い。
-  const body = commentBody(target, deps.now(), null);
+  const body = commentBody(target, deps.now(), null, null);
 
   // PR の外に書くなら、PR の確保より先に書く。**この順序が仕様になる。**
   // 下の経路は、PR を作れない・作る段でない・まだ番号が無いといった理由で
@@ -150,13 +225,23 @@ export async function publish(target: PublishTarget, deps: PublishDeps): Promise
   // ダイジェストが前ティックと同じでも書く。PR コメントを飛ばすのは、同じ通知が
   // 積まれると人間が読むのをやめるため。1回叩いて1回出す宛先では、黙って何も
   // 出さない方が読めない（「回したのに出ない」と「回っていない」が同じ見た目になる）。
-  const report = deps.report === undefined ? null : await deliver(deps.report, body);
+  //
+  // レビュー役の本文は**この宛先にだけ**足す（issue #59 の案1）。読みに行くのも
+  // ここだけになるので、`--report` を付けないティックでは生ログを開かない。
+  const report =
+    deps.report === undefined
+      ? null
+      : await deliver(deps.report, await withReviewMessage(body, deps.review));
+
+  /** 宣言で止めた段。`ensurePullRequest` が決める。null なら止めていない */
+  let held: PublishHold | null = null;
 
   const nothing = (skipped: string): PublishResult => ({
     prNumber: target.prNumber,
     created: false,
     commented: false,
     report,
+    held,
     skipped,
   });
 
@@ -167,6 +252,8 @@ export async function publish(target: PublishTarget, deps: PublishDeps): Promise
 
   try {
     const ensured = await ensurePullRequest(target, deps);
+    // 止めた段は、早く return する経路でも必ず返す。`nothing` はこの変数を読む。
+    held = ensured.held;
     if (ensured.skipped !== null && prNumber === null) {
       return nothing(ensured.skipped);
     }
@@ -195,6 +282,7 @@ export async function publish(target: PublishTarget, deps: PublishDeps): Promise
       created,
       commented: false,
       report,
+      held,
       skipped: `進捗は PR ではなく ${report.destination} に書いた`,
     };
   }
@@ -217,26 +305,42 @@ export async function publish(target: PublishTarget, deps: PublishDeps): Promise
   //
   // push が落ちたティックも必ず書く。同じ理由で、観測が変わらないまま push だけ
   // 落ち続ける状態を黙って飛ばすと、PR は静かなまま人間が待ち続ける。
+  //
+  // 宣言で止めたティックも同じ扱いにする。止まっているあいだ観測は動かないので、
+  // 初回しか書かなければ PR は静かなまま人間が待つ。宣言したのは人間だが、
+  // 「いま止まっている」を知らせないのは押せなかったときと同じ壊れ方になる。
   if (
     target.previousDigest === target.digest &&
     !stoppedByGuard(target.decision) &&
-    pushFailure === null
+    pushFailure === null &&
+    held === null
   ) {
-    return { prNumber, created, commented: false, report, skipped: "観測が前のティックと同じ" };
+    return {
+      prNumber,
+      created,
+      commented: false,
+      report,
+      held,
+      skipped: "観測が前のティックと同じ",
+    };
   }
 
   try {
-    // push が落ちたときだけ本文を作り直す。`body` は push より前に作るので、
-    // 落ちたことをまだ知らない。通常のティックでは作り直さない。
-    const withFailure = pushFailure === null ? body : commentBody(target, deps.now(), pushFailure);
-    await deps.writer.addComment(prNumber, withFailure);
-    return { prNumber, created, commented: true, report, skipped: null };
+    // push が落ちた、あるいは宣言で止めたときだけ本文を作り直す。`body` は push より
+    // 前に作るので、どちらもまだ知らない。通常のティックでは作り直さない。
+    const withNotice =
+      pushFailure === null && held === null
+        ? body
+        : commentBody(target, deps.now(), pushFailure, held);
+    await deps.writer.addComment(prNumber, withNotice);
+    return { prNumber, created, commented: true, report, held, skipped: null };
   } catch (error) {
     return {
       prNumber,
       created,
       commented: false,
       report,
+      held,
       skipped: `コメントできなかった: ${errorMessage(error)}`,
     };
   }
@@ -258,6 +362,92 @@ async function deliver(sink: ProgressSink, body: string): Promise<ReportResult> 
 }
 
 /**
+ * レビュー役の本文の節の見出し。
+ *
+ * 宛先の本文のどこに足したかを、読む側が探せるようにする。文言を変えると
+ * 探し方が変わるので、`tests/publish-review-body.test.ts` と対にしてある。
+ */
+const REVIEW_HEADING = "## レビュー役の本文";
+
+/**
+ * `--report` の宛先の本文に、レビュー役の最終メッセージを足す（issue #59 の案1）。
+ *
+ * 満たすべき性質:
+ * - **いまの本文の後ろに足す。** criteria の表の位置を動かさない。前に割り込ませると、
+ *   14,000 字の本文を読み飛ばさないと pass 状況に辿り着けなくなる
+ * - **本文はそのまま出す。** `flatten` も `oneLine` も通さない。改行・表・コード
+ *   ブロックが落ちれば、要約を読ませることになって取り返した意味が消える
+ * - **読めなかったときも黙らない。** 理由を節に出す。黙って落とすと、この Goal が
+ *   直そうとしている壊れ方（本文が verdict の1語に畳まれて消える）をもう1つ作る
+ * - **どの経路でも throw しない。** publish の既存の性質を、この節のために崩さない。
+ *   ここで throw すると、レビューの生ログが1つ壊れているだけでティックが落ちる
+ *
+ * `latest()` が null を返したときだけ、節そのものを出さない。書くことが無いのと、
+ * 書けなかったのを同じ見た目にしない。null になる条件は「1度も起動していない」
+ * だけではないので、下の分岐のコメントに書いてある。
+ */
+async function withReviewMessage(body: string, review: ReviewPort | undefined): Promise<string> {
+  const section = await reviewSection(review);
+  return section === null ? body : `${body}\n\n${section}`;
+}
+
+/** レビュー役の本文の節。出すものが無ければ null */
+async function reviewSection(review: ReviewPort | undefined): Promise<string | null> {
+  if (review === undefined) {
+    return null;
+  }
+
+  let snapshot: Awaited<ReturnType<ReviewPort["latest"]>>;
+  try {
+    snapshot = await review.latest();
+  } catch (error) {
+    // 理由をそのまま出す。Adapter は「どの Run の、どのファイルを、なぜ」を
+    // 詰めて投げてくる（`src/adapters/review-run.ts`）ので、ここで畳むと
+    // 生ログに戻る道が消える。
+    return [
+      REVIEW_HEADING,
+      "",
+      "> [!WARNING]",
+      "> レビュー役の本文を読めなかった。理由は次のとおり。",
+      "",
+      errorMessage(error),
+    ].join("\n");
+  }
+
+  // Port が出すものを持っていない。書くことが無いので節を出さない。
+  //
+  // **null は「1度も起動していない」だけではない。** `latestReviewRun()`
+  // （`src/adapters/review-run.ts`）は `role: review` かつ `status: "completed"` の
+  // Run だけを候補にするので、レビュー役が `interrupted`（SIGTERM）や `failed` でしか
+  // 終わっていない Goal でも null になる。**その見た目は1度も起動していないときと
+  // 完全に同じで、ここからは区別を作れない。** Port が返すのは snapshot か null かの
+  // 2値で、どちらの理由で null かは載っていない。Adapter は PROTECTED_PATH_FLOOR の
+  // 中なので、区別が要るなら向こう側の戻り値を足すところから始まる。
+  if (snapshot === null) {
+    return null;
+  }
+
+  // 途中で切れた Run。Adapter は空文字で返す。「本文が空だった」と
+  // 「レビューを回していない」を同じ見た目にしないので、読んだ Run の id は出す。
+  if (snapshot.finalMessage.trim() === "") {
+    return [
+      REVIEW_HEADING,
+      "",
+      `直近のレビュー役の Run \`${snapshot.runId}\` を読んだが、本文が残っていなかった。`,
+    ].join("\n");
+  }
+
+  return [
+    REVIEW_HEADING,
+    "",
+    `直近のレビュー役の Run \`${snapshot.runId}\` が最後に返した本文。`,
+    "",
+    // ここだけは加工しない。取り返したいのは本文そのものになる。
+    snapshot.finalMessage,
+  ].join("\n");
+}
+
+/**
  * 差分を push し、PR を確保する。
  *
  * **PR の有無で push を止めない。** 最初はここで `prNumber !== null` なら
@@ -275,7 +465,17 @@ async function deliver(sink: ProgressSink, body: string): Promise<ReportResult> 
 async function ensurePullRequest(
   target: PublishTarget,
   deps: PublishDeps,
-): Promise<{ prNumber: number | null; created: boolean; skipped: string | null }> {
+): Promise<{
+  prNumber: number | null;
+  created: boolean;
+  held: PublishHold | null;
+  skipped: string | null;
+}> {
+  // 止めた段に載せる宛先。押す前でも決まるので、両方の段で同じ値を使える。
+  // **規則をここに書かない。** `worktreeBranchFor`（src/act/index.ts）が正で、
+  // 2箇所に持つと、案内した push 先と実際に押す先がずれても誰も気づけない。
+  const branch = worktreeBranchFor(pushWorktree(target.goal));
+  const base = target.goal.repository.default_branch;
   // 制御ループ自体に触れた変更は push もしない（design.md §7）。
   // remote に出た時点で、通常の変更として流れる余地が生まれる。
   // 検査できなかった場合も同じ扱いにする。関門が動いていない状態で push するのは、
@@ -284,7 +484,22 @@ async function ensurePullRequest(
     return {
       prNumber: target.prNumber,
       created: false,
+      held: null,
       skipped: "保護パスの関門が通っていないので push も PR 作成もしない",
+    };
+  }
+
+  const policy = publishPolicyOf(target.goal);
+
+  // 宣言で止まる段は、実行する前に返す。**「押してから無かったことにする」形は
+  // 取れない。** remote に出たブランチも、飛んだ通知も戻らない。
+  if (policy.push_branch === "manual") {
+    return {
+      prNumber: target.prNumber,
+      created: false,
+      // remote には1行も出ていない。`pushed: false` がそれを言う唯一の値になる。
+      held: { step: "push_branch", reason: "declared_manual", pushed: false, branch, base },
+      skipped: "policies.publish.push_branch: manual の宣言があるので push しない",
     };
   }
   // **Run の有無で push を決めない。** ここは以前「完了した Run が無いティックでは
@@ -303,17 +518,48 @@ async function ensurePullRequest(
   );
   if (!pushed.pushed) {
     // 空の PR は通知にも検証にも使えない。
-    return { prNumber: target.prNumber, created: false, skipped: "base との差分が無い" };
+    return {
+      prNumber: target.prNumber,
+      created: false,
+      held: null,
+      skipped: "base との差分が無い",
+    };
   }
   if (target.prNumber !== null) {
     // push は済んだ。PR はもうあるので作らない。
-    return { prNumber: target.prNumber, created: false, skipped: null };
+    return { prNumber: target.prNumber, created: false, held: null, skipped: null };
   }
 
   // 作る前に必ず探す。2本目を立てるとどちらが正かを決められなくなる。
+  //
+  // **宣言で止める前に探す。** 人間が手で立てた PR がここで見つかるので、
+  // `open_pull_request: manual` のまま Goal を先へ進められる。宣言より先に
+  // 止めてしまうと、人間が PR を立てても controller はそれを一度も見ないまま
+  // 毎ティック同じところで止まり、宣言を書き換える以外に進む道が無くなる。
   const existing = await deps.writer.findPullRequest(pushed.branch);
   if (existing !== null) {
-    return { prNumber: existing, created: false, skipped: null };
+    return { prNumber: existing, created: false, held: null, skipped: null };
+  }
+
+  // 止めるのは「作る」ことだけになる。PR の作成はレビュアーへの通知を伴い、
+  // 取り消しても通知は戻らない。push（ブランチが remote に出るだけ）とは
+  // 戻せなさが違うので、段を分けて宣言できるようにしてある。
+  if (policy.open_pull_request === "manual") {
+    return {
+      prNumber: null,
+      created: false,
+      // ここへ来るのは push が通ったあとだけになる。`pushed: true` は「この
+      // ブランチに PR を立ててよい」を意味するので、押す前の段から出してはいけない。
+      // 押していないブランチを head にした `gh pr create` は落ちる。
+      held: {
+        step: "open_pull_request",
+        reason: "declared_manual",
+        pushed: true,
+        branch: pushed.branch,
+        base,
+      },
+      skipped: "policies.publish.open_pull_request: manual の宣言があるので PR を作らない",
+    };
   }
 
   const number = await deps.writer.createPullRequest({
@@ -324,7 +570,7 @@ async function ensurePullRequest(
     // 宣言が無ければ undefined のまま渡す。Adapter がそのとき draft を送らない。
     draft: target.goal.repository.pull_request?.draft,
   });
-  return { prNumber: number, created: true, skipped: null };
+  return { prNumber: number, created: true, held: null, skipped: null };
 }
 
 /**
@@ -412,7 +658,12 @@ export const PROGRESS_MARKER = "<!-- ent:progress -->";
  * action と rationale だけでは「何が残っているか」が読めないので、
  * criteria ごとの Verification.result を並べる。
  */
-function commentBody(target: PublishTarget, now: Date, pushFailure: string | null): string {
+function commentBody(
+  target: PublishTarget,
+  now: Date,
+  pushFailure: string | null,
+  held: PublishHold | null,
+): string {
   const rows = target.verifications.map(
     (v) => `| \`${v.criterionId}\` | ${MARKERS[v.result]} ${v.result} | ${oneLine(v.detail)} |`,
   );
@@ -426,6 +677,11 @@ function commentBody(target: PublishTarget, now: Date, pushFailure: string | nul
     ...(pushFailure === null
       ? []
       : [`> [!WARNING]`, `> push できなかった: ${oneLine(pushFailure)}`, ""]),
+    // 宣言で止めたことも先頭に出す。落ちたのではないので WARNING にはしない。
+    // 下の criteria が全部緑でも、その先は人間が進める、という但し書きになる。
+    ...(held === null
+      ? []
+      : [`> [!NOTE]`, ...heldNotes(held.step, target.goal.goal.id).map((line) => `> ${line}`), ""]),
     // 改行を潰す。承認の定型文は行単位で照合されるので、本文の途中に
     // 独立した1行を作らせない。目印による除外と二重にしておく。
     flatten(target.decision.rationale),
@@ -442,6 +698,44 @@ function commentBody(target: PublishTarget, now: Date, pushFailure: string | nul
         ]),
     `<sub>decided_by: ${target.decision.decidedBy} / digest: \`${target.digest.slice(0, 12)}\` / ${now.toISOString()}</sub>`,
   ].join("\n");
+}
+
+/**
+ * 宣言で止めた段を、PR を読む人間に伝える文面。
+ *
+ * **PR に出る説明はここだけになる。** `publishHeldDecision`（`src/controller/index.ts`）が
+ * 組み立てる rationale は publish の**後ろ**で判断を差し替えるので、この関数に渡る
+ * `target.decision` は差し替え前のものになる。同じファイルのもう1つの関門
+ * （`uncommittedDecision`）は publish の前で差し替わるため PR と `ent get` に同じ
+ * 文字列が出るが、こちらは出ない。**その分をここに書く。** 「push していない」だけを
+ * 書くと、人間が最も要る2つ——手で押しても解けないことと、`ent abandon` で終端に
+ * できること——が PR の側から読めない。
+ *
+ * 行で返す。呼ぶ側が1行ずつ `> ` を付けるので、引用の外に独立した行を作らない。
+ * 承認の定型文は行全体で照合されるので（`approves`、`src/adapters/github.ts`）、
+ * 引用の外に行を作る形にすると、そこに並んだ文字列が承認として数えられる。
+ *
+ * `open_pull_request` の側は、いまのところ PR に出ない。この段で止まるのは
+ * 「差分があり、まだ PR が無い」ティックだけで、書き込む先の PR がそもそも無いため
+ * `publish` は「PR がまだ無いのでコメントできない」で降りる。**それでも文面を
+ * 残しておく。** 段の並びが変わって PR がある状態で止まりうるようになったとき、
+ * 文面が無いことに気づける形にしておくより、あるほうが壊れ方が小さい。
+ */
+function heldNotes(step: PublishStep, goalId: string): string[] {
+  const declaration = `\`.goals/${goalId}.yaml\` の \`policies.publish.${step}\``;
+  if (step === "open_pull_request") {
+    return [
+      "`policies.publish.open_pull_request: manual` の宣言があるので、controller は PR を作らない。",
+    ];
+  }
+  return [
+    "`policies.publish.push_branch: manual` の宣言があるので push していない。" +
+      "この PR は、宣言より前に押された分のままになる。",
+    "**手で push しても controller には見えない。** 押さないと決めた口が remote を知る" +
+      "唯一の経路なので、押したことは次のティックの判断に入らない。",
+    `進めるには ${declaration} を \`auto\` に戻す。` +
+      `もう追わないなら \`ent abandon ${goalId} --reason <理由>\` で終端にする。`,
+  ];
 }
 
 const MARKERS: Record<Verification["result"], string> = {

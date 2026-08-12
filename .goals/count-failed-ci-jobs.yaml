@@ -1,0 +1,205 @@
+version: 1
+
+goal:
+  id: count-failed-ci-jobs
+  name: 落ちている job が1つも無いことを criteria に書ける
+  desired_state: |
+    **いま Goal は「CI が通っている」を書けない。** 書けるのは
+    `github.ci.conclusion == success` だけで、これは head sha に紐づく
+    **最新の workflow run 1本**の結論でしかない（issue #58）。
+
+    workflow を複数持つリポジトリでは、lint の run が落ちていても test の run が
+    後から success で終われば criterion は緑になる。実際にそれが起きて、CI が赤い
+    まま criteria が全部通り、気づかないまま人間のレビューに回りかけた。
+
+    > 誤って収束する側の壊れ方になる。回らずに止まる不具合と違って、外から見ると
+    > 成功しているので気づけない。
+
+    `github.ci.failed_jobs` は既にあるが、`verification.type: fact` の `equals` が
+    `string | number | boolean` しか受けないので「配列が空」を書けない。
+
+    そこで**数えた数を Fact にする**（issue #58 の案1）。
+    `github.ci.conclusion` の意味は変えない。案2（conclusion を check 全体の集約に
+    変える）は、同じ名前のまま既存 Goal の意味が変わるので採らない。
+
+    どう作るかは Actor が決める。以下は「何が満たされていればよいか」を書く。
+
+    1. `github.ci.failed_job_count` を観測キーとして足す
+
+      Goal が `verification: { type: fact, key: github.ci.failed_job_count, equals: 0 }`
+      と書けるようにする。`equals` は既に `number` を受けるので、
+      **スキーマ（`src/domain/goal.ts`）は触らずに済む。**
+
+    2. 数える対象は、その head sha に紐づく全 workflow run にする
+
+      **ここを1本だけにすると issue #58 は直らない。** 最新の run だけを数えた数は
+      `conclusion == success` と同じものになり、キーが1つ増えただけになる。
+
+    3. まだ回っている run があるあいだは Fact にしない
+
+      「いま時点で 0 件」を Fact にすると、push した直後の queued な状態で
+      `equals: 0` が通る。**直そうとしている誤収束より悪いものを作ることになる。**
+      実行中の run の `conclusion` を Fact にしないのと同じ規則を、数にも適用する。
+
+    4. 0 件でも Fact にする
+
+      `github.ci.failed_jobs` は「1件以上あるとき」しか push しない。そこを真似ると
+      `equals: 0` が永久に届かず、criterion が緑にならない。**0 は「観測できた 0」で
+      あって「観測できなかった」ではない。**
+
+    5. 何が落ちているかも横断して残す
+
+      数だけでは次の ACT が何を直すか決められない。`github.ci.failed_jobs` にも、
+      横断して集めた失敗ジョブの名前とログ URL を載せる。数が 2 なのに名前が
+      1つも無い、という読めない状態を作らない。
+
+    ## 触る場所
+
+    `src/domain/fact-keys.ts` / `src/observe/index.ts` / `src/adapters/github.ts`
+    の3つで足りる。どれも `PROTECTED_PATH_FLOOR` の外にある。
+
+    `CodeProviderPort` に**メソッドを増やさない。** 増やすと合成ルート
+    （`src/wiring/index.ts`）の offline スタブを直す必要が出るが、あそこは下限の中で、
+    触った時点で `ESCALATE(protected_path_touched)` になる。`CiRunSnapshot` に
+    フィールドを1つ足す形なら、スタブは `() => Promise<never>` なので何も壊れない。
+    **`src/wiring/index.ts` を触る必要が出たら、それは設計が変わったということなので
+    人間を呼ぶ。**
+
+    ## 既存テストが赤くなるのは想定内
+
+    `CiRunSnapshot` にフィールドを足すと、`tests/observe.test.ts` と
+    `tests/reconcile-stale-facts.test.ts` が組み立てている snapshot が型で落ちる。
+    **その2つを直すのはこの Goal の範囲内で、スコープ外の変更ではない。**
+    フィールドを足すのは検査を弱めることにはあたらない。
+
+    仕様は `tests/ci-failed-job-count.test.ts` に書いてある。着手時点では落ちる。
+    テストが正で、この記述と食い違ったらテストに合わせる。
+
+repository:
+  provider: github
+  owner: slashkiko
+  name: entelecheia
+  default_branch: main
+
+setup:
+  - pnpm install --frozen-lockfile
+
+acceptance_criteria:
+  - id: ac-1
+    description: ci-failed-job-count のテストが通る（着手時点では落ちている）
+    verification: { type: command, run: mise run test }
+
+  - id: ac-2
+    description: 型チェックが通る
+    verification: { type: command, run: mise run typecheck }
+
+  - id: ac-3
+    description: lint と format が通る
+    verification: { type: command, run: mise run lint }
+
+  - id: ac-4
+    description: サプライチェーンと workflow のチェックが通る（baseline 由来）
+    verification: { type: command, run: mise run check }
+
+  - id: ac-5
+    description: 変更を載せた PR の CI が成功している
+    # ここは新しいキーではなく既存の conclusion で見る。回している controller は
+    # cwd の HEAD から build した dist で動くので、Actor が足したキーは
+    # このティックの観測には入らない。自分で足したキーを自分の criteria に
+    # 使うと、永久に unobserved のまま埋まらない。
+    verification: { type: fact, key: github.ci.conclusion, equals: success }
+
+  - id: ac-6
+    description: 誤収束を作り直していないことを人間が確認する
+    verification:
+      type: human
+      prompt: |
+        この Goal は「criteria が本物の CI 失敗を素通りさせる」（issue #58）を
+        直すものです。直し方を間違えると、同じ壊れ方を別の名前で作り直せます。
+        次を確認してください。
+
+        1. 数えているのが head sha に紐づく**全 workflow run**か。最新の1本だけを
+           数えていないか。1本だけなら `github.ci.conclusion == success` と
+           同じもので、キーが1つ増えただけになる
+        2. まだ回っている run があるあいだ、`github.ci.failed_job_count` の Fact が
+           **作られていない**か。ここで 0 を出すと、push した直後に `equals: 0` が
+           通る
+        3. 0 件のときに Fact が**作られている**か。`failed_jobs` の側を真似て
+           「1件以上のときだけ push」にしていないか
+        4. `github.ci.conclusion` の意味が変わっていないか（最新の run の結論のまま）。
+           既存 Goal の ac-5 の意味が動いていないか
+        5. `src/wiring/index.ts` と `src/domain/goal.ts` を触っていないか
+        6. 既存の tests/ を弱めていないか。フィールドの追加に伴う修正の範囲に
+           収まっているか
+
+context:
+  background: |
+    issue #58（P1, bug）。`github.ci.conclusion` の Fact は head sha に対する
+    最新の workflow run 1本から作られる。この形のまま
+    「CI が通っている」を criteria に書くと、他の workflow が落ちていても通る。
+
+    ent は完了判定を VERIFIED な Fact だけで行う（design.md §3.1）。その Fact が
+    「CI は全部 green」を意味していないのに、Goal 側からはそう読める名前で
+    参照できてしまうところが問題になる。criteria の書き手が間違えたのではなく、
+    正しく書ける語彙が無かった。
+
+    issue には3案あるが、案1（数値キーを足す）を採る。案2 は `conclusion` という
+    名前のまま意味が変わるので既存 Goal の意味が動く。案3（`equals` に配列を許す）は
+    `src/domain/goal.ts` を触ることになり、あそこは `PROTECTED_PATH_FLOOR` の中で
+    ent 自身には回させられない。
+
+  constraints:
+    - テストから実際の GitHub と Claude API を叩かない
+    - tests/ci-failed-job-count.test.ts は仕様なので変更しない。通らないなら実装側を直す
+    - 既存の tests/ を弱めない。CiRunSnapshot にフィールドを足したことによる
+      修正（tests/observe.test.ts と tests/reconcile-stale-facts.test.ts）は範囲内
+    - github.ci.conclusion の意味を変えない。最新の run の結論のまま保つ
+    - CodeProviderPort にメソッドを増やさない。合成ルート（src/wiring/index.ts）は
+      下限にあり、触ると関門が鳴る
+    - src/domain/goal.ts を触らない。equals は既に number を受ける
+    - 依存パッケージを増やさない
+    - mise run check（サプライチェーン検査）を壊さない
+    - PR の作成とコメントの投稿はしない。controller が行う
+
+  references:
+    - title: 設計ドキュメント
+      path: docs/design.md
+    - title: 観測キーのレジストリ
+      path: src/domain/fact-keys.ts
+    - title: Fact を作る側
+      path: src/observe/index.ts
+    - title: GitHub から run と job を読む側
+      path: src/adapters/github.ts
+    - title: 仕様（着手時点では落ちる）
+      path: tests/ci-failed-job-count.test.ts
+
+policies:
+  require_human_approval:
+    - merge
+    - force_push
+    - push_to_default_branch
+    - deploy
+    - secret_access
+    - external_send
+  protected_paths:
+    # 下限（PROTECTED_PATH_FLOOR）は Zod が読み込み時に混ぜるので書かない。
+    # ここに並べるのは、この Goal で追加する分だけにする。
+    # 検証系。ここを書き換えられると Agent が自分の criteria を通せる。
+    # tests/** は入れない（理由は guard-the-controller.yaml に書いた）。
+    - mise.toml
+    - mise-tasks/**
+    - vitest.config.ts
+    - biome.json
+    - tsconfig*.json
+    - .github/**
+    # 依存の追加は人間が通す。この Goal の constraints にも
+    # 「依存パッケージを増やさない」と書いてある。
+    - package.json
+    - pnpm-lock.yaml
+
+budget:
+  max_actor_runs: 8
+  max_reconciles: 15
+  max_wall_clock: 3h
+  max_consecutive_failures: 3
+  max_unchanged_reconciles: 4

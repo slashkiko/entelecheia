@@ -99,6 +99,8 @@ describe("observe", () => {
             status: "completed",
             conclusion: "failure",
             failedJobs: [{ name: "typecheck", logUrl: "https://example.test/logs/1" }],
+            failedJobCount: 1,
+            excludedWorkflows: [],
           }),
         },
       }),
@@ -199,6 +201,10 @@ describe("observe", () => {
             status: "in_progress",
             conclusion: null,
             failedJobs: [],
+            // 回っている最中は数が確定しない。conclusion と同じく Fact にしない。
+            failedJobCount: null,
+            // 除外は宣言していない。宣言が無ければ Fact にもならない。
+            excludedWorkflows: [],
           }),
         },
       }),

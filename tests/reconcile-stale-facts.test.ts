@@ -123,6 +123,9 @@ function deps(over: Partial<ReconcileDeps> = {}): ReconcileDeps {
         status: "in_progress" as const,
         conclusion: null,
         failedJobs: [],
+        // 回っている最中は落ちている job の数も確定しない。
+        failedJobCount: null,
+        excludedWorkflows: [],
       }),
       getIssue: async () => null,
     },

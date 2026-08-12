@@ -1,0 +1,620 @@
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { type ControllerDeps, tick } from "../src/controller/index.js";
+import { type Goal, goalSchema } from "../src/domain/goal.js";
+import { CONTROLLER_STATE_DB_KEY } from "../src/domain/guard-rules.js";
+import type { RunIntent, RunOutcome } from "../src/domain/run.js";
+import type { Store } from "../src/store/port.js";
+import { openStore } from "../src/store/sqlite.js";
+
+/**
+ * controller 自身の書き込みで関門が鳴らないこと、外からの改竄では鳴ることを、
+ * **本物の状態 DB を通して**固定する（issue #62）。
+ *
+ * `.goals/.state/goals.db` は関門が見る保護対象でありながら、controller 自身の
+ * 書き込み先でもある。ACT の窓——ベースラインを控えてから検査するまでの間——で
+ * controller は必ずこの DB に書く（`startRun` / `finishRun` と lease の延長）。
+ * かつて関門はこのファイルを**バイト列**で見ていたので、SQLite の WAL が自動
+ * checkpoint に当たった回だけ `goals.db` の中身が動き、ACT を含むティックが
+ * `ESCALATE(protected_path_touched)` で止まっていた。実装役の成果は publish されず、
+ * worktree に未 commit で残る。
+ *
+ * **観測をバイト列から論理的な行へ移した**（`Store.guardDigest`）。関門が見るのは
+ * 「この Goal に属する行の内容」で、checkpoint が走ってもファイルが再配置されても
+ * 動かない。controller 自身が ACT の窓で書く分——lease の列と、そのティックで
+ * 作った Run の行——だけを射影から外す。
+ *
+ * **この形にした一番の理由は、ここを本物の DB で書けるようになることになる。**
+ * 指紋を文字列で偽装した fake で組むと、controller の書き込みが1つ増えた日に
+ * 何も落ちない。本物の store を通しておけば、ACT の窓の中で説明の付かない
+ * 書き込みが増えた瞬間に「controller 自身の書き込みでは止まらない」が落ちる。
+ */
+
+const NOW = new Date("2026-08-12T08:00:00.000Z");
+const WORKTREE_ROOT = "/tmp/entelecheia/worktrees";
+
+function goalWith(id: string, dependsOn: readonly string[] = []): Goal {
+  return goalSchema.parse({
+    version: 1,
+    goal: { id, name: "サンプル", desired_state: "何かが完成している", depends_on: dependsOn },
+    repository: {
+      provider: "github",
+      owner: "slashkiko",
+      name: "entelecheia",
+      default_branch: "main",
+    },
+    setup: [],
+    acceptance_criteria: [
+      {
+        id: "ac-1",
+        description: "テストが通る",
+        verification: { type: "command", run: "mise run test" },
+      },
+    ],
+    context: { background: "背景", constraints: [], references: [] },
+    // 空で宣言しても、スキーマの下限が `.goals/.state/**` と `.git/**` を入れる。
+    policies: { require_human_approval: ["merge"], protected_paths: [] },
+    budget: {
+      max_actor_runs: 10,
+      max_reconciles: 20,
+      max_wall_clock: "2h",
+      max_consecutive_failures: 3,
+      max_unchanged_reconciles: 9,
+    },
+  });
+}
+
+interface Options {
+  /** ACT の窓の中（Actor が走っているあいだ）に起きること */
+  duringAct?: () => void | Promise<void>;
+}
+
+function deps(store: Store, goalId: string, options: Options = {}): ControllerDeps {
+  return {
+    store,
+    owner: `worker-${goalId}`,
+    leaseSeconds: 300,
+    worktreeRoot: WORKTREE_ROOT,
+    review: { latest: async () => null },
+    code: {
+      getPullRequest: async () => null,
+      getLatestCiRun: async () => null,
+      getIssue: async () => null,
+    },
+    local: {
+      snapshot: async () => ({ branch: "main", headSha: "a".repeat(40), dirty: false }),
+    },
+    command: { run: async () => ({ exitCode: 1, stdout: "", stderr: "" }) },
+    approval: { getApproval: async () => null },
+    worktree: {
+      ensure: async (name) => ({
+        path: `${WORKTREE_ROOT}/${name}`,
+        branch: `entelecheia/${name}`,
+      }),
+      commit: async () => true,
+      changedPaths: async () => [],
+      // git が見える汚れは空にする。ここで見たいのは状態 DB だけになる。
+      repoDirtyState: async () => new Map(),
+      // 状態 DB はもうここには出ない。controller が store から論理ダイジェストを
+      // 取り、`CONTROLLER_STATE_DB_KEY` として観測に混ぜる。
+      outOfSightState: async () =>
+        new Map([
+          [".git/hooks/pre-push", "sha-clean"],
+          [".git/config#core.hooksPath", "unset"],
+        ]),
+    },
+    actor: {
+      kind: "claude-code",
+      run: async () => {
+        await options.duringAct?.();
+        return { exitCode: 0, logRef: "log", tokens: 10, artifacts: [] };
+      },
+    },
+    writer: {
+      findPullRequest: async () => null,
+      createPullRequest: async () => 1,
+      addComment: async () => undefined,
+    },
+    branch: { push: async (name) => ({ branch: `entelecheia/${name}`, pushed: true }) },
+    llm: { chooseAction: async () => ({ type: "ACT", intent: "テストを直す" }) },
+    now: () => NOW,
+  };
+}
+
+let dir: string;
+let dbPath: string;
+let store: Store;
+
+beforeEach(() => {
+  dir = mkdtempSync(join(tmpdir(), "ent-state-db-"));
+  mkdirSync(join(dir, ".goals", ".state"), { recursive: true });
+  dbPath = join(dir, ".goals", ".state", "goals.db");
+  store = openStore(dbPath);
+});
+
+afterEach(() => {
+  store.close();
+  rmSync(dir, { recursive: true, force: true });
+});
+
+function activate(target: Store, goal: Goal): void {
+  target.upsertGoal(goal);
+  target.setStatus(goal.goal.id, "ACTIVE", null, NOW.toISOString());
+}
+
+describe("controller 自身の書き込みでは止まらない", () => {
+  it("ACT の窓で checkpoint が走っても ESCALATE しない", async () => {
+    // issue #62 の症状そのもの。`goals.db` のバイト列が動くのは checkpoint の
+    // せいで、論理的な行は1つも変わっていない。ACT の最中に checkpoint を
+    // 明示的に起こして、その1点だけを再現する。
+    const goal = goalWith("state-db-goal");
+    activate(store, goal);
+
+    const result = await tick(
+      goal,
+      deps(store, goal.goal.id, {
+        duringAct: () => {
+          checkpoint();
+        },
+      }),
+    );
+
+    expect(result.decision?.action).toMatchObject({ type: "ACT" });
+    expect(result.status).toBe("ACTIVE");
+  });
+
+  it("Run の write-ahead と確定、lease の延長だけでは ESCALATE しない", async () => {
+    // 射影から外しているのは lease の列と「このティックで作った Run」だけになる。
+    // ACT の窓で説明の付かない書き込みが1つ増えれば、ここが落ちる。
+    const goal = goalWith("state-db-goal");
+    activate(store, goal);
+
+    const result = await tick(goal, deps(store, goal.goal.id));
+
+    expect(result.decision?.action).toMatchObject({ type: "ACT" });
+  });
+});
+
+describe("外からの改竄では止まる", () => {
+  it("ACT 中に status を書き換えられたら ESCALATE する", async () => {
+    // ここが鳴らなくなると、`UPDATE goals SET status='COMPLETED'` の1行で
+    // 以降の全ティックを短絡させられる。保護を外していないことの確認になる。
+    const goal = goalWith("state-db-goal");
+    activate(store, goal);
+
+    const result = await tick(
+      goal,
+      deps(store, goal.goal.id, {
+        duringAct: () => {
+          tamper("UPDATE goals SET status = 'COMPLETED' WHERE id = 'state-db-goal'");
+        },
+      }),
+    );
+
+    expect(result.decision?.action).toEqual({
+      type: "ESCALATE",
+      reason: "protected_path_touched",
+    });
+    expect(result.decision?.rationale).toContain(CONTROLLER_STATE_DB_KEY);
+  });
+
+  it("ACT 中に Run を差し込まれたら ESCALATE する", async () => {
+    // 外すのは「controller 自身が作った Run」だけで、Run のテーブル全体ではない。
+    const goal = goalWith("state-db-goal");
+    activate(store, goal);
+
+    const result = await tick(
+      goal,
+      deps(store, goal.goal.id, {
+        duringAct: () => {
+          tamper(
+            `INSERT INTO runs (goal_id, intent, actor, role, worktree, attempt, status, started_at, artifacts)
+             VALUES ('state-db-goal', '偽の Run', 'claude-code', 'implement', 'w', 1, 'completed', '${NOW.toISOString()}', '[]')`,
+          );
+        },
+      }),
+    );
+
+    expect(result.decision?.action).toEqual({
+      type: "ESCALATE",
+      reason: "protected_path_touched",
+    });
+  });
+
+  it("ACT 中に DB を消されたら ESCALATE する", async () => {
+    // 開いたままのコネクションは unlink されたファイルを読み続ける。
+    // 行だけを見ていると気づけないので、存在も観測に混ぜてある。
+    const goal = goalWith("state-db-goal");
+    activate(store, goal);
+
+    const result = await tick(
+      goal,
+      deps(store, goal.goal.id, {
+        duringAct: () => {
+          rmSync(dbPath);
+        },
+      }),
+    );
+
+    expect(result.decision?.action).toEqual({
+      type: "ESCALATE",
+      reason: "protected_path_touched",
+    });
+  });
+});
+
+/**
+ * 自分の Run の行は射影から丸ごと落ちる。落ちているのは「controller が ACT の窓の
+ * 中で書く列」だけのはずなのに、行ごと落とすと `role` / `intent` / `worktree` /
+ * `attempt` / `started_at` ——`finishRun` が一度も書かない列——まで観測の外に出る。
+ *
+ * **`role` が外に出ていると、実装役が自分でレビューを承認できる。** 実装役の ACT の
+ * 窓の中で `UPDATE runs SET role='review' WHERE goal_id=? AND status='starting'` を
+ * 流すと、次のティックで `latestReviewRun`（`src/adapters/review-run.ts`）が
+ * その Run を「直近のレビュー役の Run」として選ぶ。`log_ref` は controller が
+ * 正しく書いているのでログの偽造すら要らず、実装役が自分で書いた最終メッセージが
+ * `review.verdict` と `review.reviewed_sha` の Fact になり、`judgeReviewVerdict` が
+ * criterion を passed にする。
+ *
+ * 射影から落とす行の**不変列を、controller が `startRun` に渡した値と突き合わせる
+ * 関門**を ACT の後に置いた。ここが鳴らなくなると、この経路が丸ごと開く。
+ */
+describe("自分の Run の不変列を書き換えられたら止まる", () => {
+  it("ACT 中に role を書き換えられたら ESCALATE する", async () => {
+    const goal = goalWith("state-db-goal");
+    activate(store, goal);
+
+    const result = await tick(
+      goal,
+      deps(store, goal.goal.id, {
+        duringAct: () => {
+          // Run の id を知る必要は無い。`starting` の行はこのティックのものだけになる。
+          tamper(
+            "UPDATE runs SET role = 'review' WHERE goal_id = 'state-db-goal' AND status = 'starting'",
+          );
+        },
+      }),
+    );
+
+    expect(result.decision?.action).toEqual({
+      type: "ESCALATE",
+      reason: "protected_path_touched",
+    });
+    expect(result.decision?.rationale).toContain("role");
+    expect(result.decision?.rationale).toContain(CONTROLLER_STATE_DB_KEY);
+  });
+
+  it("ACT 中に intent / worktree / attempt / started_at を書き換えられたら ESCALATE する", async () => {
+    // role だけを名指しで守ると、次に足された不変列がまた観測の外に落ちる。
+    // 突き合わせるのは `startRun` に渡した組そのものにしてある。
+    const goal = goalWith("state-db-goal");
+    activate(store, goal);
+
+    const result = await tick(
+      goal,
+      deps(store, goal.goal.id, {
+        duringAct: () => {
+          tamper(
+            `UPDATE runs SET intent = '偽の意図', worktree = 'どこか', attempt = 99,
+                    started_at = '2000-01-01T00:00:00.000Z'
+              WHERE goal_id = 'state-db-goal' AND status = 'starting'`,
+          );
+        },
+      }),
+    );
+
+    expect(result.decision?.action).toEqual({
+      type: "ESCALATE",
+      reason: "protected_path_touched",
+    });
+  });
+
+  it("ACT 中に自分の Run を別の Goal へ移されたら ESCALATE する", async () => {
+    // `goal_id` を書き換えると、行は `listRuns(goalId)` から消える。
+    // 「消えた」も改竄として数える。
+    const goal = goalWith("state-db-goal");
+    activate(store, goal);
+    const other = openStore(dbPath);
+    activate(other, goalWith("other-goal"));
+    other.close();
+
+    const result = await tick(
+      goal,
+      deps(store, goal.goal.id, {
+        duringAct: () => {
+          tamper(
+            "UPDATE runs SET goal_id = 'other-goal' WHERE goal_id = 'state-db-goal' AND status = 'starting'",
+          );
+        },
+      }),
+    );
+
+    expect(result.decision?.action).toEqual({
+      type: "ESCALATE",
+      reason: "protected_path_touched",
+    });
+  });
+
+  it("ACT 中に role を読めない値へ書き換えられたら guard_unavailable にする", async () => {
+    // 行は読めるが値がスキーマに載らない。「触っていない」と「確かめられなかった」を
+    // 混ぜない（design.md §3.1）。ティックごと落とすのでもない。
+    const goal = goalWith("state-db-goal");
+    activate(store, goal);
+
+    const result = await tick(
+      goal,
+      deps(store, goal.goal.id, {
+        duringAct: () => {
+          tamper(
+            "UPDATE runs SET role = 'reviewer-x' WHERE goal_id = 'state-db-goal' AND status = 'starting'",
+          );
+        },
+      }),
+    );
+
+    expect(result.decision?.action).toEqual({
+      type: "ESCALATE",
+      reason: "guard_unavailable",
+    });
+  });
+
+  it("書き換えられていなければ、Run を作ったティックは通る", async () => {
+    // 突き合わせが常に鳴るようになっていないこと。
+    const goal = goalWith("state-db-goal");
+    activate(store, goal);
+
+    const result = await tick(goal, deps(store, goal.goal.id));
+
+    expect(result.decision?.action).toMatchObject({ type: "ACT" });
+  });
+
+  it("**鳴るのは書き換えたティックだけになる。** 次のティックでは行がそのまま残る", async () => {
+    // (c) と同じ形の残る穴になる。関門はティック内の前後差しか見ないので、
+    // 改竄された行は次のティックのベースラインに入って鳴り止む。止まった Goal を
+    // 人間が掃除しないまま回し続けると、`role='review'` の行は DB に残ったままになる。
+    // ここを固定しておかないと、docs の「塞いだ」がどこまでを指すのか読めなくなる。
+    const goal = goalWith("state-db-goal");
+    activate(store, goal);
+
+    const first = await tick(
+      goal,
+      deps(store, goal.goal.id, {
+        duringAct: () => {
+          tamper(
+            "UPDATE runs SET role = 'review' WHERE goal_id = 'state-db-goal' AND status = 'starting'",
+          );
+        },
+      }),
+    );
+    expect(first.decision?.action).toEqual({
+      type: "ESCALATE",
+      reason: "protected_path_touched",
+    });
+    expect(first.status).toBe("WAITING_HUMAN");
+
+    const second = await tick(goal, deps(store, goal.goal.id));
+
+    // 2周目は鳴らない。行は `role='review'` のまま残っている。
+    expect(second.decision?.action).not.toEqual({
+      type: "ESCALATE",
+      reason: "protected_path_touched",
+    });
+    expect(store.listRuns("state-db-goal").some((run) => run.role === "review")).toBe(true);
+  });
+});
+
+/**
+ * 依存ゲート（`dependencyGate`）は他の Goal の `status` を直接読む。しかもその
+ * 呼び出しは lease を取る前——**どのティックの ACT の窓の外**——にある。
+ * `UPDATE goals SET status='COMPLETED' WHERE id='dep-goal'` を流せばこちらのゲートが
+ * 開くのに、どちらのダイジェストにも差が出なかった（design.md §10-6 の (f)）。
+ *
+ * 読む先を射影に入れる。依存先は `COMPLETED`（終端）でなければゲートを通らず、
+ * 終端の Goal は誰も回さないので、鳴りっぱなしにはならない。
+ */
+describe("depends_on に挙げた Goal の行も見る", () => {
+  it("ACT 中に依存先の status を書き換えられたら ESCALATE する", async () => {
+    const goal = goalWith("state-db-goal", ["dep-goal"]);
+    activate(store, goal);
+    const other = openStore(dbPath);
+    other.upsertGoal(goalWith("dep-goal"));
+    other.setStatus("dep-goal", "COMPLETED", null, NOW.toISOString());
+    other.close();
+
+    const result = await tick(
+      goal,
+      deps(store, goal.goal.id, {
+        duringAct: () => {
+          tamper("UPDATE goals SET status = 'FAILED' WHERE id = 'dep-goal'");
+        },
+      }),
+    );
+
+    expect(result.decision?.action).toEqual({
+      type: "ESCALATE",
+      reason: "protected_path_touched",
+    });
+  });
+
+  it("依存先の lease を別のワーカーが動かしても ESCALATE しない", async () => {
+    // 見るのは `status` だけになる。lease や reconciles まで見ると、依存先を
+    // 回している2本目の ent の書き込みでこちらが鳴る。
+    const goal = goalWith("state-db-goal", ["dep-goal"]);
+    activate(store, goal);
+    const other = openStore(dbPath);
+    other.upsertGoal(goalWith("dep-goal"));
+    other.setStatus("dep-goal", "COMPLETED", null, NOW.toISOString());
+
+    try {
+      const result = await tick(
+        goal,
+        deps(store, goal.goal.id, {
+          duringAct: () => {
+            other.acquireLease("dep-goal", "worker-dep", new Date(NOW.getTime() + 300_000), NOW);
+          },
+        }),
+      );
+
+      expect(result.decision?.action).toMatchObject({ type: "ACT" });
+    } finally {
+      other.close();
+    }
+  });
+
+  it("依存に挙げていない Goal の status が動いても ESCALATE しない", async () => {
+    const goal = goalWith("state-db-goal");
+    activate(store, goal);
+    const other = openStore(dbPath);
+    activate(other, goalWith("other-goal"));
+    other.close();
+
+    const result = await tick(
+      goal,
+      deps(store, goal.goal.id, {
+        duringAct: () => {
+          tamper("UPDATE goals SET status = 'COMPLETED' WHERE id = 'other-goal'");
+        },
+      }),
+    );
+
+    expect(result.decision?.action).toMatchObject({ type: "ACT" });
+  });
+});
+
+describe("ダイジェストを作れなかったティック", () => {
+  it("guardDigest が throw したら guard_unavailable にする", async () => {
+    // `encodeCell` は知らない型で throw する。黙って `String(value)` に落とすと、
+    // その列だけが実質的に射影から外れるため。throw が握り潰されず
+    // `ESCALATE(guard_unavailable)` として人間に届くところまでを固定する。
+    const goal = goalWith("state-db-goal");
+    activate(store, goal);
+
+    const broken: Store = {
+      ...store,
+      guardDigest: () => {
+        throw new Error("状態 DB のダイジェストに載せられない型の値がある: object");
+      },
+    };
+
+    const result = await tick(goal, deps(broken, goal.goal.id));
+
+    expect(result.decision?.action).toEqual({
+      type: "ESCALATE",
+      reason: "guard_unavailable",
+    });
+  });
+});
+
+describe("同じディレクトリで別の Goal を回しても止まらない", () => {
+  it("ACT 中に別の Goal の行が増えても ESCALATE しない", async () => {
+    // 2本目の ent が同じ `goals.db` に書いている状態にあたる。
+    const goal = goalWith("state-db-goal");
+    activate(store, goal);
+
+    const other = openStore(dbPath);
+    activate(other, goalWith("other-goal"));
+
+    try {
+      const result = await tick(
+        goal,
+        deps(store, goal.goal.id, {
+          duringAct: () => {
+            const intent: RunIntent = {
+              intent: "別の Goal を進める",
+              actor: "claude-code",
+              role: "implement",
+              worktree: "other-goal",
+              attempt: 1,
+              startedAt: NOW.toISOString(),
+            };
+            const outcome: RunOutcome = {
+              status: "completed",
+              finishedAt: NOW.toISOString(),
+              exitCode: 0,
+              logRef: "log",
+              tokens: 1,
+              artifacts: [],
+              detail: null,
+            };
+            other.acquireLease("other-goal", "worker-b", new Date(NOW.getTime() + 300_000), NOW);
+            other.finishRun(other.startRun("other-goal", intent), outcome);
+          },
+        }),
+      );
+
+      expect(result.decision?.action).toMatchObject({ type: "ACT" });
+    } finally {
+      other.close();
+    }
+  });
+
+  it("2本のティックを同じ DB へ同時に流しても、どちらも ESCALATE しない", async () => {
+    // **これはテストの中の並列で、`ent run` を2本立てたわけではない。**
+    // 確かめているのは「同じ `goals.db` を共有する2つのティックが、互いの
+    // 書き込みで関門を鳴らさない」の1点だけになる。git のロック競合など、
+    // プロセスを分けて初めて出るものはここには出ない。
+    const a = goalWith("goal-a");
+    const b = goalWith("goal-b");
+    activate(store, a);
+
+    const second = openStore(dbPath);
+    activate(second, b);
+
+    // 互いの ACT の窓が重なるようにする。片方が先に閉じてしまうと、
+    // 相手の書き込みが自分の窓の外へ出る。
+    const started = { a: false, b: false };
+    const overlap = async (side: "a" | "b"): Promise<void> => {
+      started[side] = true;
+      for (let i = 0; i < 200 && !(started.a && started.b); i += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      }
+      // 相手の窓が開いているあいだに書く。
+      for (let i = 0; i < 20; i += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 1));
+      }
+    };
+
+    try {
+      const [left, right] = await Promise.all([
+        tick(a, deps(store, a.goal.id, { duringAct: () => overlap("a") })),
+        tick(b, deps(second, b.goal.id, { duringAct: () => overlap("b") })),
+      ]);
+
+      expect(started).toEqual({ a: true, b: true });
+      expect(left.decision?.action).toMatchObject({ type: "ACT" });
+      expect(right.decision?.action).toMatchObject({ type: "ACT" });
+    } finally {
+      second.close();
+    }
+  });
+});
+
+/** 外から DB を書き換える。Bash を持つ Actor や、別プロセスにあたる */
+function tamper(sql: string): void {
+  const db = new DatabaseSync(dbPath);
+  try {
+    db.exec(sql);
+  } finally {
+    db.close();
+  }
+}
+
+/**
+ * WAL の内容を `goals.db` へ畳み込む。誤検知の引き金だったものを明示的に起こす。
+ *
+ * 実際には SQLite が閾値（既定 1000 ページ）を越えたコミットで勝手に走らせる。
+ * 何回書けば越えるかはそのプロセスがそれまでに書いた量で決まるので、
+ * ティックの形が同じでも鳴ったり鳴らなかったりしていた
+ * （`tests/state-db-wal-checkpoint.test.ts`）。
+ */
+function checkpoint(): void {
+  const db = new DatabaseSync(dbPath);
+  try {
+    db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
+  } finally {
+    db.close();
+  }
+}

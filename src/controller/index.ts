@@ -7,13 +7,14 @@ import {
   worktreeNameFor,
 } from "../act/index.js";
 import type { BudgetUsage } from "../decide/index.js";
-import type { Decision } from "../domain/action.js";
+import type { Decision, EscalateReason } from "../domain/action.js";
 import { errorMessage } from "../domain/error-message.js";
 import type { Fact, Unresolved } from "../domain/fact.js";
-import type { Goal } from "../domain/goal.js";
+import type { Goal, PublishStep } from "../domain/goal.js";
 import { type GoalState, type GoalStatus, isTerminal, nextStatus } from "../domain/goal-state.js";
 import {
   actorUsageLimitDecision,
+  CONTROLLER_STATE_DB_KEY,
   consecutiveFailuresOf,
   dependencyGate,
   describeClaim,
@@ -27,13 +28,13 @@ import {
   waitedSeconds,
 } from "../domain/guard-rules.js";
 import { describeViolations, findViolations } from "../domain/protected-paths.js";
-import { type ActorRole, DEFAULT_ACTOR_ROLE, type Run } from "../domain/run.js";
+import { type ActorRole, DEFAULT_ACTOR_ROLE, type Run, type RunIntent } from "../domain/run.js";
 import {
   pendingReviewCriteria,
   toVerifications,
   type Verification,
 } from "../domain/verification.js";
-import { type PublishDeps, publish } from "../publish/index.js";
+import { type PublishDeps, type PublishHold, publish } from "../publish/index.js";
 import { type ReconcileDeps, reconcile } from "../reconcile/index.js";
 import type { Store } from "../store/port.js";
 
@@ -130,6 +131,19 @@ export interface TickResult {
   run: Run | null;
   /** ティック後の Goal の状態 */
   status: GoalStatus;
+  /**
+   * 宣言（`policies.publish`）で publish を止めた場合だけ入る。止めていなければ**キーごと入らない**。
+   *
+   * ティックを叩くのは人間だけではない。エージェントが回している構成では、controller が
+   * 作らなかった PR をそのエージェントが代わりに立てる。そのためには「作らなかった」と
+   * 「作るなら head と base はこれ」が、`decision.rationale` の散文を読まずに分かる
+   * 必要がある。理由と段は `decision.action.reason` にも出るが、あちらは
+   * `EscalateReason` の1語なので押す先を持てない。
+   *
+   * 止めていないティックで `null` を置かないのは、`dryRun` と同じ理由になる。
+   * 既存の `.goals/*.yaml`（宣言を1本も書いていない）を回している側の出力を変えない。
+   */
+  publishHold?: PublishHold;
   /** dry-run で回した場合だけ true。通常のティックでは入らない */
   dryRun?: boolean;
   /**
@@ -299,6 +313,10 @@ export async function tick(goal: Goal, deps: ControllerDeps): Promise<TickResult
   // いるかぎり lease が切れないので、design.md §3.6 の「どのティックも有限時間で
   // return する」が外から見て成立しなくなる。上限に達したら延長をやめ、lease は
   // 期限で切れる。走行中の ACT は続くが、次のティックには別プロセスが入れる。
+  //
+  // 延長は ACT の窓の中で走る状態 DB への書き込みでもある。関門が見るのは
+  // `Store.guardDigest` で、lease の列はその射影から外してある。ここで書いても
+  // 関門は動かない（`observedRepoState`）。
   let renewals = 0;
   const heartbeat: NodeJS.Timeout = setInterval(
     () => {
@@ -365,10 +383,28 @@ export async function tick(goal: Goal, deps: ControllerDeps): Promise<TickResult
     // 副作用のあるこの層で作り直すと、判断に使った値と記録が食い違いうる。
     const digest = result.observedDigest;
 
+    // このティックで controller 自身が作った Run。関門が状態 DB を見るときに、
+    // この分だけを射影から外す（`observedRepoState`）。write-ahead と
+    // 確定は ACT の窓のちょうど真ん中で書かれるので、外さないと自分の書き込みで
+    // 鳴る。**`run` の id を使わずにここへ溜めるのは、Run を書いてから ACT が
+    // 失敗した回でも id が要るため**になる。`maybeAct` は `acted: false` の回に
+    // null を返すが、行は残る。
+    //
+    // **id と一緒に、`startRun` に渡した意図そのものを控える。** 射影から行ごと
+    // 落とすので、`finishRun` が一度も書かない列——`role` / `intent` / `worktree` /
+    // `attempt` / `started_at`——まで観測の外に出る。控えた値と ACT の後に
+    // 突き合わせて、そこだけを別の関門で見る（`ownRunDrift`）。
+    //
+    // **下の `repoBaseline` は、この配列がまだ空のうちに読む。** ベースラインの
+    // 時点では Run の行そのものが無いので、空で読んで初めて検査時の射影と
+    // 揃う。ここを遅延させる（あとで読み直す形にする）と、ベースラインだけが
+    // 自分の Run を含んだ射影になり、前後が食い違う。
+    const ownRuns: OwnRun[] = [];
+
     // 本体リポジトリ側の汚れを ACT の前に控える。自己ホストなので、人間が
     // 編集中のファイルが最初から並んでいる。それを違反と読むと関門が毎回鳴り、
     // 鳴りっぱなしの関門は誰も見なくなる。差分だけを Actor の仕業として数える。
-    const repoBefore = await repoBaseline(deps);
+    const repoBefore = await repoBaseline(goal, ownRuns, deps);
 
     // 基準が読めなければ Actor を起動しない。関門は下で guard_unavailable に倒すが、
     // その前に1回分の予算を使ってしまうのは避ける。
@@ -376,7 +412,15 @@ export async function tick(goal: Goal, deps: ControllerDeps): Promise<TickResult
     const run =
       base === null
         ? null
-        : await maybeAct(goal, result.decision, base, result.observedFacts, deps, actorSignal);
+        : await maybeAct(
+            goal,
+            result.decision,
+            base,
+            result.observedFacts,
+            deps,
+            actorSignal,
+            ownRuns,
+          );
 
     // ACT のあいだに奪われていないか。Run はもう確定している（中断は act が
     // interrupted として書く）ので、止めるのはここから下の書き込みだけになる。
@@ -418,7 +462,15 @@ export async function tick(goal: Goal, deps: ControllerDeps): Promise<TickResult
     // Agent が触ってはいけないものに触れていないかを、ACT の外で検査する
     // （design.md §7 / §10-6）。Agent 側の disallowedTools は Agent の設定で、
     // SDK の外から同じ操作をされれば素通りする。
-    const guarded = await guardedDecision(goal, result.decision, run, repoBefore, base, deps);
+    const guarded = await guardedDecision(
+      goal,
+      result.decision,
+      run,
+      repoBefore,
+      base,
+      deps,
+      ownRuns,
+    );
     const actorGuarded = actorUsageLimitDecision(guarded, run);
 
     // 機械側の criteria が全部通ったら、controller が commit する
@@ -455,12 +507,6 @@ export async function tick(goal: Goal, deps: ControllerDeps): Promise<TickResult
     deps.store.saveSnapshot(goalId, snapshot);
     deps.store.saveVerifications(goalId, verifications);
 
-    // Decision は1ティックに1行だけ書く。以前は先に result.decision を書き、
-    // 差し替えたときにもう1行足していたので、保護パス違反のティックだけ
-    // decisions が2行になった。countTrailingDigest は行を数えるので、
-    // max_unchanged_reconciles がそのぶん余計に進んでいた。
-    deps.store.saveDecision(goalId, digest, decided);
-
     // PR を確保して進捗を書く。ここは throw しないので、通知の失敗で
     // ティック全体を落とさない（design.md §9 の「PR と通知」）。
     // 保護パスに触れていたら PR は作らない。通常の変更として流れてしまう。
@@ -482,8 +528,21 @@ export async function tick(goal: Goal, deps: ControllerDeps): Promise<TickResult
       deps.store.setObserveTarget(goalId, published.prNumber, state.issueNumber);
     }
 
-    const status = nextStatus(state.status, decided.action);
-    const action = decided.action;
+    // 宣言（`policies.publish`）で publish を止めたなら、このティックは人間待ちで
+    // 終わる。**判断の差し替えを publish の後ろに置く。** 止めた段が確定するのは
+    // publish の中で、`open_pull_request` は「差分があり、まだ PR が無い」ティックに
+    // しか成立しない。宣言だけを先に読んで差し替えると、押すものが無いティックまで
+    // 人間を呼ぶことになる。
+    const settled = publishHeldDecision(goal, decided, published.held, deps);
+
+    // Decision は1ティックに1行だけ書く。以前は先に result.decision を書き、
+    // 差し替えたときにもう1行足していたので、保護パス違反のティックだけ
+    // decisions が2行になった。countTrailingDigest は行を数えるので、
+    // max_unchanged_reconciles がそのぶん余計に進んでいた。
+    deps.store.saveDecision(goalId, digest, settled);
+
+    const status = nextStatus(state.status, settled.action);
+    const action = settled.action;
     deps.store.setStatus(
       goalId,
       status,
@@ -491,7 +550,16 @@ export async function tick(goal: Goal, deps: ControllerDeps): Promise<TickResult
       deps.now().toISOString(),
     );
 
-    return { ran: true, skipped: null, reclaimed, decision: decided, run, status };
+    return {
+      ran: true,
+      skipped: null,
+      reclaimed,
+      decision: settled,
+      run,
+      // 止めていないティックにはキーを足さない。既存の出力の形を変えない。
+      ...(published.held === null ? {} : { publishHold: published.held }),
+      status,
+    };
   } finally {
     // 例外で抜けても解放する。残すと lease の期限までどのワーカーも動けない。
     clearInterval(heartbeat);
@@ -555,6 +623,15 @@ function holdsLease(goalId: string, deps: ControllerDeps): boolean {
  *   dry-run が「次に何が起きるか」を映さなくなる。検査そのものは触っていない
  * - 書いていたらどの状態に移っていたかを返す。状態は動かさないので、
  *   nextStatus の結果を wouldTransitionTo として別に返す
+ * - **`policies.publish` で止まる分は映らない。** publish を回さないので、宣言で
+ *   止めたときの `WAITING_HUMAN`（`publishHeldDecision`）はここでは出ず、
+ *   `wouldTransitionTo` は止める前の判断のまま返る。`open_pull_request` が止まるのは
+ *   「差分があり、まだ PR が無い」ティックだけで、それを知るには push して探すしかない。
+ *   dry-run は書かないティックなので、押してから判定することはできない。
+ *   `push_branch` だけは宣言から決まるので先に読めるが、ここだけ予告すると
+ *   同じ関門の判定が publish と preview の2箇所に分かれる。**片方が古くなったときに
+ *   どちらが実体なのか読む側から分からなくなる**ので、判定は publish に1本化して、
+ *   映らないことをこの行で明示する側を採る
  * - GitHub の読み口が生きているかを確かめる（reachableCode）。dry-run は
  *   「配管が繋がっているか」を見るためのものなので、observe が触らなかった
  *   Port をそのままにすると用を成さない
@@ -588,13 +665,19 @@ async function preview(goal: Goal, state: GoalState, deps: ControllerDeps): Prom
   // ACT を実行していないので、本体リポジトリ側の差分はこのティックには無い。
   // それでも検査を通すのは、前のティックが残した違反が worktree に残っている
   // 場合に、次のティックが ESCALATE になることまで含めて見せるため。
+  //
+  // 状態 DB の観測も通常のティックと同じに作る。dry-run は1行も書かないので
+  // 外す Run は1件も無いが、ここだけ経路を変えると dry-run が
+  // 「次に何が起きるか」を映さなくなる。
+  const repoBefore = await repoBaseline(goal, [], deps);
   const guarded = await guardedDecision(
     goal,
     result.decision,
     null,
-    await repoBaseline(deps),
+    repoBefore,
     guardBaseOf(goal, state),
     deps,
+    [],
   );
 
   // 未 commit の関門も通常のティックと同じに通す。ここを抜くと、worktree が
@@ -685,6 +768,10 @@ async function reachableCode(state: GoalState, deps: ControllerDeps): Promise<Un
  *   現れなかった。隔離が守るはずの当のファイルが検査から漏れていた
  * - 本体側は ACT 前の状態との差だけを数える。自己ホストなので人間の編集中の
  *   ファイルが最初から汚れている。それを違反にすると関門が毎回鳴る
+ * - **状態 DB はバイト列ではなく論理的な行で見る。** あれは関門が見る保護対象で
+ *   ありながら controller 自身の書き込み先でもあり、ACT の窓の中で `startRun` /
+ *   `finishRun` / lease の延長が走る。バイト列だと WAL の checkpoint に当たった
+ *   回だけ「外部からの改竄」と同じ差になっていた（`observedRepoState`）
  * - artifacts も併せて渡す。SDK が申告するパスは worktree の外を指すこともある
  * - 検査できなかったら ESCALATE(guard_unavailable)。「触っていない」と
  *   「確かめられなかった」を混ぜない（design.md §3.1）
@@ -700,6 +787,7 @@ async function guardedDecision(
   repoBefore: RepoBaseline,
   base: string | null,
   deps: ControllerDeps,
+  ownRuns: readonly OwnRun[],
 ): Promise<Decision> {
   // act と同じ規則で worktree の場所を決める。ここがずれると、
   // 隔離の中の編集を「外に出た」と読んでしまう。
@@ -737,6 +825,17 @@ async function guardedDecision(
       "guard_unavailable",
       "関門の基準（guard_base_sha）が commit id の形をしていないので停止する",
     );
+  }
+
+  // 射影から落とした Run の不変列を、控えた値と突き合わせる。
+  //
+  // **下の早期 return より前に置く。** Actor が worktree を1文字も編集しなければ
+  // `inspected` も `escaped` も空になり、そこで `decision` がそのまま返る。
+  // この検査を違反の枝に混ぜると、いちばん通したくない経路——何も編集せずに
+  // DB だけを1行書き換える——で一度も走らない。
+  const drift = ownRunDrift(goal.goal.id, ownRuns, deps);
+  if (drift !== null) {
+    return escalate(drift.reason, drift.detail);
   }
 
   // 作業ツリーごとに「編集されたパスの集合」と「そのツリーの場所」を組で持つ。
@@ -783,7 +882,7 @@ async function guardedDecision(
     // baseline にしか現れず、下の filter が after 側のエントリしか見ないので
     // 指紋がどう変わっても escaped に入らない。観測を足したのに関門が一度も
     // 鳴らない、という形になる。前後で同じものを見ること。
-    const after = await observedRepoState(deps);
+    const after = await observedRepoState(goal, ownRuns, deps);
     // 中身の指紋で比べる。パスの集合だけだと、人間が編集中のファイルを
     // Actor が上書きしたときに前後で同じパスが並び、差がゼロになる。
     //
@@ -998,6 +1097,96 @@ function uncommittedDecision(
 }
 
 /**
+ * 宣言（`policies.publish`）で publish を止めたティックの判断。止めていなければそのまま返す。
+ *
+ * 満たすべき性質:
+ * - 止めた段ごとに別の理由にする。`ent list` が出すのは種別と理由だけなので
+ *   （`stoppedReason`）、1つに畳むと「push を止めたのか PR を止めたのか」を
+ *   読む側がもう一度調べることになる
+ * - 状態は `WAITING_HUMAN` になる（`nextStatus`）。**COMPLETE を上書きする。**
+ *   PR が1本も無いまま「終わった」と言い切ると、完了判定が意味を失う。
+ *   ここで止めなければ、宣言した Goal ほど静かに COMPLETED へ抜ける
+ * - 判断したのは LLM ではないので decidedBy は "guard"（design.md §7）
+ * - 止めた理由と、人間が何をすれば進むのかを rationale に書く。ここが
+ *   `ent get`（`decision.rationale`）と `ent list` に出る唯一の説明になる
+ * - 元の rationale を残す。何をしようとしていたのかが読めなくなる
+ *
+ * **この rationale は PR には出ない。** 差し替えるのは publish の**後ろ**なので、
+ * `publish` が進捗コメントに載せた `decision` は差し替え前のものになる。同じファイルの
+ * `uncommittedDecision` は publish の前で差し替わるため PR と `ent get` に同じ文字列が
+ * 出るが、こちらはその規約から外れる。**差し替えを前へ動かす形は採れない。**
+ * `open_pull_request` を止めるかどうかは「push が通り、まだ PR が無い」を確かめたあと
+ * ——つまり publish の中——でしか決まらない。
+ *
+ * 代わりに、PR に要る分は `heldNotes`（`src/publish/index.ts`）が NOTE として書く。
+ * 文字列は別でも**同じ事実**を言う（手で押しても解けないこと、`auto` に戻すか
+ * `ent abandon` で終端にすること）。片方を直すときはもう片方も見る。
+ *
+ * **2つの段は、解け方が違う。** `open_pull_request` は人間が PR を立てれば次のティックの
+ * `findPullRequest` が見つけるので、宣言を書き換えなくても進む。`push_branch` にはその
+ * 経路が無い——押さないと決めた口（`BranchPort.push`）が remote を知る唯一の経路なので、
+ * 人間が手で押しても controller には見えない。宣言を `auto` に戻すまで毎ティック同じ
+ * 理由で止まり、予算だけが減る。**その非対称を rationale に書く。** 書かないと、
+ * 押したのに止まり続ける理由を人間がコードから探すことになる。
+ */
+function publishHeldDecision(
+  goal: Goal,
+  decision: Decision,
+  held: PublishHold | null,
+  deps: ControllerDeps,
+): Decision {
+  if (held === null) {
+    return decision;
+  }
+
+  // 案内するのは実装役の作業ツリーに揃える。押すのも commit もそちらで
+  // （`pushWorktree` / `commitVerifiedWork`）、人間が手で押す先も同じになる。
+  const worktreePath = worktreePathFor(goal, DEFAULT_ACTOR_ROLE, null, deps);
+  // ブランチと base は `PublishHold` から取る。**ここで組み立て直さない。**
+  // 同じ2つを機械可読なキー（`publishHold`）にも出しているので、別々に作ると
+  // 文面と payload が食い違いうる。読む側は同じティックの出力の中で矛盾を見る。
+  const branch = held.branch;
+  const base = held.base;
+  const declaration = `.goals/${goal.goal.id}.yaml の policies.publish.${held.step}`;
+
+  const rationale =
+    held.step === "push_branch"
+      ? `policies.publish.push_branch: manual を宣言しているので、controller は push しなかった。` +
+        `worktree（${worktreePath}、ブランチ ${branch}）に commit 済みの差分が残っていても ` +
+        `remote には1行も出ない。進めるには、人間が中身を確かめてから自分で押す` +
+        `（\`git -C ${worktreePath} push -u origin HEAD:${branch}\`）。` +
+        `**押しても controller はここを通り続ける。** 押さないと決めた口が remote を知る` +
+        `唯一の経路なので、人間が押したことを観測できない。${declaration} を auto に戻すまで` +
+        `毎ティック同じ理由で止まり、そのあいだ reconcile の予算は減り続ける。` +
+        `もう追わないなら \`ent abandon ${goal.goal.id} --reason <理由>\` で終端にする` +
+        `（元の判断: ${decision.rationale}）`
+      : `policies.publish.open_pull_request: manual を宣言しているので、controller は PR を` +
+        `作らなかった。push は済んでいるので、ブランチ ${branch} は remote にある。` +
+        `進めるには、人間が中身を確かめてから PR を立てる` +
+        `（\`gh pr create --head ${branch} --base ${base}\`）。` +
+        `次のティックはその PR を見つけて先へ進むので、${declaration} はそのままでよい` +
+        `（元の判断: ${decision.rationale}）`;
+
+  return {
+    decidedAt: deps.now().toISOString(),
+    action: { type: "ESCALATE", reason: HELD_REASONS[held.step] },
+    rationale,
+    decidedBy: "guard",
+  };
+}
+
+/**
+ * 止めた段と、人間を呼ぶ理由の対応。
+ *
+ * 宣言部のキー名をそのまま理由にしてある。`ent get` を読んだ人間が、
+ * `.goals/<slug>.yaml` のどの行を書き換えれば挙動が変わるのかを翻訳表なしで辿れる。
+ */
+const HELD_REASONS = {
+  push_branch: "push_branch_declared_manual",
+  open_pull_request: "open_pull_request_declared_manual",
+} as const satisfies Record<PublishStep, EscalateReason>;
+
+/**
  * ACT 前の本体リポジトリの汚れ。
  *
  * 控えられなかったことも値として持つ。ここで例外にすると、git が読めない環境で
@@ -1006,13 +1195,133 @@ function uncommittedDecision(
  */
 type RepoBaseline = { state: ReadonlyMap<string, string> } | { error: string };
 
-async function repoBaseline(deps: ControllerDeps): Promise<RepoBaseline> {
+async function repoBaseline(
+  goal: Goal,
+  ownRuns: readonly OwnRun[],
+  deps: ControllerDeps,
+): Promise<RepoBaseline> {
   try {
-    return { state: await observedRepoState(deps) };
+    return { state: await observedRepoState(goal, ownRuns, deps) };
   } catch (error) {
     return { error: errorMessage(error) };
   }
 }
+
+/**
+ * このティックで controller 自身が書いた Run と、そのとき渡した意図。
+ *
+ * 意図を捨てて id だけを持つと、射影から落とした行の**不変列**を誰も見なくなる
+ * （`ownRunDrift`）。
+ */
+type OwnRun = { id: string; intent: RunIntent };
+
+/**
+ * 射影から落とした Run の行が、controller が書いたままかを確かめる。
+ *
+ * **なぜ要るか。** 状態 DB の論理ダイジェストは `ownRunIds` の行を**丸ごと**
+ * 落とす。ところが controller が ACT の窓の中で書き換えるのは `finishRun` の9列
+ * （`status` / `finished_at` / `exit_code` / `log_ref` / `tokens` / `artifacts` /
+ * `detail` / `error_kind` / `actor_resume_after`）だけで、`role` / `intent` /
+ * `worktree` / `attempt` / `started_at` は `startRun` が1回書いたきり動かない。
+ * 行ごと落とすと、その不変列まで観測の外に出る。
+ *
+ * **とくに `role` が外に出ていると、実装役が自分でレビューを承認できた。**
+ * 実装役の ACT の窓の中で
+ * `UPDATE runs SET role='review' WHERE goal_id=? AND status='starting'` を流すと
+ * （Run の id を知る必要すら無い）、次のティックで `latestReviewRun`
+ * （`src/adapters/review-run.ts`）がその Run を「直近のレビュー役の Run」として
+ * 選ぶ。`log_ref` は controller が正しく書いているので生ログの偽造も要らず、
+ * 実装役が自分で書いた最終メッセージが `review.verdict` と `review.reviewed_sha`
+ * の Fact になり、`judgeReviewVerdict` が criterion を passed にする。
+ *
+ * **行が消えたことも改竄として数える。** `goal_id` を書き換えられると、行は
+ * `listRuns(goalId)` から落ちる。「見つからない」を「変わっていない」と読まない。
+ *
+ * **読めなかったら `guard_unavailable` に倒す。** `listRuns` は `role` や
+ * `status` をスキーマに通すので、値そのものを壊されると throw する。ティックごと
+ * 落とすのでも、握り潰すのでもなく、人間に渡す（design.md §3.1）。
+ *
+ * **残る穴は (c) と同じ形になる。** ここが見るのはティック内の前後差だけなので、
+ * 鳴ったティックで Goal は `WAITING_HUMAN` に落ちるが、書き換えられた行は DB に
+ * 残る。次のティックではその行が射影の内側に入るので鳴り止む。人間が掃除しない
+ * まま回し続けると、`role='review'` の行はそのまま残る（design.md §10-6 の (h)）。
+ */
+function ownRunDrift(
+  goalId: string,
+  ownRuns: readonly OwnRun[],
+  deps: ControllerDeps,
+): { reason: "protected_path_touched" | "guard_unavailable"; detail: string } | null {
+  if (ownRuns.length === 0) {
+    return null;
+  }
+
+  let rows: readonly Run[];
+  try {
+    rows = deps.store.listRuns(goalId);
+  } catch (error) {
+    return {
+      reason: "guard_unavailable",
+      detail:
+        `このティックで作った Run の行を読めなかったので停止する` +
+        `（${CONTROLLER_STATE_DB_KEY}）: ${errorMessage(error)}`,
+    };
+  }
+
+  const byId = new Map(rows.map((row) => [row.id, row]));
+  for (const own of ownRuns) {
+    const row = byId.get(own.id);
+    if (row === undefined) {
+      return {
+        reason: "protected_path_touched",
+        detail:
+          `このティックで作った Run ${own.id} の行が、この Goal から消えている` +
+          `（${CONTROLLER_STATE_DB_KEY}）`,
+      };
+    }
+    const changed = OWN_RUN_IMMUTABLE.filter(
+      (column) => row[column.key] !== own.intent[column.key],
+    );
+    if (changed.length > 0) {
+      return {
+        reason: "protected_path_touched",
+        detail:
+          `このティックで作った Run ${own.id} の、controller しか書かない列が` +
+          `書き換えられている（${CONTROLLER_STATE_DB_KEY}）: ` +
+          changed
+            .map(
+              (column) =>
+                `${column.name} は ${JSON.stringify(own.intent[column.key])} のはずが ` +
+                `${JSON.stringify(row[column.key])}`,
+            )
+            .join("、"),
+      };
+    }
+  }
+
+  return null;
+}
+
+/**
+ * `startRun` が1回書いたきり動かない列。`finishRun` の UPDATE には1つも入らない。
+ *
+ * `Run` と `RunIntent` で同じ名前を持つものだけを並べる。`goal_id` はここに無いが、
+ * 書き換えられると `listRuns(goalId)` から行ごと消えるので、上の「見つからない」で
+ * 捕まる。
+ *
+ * 比較は `!==` で足りる。`attempt` だけが数値で、`node:sqlite` は 2^53 を越える
+ * INTEGER を bigint で返す（`1n !== 1` なので、素通しだと大きい値で誤検知する）。
+ * ただし `listRuns` は行を `runRowSchema`（`attempt: z.number()`）に通してから
+ * 返すので、bigint はここまで届かない。届いた回は parse が throw して、上の
+ * `guard_unavailable` に倒れる。
+ */
+const OWN_RUN_IMMUTABLE: readonly { key: keyof RunIntent & keyof Run; name: string }[] = [
+  { key: "intent", name: "intent" },
+  { key: "actor", name: "actor" },
+  { key: "role", name: "role" },
+  { key: "worktree", name: "worktree" },
+  { key: "attempt", name: "attempt" },
+  { key: "startedAt", name: "started_at" },
+];
 
 /**
  * ACT の前後で比べる観測を1つにまとめる。
@@ -1025,14 +1334,57 @@ async function repoBaseline(deps: ControllerDeps): Promise<RepoBaseline> {
  *
  * `outOfSightState` を持たない実装（テストの fake など）では、git 側だけを見る。
  * 持っていないことを違反にはしない。
+ *
+ * **状態 DB だけは store から取る**（issue #62）。`.goals/.state/goals.db` は
+ * この関門が見る保護対象でありながら、controller 自身の書き込み先でもある。
+ * ACT の窓——ベースラインを控えてから検査するまでの間——で、controller は必ず
+ * この DB に書く。Run の write-ahead（`startRun`）と確定（`finishRun`）、
+ * そして lease の延長になる。
+ *
+ * かつてはこれも adapter がファイルの**バイト列**で見ていた。SQLite は WAL なので
+ * 普段その書き込みは `goals.db-wal` に載るだけだが、WAL が既定の閾値を越えた
+ * コミットでは自動 checkpoint が走り、`goals.db` の中身が動く。ティックの形が
+ * 同じでも、そのプロセスがそれまでに書いた量が閾値を跨いだ回だけ
+ * `ESCALATE(protected_path_touched)` になっていた。人間も Actor も触っていない
+ * のに関門が鳴り、実装役の成果が publish されないまま worktree に残る。
+ *
+ * **保護対象からは外さない。** `.goals/.state/**` は `PROTECTED_PATH_FLOOR` に
+ * 残る。外せば、DB を直接書き換えて状態を偽造されても関門が鳴らない。
+ * 変えたのは観測の作り方で、**バイト列ではなくこの Goal に属する行の内容**から
+ * 論理ダイジェストを作る（`Store.guardDigest`）。checkpoint では動かず、同じ
+ * ディレクトリで別の Goal を回す2本目の ent の書き込みでも動かない。
+ * 何を諦めたかは `guardDigestOf`（`src/store/sqlite.ts`）に書いてある。
+ *
+ * `ownRuns` はそのティックで controller 自身が作った Run になる。
+ * ベースラインの時点ではまだ1件も無く（行そのものが無い）、検査の時点では
+ * 作った分だけ挙がる。どちらも同じ射影になるので、前後で値が一致する。
+ * 落とした行の不変列は `ownRunDrift` が別に突き合わせる。
+ *
+ * **`depends_on` も渡す。** 依存ゲート（`dependencyGate`）は他の Goal の
+ * `status` を直接読むうえ、その呼び出しは lease を取る前——どのティックの
+ * ACT の窓の外——にある。射影に入れないと、`UPDATE goals SET status='COMPLETED'`
+ * を依存先へ流すだけでゲートを開けられて、どちらのダイジェストにも差が出ない
+ * （design.md §10-6 の (f)）。窓の中で書き換えられた分だけはここで鳴る。
  */
-async function observedRepoState(deps: ControllerDeps): Promise<Map<string, string>> {
+async function observedRepoState(
+  goal: Goal,
+  ownRuns: readonly OwnRun[],
+  deps: ControllerDeps,
+): Promise<Map<string, string>> {
   const dirty = await deps.worktree.repoDirtyState();
-  const outOfSight = await deps.worktree.outOfSightState?.();
-  if (outOfSight === undefined) {
-    return dirty;
-  }
-  return new Map([...dirty, ...outOfSight]);
+  const outOfSight = (await deps.worktree.outOfSightState?.()) ?? new Map<string, string>();
+  return new Map([
+    ...dirty,
+    ...outOfSight,
+    [
+      CONTROLLER_STATE_DB_KEY,
+      deps.store.guardDigest(
+        goal.goal.id,
+        ownRuns.map((own) => own.id),
+        goal.goal.depends_on,
+      ),
+    ],
+  ]);
 }
 
 /**
@@ -1055,6 +1407,7 @@ async function maybeAct(
   observedFacts: readonly Fact[],
   deps: ControllerDeps,
   signal: AbortSignal,
+  ownRuns: OwnRun[],
 ): Promise<Run | null> {
   if (decision.action.type !== "ACT") {
     return null;
@@ -1062,8 +1415,24 @@ async function maybeAct(
 
   const goalId = goal.goal.id;
   const intent = decision.action.intent;
+  // Run の write-ahead と確定は、ACT の窓の中で controller 自身が状態 DB へ書く
+  // 唯一の経路になる（もう1つは lease の延長）。**書いた id をここで控える。**
+  // 関門はこの分だけを状態 DB の射影から外すので（`observedRepoState`）、
+  // 控え損ねると自分の書き込みで `protected_path_touched` が鳴る。
+  //
+  // `act` の戻り値からではなく、書いた側で控える。`act` は Run を書いたあとに
+  // 中断されても `acted: false` を返しうるし、確定を書けなかった回もある。
+  // 行が残った回は必ず id が要る。
+  //
+  // **意図も一緒に控える。** 射影から行ごと落とすので、`finishRun` が書かない
+  // 不変列（`role` など）まで観測の外に出る。ACT の後に、ここで控えた値と
+  // 突き合わせる（`ownRunDrift`）。
   const runs: RunRecorderPort = {
-    start: async (runIntent) => deps.store.startRun(goalId, runIntent),
+    start: async (runIntent) => {
+      const runId = deps.store.startRun(goalId, runIntent);
+      ownRuns.push({ id: runId, intent: runIntent });
+      return runId;
+    },
     finish: async (runId, outcome) => {
       deps.store.finishRun(runId, outcome);
     },

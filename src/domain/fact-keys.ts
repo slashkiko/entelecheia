@@ -87,8 +87,53 @@ export const observedFactKeySchema = z.enum([
 
   // CodeProviderPort.getLatestCiRun()
   "github.ci.status",
+  /**
+   * head sha に紐づく**最新の workflow run 1本**の結論。
+   *
+   * **新しい Goal の criteria には使わない。** workflow を複数持つリポジトリでは、
+   * lint の run が落ちていても test の run が後から success で終われば
+   * `equals: success` が通る（issue #58）。「この head sha で落ちている job が
+   * 1つも無い」を書きたいなら `github.ci.failed_job_count` を使う。
+   * `repository.ci.exclude_workflows` の除外が効くのもそちらだけになる。
+   *
+   * 既存の Goal がこのキーで書かれているのは、`failed_job_count` より先に
+   * あったからで、意味が正しいからではない。消さないのは、回っている Goal の
+   * 判定を後から変えないため。
+   */
   "github.ci.conclusion",
   "github.ci.failed_jobs",
+  /**
+   * head sha に紐づく**全 workflow run**を横断して数えた、落ちている job の数。
+   *
+   * `github.ci.conclusion` とは見ている範囲が違う。あちらは最新の run 1本の結論で、
+   * workflow を複数持つリポジトリでは lint の run が落ちていても test の run が
+   * 後から success で終われば `equals: success` が通る（issue #58）。
+   * 「この head sha で落ちている job が1つも無い」は
+   * `{ key: github.ci.failed_job_count, equals: 0 }` の側で書く。
+   *
+   * `github.ci.failed_jobs` があるのに数を別に持つのは、`verification.type: fact` の
+   * `equals` が `string | number | boolean` しか受けず、「配列が空」を書けないため。
+   *
+   * **0 は観測できた 0 で、未観測ではない。** 1件以上のときだけ push する
+   * `failed_jobs` の形をここで真似ると `equals: 0` が永久に届かない。逆に、まだ
+   * 回っている run が1本でもあるあいだは Fact にしない。実行中の run の
+   * `conclusion` を Fact にしないのと同じ規則で、push した直後の「いま 0 件」を
+   * 掴ませないため。
+   */
+  "github.ci.failed_job_count",
+  /**
+   * `repository.ci.exclude_workflows` で数から外した workflow と、実際に外した run の数
+   * （`[{ name, runs }]`）。**宣言があるときだけ観測に出る。**
+   *
+   * このキーが Fact として出ているかどうかが、そのまま「除外したかどうか」になる。
+   * `failed_job_count=0` を出しておいて何を外したかを言わないと、「落ちている job が
+   * 1つも無い」と「外した上で1つも無い」が同じ見た目になる。**issue #58 が直そうと
+   * したのは、まさにその読み違いだった。**
+   *
+   * `runs: 0` は「書いたのに何も外していない」。typo かもしれないし、今回は起動
+   * しなかった workflow かもしれない。観測の側から区別できないので、弾かずに数を出す。
+   */
+  "github.ci.excluded_workflows",
 
   // CodeProviderPort.getIssue()
   "github.issue.number",

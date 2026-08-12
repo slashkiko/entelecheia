@@ -25,6 +25,50 @@ import { observedFactKeySchema } from "./fact-keys.js";
 const shellCommandSchema = z.string().min(1);
 
 /**
+ * CI の観測をどう絞るか。対象リポジトリの運用に合わせる口になる。
+ *
+ * `repository` の下に置く。どの check を数えるかは対象リポジトリの運用で決まるもので、
+ * Goal の中身（`desired_state` や criteria）とは別の軸になる。
+ */
+export const ciOptionsSchema = z.strictObject({
+  /**
+   * `github.ci.failed_job_count` の数から外す workflow の名前。
+   * `.github/workflows/*.yml` の `name:`（PR の checks 欄に出る名前）で書く。
+   *
+   * **リポジトリによっては、恒久的に赤いまま／保留のままにしてある gate がある。**
+   * 「特定の人のレビューが通るまで mergeable にしない」種類のものがそれで、
+   * 数に入れると `equals: 0` の criterion が永久に埋まらない。
+   *
+   * **除外の単位を job 名ではなく workflow にしてある。** 数が確定するのは
+   * 「未確定の run が1本も無い」ときで、これは run の属性になる。承認待ちの gate は
+   * `completed` にならないので、job 名で外しても run が pending であることは変わらず、
+   * 数は永久に null のままになる。run ごと外せる粒度でないと、この要望は満たせない。
+   *
+   * **ここで外せるのは GitHub Actions の workflow run だけ。** `failed_job_count` は
+   * もともと Actions の run の job しか数えていないので、third-party の check run や
+   * branch protection の required review は最初から数に入っていない。そういう gate を
+   * ここに書いても何も起きない（一致した run の数が 0 として観測に出る）。
+   *
+   * **全部の run を外すと数は 0 になる。** 数えた結果 1件も無かったのと同じ値が出る。
+   * 「1本も見ていないのに緑」に見えるが、除外したことは `github.ci.excluded_workflows` に
+   * 出るので外から読める。ここで数を出さない側に倒すと「除外したのに数が出ない」になり、
+   * 宣言した通りに動いていないように見える。
+   *
+   * **外れるのは数だけではない。** 外した run の失敗ジョブは `github.ci.failed_jobs` からも
+   * 消えるので、次の ACT に渡る材料が除外分だけ欠ける（`CiRunSnapshot.failedJobs`）。
+   * 外した run が赤かったかは `github.ci.excluded_workflows` の `states` から読む。
+   *
+   * 一致しなかった名前を弾かない。宣言を読む時点ではリポジトリを見ないので解析では
+   * 決まらず、対象リポジトリは手元の checkout とは限らないので doctor でも決まらない。
+   * そもそも「一致しない」は typo と「今回は起動しなかった workflow」（path filter や
+   * branch filter で走らないことがある）の両方を指すので、観測の側から区別できない。
+   * 代わりに**一致した run の数を観測ごとに出す**（`github.ci.excluded_workflows`）。
+   */
+  exclude_workflows: z.array(z.string().min(1)).default([]),
+});
+export type CiOptions = z.infer<typeof ciOptionsSchema>;
+
+/**
  * 観測対象のリポジトリ。
  *
  * Phase 0 では evidence.source に `GET /repos/{owner}/{repo}/pulls/12` を書けなかった。
@@ -67,6 +111,15 @@ export const repositorySchema = z.strictObject({
   owner: z.string().min(1),
   name: z.string().min(1),
   default_branch: z.string().min(1),
+  /**
+   * CI の観測の絞り方。省略できる。
+   *
+   * **`.default({})` にしない。** 既定を入れると、いま `.goals/` にある Goal 全部の
+   * 解析結果に `ci` が生える。宣言部は `ent get` がそのまま出し、store も保存するので、
+   * 1本も YAML を触っていないのに出力が変わることになる。
+   * 「書かなければ何も起きない」を、値ではなくキーの有無で表す。
+   */
+  ci: ciOptionsSchema.optional(),
   /**
    * PR の作り方。省略できる。
    *
@@ -171,6 +224,83 @@ export const APPROVAL_GATE_FLOOR = ["secret_access", "external_send"] as const;
  */
 export function withApprovalGateFloor(declared: readonly ApprovalGate[]): ApprovalGate[] {
   return [...new Set<ApprovalGate>([...declared, ...APPROVAL_GATE_FLOOR])];
+}
+
+/**
+ * publish の各段を、誰が行うか。
+ *
+ * - `auto`   — これまでどおり controller が行う
+ * - `manual` — controller は行わない。人間が行う
+ *
+ * **「承認」の語彙を使わない。** 承認を検知して先へ進む仕組み（`/ent approve`）は
+ * criteria にしか無く、publish には無い。「承認待ち」と読める名前を付けると、
+ * どこかに承認する口があるはずだと読み手に探させることになる。ここが宣言して
+ * いるのは承認の要否ではなく**実行主体**で、`manual` なら人間が自分で push なり
+ * PR 作成なりを済ませる。
+ */
+export const publishModeSchema = z.enum(["auto", "manual"]);
+export type PublishMode = z.infer<typeof publishModeSchema>;
+
+/**
+ * controller 自身の publish（push と PR 作成）を宣言で止める口。
+ *
+ * `policies.require_human_approval` に書いたゲートは、Actor に渡す拒否ツール
+ * （`DENIED_TOOLS`）にしかならない。push と PR 作成を行っているのは controller の
+ * publish で、こちらはゲートを1つも通っていなかった。結果として「PR を勝手に
+ * 立てるな」を宣言する口がどこにも無く、人間が確認しようとした時点では既に PR が
+ * 立ち、レビュアーへの通知も飛んでいた。取り消しても通知は戻らない。
+ *
+ * **`require_human_approval` は広げない。別の宣言にする。** あちらの意味は
+ * 「**Agent に**許さない操作」で、こちらは「**controller が**行わない段」になる。
+ * 1つの列挙に混ぜると、同じ値が主体によって別の関門に効くことになり、しかも
+ * 対応する `DENIED_TOOLS` の行が無い値だけが Agent 側で素通りする。読み手からは
+ * どの値がどちらに効くのかが見分けられない。名前を分けて、効く先を名前で示す。
+ *
+ * **置き場所は `policies` の下にする。** `repository` は観測対象の識別子
+ * （provider / owner / name / default_branch）だけを持つ場所で、振る舞いの宣言を
+ * 混ぜると「どのリポジトリか」以外の役割が入る。`policies` は既に「対象」
+ * （`protected_paths`）と「操作」（`require_human_approval`）を並べており、
+ * 3つ目として controller の外向きの行動を置くのが読み味に近い。
+ *
+ * **段ごとに分ける。** push はブランチが remote に出るだけだが、PR 作成は
+ * レビュアーへの通知を伴う。止めたいのが後者だけの Goal は多いので、
+ * 「ブランチは出してよいが PR は人間が立てる」を書けるようにする。
+ *
+ * **既定は `auto`。** 宣言そのものを任意にしてあるので、既存の `.goals/*.yaml` は
+ * 1本も挙動が変わらない。`protected_paths` や `require_human_approval` のような
+ * 下限（floor）は置かない。あちらは書き換えられると関門そのものが働かなくなる
+ * ものの下限で、こちらは**止めなければ従来どおり動く**だけになる。既定を
+ * `manual` に倒すと、いま回っている Goal が全部止まる。
+ */
+export const publishPolicySchema = z.strictObject({
+  /** feature ブランチへの push。`manual` なら remote には何も出ない */
+  push_branch: publishModeSchema.default("auto"),
+  /** PR の作成。`manual` なら controller は作らない。既にある PR への追記は止めない */
+  open_pull_request: publishModeSchema.default("auto"),
+});
+export type PublishPolicy = z.infer<typeof publishPolicySchema>;
+
+/**
+ * 宣言で個別に止められる段の名前。
+ *
+ * キーから導く。文字列の列挙をもう1つ持つと、段を足したときに片方だけが古くなる。
+ */
+export type PublishStep = keyof PublishPolicy;
+
+/** 宣言が無いときの既定。どちらも controller が行う（これまでの挙動） */
+export const DEFAULT_PUBLISH_POLICY: PublishPolicy = {
+  push_branch: "auto",
+  open_pull_request: "auto",
+};
+
+/**
+ * この Goal の publish の宣言。書いていなければ既定に落とす。
+ *
+ * 読む側（publish と controller）に `?? DEFAULT_PUBLISH_POLICY` を散らさない。
+ * 散らすと、片方だけ既定を書き忘れたときに宣言が半分だけ効く。
+ */
+export function publishPolicyOf(goal: Goal): PublishPolicy {
+  return goal.policies.publish ?? DEFAULT_PUBLISH_POLICY;
 }
 
 /**
@@ -402,6 +532,18 @@ export const goalSchema = z.strictObject({
      * 「保護を外したい Goal が外せる」状態を作らないため、除去はできない。
      */
     protected_paths: z.array(z.string().min(1)).default([]).transform(withProtectedPathFloor),
+    /**
+     * controller 自身の publish を、どの段まで自動で進めるか（`publishPolicySchema`）。
+     *
+     * `require_human_approval` とは主体が違う。あちらは Agent に許さない操作、
+     * ここは controller が行わない段になる。
+     *
+     * **任意にしてある。** 上の2つと違って `.default()` を置かないのは、
+     * 「書いていない」と「既定を書いた」を型の上でも区別したいためではなく、
+     * 既存の Goal と `Goal` 型を組み立てている側（テストの fixture を含む）に
+     * 1行も足させずに済ませるため。読むときは `publishPolicyOf(goal)` を通す。
+     */
+    publish: publishPolicySchema.optional(),
   }),
   budget: budgetSchema,
 });
@@ -493,6 +635,16 @@ policies:
     - external_send
   # Agent に書き換えさせないパス。ここが空でも PROTECTED_PATH_FLOOR は必ず効く。
   protected_paths: []
+  # controller 自身の publish を、どこまで自動で進めるか。上の
+  # require_human_approval は「Agent に許さない操作」で、こちらは
+  # 「controller が行わない段」になる。主体が違うので宣言も分けてある。
+  # manual にした段は controller が行わず、そのティックは WAITING_HUMAN で止まる。
+  # 止めた理由と次にすることは ent get の decision に出る。
+  publish:
+    push_branch: auto
+    # チームで使うリポジトリなら manual にする。PR の作成はレビュアーへの
+    # 通知を伴い、取り消しても通知は戻らない。
+    open_pull_request: auto
 
 budget:
   max_actor_runs: 8

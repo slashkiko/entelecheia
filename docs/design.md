@@ -3,7 +3,7 @@
 このリポジトリの単一の設計ソース。新しく参加するとき（あるいは新しいセッションを開くとき）は、
 まずこれを読めば足りるように書いてある。
 
-最終更新: 2026-08-11。この更新で入ったのは次の5件になる。
+最終更新: 2026-08-12。この更新で入ったのは次の6件になる。
 
 - **タスク分解の粒度を決めた。** 分解した1本ごとに Goal を立てる方針にして、順序の宣言
   `goal.depends_on` を入れた。分解を機械にやらせる場合の宣言部の書き手も決めた。実装は保留
@@ -16,6 +16,13 @@
   evidence に残すようにした（§4.5）
 - **Codex CLI Adapterとphase別のprovider・model・effort選択を追加した。** Actorの使用量上限を
   Runからguardの待機判断へ伝播する（§3.5・§4.2）
+- **publish を宣言で止める口を足した。** `policies.publish` の `push_branch` /
+  `open_pull_request` を `auto` / `manual` で宣言する。止めたことは `ent run` の出力の
+  `publishHold` に構造で出す（§7）
+- **状態 DB の観測を、バイト列から Goal ごとの論理ダイジェストへ移した**（§10-6）。射影から
+  落とした Run の不変列は `ownRunDrift` が突き合わせる。`depends_on` の Goal の `status` も
+  射影に入れた。同一ディレクトリの並列を塞いでいた誤検知は外れたが、実プロセス2本での
+  確認は済んでいない（§5）
 
 ---
 
@@ -448,6 +455,40 @@ Fact が無い間は Gap が残り COMPLETE には届かない（§3.1）。guar
 レビュー役は毎回同じ出力を返すとは限らない。レビュー役を1度も起動していない
 ティックでは、Fact も `unobserved` も作らない。
 
+**畳んだ本文そのものは、`--report` の宛先に出す（§9 の「PR と通知」、issue #59）。**
+上の経路が残すのは `verdict` の1語と sha の2つだけで、`approved` に添えられた理由も
+留保も `runs/<run-id>/log.jsonl` に沈む。`approved` は「何も言うことが無い」ではないので、
+`publish` が `ReviewPort.latest()` をもう一度読み、`## レビュー役の本文` の節として
+宛先の本文の**後ろ**に足す。後ろに置くのは、criteria の表の位置を宛先を問わず
+同じに保つため——前に割り込ませると、長い本文を読み飛ばさないと pass 状況に届かない。
+本文は要約せず、改行も表もコードブロックも落とさない（`flatten` も `oneLine` も通さない）。
+
+**ここで本文を Fact にはしない。** 出すのは人間が読む宛先だけで、observe の側は
+上の照合を通ったものしか Fact にしない。載せるのも `--report` の宛先だけで、
+PR コメントには出さない（`--report` の本文と PR コメントの本文は一致しなくなる）。
+`--report` を付けないティックでは生ログを開かない——使わない本文のために毎ティック
+開くのは、失敗する口を1つ増やすだけになる。読めなかったときは理由を、本文が残って
+いない Run では読んだ Run の id を節に出す。**黙って落とすと、この節が直そうとしている
+壊れ方をもう1つ作ることになる。** 読み取りが失敗しても `publish` は throw しない
+（§9）。新しい Port も Adapter も作らず、`ControllerDeps` が `ObserveDeps` を継承して
+いることを使って、既にある `ReviewPort` を `PublishDeps` の任意の依存として受け取る。
+
+PR コメントに出さないのは、人間が購読している場所に毎ティック 14,000 字が積まれると
+読むのをやめるためになる。**この理由は `--report` の2つの宛先で効き方が違う。**
+`--report stdout` は1回叩いて1回出すので積み上がらないが、`--report <path>` は追記
+（`src/cli/present.ts`）で、追記なのは cron から回したときに最後の1ティックしか
+残らないのを避けるための選択になる。しかも `ReviewPort.latest()` が返すのは直近の
+**完了した**レビュー役の Run なので、次のレビューが終わるまで毎ティック同じ本文が返る
+（`WAIT(review_pending)` が続く区間がこれにあたる）。**PR コメントを退けた理由は、
+ファイルの宛先ではそのまま再現する。** 前ティックと同じ Run なら節を畳む形は取れるが、
+publish は前ティックに何を出したかを持っていないので `PublishTarget` を足すことになる。
+いまは足していない。
+
+`latest()` が null を返す条件も、見た目より広い。`latestReviewRun()`
+（`src/adapters/review-run.ts`）は `status: "completed"` の Run だけを候補にするので、
+レビュー役が `interrupted` や `failed` でしか終わっていない Goal でも null になる。
+**「1度も起動していない」との区別は Port の戻り値に載っていない。**
+
 sha を読む経路は2本ある。**先に見るのは `reviewed_sha:` の名指しで、いまはこちらが
 通常の経路になる。** 名指しが1つだけあればそれを採り、2つ以上あって値が食い違えば、
 数え直さずに `pending` に落とす——どれを読んだかを2通り述べた出力は、数えても
@@ -762,9 +803,12 @@ PRAGMA foreign_keys = ON;
   ティックをまたいだ交代で成立させる。同じティックに2体を走らせると、Run の確定・
   lease・write-ahead の前提（§3.6 / §4.5）まで変わる。
   **ここで言う並列は1ティックの内側の話になる。** Goal単位のleaseがあるためデータモデル上は
-  N本を別プロセスで扱えるが、同一ディレクトリでの並列実行は状態DBの指紋変化を
-  保護パス違反と誤検知するため現在未対応。README「複数のGoalを同時に回す」のとおり、
-  この制約が解けるまでは1本ずつ回す
+  N本を別プロセスで扱える。同一ディレクトリでの並列実行を塞いでいた保護パスの関門は、
+  状態DBの観測をGoalごとの論理ダイジェストに移したことで外れた（§10-6）。
+  ただし**確かめたのはVitestの中で2本のティックを同じDBへ同時に流したところまで**で、
+  `ent run`のプロセスを2本立てて回してはいない。gitのロック競合（初回の
+  `git worktree add`が`.git/index.lock`を取る）とSQLiteのbusy競合は残る。
+  README「複数のGoalを同時に回す」を参照
 - ~~Codex CLI の実装~~（`ENT_ACTOR=codex`またはphase別指定で非対話JSONL Adapterを選ぶ）
 - L5 改善レイヤー（History は貯めるだけ、学習はしない）
 
@@ -858,7 +902,7 @@ mise run check                                      サプライチェーンと 
 ## 7. 暴走とコストの制御
 
 自律実行させる以上、ここは機能要件と同格に扱う。予算と上限と承認ゲート、保護パスの選び方、
-資格情報と外部コマンドの3つを順に説明する。
+publish を宣言で止める口、資格情報と外部コマンドの4つを順に説明する。
 
 ### 予算と上限、承認が要る操作
 
@@ -963,6 +1007,145 @@ DECIDE の LLM 呼び出しは `LlmCall.tokens` に残す（§4.5）。あとか
   後者まで凍らせると新しいテストを1本足すたびに ESCALATE する
 - `src/**` 全体も入れない。Agent が実装するのはまさにそこで、丸ごと保護すると
   このツールが仕事をできなくなる
+
+### publish を宣言で止める
+
+上の承認ゲート（`policies.require_human_approval`）が止めるのは **Agent** の操作になる。
+書いたゲートは `DENIED_TOOLS`（`src/adapters/claude.ts`）の対応行を拒否パターンに変えるだけで、
+**controller 自身の行動には1つも効かない**。push と PR 作成を行っているのは
+controller の publish（§10-11）なので、「PR を勝手に立てるな」を宣言する口が無かった。
+実際、Goal を回した次のティックで PR が立ち、人間が確認しようとした時点では
+レビュアーへの通知も飛んでいた。取り消しても通知は戻らない。
+
+**ゲートの意味は広げず、別の宣言にする。** `policies.publish` を新設し、
+`push_branch` と `open_pull_request` をそれぞれ `auto` / `manual` で宣言する。
+`require_human_approval` に `open_pull_request` を足す形は採らない。同じ列挙が
+主体（Agent / controller）によって別の関門に効くことになり、しかも対応する
+`DENIED_TOOLS` の行が無い値だけが Agent 側で素通りする。読み手からは、どの値が
+どちらに効くのかを名前から見分けられない。
+
+| 宣言 | 止める主体 | 効く先 |
+|---|---|---|
+| `policies.require_human_approval` | Agent | Actor に渡す拒否ツール（`deniedOperations`） |
+| `policies.publish` | controller | `src/publish/index.ts` の push と PR 作成 |
+
+値は「承認の要否」ではなく**実行主体**にしてある（`auto` = controller、`manual` = 人間）。
+承認を検知して先へ進む仕組み（`/ent approve`、§10-4）は criteria にしか無く、publish には
+無い。「承認待ち」と読める名前を付けると、どこかに承認する口があるはずだと探させることになる。
+
+段を2つに分けたのは、戻せなさが違うため。push はブランチが remote に出るだけだが、
+PR の作成はレビュアーへの通知を伴う。「ブランチは出してよいが PR は人間が立てる」を
+書けるようにする。
+
+**既定は `auto` で、下限（floor）は置かない。** `PROTECTED_PATH_FLOOR` と
+`APPROVAL_GATE_FLOOR` が下限を持つのは、書き換えられると関門そのものが働かなくなる
+ためで、こちらは止めなければ従来どおり動くだけになる。既定を `manual` に倒すと、
+いま回っている Goal が全部止まる。
+
+止めたティックは `ESCALATE(push_branch_declared_manual)` か
+`ESCALATE(open_pull_request_declared_manual)` になり、状態は `WAITING_HUMAN` に移る。
+**COMPLETE も上書きする。** PR が1本も無いまま「終わった」と言い切ると完了判定が
+意味を失う。理由を段ごとに分けてあるのは、`ent list` が出すのが種別と理由だけだから
+（`WAITING_HUMAN` には §10-6 の `protected_path_touched` など他の理由も畳まれる）。
+人間が何をすれば進むのかは
+`decision.rationale` に書く。
+
+**その rationale が出るのは `ent get` と `ent list` までになる。** 判断の差し替え
+（`publishHeldDecision`）は publish の**後ろ**にあるので、publish が進捗コメントに載せた
+`decision` は差し替え前のものになる。§10-11 の `uncommitted_changes` は publish の前で
+差し替わるため PR と `ent get` に同じ文字列が出るが、こちらはその規約から外れる。
+**差し替えを前へ動かす形は採れない。** `open_pull_request` を止めるかどうかは
+「push が通り、まだ PR が無い」を確かめたあと——publish の中——でしか決まらない。
+
+代わりに、PR には `heldNotes`（`src/publish/index.ts`）が `> [!NOTE]` を書く。文字列は
+rationale と別でも、**同じ事実を言う**——手で push しても controller には見えないこと、
+宣言を `auto` に戻すか `ent abandon` で終端にすること。ここを「push していない」の1行に
+留めると、人間が最も要る2つが PR の側から読めない。止めたことを知らせておいて
+次にすることを書かない通知は、鳴っていないのとほぼ同じになる。
+
+**`open_pull_request` を止めたティックは、PR の側に何も出ない。** この段で止まるのは
+「差分があり、まだ PR が無い」ティックだけなので、書き込む先が1本も無い。読むのは
+`ent get` と、次に出てくる `publishHold` になる。
+
+**この段で止まった Goal は、どの通知にも出ない。** PR コメントが無く、`BLOCKED` にも
+落ちず、壁時計も止まる。cron から回して stdout を誰も読まない構成では、止まったことに
+気づく経路が `ent list` を定期的に読むこと以外に無い。`open_pull_request: manual` を
+宣言する側は、その1本を用意しておく。
+
+`open_pull_request` を止めた Goal は、**人間が PR を立てれば宣言を書き換えなくても進む**。
+publish は作る前に必ず同じ head の PR を探すので（`findPullRequest`）、次のティックが
+それを見つけて先へ行く。止めているのは「作る」ことだけで、既にある PR への進捗コメントは
+止めない。
+
+**`push_branch` にはその経路が無い。** publish が push の要否を決める材料は
+`BranchPort.push` の結果しかないので、人間が手で押しても publish の判断には入らない
+（remote そのものは `github.pr.head_sha` などで観測しているが、押すかどうかの判断は
+それを読まない）。宣言を `auto` に戻すまで毎ティック同じ理由で `WAITING_HUMAN` に
+落ち続け、そのあいだ reconcile の予算だけが減る。
+`protected_path_touched` が worktree を掃除すれば解けるのとはここが違う。
+**解けない関門であることを rationale に書く**（`publishHeldDecision`）。書かなければ、
+押したのに止まり続ける理由を人間がコードから探すことになる。
+
+**`BLOCKED` には落ちない。** 判断の差し替えは publish の後ろにあり、`held` があれば
+DECIDE が何を選んでいても `ESCALATE(*_declared_manual)` で上書きする。`BLOCKED` になるのは
+`ESCALATE(budget_exhausted)` だけなので（§4.4）、止めているあいだは上限に達しても
+そちらが表に出ない。人間を呼ぶ理由としては `*_declared_manual` のほうが具体的なので
+上書きの向きはこれでよいが、「止めているあいだは予算の枯渇が見えない」ことは
+宣言を書く側が知っておく必要がある。
+
+**進み続ける上限と、止まる上限がある。** 3つを一緒に扱わない。
+
+| 上限 | 止めているあいだ | なぜ |
+|---|---|---|
+| `max_reconciles` | 進む | `saveSnapshot` が数えるのは publish より前で、止めても1ティックは1ティック |
+| `max_actor_runs` | 進む | ACT は publish より前になる。止めているのは push と PR 作成だけで、Actor は走る |
+| `max_wall_clock` | **止まる** | `waitsForOthers` が `budget_exhausted` 以外の `ESCALATE` を待ちに数える |
+
+壁時計だけは隠れるのではなく止まる。`*_declared_manual` は `ESCALATE` で、しかも
+`budget_exhausted` ではないので、`waitedSeconds`（`src/domain/guard-rules.ts`）がその窓を
+積み、`usageOf`（`src/controller/index.ts`）が `elapsedSeconds` から引く。止めていた分は
+まるごと予算から外れるので、宣言を `auto` に戻したティックで壁時計が上限に達している
+ことはない。**そこで表に出うるのは `max_reconciles` と `max_actor_runs` の側になる。**
+待たせたのは controller の側なので引くのは筋が通っているが（§4.4）、「止めていれば
+時間は減らない」ことは、`max_wall_clock` を停止条件として当てにする側が知っておく。
+
+**止めたことは機械可読で出す。** ティックを叩くのは人間だけではない。エージェントが
+回している構成では、controller が作らなかった PR をそのエージェントが代わりに立てる。
+そのためには「作らなかった」と「作るなら head と base はこれ」が、`decision.rationale` の
+散文を読まずに分かる必要がある。`ent run` の出力に `publishHold` を足してある。
+
+```json
+{
+  "publishHold": {
+    "step": "open_pull_request",
+    "reason": "declared_manual",
+    "pushed": true,
+    "branch": "entelecheia/<goal-id>",
+    "base": "main"
+  }
+}
+```
+
+形は `--report` の `report`（`destination` / `written` / `error`）に揃えてある。どちらも
+「その口を使ったティックにだけ載る publish の結果」で、行った先と結果を構造で返す。
+**止めていないティックにはキーごと載せない。** 宣言を書いていない既存の `.goals/*.yaml` を
+回している側の出力を1キーも変えない（`dryRun` と同じ扱い）。
+
+`pushed` は `step` から導ける（`open_pull_request` の段に来るのは push が通ったあとだけ）が、
+それでも別に持つ。remote に無いブランチを head にした PR は作れないので、代わりに立てる側は
+ここを見てから動く。導出に頼らせると、publish の順序が変わったときに読む側が静かに間違う。
+
+段と理由も分けてある。`step` に「宣言で止めた」まで畳むと、宣言以外の理由で止める形が
+増えたときに読む側の分岐が壊れる。いま `reason` に入るのは `declared_manual` だけになる。
+
+**保護パスの関門で止めたティックにはこのキーを出さない**（`blocksPush`）。あちらは push も
+していないうえ、代わりに押してよい状態でもない。ここに出すと、controller が止めた関門を
+叩いた側のエージェントが迂回する経路になる。それは関門が無いのと同じになる。
+
+`--dry-run` にはこの停止は映らない。publish を回さないティックなので、`wouldTransitionTo` は
+止める前の判断のまま返る。`push_branch` の側は宣言だけから決まるので予告もできるが、
+そうすると同じ関門の判定が publish と preview の2箇所に分かれる。判定は publish に1本化して、
+映らないことを `preview` の性質として書いてある。
 
 ### 資格情報と外部コマンド
 
@@ -1458,7 +1641,79 @@ remote に出た時点で、通常の変更として流れる余地が生まれ�
 PR がまだ無いうちに違反したティックでは、PR を作らないので通知も残らない。
 その場合に人間へ届くのは `ent get` と Decision の履歴だけになる。
 
-**残る穴を5つ書いておく。**
+**状態 DB だけは、ファイルではなく行を見る。** `.goals/.state/goals.db` は
+関門が見る保護対象でありながら、**controller 自身の書き込み先**でもある。
+ACT の窓——ベースラインを控えてから検査するまでの間——で、controller は必ず
+この DB に書く。Run の write-ahead（`startRun`）と確定（`finishRun`）、そして
+lease の延長になる。
+
+かつてこれも `outOfSightState` が**ファイルのバイト列**で見ていた。SQLite は
+WAL なので、その書き込みは普段 `goals.db-wal` に載るだけで `goals.db` の中身は
+1バイトも動かない。動くのは **WAL が既定の閾値（1000 ページ）を越えたコミットで
+自動 checkpoint が走り、WAL の内容が `goals.db` へ畳み込まれたとき**になる。
+ティックの形が同じでも、そのプロセスがそれまでに書いた量が閾値を跨いだ回だけ
+指紋が変わり、`ESCALATE(protected_path_touched)` になっていた。人間も Actor も
+触っていないのに関門が鳴り、実装役の成果が publish されないまま worktree に残る。
+
+**保護するかどうかは変えない。** `.goals/.state/**` は `PROTECTED_PATH_FLOOR` に
+残る。外せば、DB を直接書き換えて状態を偽造されても関門が鳴らない。変えたのは
+観測の作り方で、**バイト列ではなく、その Goal に属する行の内容**から決定的な
+ハッシュを作る（`Store.guardDigest`。実装は `src/store/sqlite.ts` の
+`guardDigestOf`）。checkpoint でも VACUUM でもページの再配置でも値は動かない。
+
+**Goal ごとに閉じる。** 見るのはそのティックが回している Goal の行だけになる。
+別の Goal の行がいくら増えても値が動かないので、同じディレクトリで2本目の ent が
+別の Goal を回してもこちらの関門は鳴らない。行が `goal_id` を持つこと自体は
+最初からそうなっており（`facts` と `unresolved` は `snapshots` 経由で辿れる）、
+§4.5 のスキーマは変えていない。**行を分けるだけでは解けなかったのは、WAL が DB
+ファイルに1つしか無いため**で、論理ダイジェストと組にして初めて Goal ごとに
+閉じた観測になる。
+
+**`depends_on` に挙げた Goal の `status` も射影に入れる。** 依存ゲート
+（`dependencyGate`）はそこを直接読んで進むかどうかを決めるうえ、その呼び出しは
+lease を取る前——どのティックの ACT の窓の外——にある。入れないと、依存先へ
+`UPDATE goals SET status='COMPLETED'` を1行流すだけでゲートを開けられて、
+どちらの Goal のダイジェストにも差が出なかった。見るのは `status` だけにする。
+`reconciles` や lease や `pr_number` は、依存先を回す2本目の ent や人間の
+`ent start` で動くので、入れると鳴りっぱなしになる。`status` はゲートを通る条件が
+`COMPLETED`（終端）で、終端の Goal は誰も回さないため動かない。
+
+**controller 自身が ACT の窓で書く分だけを射影から外す。** 外すのは2つで、
+`goals` の lease 列（ティックのあいだ延長し続ける）と、そのティックで controller が
+作った Run の行になる。落とすのは**渡した Run だけ**で、テーブルごとではない。
+ACT の窓で誰かに Run を差し込まれれば鳴る。
+
+**落とした Run の行は、別の関門が不変列だけ受け持つ**（`ownRunDrift`、
+`src/controller/index.ts`）。controller が ACT の窓で書き換えるのは `finishRun` の
+9列（`status` / `finished_at` / `exit_code` / `log_ref` / `tokens` / `artifacts` /
+`detail` / `error_kind` / `actor_resume_after`）だけで、`intent` / `actor` / `role` /
+`worktree` / `attempt` / `started_at` は `startRun` が1回書いたきり動かない。
+行ごと落とすと、その不変列まで観測の外に出る。**とくに `role` が外に出ていると、
+実装役が自分でレビューを承認できた。** 実装役の ACT の窓の中で
+`UPDATE runs SET role='review' WHERE goal_id=? AND status='starting'` を流すと
+（Run の id を知る必要すら無い）、次のティックで `latestReviewRun` がその Run を
+「直近のレビュー役の Run」として選ぶ。`log_ref` は controller が正しく書いている
+ので生ログの偽造も要らず、実装役が自分で書いた最終メッセージが `review.verdict` と
+`review.reviewed_sha` の Fact になり、`judgeReviewVerdict` が criterion を passed に
+する。だから ACT の後に、`startRun` へ渡した組と DB の行を突き合わせる。
+行が `listRuns` から消えていること（`goal_id` の書き換え）も改竄として数え、
+値がスキーマに載らず読めなければ `guard_unavailable` に倒す。
+**ただし鳴るのは書き換えたティックだけで、書き換えられた行は DB に残る。**
+次のティックではその Run が `ownRuns` から外れて射影の内側に入るので鳴り止み、
+人間が掃除しなければ `role='review'` の行はそのまま残る（(h)）。
+
+スキーマ（`sqlite_master`）も見る。
+trigger を1つ仕込めば、行を1つも変えずに以降の書き込みへ副作用を付けられる。
+**ファイルの存在と inode も見る。** 開いたままのコネクションは unlink された
+ファイルを読み続けるので、行だけを見ていると、消されたことにも、同じパスへ別の
+ファイルを置かれたことにも気づけない。存在だけでは後者が素通りするので、
+inode を組で見る。
+
+**バイト列を捨てて諦めたものは (h) に書いた。代わりに (g) が閉じた。**
+論理ダイジェストは SQLite 経由で読むので、まだ WAL にしか無い行も見える。
+
+**残る穴を7つ書いておく**（記号は動かさない。(g) は閉じたが、他の穴の呼び名が
+ずれると過去のレビューが指す先が変わるので、消さずに取り消し線で残す）。
 
 (a) repoRoot の外（`~/.zshrc` や `~/.claude/**`）は git で観測できないので見えない。
 
@@ -1466,10 +1721,11 @@ PR がまだ無いうちに違反したティックでは、PR を作らない�
 gitignore とは無関係に `git status` が原理的に出さないもの（`.git/hooks/**` と、
 そもそもパスではない `core.hooksPath` の設定値）。前者は `--ignored` を付ければ出るが、
 controller 自身が毎ティック書くので、自分の書き込みが毎回違反として並ぶ。
-**どちらの系統も、実行に繋がる3つ——`.goals/.state/goals.db`・`.git/hooks/**`・
-`core.hooksPath`——だけは `outOfSightState` が名指しで指紋を取り、ACT の前後で
-比べる**（MVP レビューの SEC2 / SEC3）。残る穴は `goals.db` 以外の gitignore された
-パスで、そこを書き換えられても検知しない。
+**どちらの系統も、実行に繋がる3つだけは ACT の前後で比べる**（MVP レビューの
+SEC2 / SEC3）。`.git/hooks/**` と `core.hooksPath` は `outOfSightState` が名指しで
+指紋を取り、`.goals/.state/goals.db` は controller が `Store.guardDigest` の論理
+ダイジェストで見る。残る穴は `goals.db` 以外の gitignore されたパスで、そこを
+書き換えられても検知しない。
 
 (c) 本体側の違反は、同じファイルが次のティックまで**そのまま**なら、
 その内容がベースラインに入るので鳴り止む。指紋で比べているので、同じファイルを
@@ -1484,6 +1740,58 @@ controller のソースはディスクに残る。
 追うが、本体側のブランチは controller が動かさないので `status` だけにしてある。
 `git -C ../../../.. commit` や `git -C ../../../.. stash` は拒否リストに無いので、
 本体側で書いてから commit されると、汚れの集合から消えて検査の外に出る。
+
+(f) 状態 DB の改竄で見えるのは、そのティックが回している Goal の行と、
+`depends_on` に挙げた Goal の `status` だけになる。それ以外の Goal の行を
+書き換えられても、こちらのティックは気づかない。あちらのティックが自分の窓の中で
+気づく余地はあるが、窓の外で起きた分は誰も見ない。これは Goal ごとに閉じた観測に
+した代償で、同じディレクトリで別の Goal を回せることとは表裏になる。
+
+**依存ゲートだけは、他の Goal の行を読む唯一の例外**になる。
+`dependencyGate` は依存先の `status` を直接読み、しかもその呼び出しは lease を取る
+前——どのティックの ACT の窓の外——にある。射影に入れたので、**どこかのティックの
+ACT の窓の中で書き換えられた分は鳴る**。窓の外で書き換えられれば、こちらの
+ベースラインにも検査にも同じ値が入るので、やはり誰も見ない。読む先を射影に
+入れることと、窓の外を見られないことは別の話になる。
+
+**誤検知は増やしていない。** ゲートを通る依存先は `COMPLETED`（終端）に限られ、
+終端の Goal は `tick` が回さず、`ent start` も `ent abandon` も終端を理由に断る
+（`src/cli.ts`）。射影に入れた `status` を正規の経路で動かせる者はいないので、
+依存先を回す2本目の ent がいても鳴りっぱなしにはならない。lease や `reconciles`
+まで入れると鳴るので、入れるのは `status` だけにしてある。
+
+(g) ~~状態 DB の改竄も指紋で見るのは `goals.db` だけで、`goals.db-wal` は
+見ていない~~（閉じた）。論理ダイジェストは SQLite 経由で読むので、まだ WAL に
+しか無い行も見える。バイト列で見ていた頃は、SQLite 経由で書き換えられた行が
+次の checkpoint まで `goals.db` に現れず、そのティックの差に出ないことがあった。
+
+(h) 状態 DB について、「バイト列は違うが、この Goal の論理的な行は同じ」改竄は
+通る。射影から外してあるのは `goals` の lease 列と、そのティックで controller が
+作った Run の行の2つになる。
+
+前者は lease を奪える（＝ティックを落とせる）が、状態の偽造にはならない。
+
+後者は**可変列だけ**が残る。`finishRun` が書く9列——`status` / `finished_at` /
+`exit_code` / `log_ref` / `tokens` / `artifacts` / `detail` / `error_kind` /
+`actor_resume_after`——を書き換えられるので、予算の数え方（§7 の `max_actor_runs` /
+`max_consecutive_failures`）を1件分ごまかせる。**不変列（`intent` / `actor` /
+`role` / `worktree` / `attempt` / `started_at`）は `ownRunDrift` が突き合わせるので、
+そのティックでは鳴る。** かつてここは行ごと落ちており、`role` を `review` へ
+書き換えるだけで実装役が自分のレビューを承認できた（上の本文）。届く範囲は
+「予算1件分」では済んでいなかった。
+
+**ただし鳴るのは書き換えたティックだけになり、(c) と同じ形の穴が残る。**
+そのティックは `ESCALATE(protected_path_touched)` で `WAITING_HUMAN` に落ちるが、
+書き換えられた行は DB に残る。次のティックではその行が `ownRunIds` から外れて
+射影の内側に入るので、前後で差が出ず鳴り止む。止まった Goal を人間が掃除しない
+まま回し続ければ、`role='review'` の行はそのまま残り、次のティックの
+`latestReviewRun` はそれを選ぶ。**関門が保証するのは「人間に1度届くこと」までで、
+改竄を取り消しはしない。**（`tests/controller-state-db-writes.test.ts` の
+「鳴るのは書き換えたティックだけになる」がこの2周を固定する。）
+
+ファイルの側は、**存在と inode を見るので、消去（`rmSync`）と差し替え（unlink して
+同じパスに別のファイルを置く形）は鳴る**。残るのは、開いたままのコネクションから
+見える中身を変えない破損になる。
 
 (c) と (d) は逆向きのトレードオフで、どちらも検知を永続化するか
 Actor プロセスと編集を紐付けないと同時には解けない。MVP では両方残す。
@@ -1619,10 +1927,12 @@ worktree が無く `local.*` は controller 自身のリポジトリを観測す
 変わらないので、初回しか書かないと2ティック目以降は PR が静かなまま
 `max_reconciles` に当たって `BLOCKED` になる。`rationale` には止めた理由だけでなく
 **どうすれば進むか**（worktree のパスと、commit するか元に戻すか）を書く。
-`ent get` の `decision.rationale` と PR の進捗コメントは同じ文字列を出すので、
-ここが人間に届く唯一の説明になる。
-push まで止めるのは保護パスの関門だけで、こちらは止めない。commit された分は
-remote に出てよい。
+**この関門は publish の前で判断を差し替える**ので、`ent get` の `decision.rationale` と
+PR の進捗コメントは同じ文字列を出す。ここが人間に届く唯一の説明になる。
+publish の後ろで差し替える `policies.publish` の関門（§7）だけがこの規約から外れ、
+PR に出す分を別に書いている。
+push まで止めるのは保護パスの関門と `policies.publish.push_branch`（§7）の2つで、
+こちら（未 commit の関門）は止めない。commit された分は remote に出てよい。
 
 **その「出てよい」を実際に出せるようにするため、push の機会を Actor の実行から
 外した。** この関門の解決手順は人間が commit することで（controller が commit するように
