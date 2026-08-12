@@ -12,7 +12,8 @@ Claude Code または Codex を起動する。CLI 名は `ent` になる。
 *[English](README.md) | 日本語*
 
 この README は、設計の要点・現在地・使い方を扱う。設計の全体像・判断の根拠・Phase 計画は
-[`docs/design.md`](docs/design.md) にある。このリポジトリで作業を始めるときは、まずそれを読む。
+[`docs/design.ja.md`](docs/design.ja.md) にある（英語は
+[`docs/design.md`](docs/design.md)）。このリポジトリで作業を始めるときは、まずそれを読む。
 
 ## 設計の要点
 

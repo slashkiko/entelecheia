@@ -14,8 +14,7 @@ actuality. It names exactly the state this tool tries to realize for a Goal.
 
 This README covers the design essentials, where the project stands, and how to use it. The full
 design, the reasoning behind each decision, and the phase plan live in
-[`docs/design.md`](docs/design.md) (written in Japanese). Read that first when you start working in
-this repository.
+[`docs/design.md`](docs/design.md). Read that first when you start working in this repository.
 
 ## Design essentials
 
