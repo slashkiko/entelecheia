@@ -62,6 +62,26 @@ export const observedFactKeySchema = z.enum([
    * 0 を falsy として落とすと `equals: 0` は永久に成立しない。逆に「件数を
    * 確かめられなかった」を 0 と読むと、指摘を残したまま収束する。後者は
    * Port が null を返し、observe が Fact を作らないことで表す（§4.3）。
+   *
+   * 引き継ぎにも注意が要る。件数を読めなかったティックでは、前ティックの値が
+   * VERIFIED のまま残らないように `expireStaleFacts`（`src/reconcile/index.ts`）が
+   * 落とす。詳しくは design.md §4.3。
+   *
+   * **criteria に書く前に、誰がこのキーを 0 にするのかを決めること。**
+   * このリポジトリには、レビュースレッドを解決する（`isResolved` を false → true に
+   * する）書き込み経路が無い。GitHub 側の書き込みは GraphQL の
+   * `resolveReviewThread` mutation にしか無く、controller はそれを呼ばないし、
+   * Actor には資格情報を渡していない（`WITHHELD_ENV`）。つまり
+   * `{ key: github.pr.unresolved_threads, equals: 0 }` は、**いまのところ Actor が
+   * 自力では満たせない criterion**になる。実質は人間のゲートだが、`type: human` と
+   * 違って `WAITING_HUMAN` にはならない。Gap が残り続けたまま ACT の予算を消費し、
+   * 最後は `max_unchanged_reconciles` の `loop_detected` で止まる。人間が受け取る
+   * 停止理由が「レビューの解決待ち」を指さない、ということになる。
+   *
+   * この前提が変わりうる点を1つ**確かめていない**。指摘された行が後続のコミットで
+   * 変わり、GitHub がそのスレッドを outdated にしたとき、`isResolved` が自動で
+   * true になるのかどうかは検証していない。自動で true になるなら Actor が
+   * コードを直すだけで件数が減りうるが、**確かめていないので前提にしない。**
    */
   "github.pr.unresolved_threads",
 
