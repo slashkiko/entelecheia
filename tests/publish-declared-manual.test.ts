@@ -242,7 +242,7 @@ describe("push_branch: manual", () => {
       deps(s),
     );
 
-    expect(result.held).toBe("push_branch");
+    expect(result.held?.step).toBe("push_branch");
     expect(result.skipped).toContain("push_branch");
   });
 
@@ -279,7 +279,7 @@ describe("open_pull_request: manual", () => {
     expect(s.pushes).toHaveLength(1);
     expect(s.created).toEqual([]);
     expect(result.prNumber).toBeNull();
-    expect(result.held).toBe("open_pull_request");
+    expect(result.held?.step).toBe("open_pull_request");
     expect(result.skipped).toContain("open_pull_request");
   });
 

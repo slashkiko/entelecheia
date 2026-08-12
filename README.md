@@ -83,6 +83,13 @@ policies:
 行わず、そのティックは `WAITING_HUMAN` で止まる。止めた段と、人間が何をすれば進むのかは
 `ent get <slug>` の `decision` に出る。
 
+止めたことは `ent run` の出力にも構造で出る。宣言で止めたティックにだけ `publishHold` が
+載り、止めた段（`step`）と、ブランチが remote にあるか（`pushed`）と、PR を立てるなら
+どの head と base になるか（`branch` / `base`）が入る。ティックを叩いているのが
+エージェントなら、controller が作らなかった PR をそれを読んで代わりに立てられる
+（手順は `.claude/skills/ent/SKILL.md`）。宣言を書いていない Goal ではこのキーは出ないので、
+いま回している `jq` は1つも変わらない。
+
 2つの段は解け方が違う。`open_pull_request` を止めた場合は、人間が PR を立てれば次のティックが
 それを見つけて先へ進む（宣言はそのままでよい）。`push_branch` はそうならない。publish が push の
 要否を決める材料は押さないと決めた口の結果しかないので、人間が手で押しても publish の判断には

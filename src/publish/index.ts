@@ -1,4 +1,4 @@
-import { worktreeNameFor } from "../act/index.js";
+import { worktreeBranchFor, worktreeNameFor } from "../act/index.js";
 import type { Decision } from "../domain/action.js";
 import { errorMessage } from "../domain/error-message.js";
 import { type Goal, type PublishStep, publishPolicyOf } from "../domain/goal.js";
@@ -97,6 +97,42 @@ export interface ReportResult {
   error: string | null;
 }
 
+/**
+ * 宣言（`policies.publish`）で止めた段と、代わりに動く側が要る事実。
+ *
+ * `ReportResult` と同じ形にしてある。あちらも「その口を使ったティックにだけ載る、
+ * publish の結果」で、`destination` / `written` / `error` という**行った先と結果**を
+ * 構造で返している。ここも同じく、止めた段と、続きをやるのに要る宛先
+ * （head と base）を構造で返す。
+ *
+ * `skipped` や `decision.rationale` の文面と別に持つ。あちらは人間が読む1行で、
+ * 文面は直る。停止条件や「代わりに PR を立てるか」を文字列の部分一致に載せると、
+ * 文面を直した瞬間に読む側の分岐が黙って消える。
+ */
+export interface PublishHold {
+  /** 止めた段 */
+  step: PublishStep;
+  /**
+   * 止めた理由の種別。いまは宣言だけ。
+   *
+   * `step` に畳まない。段が増えるより先に「別の事情で止める」が増える方があり得るので、
+   * 「宣言で止めた」を読む側が名指しで確かめられるようにしておく。
+   */
+  reason: "declared_manual";
+  /**
+   * controller が push を済ませたか。`branch` が remote にあるかと同義。
+   *
+   * **`step` から導けるが、それでも別に持つ。** remote に無いブランチに PR は
+   * 立てられないので、代わりに立てる側はここを見てから動く。導出に頼らせると、
+   * publish の順序が変わったときに読む側のコードが静かに間違う。
+   */
+  pushed: boolean;
+  /** PR の head になるブランチ。押していない段でも、押す先はこの名前になる */
+  branch: string;
+  /** PR の base */
+  base: string;
+}
+
 export interface PublishResult {
   /** 確保できた PR 番号。作れなかった、あるいは作る段でなければ null */
   prNumber: number | null;
@@ -106,14 +142,8 @@ export interface PublishResult {
   commented: boolean;
   /** PR の外に進捗を書いた結果。宛先の指定が無ければ null */
   report: ReportResult | null;
-  /**
-   * 宣言（`policies.publish`）で止めた段。止めていなければ null。
-   *
-   * `skipped` の文面と別に持つ。あちらは人間が読む1行で、こちらは controller が
-   * 「このティックは人間待ちで終わる」を決めるために読む値になる。文字列の
-   * 部分一致で分岐させると、文面を直した瞬間に停止条件が黙って消える。
-   */
-  held: PublishStep | null;
+  /** 宣言で止めた段。止めていなければ null */
+  held: PublishHold | null;
   /** 何もしなかった理由。した場合は null */
   skipped: string | null;
 }
@@ -157,7 +187,7 @@ export async function publish(target: PublishTarget, deps: PublishDeps): Promise
   const report = deps.report === undefined ? null : await deliver(deps.report, body);
 
   /** 宣言で止めた段。`ensurePullRequest` が決める。null なら止めていない */
-  let held: PublishStep | null = null;
+  let held: PublishHold | null = null;
 
   const nothing = (skipped: string): PublishResult => ({
     prNumber: target.prNumber,
@@ -305,9 +335,14 @@ async function ensurePullRequest(
 ): Promise<{
   prNumber: number | null;
   created: boolean;
-  held: PublishStep | null;
+  held: PublishHold | null;
   skipped: string | null;
 }> {
+  // 止めた段に載せる宛先。押す前でも決まるので、両方の段で同じ値を使える。
+  // **規則をここに書かない。** `worktreeBranchFor`（src/act/index.ts）が正で、
+  // 2箇所に持つと、案内した push 先と実際に押す先がずれても誰も気づけない。
+  const branch = worktreeBranchFor(pushWorktree(target.goal));
+  const base = target.goal.repository.default_branch;
   // 制御ループ自体に触れた変更は push もしない（design.md §7）。
   // remote に出た時点で、通常の変更として流れる余地が生まれる。
   // 検査できなかった場合も同じ扱いにする。関門が動いていない状態で push するのは、
@@ -329,7 +364,8 @@ async function ensurePullRequest(
     return {
       prNumber: target.prNumber,
       created: false,
-      held: "push_branch",
+      // remote には1行も出ていない。`pushed: false` がそれを言う唯一の値になる。
+      held: { step: "push_branch", reason: "declared_manual", pushed: false, branch, base },
       skipped: "policies.publish.push_branch: manual の宣言があるので push しない",
     };
   }
@@ -379,7 +415,16 @@ async function ensurePullRequest(
     return {
       prNumber: null,
       created: false,
-      held: "open_pull_request",
+      // ここへ来るのは push が通ったあとだけになる。`pushed: true` は「この
+      // ブランチに PR を立ててよい」を意味するので、押す前の段から出してはいけない。
+      // 押していないブランチを head にした `gh pr create` は落ちる。
+      held: {
+        step: "open_pull_request",
+        reason: "declared_manual",
+        pushed: true,
+        branch: pushed.branch,
+        base,
+      },
       skipped: "policies.publish.open_pull_request: manual の宣言があるので PR を作らない",
     };
   }
@@ -482,7 +527,7 @@ function commentBody(
   target: PublishTarget,
   now: Date,
   pushFailure: string | null,
-  held: PublishStep | null,
+  held: PublishHold | null,
 ): string {
   const rows = target.verifications.map(
     (v) => `| \`${v.criterionId}\` | ${MARKERS[v.result]} ${v.result} | ${oneLine(v.detail)} |`,
@@ -499,7 +544,7 @@ function commentBody(
       : [`> [!WARNING]`, `> push できなかった: ${oneLine(pushFailure)}`, ""]),
     // 宣言で止めたことも先頭に出す。落ちたのではないので WARNING にはしない。
     // 下の criteria が全部緑でも、その先は人間が進める、という但し書きになる。
-    ...(held === null ? [] : [`> [!NOTE]`, `> ${HELD_NOTES[held]}`, ""]),
+    ...(held === null ? [] : [`> [!NOTE]`, `> ${HELD_NOTES[held.step]}`, ""]),
     // 改行を潰す。承認の定型文は行単位で照合されるので、本文の途中に
     // 独立した1行を作らせない。目印による除外と二重にしておく。
     flatten(target.decision.rationale),

@@ -924,6 +924,39 @@ reconcile 回数だけが進んで `max_reconciles` に当たり `BLOCKED` に�
 **解けない関門であることを rationale に書く**（`publishHeldDecision`）。書かなければ、
 押したのに止まり続ける理由を人間がコードから探すことになる。
 
+**止めたことは機械可読で出す。** ティックを叩くのは人間だけではない。エージェントが
+回している構成では、controller が作らなかった PR をそのエージェントが代わりに立てる。
+そのためには「作らなかった」と「作るなら head と base はこれ」が、`decision.rationale` の
+散文を読まずに分かる必要がある。`ent run` の出力に `publishHold` を足してある。
+
+```json
+{
+  "publishHold": {
+    "step": "open_pull_request",
+    "reason": "declared_manual",
+    "pushed": true,
+    "branch": "entelecheia/<goal-id>",
+    "base": "main"
+  }
+}
+```
+
+形は `--report` の `report`（`destination` / `written` / `error`）に揃えてある。どちらも
+「その口を使ったティックにだけ載る publish の結果」で、行った先と結果を構造で返す。
+**止めていないティックにはキーごと載せない。** 宣言を書いていない既存の `.goals/*.yaml` を
+回している側の出力を1キーも変えない（`dryRun` と同じ扱い）。
+
+`pushed` は `step` から導ける（`open_pull_request` の段に来るのは push が通ったあとだけ）が、
+それでも別に持つ。remote に無いブランチを head にした PR は作れないので、代わりに立てる側は
+ここを見てから動く。導出に頼らせると、publish の順序が変わったときに読む側が静かに間違う。
+
+段と理由も分けてある。`step` に「宣言で止めた」まで畳むと、宣言以外の理由で止める形が
+増えたときに読む側の分岐が壊れる。いま `reason` に入るのは `declared_manual` だけになる。
+
+**保護パスの関門で止めたティックにはこのキーを出さない**（`blocksPush`）。あちらは push も
+していないうえ、代わりに押してよい状態でもない。ここに出すと、controller が止めた関門を
+叩いた側のエージェントが迂回する経路になる。それは関門が無いのと同じになる。
+
 `--dry-run` にはこの停止は映らない。publish を回さないティックなので、`wouldTransitionTo` は
 止める前の判断のまま返る。`push_branch` の側は宣言だけから決まるので予告もできるが、
 そうすると同じ関門の判定が publish と preview の2箇所に分かれる。判定は publish に1本化して、

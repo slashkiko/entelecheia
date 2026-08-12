@@ -229,6 +229,42 @@ commit が消えたときがこれにあたる。`budget_exhausted` の `ESCALAT
 `status` に入るのは Goal の状態（`ACTIVE` / `WAITING_HUMAN` / `WAITING_EXTERNAL` /
 `BLOCKED` / `COMPLETED` など）で、`ESCALATE` や `WAIT` は `action` の側に出る。
 
+## controller が push や PR 作成をしなかったとき
+
+Goal の宣言に `policies.publish` があると、controller は `manual` と書かれた段を行わない。
+そのティックの出力に `publishHold` が入る（宣言を書いていない Goal には出ない）。
+
+| キー | 入るもの |
+| --- | --- |
+| `step` | 止めた段。`push_branch` か `open_pull_request` |
+| `reason` | `declared_manual`。宣言で止めたということ |
+| `pushed` | `branch` が remote にあるか |
+| `branch` | PR の head になるブランチ |
+| `base` | PR の base |
+
+判定はこのキーで行う。`skipped` と `decision.rationale` は人間が読む1行なので、
+文面で分岐すると文言を直した時点で黙って壊れる。
+
+**`step: open_pull_request`（`pushed: true`）なら、代わりに PR を立ててよい。**
+ブランチは既に remote にあり、controller は作らないと宣言されているだけになる。
+
+```
+gh pr create --head <publishHold.branch> --base <publishHold.base>
+```
+
+次のティックがその PR を見つけて先へ進む。宣言はそのままでよい。
+ただし**宣言した人間が中身を見てから立てたい**場合もある。止めた口は controller に
+作らせないためのもので、叩いた側に作らせないためのものではない。代行してよいかを
+指示されていないなら、立てずに `publishHold` の中身を人間に渡す。
+
+**`step: push_branch`（`pushed: false`）は代行しない。** ブランチが remote に無いので
+PR は立てられない。手で push しても controller はそれを観測できないため、宣言を `auto` に
+戻すまで毎ティック同じところで止まり、`max_reconciles` に当たって `BLOCKED` になる。
+人間に渡す。
+
+`ESCALATE(protected_path_touched)` などの関門で止まったティックには `publishHold` は
+出ない。そちらは push も PR も代行してはいけない停止になる。
+
 ## 終了コード
 
 | code | 意味 |

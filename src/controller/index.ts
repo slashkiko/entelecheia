@@ -29,7 +29,7 @@ import {
 import { describeViolations, findViolations } from "../domain/protected-paths.js";
 import { type ActorRole, DEFAULT_ACTOR_ROLE, type Run } from "../domain/run.js";
 import { toVerifications, type Verification } from "../domain/verification.js";
-import { type PublishDeps, publish } from "../publish/index.js";
+import { type PublishDeps, type PublishHold, publish } from "../publish/index.js";
 import { type ReconcileDeps, reconcile } from "../reconcile/index.js";
 import type { Store } from "../store/port.js";
 
@@ -126,6 +126,19 @@ export interface TickResult {
   run: Run | null;
   /** ティック後の Goal の状態 */
   status: GoalStatus;
+  /**
+   * 宣言（`policies.publish`）で publish を止めた場合だけ入る。止めていなければ**キーごと入らない**。
+   *
+   * ティックを叩くのは人間だけではない。エージェントが回している構成では、controller が
+   * 作らなかった PR をそのエージェントが代わりに立てる。そのためには「作らなかった」と
+   * 「作るなら head と base はこれ」が、`decision.rationale` の散文を読まずに分かる
+   * 必要がある。理由と段は `decision.action.reason` にも出るが、あちらは
+   * `EscalateReason` の1語なので押す先を持てない。
+   *
+   * 止めていないティックで `null` を置かないのは、`dryRun` と同じ理由になる。
+   * 既存の `.goals/*.yaml`（宣言を1本も書いていない）を回している側の出力を変えない。
+   */
+  publishHold?: PublishHold;
   /** dry-run で回した場合だけ true。通常のティックでは入らない */
   dryRun?: boolean;
   /**
@@ -476,7 +489,16 @@ export async function tick(goal: Goal, deps: ControllerDeps): Promise<TickResult
       deps.now().toISOString(),
     );
 
-    return { ran: true, skipped: null, reclaimed, decision: settled, run, status };
+    return {
+      ran: true,
+      skipped: null,
+      reclaimed,
+      decision: settled,
+      run,
+      // 止めていないティックにはキーを足さない。既存の出力の形を変えない。
+      ...(published.held === null ? {} : { publishHold: published.held }),
+      status,
+    };
   } finally {
     // 例外で抜けても解放する。残すと lease の期限までどのワーカーも動けない。
     clearInterval(heartbeat);
@@ -1002,22 +1024,25 @@ function uncommittedDecision(
 function publishHeldDecision(
   goal: Goal,
   decision: Decision,
-  held: PublishStep | null,
+  held: PublishHold | null,
   deps: ControllerDeps,
 ): Decision {
   if (held === null) {
     return decision;
   }
 
-  // 案内するのは実装役の作業ツリーに揃える。押すのも commit するのもそちらで
+  // 案内するのは実装役の作業ツリーに揃える。押すのも commit もそちらで
   // （`pushWorktree` / `commitVerifiedWork`）、人間が手で押す先も同じになる。
   const worktreePath = worktreePathFor(goal, DEFAULT_ACTOR_ROLE, null, deps);
-  const branch = worktreeBranchFor(worktreeNameFor(goal.goal.id, DEFAULT_ACTOR_ROLE));
-  const base = goal.repository.default_branch;
-  const declaration = `.goals/${goal.goal.id}.yaml の policies.publish.${held}`;
+  // ブランチと base は `PublishHold` から取る。**ここで組み立て直さない。**
+  // 同じ2つを機械可読なキー（`publishHold`）にも出しているので、別々に作ると
+  // 文面と payload が食い違いうる。読む側は同じティックの出力の中で矛盾を見る。
+  const branch = held.branch;
+  const base = held.base;
+  const declaration = `.goals/${goal.goal.id}.yaml の policies.publish.${held.step}`;
 
   const rationale =
-    held === "push_branch"
+    held.step === "push_branch"
       ? `policies.publish.push_branch: manual を宣言しているので、controller は push しなかった。` +
         `worktree（${worktreePath}、ブランチ ${branch}）に commit 済みの差分が残っていても ` +
         `remote には1行も出ない。進めるには、人間が中身を確かめてから自分で押す` +
@@ -1036,7 +1061,7 @@ function publishHeldDecision(
 
   return {
     decidedAt: deps.now().toISOString(),
-    action: { type: "ESCALATE", reason: HELD_REASONS[held] },
+    action: { type: "ESCALATE", reason: HELD_REASONS[held.step] },
     rationale,
     decidedBy: "guard",
   };
