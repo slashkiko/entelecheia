@@ -52,6 +52,19 @@ export const observedFactKeySchema = z.enum([
 
   // CodeProviderPort.getLatestCiRun()
   "github.ci.status",
+  /**
+   * head sha に紐づく**最新の workflow run 1本**の結論。
+   *
+   * **新しい Goal の criteria には使わない。** workflow を複数持つリポジトリでは、
+   * lint の run が落ちていても test の run が後から success で終われば
+   * `equals: success` が通る（issue #58）。「この head sha で落ちている job が
+   * 1つも無い」を書きたいなら `github.ci.failed_job_count` を使う。
+   * `repository.ci.exclude_workflows` の除外が効くのもそちらだけになる。
+   *
+   * 既存の Goal がこのキーで書かれているのは、`failed_job_count` より先に
+   * あったからで、意味が正しいからではない。消さないのは、回っている Goal の
+   * 判定を後から変えないため。
+   */
   "github.ci.conclusion",
   "github.ci.failed_jobs",
   /**

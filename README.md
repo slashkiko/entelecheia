@@ -459,6 +459,21 @@ repository:
 選び方は変わらない。宣言を1行足しただけで既存の `conclusion == success` の意味が動く形に
 しないため。
 
+> [!IMPORTANT]
+> **新しい Goal の CI の criterion は `github.ci.failed_job_count` で書く。**
+> `github.ci.conclusion == success` は最新の run 1本しか見ないので、他の run が
+> 落ちていても通る（issue #58）。除外が効くのも `failed_job_count` の側だけになる。
+>
+> ```yaml
+> - id: ac-5
+>   description: 変更を載せた PR の CI で、落ちている job が1つも無い
+>   verification: { type: fact, key: github.ci.failed_job_count, equals: 0 }
+> ```
+>
+> 既にある Goal がまだ `conclusion` で書かれているのは、`failed_job_count` より先に
+> あったからで、意味が正しいからではない。回っている Goal の判定を後から変えないために
+> そのまま残してある。
+
 **ただし `github.ci.failed_jobs` からも外れる。** 失敗ジョブの名前とログ URL を集めるのは
 除外したあとの run なので、外した run の失敗ジョブは数だけでなくこの Fact からも消える。
 **次の ACT に渡る材料が除外分だけ欠ける**ことになる。残す側に倒すと「数から外した＝直さなくて
