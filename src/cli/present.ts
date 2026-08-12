@@ -94,6 +94,16 @@ export function summarize(result: TickResult): Record<string, unknown> {
     action: result.decision?.action ?? null,
     rationale: result.decision?.rationale ?? null,
     run: result.run === null ? null : { id: result.run.id, status: result.run.status },
+    // 宣言（`policies.publish`）で publish を止めたティックだけに足す枝。
+    //
+    // 止めた段は `action`（`ESCALATE(open_pull_request_declared_manual)`）にも出るが、
+    // あちらは1語なので押す先を持てない。controller が作らなかった PR を、ティックを
+    // 叩いた側のエージェントが代わりに立てるには head と base が要る。それを
+    // `rationale` の散文から正規表現で剥がす形にすると、文面を直した瞬間に壊れる。
+    //
+    // 止めていないティックでは**キーごと足さない**。宣言を書いていない既存の
+    // `.goals/*.yaml` を回している `jq` を壊さない（`dryRun` と同じ扱い）。
+    ...(result.publishHold === undefined ? {} : { publishHold: result.publishHold }),
     // dry-run は DB に残さないので、ここで出さなければ読む手段が無い。
     // 通常のティックでは増やさない。既存の呼び出しが読んでいる形を変えない。
     ...(result.dryRun === true

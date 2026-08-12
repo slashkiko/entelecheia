@@ -1,0 +1,229 @@
+version: 1
+
+goal:
+  id: show-the-review-body
+  name: レビュー役の本文が --report の出力に出る
+  desired_state: |
+    レビュー役の Actor が返した本文は、Fact になる過程で `review.verdict` と
+    `review.reviewed_sha` の2つに畳まれる。**本文そのものはどこにも出ない。**
+    残るのは `.goals/.state/runs/<id>/log.jsonl` の中だけで、`ent run` の出力にも
+    `--report` の出力にも現れない。
+
+    人間が見られるのは verdict の1語になる。9,000〜14,000 字の指摘が、
+    `approved` の4文字に畳まれて消える。**`approved` は「何も言うことが無い」では
+    ない。** 実際に、承認と同時に捨てられた留保を、数ティックあとに外部の
+    自動レビュー bot が指摘し直した（issue #59）。
+
+    どう作るかは Actor が決める。以下は「何が満たされていればよいか」を書く。
+
+    1. `--report` の本文の後ろに、レビュー役の本文を節として足す
+
+      `ent run <slug> --report stdout` の `report.body` と、
+      `ent run <slug> --report ./progress.md` が書くファイルの両方に出る。
+      節の見出しは `## レビュー役の本文` にする。どの Run を読んだかが分かるよう、
+      Run の id も出す。**節はいまの本文の後ろに足す。** criteria の表より前に
+      割り込ませない。表は宛先を問わず同じ位置で読めるようにしておく。
+
+    2. 本文はそのまま出す
+
+      潰さない、切らない、引用符で包み直さない。改行も、表も、コードブロックも
+      そのまま残る。既存の `flatten` / `oneLine` は表のセルと見出しのための
+      加工なので、ここを通さない。**この Goal が取り返そうとしているのは本文で、
+      要約ではない。**
+
+    3. PR コメントには載せない
+
+      issue #59 の案3（PR に投稿する）は採らない。したがって
+      `--report` の本文と PR コメントの本文は**同じでなくなる**。
+      いまの `src/publish/index.ts` の冒頭は「本文は宛先に関わらず1つ」と
+      書いているので、その説明を書き直す。破れたことを事故ではなく判断として
+      読める形にする（案3 を見送った理由と、issue #59 の表を指す）。
+
+      `--report` を付けないティックでは、レビュー役のログを読みに行かない。
+      使わない本文のために毎ティック生ログを開くのは無駄で、失敗する口も増える。
+
+    4. 読めなかったときに黙らない
+
+      レビュー役の Run はあるが生ログを読めなかった、本文が残っていない
+      （途中で切れた Run）、といった場合も節は出す。何が起きたかを1行で書く。
+      **黙って落とすと、この Goal が直そうとしている壊れ方をもう1つ作ることになる。**
+      publish はどの経路でも throw しない、という既存の性質は変えない。
+      レビュー役を1度も起動していない Goal では、節そのものを出さない。
+
+    5. 材料はもう届いている。新しい Port も Adapter も要らない
+
+      レビュー役の Run から最終メッセージを取り出す口は `ReviewPort`
+      （`src/observe/index.ts`）として既にあり、実装（`src/adapters/review-run.ts`）は
+      合成ルートが `tickPorts` で挿している。**`ControllerDeps` は `ObserveDeps` を
+      継承しているので、`publish` に渡っている `deps` には既に `review` が入っている。**
+      `PublishDeps` に任意（optional）のフィールドとして宣言すれば、
+      `src/controller/index.ts` も `src/wiring/index.ts` も1文字も触らずに読める。
+      どちらも `PROTECTED_PATH_FLOOR` の中にあり、Actor には書けない。
+
+      **`src/adapters/**` も触らない。** レビュー役の生ログの形に依存する知識は
+      あちらに閉じてあり、この Goal はその口を呼ぶだけで足りる。
+
+      観測（`src/observe/**`）も触らない。本文を Fact にする道は選ばない。
+      Fact にすると 14,000 字が毎ティックの snapshot に入り、`ent get` の出力にも
+      carriedFacts にも載る。読む側の予算（gist 2.5）を壊す。
+
+    6. 文書を合わせる
+
+      `.claude/skills/ent/SKILL.md` の「進捗を PR に投稿しないで回す」と
+      README.md の「進捗を PR に投稿しない」は、いまどちらも「移るのは進捗の宛先
+      だけ」「本文は PR コメントと同じ」と読める。**そこが変わる。** `--report` の
+      本文にだけ載るものが1つできたことを、両方に書く。
+
+      `docs/design.md` のレビュー役の節（`review.verdict` と `review.reviewed_sha`
+      を作るところ）にも1〜2文足す。本文を Fact にしないという判断は据え置きで、
+      **畳んだ残りを捨てずに `--report` に出す**ことを書く。§3.1 の
+      「観測を捏造しない」は動かさない。
+
+    テストは tests/publish-review-body.test.ts に書いてある。着手時点では落ちる。
+    仕様はテストが正で、この記述と食い違ったらテストに合わせる。
+
+    `tests/publish.test.ts` の「本文は PR コメントと同じ」は変更しない。あの検査は
+    `review` を渡さない構成での性質として、いまも真になる。
+
+repository:
+  provider: github
+  owner: slashkiko
+  name: entelecheia
+  default_branch: main
+
+setup:
+  - pnpm install --frozen-lockfile
+
+acceptance_criteria:
+  - id: ac-1
+    description: publish-review-body のテストが通る（着手時点では落ちている）
+    verification: { type: command, run: mise run test }
+
+  - id: ac-2
+    description: 型チェックが通る
+    verification: { type: command, run: mise run typecheck }
+
+  - id: ac-3
+    description: lint と format が通る
+    verification: { type: command, run: mise run lint }
+
+  - id: ac-4
+    description: サプライチェーンと workflow のチェックが通る（baseline 由来）
+    verification: { type: command, run: mise run check }
+
+  - id: ac-5
+    description: 変更を載せた PR の CI が成功している
+    verification: { type: fact, key: github.ci.conclusion, equals: success }
+
+  - id: ac-6
+    description: 宛先を分けた判断と、本文をそのまま出していることを人間が確認する
+    verification:
+      type: human
+      prompt: |
+        この Goal は、レビュー役の本文を `--report` の宛先にだけ足すものです。
+        PR への投稿（issue #59 の案3）は採っていません。次を確認してください。
+
+        1. PR コメントの本文にレビュー役の本文が混ざっていないか。
+           `--report` を付けないティックで `ReviewPort.latest()` を呼んでいないか
+        2. 本文がそのまま出ているか。潰していないか、切っていないか
+        3. 生ログを読めなかったとき・本文が残っていないときに黙っていないか。
+           publish がどの経路でも throw しないままか
+        4. `PROTECTED_PATH_FLOOR`（`src/controller/**` / `src/wiring/index.ts` /
+           `src/adapters/claude.ts` など）に触れていないか。観測
+           （`src/observe/**`）を触って本文を Fact にしていないか
+        5. SKILL.md・README.md・design.md が、宛先で本文が変わることを
+           書いているか
+
+        あわせて、issue #59 の案2（`ent get` の runs にレビュー本文を載せる）は
+        この Goal の範囲外にしてあります。`ent get` は既定でエージェントが読む
+        出力で、14,000 字の本文を無条件に足すと出力の予算（gist 2.5）を壊すこと、
+        `src/cli.ts` から `ReviewPort` を作る道が合成ルート
+        （`PROTECTED_PATH_FLOOR` の中）を通ることの2つが理由です。
+        必要なら別 Goal で、フラグで明示的に取りに行く形にしてください。
+
+context:
+  background: |
+    issue #59（P1）。レビュー役の出力のほとんどが捨てられている。
+    すでに払ったコストが回収できていない。
+
+    1つの Goal を収束させる間にレビュー役を3回起動し、本文はそれぞれ
+    9,000〜14,000 字あった。指摘は根拠付きで具体的だったが、人間が見られるのは
+    verdict の1語だけなので「レビュー役はまともに読んでいないのでは」という
+    疑いを持たれた。実際には読んでいた。
+
+    実害もあった。1回目のレビューは `approved` を返したが、本文には
+    「回帰テストの fixture が第3ソートキーで通っており、第1キーを外しても
+    テストは同じ結果で通ってしまう」という指摘が含まれていた。この指摘は
+    verdict に畳まれて消え、数ティックあとに外部の自動レビュー bot が
+    近いところを指摘し直した。
+
+    issue #59 は3つの案を挙げている。この Goal が採るのは案1（`--report` の
+    出力に本文を含める）だけで、案2（`ent get`）と案3（PR に投稿する）は
+    採らない。案1 だけで「人間が本文を読める」は満たせて、触る範囲が
+    `src/publish/**` に閉じる。
+
+  constraints:
+    - テストから実際の GitHub と Claude API を叩かない
+    - tests/publish-review-body.test.ts は仕様なので変更しない。通らないなら実装側を直す
+    - 既存の tests/ も弱めない。とくに tests/publish.test.ts は変更しない
+    - 触るのは src/publish/index.ts だけで足りる。新しい Port も Adapter も作らない
+    - src/observe/** を触らない。本文を Fact にしない
+    - PR コメントの本文を変えない。issue #59 の案3 は採らない
+    - ent get の出力を変えない。issue #59 の案2 は採らない
+    - publish はどの経路でも throw しない、という既存の性質を変えない
+    - 本文を潰さない・切らない。flatten / oneLine を通さない
+    - 依存パッケージを増やさない
+    - mise run check（サプライチェーン検査）を壊さない
+    - SKILL.md / README.md / docs/design.md を、実装に合わせて書き直す
+    - PR の作成とコメントの投稿はしない。controller が行う
+
+  references:
+    - title: 設計ドキュメント（レビュー役の結論を Fact にするところ）
+      path: docs/design.md
+    - title: 進捗の宛先と本文の組み立て
+      path: src/publish/index.ts
+    - title: レビュー役の生ログから最終メッセージを取り出す Adapter（触らない側）
+      path: src/adapters/review-run.ts
+    - title: ReviewPort の宣言（触らない側）
+      path: src/observe/index.ts
+    - title: --report の使い方
+      path: .claude/skills/ent/SKILL.md
+
+policies:
+  require_human_approval:
+    - merge
+    - force_push
+    - push_to_default_branch
+    - deploy
+    - secret_access
+    - external_send
+  protected_paths:
+    # 下限（PROTECTED_PATH_FLOOR）は Zod が読み込み時に混ぜるので書かない。
+    # ここに並べるのは、この Goal で追加する分だけにする。
+    # 検証系。ここを書き換えられると Agent が自分の criteria を通せる。
+    - mise.toml
+    - mise-tasks/**
+    - vitest.config.ts
+    - biome.json
+    - tsconfig*.json
+    - .github/**
+    # 依存の追加は人間が通す。
+    - package.json
+    - pnpm-lock.yaml
+    # 観測と判断はこの Goal の範囲外。本文を Fact にする道は選ばない。
+    - src/observe/**
+    - src/assess/**
+    - src/decide/**
+    - src/reconcile/**
+    - src/verify/**
+    # 生ログの形に依存する知識は Adapter に閉じている。呼ぶだけで足りる。
+    - src/adapters/**
+    # 状態の永続化も動かさない。
+    - src/store/**
+
+budget:
+  max_actor_runs: 10
+  max_reconciles: 25
+  max_wall_clock: 12h
+  max_consecutive_failures: 3
+  max_unchanged_reconciles: 6
