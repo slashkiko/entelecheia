@@ -421,7 +421,9 @@ ent doctor          # その場所で回せるかを読み取り専用で調べ�
 `ent init` は冪等で、既にある `.goals/*.yaml` を上書きせず、`.gitignore` に
 同じ行を二重に足さない。git リポジトリでなければ何も作らずに終了コード 1 で断る。
 雛形はスキーマとして妥当なところまでしか埋まっていない。`desired_state` と
-`acceptance_criteria` は人間が書く。
+`acceptance_criteria` は人間が書く。CI の criterion の書き方は
+「[恒久的に落ちる workflow を数から外す](#恒久的に落ちる-workflow-を数から外す)」の
+`[!IMPORTANT]` を見る。
 
 **起動する Node を固定する。** `node:sqlite` を使うので Node 24 以上が要る。
 `/usr/bin/env node` に任せると、対象リポジトリ側の mise や nvm が効いて古い Node が
@@ -457,9 +459,6 @@ ent doctor          # その場所で回せるかを読み取り専用で調べ�
 job を数える。`{ type: fact, key: github.ci.failed_job_count, equals: 0 }` と書けば
 「この commit で落ちている job が1つも無い」を criteria にできる。
 
-書かなければ、これまでどおり全 workflow run を数える。既存の `.goals/*.yaml` は1本も挙動が
-変わらない。
-
 **除外が効くのは `github.ci.failed_job_count` だけ。** いま `.goals/` にある Goal 28 本のうち、
 CI を見ている 27 本は**すべて** criterion を
 `{ type: fact, key: github.ci.conclusion, equals: success }` で書いており、
@@ -481,10 +480,13 @@ repository:
   name: your-repo
   default_branch: main
   ci:
-    # .github/workflows/*.yml の name:（PR の checks 欄に出る名前）で書く
+    # .github/workflows/*.yml の name: で書く（PR の checks 欄には job 名や
+    # third-party の check run も並ぶので、そこからは取らない）
     exclude_workflows:
       - Require owner approval
 ```
+
+`exclude_workflows` を書かなければ、`failed_job_count` は全 workflow run を数える。
 
 **外れるのは workflow run ごと**で、job 名では書けない。数が確定するのは「未確定の run が
 1本も無い」ときなので、承認待ちで `completed` にならない gate は run ごと外さないと数が
