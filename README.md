@@ -291,7 +291,8 @@ mise run check    # サプライチェーンと workflow のチェック（basel
 手順を扱う。コマンドの一覧に続けて、「共通のオプション」「provider・model・effort を選ぶ」
 「Codex を使うとき」「関門の基準になる commit」「起動の仕方と、ent 自身を直すときの例外」の
 順になる。後半は運用にあたる。「この repo の外のリポジトリで使う」「進捗を PR に投稿しない」
-「粗いタスクを複数の Goal に割る」「複数の Goal を同時に回す」の4つが続く。
+「PR を draft で立てる」「粗いタスクを複数の Goal に割る」「複数の Goal を同時に回す」の
+5つが続く。
 
 ```sh
 mise run build                     # dist/cli.js を作る
@@ -468,6 +469,40 @@ criteria の pass 状況で、試走のたびにレビュー中の PR を伸ば�
 `stdout` を指定しても素の Markdown は流れない。`run` の標準出力は JSON 専用で、
 本文は `report.body` に入る。受け取るのは `run` だけで、`--dry-run` とは併用できない。
 JSON に何が入るか、書けなかったときにどうなるかは `.claude/skills/ent/SKILL.md` にある。
+
+### PR を draft で立てる
+
+対象リポジトリに「まず draft で出す」運用があるなら、`repository.pull_request.draft` に
+書く。
+
+```yaml
+repository:
+  provider: github
+  owner: your-org
+  name: your-repo
+  default_branch: main
+  pull_request:
+    draft: true
+```
+
+**書かなければ、これまでどおり ready で立つ。** 既定は変えていないので、既存の
+`.goals/*.yaml` は1本も挙動が変わらない。
+
+効くのは PR を作るときだけになる。既に立っている PR を draft に戻すことはしない。
+publish は作成後の PR のタイトルも本文も書き換えない（毎ティック書き換えると
+レビューが差分を追えなくなる）ので、そこと揃えてある。
+
+draft で立てておくと、タイトル規約や PR テンプレートに合わせる手直しを、レビュアーへの
+通知より前に済ませられる。**そのタイトルと本文そのものを宣言で決める口はまだ無い。**
+タイトルは `goal.name` のまま、本文は ent 固定のテンプレートで作られる。
+
+> [!WARNING]
+> 対象リポジトリの workflow が draft の PR を除外している
+> （`if: github.event.pull_request.draft == false` など）と、**CI が一度も走らない。**
+> 走らなければ `github.ci.*` の Fact は1つも作られないので、それを読む `type: fact` の
+> criterion は解決しないまま残り、Goal は `max_unchanged_reconciles` に当たるまで
+> 同じところを回る。draft を宣言する前に、対象リポジトリの workflow が draft を
+> どう扱うかを見る。
 
 ### 粗いタスクを複数の Goal に割る
 

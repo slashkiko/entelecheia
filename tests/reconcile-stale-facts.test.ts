@@ -104,6 +104,8 @@ function pullRequest(headSha: string) {
     headSha,
     reviewDecision: null,
     requestedReviewers: [],
+    title: "サンプル PR",
+    body: "本文",
   };
 }
 

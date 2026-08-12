@@ -3,7 +3,12 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { EffortLevel, Options } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
-import type { ActorInvocation, ActorPort, ActorResult } from "../act/index.js";
+import {
+  type ActorInvocation,
+  type ActorPort,
+  type ActorResult,
+  renderPullRequestText,
+} from "../act/index.js";
 import type { LlmPort } from "../decide/index.js";
 import type { ApprovalGate } from "../domain/goal.js";
 import type { LlmCall } from "../domain/llm-call.js";
@@ -690,6 +695,20 @@ ${COMMON_TAIL}`;
  * その差は下の読み替えの表で吸収し、**skill 側には ent の語彙を入れない。**
  * 別リポジトリへ切り出すときにコピーだけで済む形を保つ。
  *
+ * ## PR のタイトルと本文は controller が渡す
+ *
+ * **レビュー役が自分で PR を読むことはできない**（資格情報を渡さない設計は
+ * 変えない）が、controller は OBSERVE で PR を読んでいる。その結果だけを
+ * `ActorInvocation.pullRequest` で受け取り、`renderPullRequestText` が組み立てた
+ * 節をここに載せる。渡す口が無かったころは「宣言部の制約が PR 本文に反映されて
+ * いるか」という観点が毎回「未取得」で終わっていた。
+ *
+ * **読み替えの表もそれに合わせて直す。** 渡す口だけ足して表を残すと、同じ
+ * プロンプトが「PR は読めない」と「これが PR のタイトルと本文だ」を同時に述べる。
+ * ただし**「宣言された意図」の一次情報は `.goals/<id>.yaml` のまま**にする。
+ * PR 本文を意図の基準にすると、宣言部と食い違う本文を根拠に approved が出せる。
+ * 本文はレビューの**対象**であって、判定の基準ではない。
+ *
  * 出力の契約もこちらが持つ。skill の出力形式（末尾が `<sub>` のフッタ）に
  * 手を入れる必要は無い。観測側が求めているのは「`verdict:` の行が本文中に
  * ちょうど1つ」と「`reviewed_sha:` のラベル行」で、どちらも最終行である必要は
@@ -702,7 +721,7 @@ ${COMMON_TAIL}`;
  * その場合は保護パス違反か budget の枯渇で人間が呼ばれる——**黙って
  * 回り続けはしない。** 宣言部を `ent start` より前に commit しておけば起きない。
  */
-const REVIEW_PROMPT = ({ intent, goalId }: ActorInvocation): string =>
+const REVIEW_PROMPT = ({ intent, goalId, pullRequest }: ActorInvocation): string =>
   `${intent}
 
 あなたはレビュー役として起動している。**ファイルは書き換えない。**
@@ -715,16 +734,17 @@ const REVIEW_PROMPT = ({ intent, goalId }: ActorInvocation): string =>
 
 \`semantic-review\` の skill を Skill ツールで起動し、その観点と出力形式に従う。
 skill は GitHub の Pull Request を読む前提で書かれているが、**ここでは PR を
-読まない。** 次の読み替えを、skill の記述より優先する。
+自分で取りに行かない。** 次の読み替えを、skill の記述より優先する。
 
 | skill の前提 | ここでの読み替え |
 | --- | --- |
 | 対象は GitHub Pull Request | 現在の作業ツリーの HEAD と、その base からの差分 |
-| PR のタイトル・本文が「宣言された意図」 | \`.goals/${goalId}.yaml\` の desired_state・acceptance_criteria・context が「宣言された意図」 |
-| gh やコネクタでチケットや議論を読む | 使えない。リポジトリの中だけで確かめ、取れなかったものは「未取得」と書く |
+| PR のタイトル・本文が「宣言された意図」 | 「宣言された意図」は \`.goals/${goalId}.yaml\` の desired_state・acceptance_criteria・context のまま。PR のタイトルと本文は下の節に controller が観測して渡してあり、**意図の基準ではなくレビューの対象**として読む |
+| gh やコネクタでチケットや議論を読む | 使えない。リポジトリの中と下の節だけで確かめ、取れなかったものは「未取得」と書く |
 | PR コメントとして投稿する | 投稿しない。本文を返すだけ |
 
 \`gh\` には資格情報を渡していない。WebFetch も MCP も無い。使おうとしない。
+PR について確かめられるのは、下の節に載っている分だけになる。
 
 ## 手順
 
@@ -733,9 +753,11 @@ skill は GitHub の Pull Request を読む前提で書かれているが、**�
    context.references に挙がっているリポジトリ内のファイルも読む。
    **読めなければ観点 A を評価せず、判定を INSUFFICIENT_CONTEXT にし、
    「宣言部を読めなかった」ことを要対応の第1項目に書く**
-3. 差分と、その差分が壊しうる箇所を読む。必要ならテストを流して確かめる
-4. semantic-review の観点と出力形式で、レビュー本文を作る
-5. 本文の最後に、次の2行だけを足す
+3. 下の「PR のタイトルと本文」を読む。渡っていれば、宣言部の制約が本文に
+   反映されているかもここで見る。渡っていなければ、その観点は評価せず「未取得」と書く
+4. 差分と、その差分が壊しうる箇所を読む。必要ならテストを流して確かめる
+5. semantic-review の観点と出力形式で、レビュー本文を作る
+6. 本文の最後に、次の2行だけを足す
 
 reviewed_sha: <1 で確かめた40桁の sha>
 verdict: <approved か changes_requested のどちらか>
@@ -752,6 +774,8 @@ verdict: <approved か changes_requested のどちらか>
 でなければ、結論として読まれない。\`reviewed_sha:\` も同じ理由で1つにする。
 
 確かめられなかったことを「問題なし」と書かない。
+
+${renderPullRequestText(pullRequest ?? null)}
 
 ${COMMON_TAIL}`;
 
