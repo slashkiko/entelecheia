@@ -1,6 +1,11 @@
 import { z } from "zod";
 import { type Evidence, evidenceSchema, type Fact, type Unresolved, verifiedOnly } from "./fact.js";
-import { criterionFactKey } from "./fact-keys.js";
+import {
+  criterionFactKey,
+  LOCAL_HEAD_SHA_KEY,
+  REVIEW_REVIEWED_SHA_KEY,
+  REVIEW_VERDICT_KEY,
+} from "./fact-keys.js";
 import type { AcceptanceCriterion } from "./goal.js";
 
 /**
@@ -99,4 +104,75 @@ export function toVerifications(
       verifiedAt,
     };
   });
+}
+
+/**
+ * レビューの鮮度に依存する criterion か。
+ *
+ * `review.verdict` は「どの commit を読んだ結論か」（`review.reviewed_sha`）と
+ * 対でしか意味を持たないので、どちらのキーを見る criterion も同じ扱いにする
+ * （`src/verify/index.ts` の `judgeReviewVerdict`）。
+ */
+function dependsOnReview(criterion: AcceptanceCriterion): boolean {
+  const verification = criterion.verification;
+  return (
+    verification.type === "fact" &&
+    (verification.key === REVIEW_VERDICT_KEY || verification.key === REVIEW_REVIEWED_SHA_KEY)
+  );
+}
+
+/**
+ * 判定を見送った理由。`ent get` と PR の進捗コメントに出る唯一の説明になる。
+ *
+ * 定数にしておくのは、読む人間が「落ちた」と読み違えないことがこの表現の
+ * 目的そのもので、文面が仕様にあたるため。
+ */
+export const REVIEW_PENDING_DETAIL =
+  `実装役がこのティックで走ったので、レビュー系の criterion はこのティックでは判定しない。` +
+  `${REVIEW_REVIEWED_SHA_KEY} も ${LOCAL_HEAD_SHA_KEY} も ACT より前の観測で、` +
+  `このティックで積まれた commit はまだ誰も読んでいない`;
+
+/**
+ * 実装役が走ったティックの検証結果から、レビュー系の criteria を pending に倒す。
+ *
+ * 1ティックの中は OBSERVE → ACT → publish の順に進むので、VERIFY が読む
+ * `local.head_sha` は ACT より前の観測になる。実装役が commit を積むと、ティックが
+ * 終わる時点の HEAD は誰も読んでいない commit になっているのに、`review.reviewed_sha`
+ * との一致だけを見た結果が「現在の HEAD へのレビュー」として残る。
+ *
+ * 満たすべき性質:
+ * - 倒す先は「不合格」ではなく「判定しない」にする。ACT のあとの HEAD を誰かが
+ *   読んだかどうかは、このティックでは確かめようがない。確かめられないものを
+ *   不合格として記録すると、観測の穴が実装の不備として PR に出る（design.md §3.1、
+ *   `findViolations` の「判定できないものを違反にしない」と同じ考え方）
+ * - `criteria.<id>.passed` の Fact を落とす。Fact は次のティックへ引き継がれるので、
+ *   残すと誰も読んでいない commit への承認が VERIFIED なまま生き続ける
+ * - 落とすだけにしない。Fact の不在は「対象が無い」とも読めるので、同じキーを
+ *   pending として unresolved に積む（design.md §3.1）
+ * - 既に unresolved に積まれている criterion は触らない。検証できなかった理由が
+ *   あるなら、そちらのほうが具体的になる
+ * - 観測そのものの Fact（`review.verdict` / `review.reviewed_sha`）は落とさない。
+ *   いつどの commit を読んだかは、後から追えるようにしておく
+ * - レビューに依存しない criteria には触らない。CI の結論のように「どの commit を
+ *   読んだか」を持たない観測まで巻き込むと、実装役が走るたびに全部が未検証になる
+ */
+export function pendingReviewCriteria(
+  criteria: readonly AcceptanceCriterion[],
+  facts: readonly Fact[],
+  unresolved: readonly Unresolved[],
+): { facts: Fact[]; unresolved: Unresolved[] } {
+  const keys = new Set(criteria.filter(dependsOnReview).map((c) => criterionFactKey(c.id)));
+  if (keys.size === 0) {
+    return { facts: [...facts], unresolved: [...unresolved] };
+  }
+
+  const already = new Set(unresolved.map((entry) => entry.key));
+  const pending: Unresolved[] = [...keys]
+    .filter((key) => !already.has(key))
+    .map((key) => ({ key, reason: "pending", detail: REVIEW_PENDING_DETAIL }));
+
+  return {
+    facts: facts.filter((fact) => !keys.has(fact.key)),
+    unresolved: [...unresolved, ...pending],
+  };
 }

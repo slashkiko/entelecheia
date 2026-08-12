@@ -30,7 +30,11 @@ import {
 } from "../domain/guard-rules.js";
 import { describeViolations, findViolations } from "../domain/protected-paths.js";
 import { type ActorRole, DEFAULT_ACTOR_ROLE, type Run } from "../domain/run.js";
-import { toVerifications, type Verification } from "../domain/verification.js";
+import {
+  pendingReviewCriteria,
+  toVerifications,
+  type Verification,
+} from "../domain/verification.js";
 import { type PublishDeps, publish } from "../publish/index.js";
 import { type ReconcileDeps, reconcile } from "../reconcile/index.js";
 import type { Store } from "../store/port.js";
@@ -358,28 +362,14 @@ export async function tick(goal: Goal, deps: ControllerDeps): Promise<TickResult
       return lost(state.status, reclaimed, null);
     }
 
-    // Fact と「結論が出なかった対象」を組で書く。片方だけ書くと §3.1 が DB 層で再発する。
+    // 観測した時刻を控える。Fact と「結論が出なかった対象」は組で書くので、
+    // 片方だけ書くと §3.1 が DB 層で再発する。
     //
-    // 組み立てるのはここ（観測した直後）だが、**書くのは ACT の後**にまとめる。
-    // ACT は分単位で、そのあいだに lease を奪われうる。先に書いてしまうと、
-    // 奪われたと分かった時点では既に他のワーカーの Goal の行を汚した後になる。
-    // observedAt は観測した時刻のままにする。書いた時刻に寄せると、Fact の
-    // 時点が ACT のぶんだけ後ろにずれる。
+    // **書くのは ACT の後**にまとめる。ACT は分単位で、そのあいだに lease を
+    // 奪われうる。先に書いてしまうと、奪われたと分かった時点では既に他の
+    // ワーカーの Goal の行を汚した後になる。それでも observedAt は観測した時刻の
+    // ままにする。書いた時刻に寄せると、Fact の時点が ACT のぶんだけ後ろにずれる。
     const observedAt = deps.now().toISOString();
-    const snapshot = {
-      observedAt,
-      facts: result.facts,
-      unresolved: result.unresolved,
-    };
-    // criteria 単位の索引（design.md §4.5 の Verification）。同じ結果を facts と
-    // unresolved から導くだけで、検証をもう一度回さない。二重に検証すると、
-    // 同じティックの中で結果が食い違う余地が生まれる。
-    const verifications = toVerifications(
-      goal.acceptance_criteria,
-      result.facts,
-      result.unresolved,
-      observedAt,
-    );
     // ダイジェストは reconcile が作る。DECIDE がループ検知に使う値なので、
     // 副作用のあるこの層で作り直すと、判断に使った値と記録が食い違いうる。
     const digest = result.observedDigest;
@@ -401,7 +391,15 @@ export async function tick(goal: Goal, deps: ControllerDeps): Promise<TickResult
     const run =
       base === null
         ? null
-        : await maybeAct(goal, result.decision, base, deps, actorSignal, witness);
+        : await maybeAct(
+            goal,
+            result.decision,
+            base,
+            result.observedFacts,
+            deps,
+            actorSignal,
+            witness,
+          );
 
     // ACT のあいだに奪われていないか。Run はもう確定している（中断は act が
     // interrupted として書く）ので、止めるのはここから下の書き込みだけになる。
@@ -409,6 +407,36 @@ export async function tick(goal: Goal, deps: ControllerDeps): Promise<TickResult
     if (!holdsLease(goalId, deps)) {
       return lost(state.status, reclaimed, run);
     }
+
+    // 観測と検証の結果を、書く形に組み立てる。**組み立てるのが ACT の後なのは、
+    // 実装役が走ったかどうかがここでしか分からないため**（issue #63）。
+    //
+    // 実装役が走ったティックでは、レビュー系の criteria を判定しない。ティックの
+    // 中は OBSERVE → ACT → publish の順なので、VERIFY が読む `local.head_sha` は
+    // ACT より前の観測になる。実装役が commit を積むと、ティックが終わる時点の
+    // HEAD は誰も読んでいない commit になっているのに、`review.reviewed_sha` との
+    // 一致だけを見た結果が「現在の HEAD へのレビュー」として 🟢 で残る。
+    //
+    // **鮮度の判定そのもの（`judgeReviewVerdict`）は触らない。** 順序の問題であって
+    // 判定ロジックの問題ではないので、判定を通さない側——安全側——へ倒すだけにする。
+    // VERIFY を publish の後ろへ移す形も採らない。ティックの構造（design.md §3.6）を
+    // 変えずに済む。
+    //
+    // 実装役が走らなかったティックには何もしない。レビュー役は読むだけで、
+    // `investigate` は別の作業ツリーを使うので、どちらも押す木の HEAD を動かさない。
+    const judged = implementRan(run)
+      ? pendingReviewCriteria(goal.acceptance_criteria, result.facts, result.unresolved)
+      : { facts: result.facts, unresolved: result.unresolved };
+    const snapshot = { observedAt, facts: judged.facts, unresolved: judged.unresolved };
+    // criteria 単位の索引（design.md §4.5 の Verification）。同じ結果を facts と
+    // unresolved から導くだけで、検証をもう一度回さない。二重に検証すると、
+    // 同じティックの中で結果が食い違う余地が生まれる。
+    const verifications = toVerifications(
+      goal.acceptance_criteria,
+      judged.facts,
+      judged.unresolved,
+      observedAt,
+    );
 
     // Agent が触ってはいけないものに触れていないかを、ACT の外で検査する
     // （design.md §7 / §10-6）。Agent 側の disallowedTools は Agent の設定で、
@@ -500,6 +528,20 @@ export async function tick(goal: Goal, deps: ControllerDeps): Promise<TickResult
     clearInterval(heartbeat);
     deps.store.releaseLease(goalId, deps.owner);
   }
+}
+
+/**
+ * このティックで実装役が走ったか。
+ *
+ * 押す木（`worktreeNameFor(goal.id, "implement")`）の HEAD がティックの途中で
+ * 動きうるのは、この役割が走ったときだけになる。レビュー役は同じ木を読むだけで、
+ * `investigate` は別の木を使う。
+ *
+ * Run の状態は見ない。失敗した Run でも、それまでに Actor が commit を積んで
+ * いれば HEAD は動く。「動いていないと確かめられた」ときだけ判定を続ける側に倒す。
+ */
+function implementRan(run: Run | null): boolean {
+  return run !== null && run.role === DEFAULT_ACTOR_ROLE;
 }
 
 /**
@@ -1191,11 +1233,18 @@ function stateWitness(deps: ControllerDeps): StateWitness {
  * `signal` は deps.signal（SIGTERM）と lease の喪失を束ねたもの。act は
  * これを見て Run を interrupted で確定するので、奪われた側の Run が failed に
  * ならない。意図して止めたものを failed にすると、再試行の上限を無駄に消費する。
+ *
+ * `observedFacts` は**今ティックの観測が作った Fact だけ**を渡す。act はそこから
+ * PR のタイトルと本文を取り出してレビュー役に載せる（`pullRequestTextFrom`）。
+ * 持ち越しを混ぜた `result.facts` を渡すと、GitHub を読めなかったティックにも
+ * 前回のタイトルと本文が届き、観測の失敗が古い値で埋まって見えなくなる
+ * （下の `uncommittedDecision` が `result.observedFacts` を選ぶのと同じ理由）。
  */
 async function maybeAct(
   goal: Goal,
   decision: Decision,
   base: string,
+  observedFacts: readonly Fact[],
   deps: ControllerDeps,
   signal: AbortSignal,
   witness: StateWitness,
@@ -1228,7 +1277,7 @@ async function maybeAct(
 
   // 同じ intent の何回目か。Task を持たないので Run の履歴から数える。
   const attempt = deps.store.listRuns(goalId).filter((r) => r.intent === intent).length + 1;
-  const result = await act({ goal, decision, attempt, base }, actDeps);
+  const result = await act({ goal, decision, attempt, base, facts: observedFacts }, actDeps);
   return result.acted ? result.run : null;
 }
 
