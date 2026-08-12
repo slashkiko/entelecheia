@@ -70,9 +70,13 @@ export const escalateReasonSchema = z.enum([
    * `policies.publish.push_branch: manual` を宣言しているので push しなかった。
    *
    * `protected_path_touched` とは別に立てる。あちらは「触ってはいけないものに
-   * 触れた」で、こちらは**人間がそう宣言したから止まった**になる。前者は worktree を
-   * 掃除しないと進まないが、後者は人間が自分で push すれば進む。同じ WAITING_HUMAN に
+   * 触れた」で、こちらは**人間がそう宣言したから止まった**になる。同じ WAITING_HUMAN に
    * 畳まれるので、reason を分けないと `ent list` からは見分けられない。
+   *
+   * **どちらも、人間が手を動かすだけでは解けない。** 前者は worktree を掃除するまで
+   * 進まない。後者は `ensurePullRequest` が push の要否を決める前に返すので、人間が
+   * 手で push しても publish はそれを一度も見ず、宣言を `auto` に戻すまで毎ティック
+   * 同じところで止まる。`open_pull_request_declared_manual` とはここが違う。
    *
    * 宣言部のキー名をそのまま reason にしてある。読んだ人間が `.goals/<slug>.yaml` の
    * どの行を書き換えれば挙動が変わるのかを、翻訳表なしで辿れるようにする。

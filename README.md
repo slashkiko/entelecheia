@@ -74,7 +74,7 @@ PR 作成には効かない。そちらを止めるのは `policies.publish` に
 policies:
   publish:
     push_branch: auto
-    # チームで使うリポジトリなら manual にする。PR の作成はレビュアーへの
+    # チームで使うリポジトリではこう書く。PR の作成はレビュアーへの
     # 通知を伴い、取り消しても通知は戻らない。
     open_pull_request: manual
 ```
@@ -84,17 +84,16 @@ policies:
 `ent get <slug>` の `decision` に出る。
 
 止めたことは `ent run` の出力にも構造で出る。宣言で止めたティックにだけ `publishHold` が
-載り、止めた段（`step`）と、ブランチが remote にあるか（`pushed`）と、PR を立てるなら
-どの head と base になるか（`branch` / `base`）が入る。ティックを叩いているのが
-エージェントなら、controller が作らなかった PR をそれを読んで代わりに立てられる
-（手順は `.claude/skills/ent/SKILL.md`）。宣言を書いていない Goal ではこのキーは出ないので、
-いま回している `jq` は1つも変わらない。
+載る。**PR の作成（`open_pull_request`）を止めたときにかぎり**、ティックを叩いている
+エージェントが `publishHold` を読んで代わりに PR を立てられる。push を止めた段はブランチが
+remote に無いので代行できない。キーの内訳と代行の手順は `.claude/skills/ent/SKILL.md` に
+ある。宣言を書いていない Goal ではこのキーは出ないので、いま回している `jq` は1つも変わらない。
 
 2つの段は解け方が違う。`open_pull_request` を止めた場合は、人間が PR を立てれば次のティックが
-それを見つけて先へ進む（宣言はそのままでよい）。`push_branch` はそうならない。publish が push の
-要否を決める材料は押さないと決めた口の結果しかないので、人間が手で押しても publish の判断には
-入らず、宣言を `auto` に戻すまで毎ティック止まり続ける。名前を `require_human_approval` と
-分けた理由は design.md §7 にある。
+それを見つけて先へ進む（宣言はそのままでよい）。`push_branch` はそうならない。押さないと決めた
+口（`BranchPort.push`）が remote を知る唯一の経路なので、人間が手で押しても controller は
+それを観測できない。宣言を `auto` に戻すまで毎ティック止まり続ける。名前を
+`require_human_approval` と分けた理由は design.md §7 にある。
 
 ### Agent に渡さない資格情報
 

@@ -245,6 +245,13 @@ Goal の宣言に `policies.publish` があると、controller は `manual` と�
 判定はこのキーで行う。`skipped` と `decision.rationale` は人間が読む1行なので、
 文面で分岐すると文言を直した時点で黙って壊れる。
 
+同じティックの `action` は `ESCALATE(push_branch_declared_manual)` か
+`ESCALATE(open_pull_request_declared_manual)`、`status` は `WAITING_HUMAN` になる。
+
+`--dry-run` にはこの停止が映らない。publish を通らないので `publishHold` は出ず、
+`wouldTransitionTo` も止める前の判断のまま返る。宣言で止まる Goal では、dry-run の予告と
+実ティックの結果が食い違う。
+
 **`step: open_pull_request`（`pushed: true`）なら、代わりに PR を立てる。**
 ブランチは既に remote にあり、止まっているのは controller が作らないと宣言されている
 からだけになる。この宣言は controller に作らせない口であって、叩いた側に作らせない
@@ -259,6 +266,10 @@ gh pr create --head <publishHold.branch> --base <publishHold.base> \
 （`/ent approve <criterion-id>`）を入れる。controller が立てる PR がその形で、
 `verification.type: human` の criteria はその定型文が本文に無いと、レビュアーが
 承認の口を見つけられない。中身は `ent get <slug>` から取れる。
+
+`repository.pull_request.draft: true` が宣言されていれば `--draft` を付ける。controller が
+立てるときは渡している値なので、付け忘れると代行した PR だけがレビュアーに通知を飛ばす。
+宣言も `ent get <slug>` から読める。
 
 次のティックがその PR を見つけて先へ進む。宣言はそのままでよい。
 **人間が先に中身を見てから立てたいと言われている場合だけ**、立てずに `publishHold` を

@@ -3,7 +3,7 @@
 このリポジトリの単一の設計ソース。新しく参加するとき（あるいは新しいセッションを開くとき）は、
 まずこれを読めば足りるように書いてある。
 
-最終更新: 2026-08-11。この更新で入ったのは次の5件になる。
+最終更新: 2026-08-12。この更新で入ったのは次の6件になる。
 
 - **タスク分解の粒度を決めた。** 分解した1本ごとに Goal を立てる方針にして、順序の宣言
   `goal.depends_on` を入れた。分解を機械にやらせる場合の宣言部の書き手も決めた。実装は保留
@@ -16,6 +16,9 @@
   evidence に残すようにした（§4.5）
 - **Codex CLI Adapterとphase別のprovider・model・effort選択を追加した。** Actorの使用量上限を
   Runからguardの待機判断へ伝播する（§3.5・§4.2）
+- **publish を宣言で止める口を足した。** `policies.publish` の `push_branch` /
+  `open_pull_request` を `auto` / `manual` で宣言する。止めたことは `ent run` の出力の
+  `publishHold` に構造で出す（§7）
 
 ---
 
@@ -915,7 +918,7 @@ DECIDE の LLM 呼び出しは `LlmCall.tokens` に残す（§4.5）。あとか
 上の承認ゲート（`policies.require_human_approval`）が止めるのは **Agent** の操作になる。
 書いたゲートは `DENIED_TOOLS`（`src/adapters/claude.ts`）の対応行を拒否パターンに変えるだけで、
 **controller 自身の行動には1つも効かない**。push と PR 作成を行っているのは
-controller の publish（§9）なので、「PR を勝手に立てるな」を宣言する口が無かった。
+controller の publish（§10-11）なので、「PR を勝手に立てるな」を宣言する口が無かった。
 実際、Goal を回した次のティックで PR が立ち、人間が確認しようとした時点では
 レビュアーへの通知も飛んでいた。取り消しても通知は戻らない。
 
@@ -960,11 +963,19 @@ publish は作る前に必ず同じ head の PR を探すので（`findPullReque
 **`push_branch` にはその経路が無い。** publish が push の要否を決める材料は
 `BranchPort.push` の結果しかないので、人間が手で押しても publish の判断には入らない
 （remote そのものは `github.pr.head_sha` などで観測しているが、押すかどうかの判断は
-それを読まない）。宣言を `auto` に戻すまで毎ティック同じ理由で止まり、そのあいだ
-reconcile 回数だけが進んで `max_reconciles` に当たり `BLOCKED` になる。
+それを読まない）。宣言を `auto` に戻すまで毎ティック同じ理由で `WAITING_HUMAN` に
+落ち続け、そのあいだ reconcile の予算だけが減る。
 `protected_path_touched` が worktree を掃除すれば解けるのとはここが違う。
 **解けない関門であることを rationale に書く**（`publishHeldDecision`）。書かなければ、
 押したのに止まり続ける理由を人間がコードから探すことになる。
+
+**`BLOCKED` には落ちない。** 判断の差し替えは publish の後ろにあり、`held` があれば
+DECIDE が何を選んでいても `ESCALATE(*_declared_manual)` で上書きする。`BLOCKED` になるのは
+`ESCALATE(budget_exhausted)` だけなので（§4.4）、止めているあいだは上限に達しても
+そちらが表に出ない。**上限そのものは進み続ける**ので、宣言を `auto` に戻したティックで
+初めて `budget_exhausted` が表に出ることになる。人間を呼ぶ理由としては
+`*_declared_manual` のほうが具体的なので上書きの向きはこれでよいが、
+「止めているあいだは予算の枯渇が見えない」ことは宣言を書く側が知っておく必要がある。
 
 **止めたことは機械可読で出す。** ティックを叩くのは人間だけではない。エージェントが
 回している構成では、controller が作らなかった PR をそのエージェントが代わりに立てる。
@@ -1661,8 +1672,8 @@ worktree が無く `local.*` は controller 自身のリポジトリを観測す
 **どうすれば進むか**（worktree のパスと、commit するか元に戻すか）を書く。
 `ent get` の `decision.rationale` と PR の進捗コメントは同じ文字列を出すので、
 ここが人間に届く唯一の説明になる。
-push まで止めるのは保護パスの関門だけで、こちらは止めない。commit された分は
-remote に出てよい。
+push まで止めるのは保護パスの関門と `policies.publish.push_branch`（§7）の2つで、
+こちら（未 commit の関門）は止めない。commit された分は remote に出てよい。
 
 **その「出てよい」を実際に出せるようにするため、push の機会を Actor の実行から
 外した。** この関門の解決手順は人間が commit することで（controller が commit するように
