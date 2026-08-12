@@ -258,9 +258,9 @@ mise run check    # サプライチェーンと workflow のチェック（basel
 **`ent` は起動のたびに1ティックだけ回して終了する。** 前半はこのリポジトリで1本回すための
 手順を扱う。コマンドの一覧に続けて、「共通のオプション」「provider・model・effort を選ぶ」
 「Codex を使うとき」「関門の基準になる commit」「起動の仕方と、ent 自身を直すときの例外」の
-順になる。後半は運用にあたる。「この repo の外のリポジトリで使う」「進捗を PR に投稿しない」
-「PR を draft で立てる」「粗いタスクを複数の Goal に割る」「複数の Goal を同時に回す」の
-5つが続く。
+順になる。後半は運用にあたる。「この repo の外のリポジトリで使う」「恒久的に落ちる workflow を
+数から外す」「進捗を PR に投稿しない」「PR を draft で立てる」「粗いタスクを複数の Goal に
+割る」「複数の Goal を同時に回す」の6つが続く。
 
 ```sh
 mise run build                     # dist/cli.js を作る
@@ -416,15 +416,19 @@ ent doctor          # その場所で回せるかを読み取り専用で調べ�
   見えないまま残るのは、`goals.db` 以外の gitignore されたパスと repoRoot の外に
   なる（design.md §10-6 の穴 (a)(b)）
 
-### 恒久的に落ちる check を数から外す
+### 恒久的に落ちる workflow を数から外す
 
 `github.ci.failed_job_count` は head sha に紐づく**全 workflow run**を横断して、落ちている
 job を数える。`{ type: fact, key: github.ci.failed_job_count, equals: 0 }` と書けば
 「この commit で落ちている job が1つも無い」を criteria にできる。
 
-横断するので、**リポジトリの運用として意図的に赤いまま／保留のままにしてある gate も
-数に入る。**「特定の人のレビューが通るまで mergeable にしない」種類の workflow がそれで、
-数に入れると `equals: 0` は永久に埋まらない。外すなら宣言部に書く。
+書かなければ、これまでどおり全 workflow run を数える。既存の `.goals/*.yaml` は1本も挙動が
+変わらない。
+
+横断するので、**リポジトリの運用として意図的に赤いまま／保留のままにしてある workflow も
+対象に入る。**「特定の人のレビューが通るまで mergeable にしない」種類の workflow がそれで、
+落ちれば数に加わり、承認待ちのまま `completed` にならなければ数そのものが確定しない。
+どちらにしても `equals: 0` は埋まらない。外すなら宣言部に書く。
 
 ```yaml
 repository:
@@ -458,11 +462,11 @@ repository:
 ent get <slug> | jq '.snapshot.facts[] | select(.key == "github.ci.excluded_workflows")'
 ```
 
-一致しなかった名前は弾かず、`runs: 0` として観測に出す。宣言を読む時点ではリポジトリを
-見ないので解析では決まらず、対象リポジトリは手元の checkout とは限らないので `ent doctor`
-でも決まらない。そもそも「一致しない」は typo と「今回は起動しなかった workflow」（path
-filter や branch filter で走らないことがある）の両方を指すので、観測の側から区別できない。
-数を出して人間に読ませる方に倒してある。
+一致しなかった名前は弾かず、`runs: 0` として観測に出す。名前が実在するかは、宣言を読む
+時点では決められない。解析はリポジトリを見ないし、`ent doctor` から見ても対象リポジトリは
+手元の checkout とは限らない。そもそも「一致しない」は typo と「今回は起動しなかった
+workflow」（path filter や branch filter で走らないことがある）の両方を指すので、観測の
+側から区別できない。数を出して人間に読ませる方に倒してある。
 
 ### 進捗を PR に投稿しない
 
