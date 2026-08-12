@@ -515,7 +515,7 @@ produces neither a Fact nor an `unobserved`.
 issue #59).** The path above leaves only two things, the single word `verdict` and the sha, and both
 the reasons attached to an `approved` and its reservations sink into `runs/<run-id>/log.jsonl`.
 `approved` does not mean "there is nothing to say," so `publish` reads `ReviewPort.latest()` once
-more and appends it as a `## Review role body` section **after** the destination's body. It goes
+more and appends it as a `## レビュー役の本文` section **after** the destination's body. It goes
 after in order to keep the position of the criteria table the same regardless of destination — cut
 in front of it, and you cannot reach the pass status without skimming past a long body. The body is
 not summarized, and no line break, table, or code block is dropped (it goes through neither
@@ -932,7 +932,7 @@ the Slack workspace) does not yet exist, the dependencies were narrowed down to 
   However, **what was verified is only running two ticks concurrently against the same DB inside Vitest**,
   and two `ent run` processes have not been stood up and run. The git lock contention (the first
   `git worktree add` takes `.git/index.lock`) and SQLite busy contention remain.
-  See README "Running multiple Goals at the same time"
+  See README "Running several Goals at once"
 - ~~Codex CLI implementation~~ (`ENT_ACTOR=codex` or a per-phase setting selects the non-interactive JSONL Adapter)
 - L5 improvement layer (History is only accumulated; no learning)
 
@@ -2071,7 +2071,7 @@ Settled.
 **the controller commits** (see "The premise was dropped" below). The discussion of who verifies
 stays below that. It still works today as the catcher for when nothing was committed.
 **The order is: the protected-path gate → the controller's commit → (only when nothing was
-committed) the uncommitted gate.**
+committed) the uncommitted-work gate.**
 
 The controller verifies outside ACT, and **once it verifies that uncommitted changes remain**, it
 goes to `ESCALATE(uncommitted_changes)`. A tick where it could not verify is not treated as a
@@ -2149,7 +2149,7 @@ whether to commit or to revert). **This gate swaps the decision before publish**
 that reaches the human. Only the `policies.publish` gate (§7), which swaps after publish, falls
 outside this convention and writes what goes to the PR separately.
 What stops even push is two things, the protected-path gate and `policies.publish.push_branch` (§7);
-this one (the uncommitted gate) does not stop it. What has been committed may go to the remote.
+this one (the uncommitted-work gate) does not stop it. What has been committed may go to the remote.
 
 **To make that "may go" actually happen, the push opportunity was taken out of the Actor's
 execution.** The resolution procedure for this gate is a human committing (now that the controller
@@ -2196,7 +2196,7 @@ without pushing have passed". On a Goal with not a single `command` type, it doe
 Committing when nothing has been verified on the machine side would push, as committed, something
 the Actor merely wrote.
 
-**On a tick that committed, the uncommitted gate is not consulted.** `local.dirty` is an observation
+**On a tick that committed, the uncommitted-work gate is not consulted.** `local.dirty` is an observation
 from before the commit, so reading it would mean stopping yourself with the dirt you cleaned up
 yourself. When nothing was committed (only gitignored files are dirty, or the commit itself failed),
 the gate rings as before. **It was not removed; one of its firing conditions simply went away.**
@@ -2304,7 +2304,7 @@ stays as §3.2.
 `resume_after`). Making it "do not go ACTIVE" at the entrance of `ent start` would make it
 impossible to write declarations in an order where the dependency has not been started yet.
 Registering decomposed sub-Goals all at once is exactly that usage. **It does not take a lease.**
-The one who decides how many to line up is the caller (README "running multiple Goals at once"), so
+The one who decides how many to line up is the caller (README "Running several Goals at once"), so
 if one that is waiting on a dependency keeps holding a slot, even the Goals that could proceed would
 not get a turn in one cron cycle.
 
