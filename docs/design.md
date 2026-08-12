@@ -3,7 +3,7 @@
 このリポジトリの単一の設計ソース。新しく参加するとき（あるいは新しいセッションを開くとき）は、
 まずこれを読めば足りるように書いてある。
 
-最終更新: 2026-08-12。この更新で入ったのは次の6件になる。
+最終更新: 2026-08-12。この更新で入ったのは次の11件になる。
 
 - **タスク分解の粒度を決めた。** 分解した1本ごとに Goal を立てる方針にして、順序の宣言
   `goal.depends_on` を入れた。分解を機械にやらせる場合の宣言部の書き手も決めた。実装は保留
@@ -19,10 +19,23 @@
 - **publish を宣言で止める口を足した。** `policies.publish` の `push_branch` /
   `open_pull_request` を `auto` / `manual` で宣言する。止めたことは `ent run` の出力の
   `publishHold` に構造で出す（§7）
+- **レビュー役の本文を `--report` の宛先に出すようにした**（§4.3）。`verdict` の1語だけを
+  Fact にする経路はそのままで、畳まれていた本文を `## レビュー役の本文` の節として
+  本文の後ろに足す。PR コメントには出さない
 - **状態 DB の観測を、バイト列から Goal ごとの論理ダイジェストへ移した**（§10-6）。射影から
   落とした Run の不変列は `ownRunDrift` が突き合わせる。`depends_on` の Goal の `status` も
   射影に入れた。同一ディレクトリの並列を塞いでいた誤検知は外れたが、実プロセス2本での
   確認は済んでいない（§5）
+- **「落ちている job が1つも無い」を criteria に書けるようにした**（§4.3）。
+  `github.ci.failed_job_count` は head sha に紐づく全 workflow run を横断して数える。
+  恒久的に落ちる workflow は `repository.ci.exclude_workflows` で数から外し、外した分は
+  `github.ci.excluded_workflows` に出す（README の「恒久的に落ちる workflow を数から外す」）
+- **未解決のレビュースレッドの件数を観測するようにした**（§4.3）。
+  `github.pr.unresolved_threads` だけは GraphQL から取る。数え切れなければ Fact を作らず、
+  引き継いだ件数は `expireStaleFacts` が条件付きで落とす
+- **`changes_requested` を受け取ったティックで `WAIT` に居着かないようにした**（§4.3）。
+  レビュー役の結論が読んだ commit のままなら待って変わるものが無いので、DECIDE の
+  選択肢から `WAIT` を外す。選択肢を消す側は今ティックの観測（`observedFacts`）だけで判定する
 
 ---
 
@@ -370,7 +383,9 @@ roleは次の5箇所を通る。
 PR        number, state, mergeable, head_sha, review_decision, requested_reviewers,
           title, body, unresolved_threads
 Review    state (APPROVED / CHANGES_REQUESTED / COMMENTED), author, submitted_at
-CI        workflow_run の conclusion、失敗時は失敗ジョブ名とログ URL
+CI        workflow_run の conclusion、失敗時は失敗ジョブ名とログ URL、
+          落ちている job の数（failed_job_count）と数から外した workflow
+          （excluded_workflows）
 Issue     state, labels, linked_pr
 local     current_branch, HEAD sha, worktree に未コミット変更があるか
 ```
