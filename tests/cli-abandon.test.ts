@@ -311,6 +311,6 @@ describe("CLI の構造に載る", () => {
       .commands.find((command) => command.name === "abandon")
       ?.flags.find((flag) => flag.name === "--reason");
 
-    expect(reason?.summary).toContain("必須");
+    expect(reason?.summary).toContain("required");
   });
 });

@@ -270,7 +270,7 @@ export async function publish(target: PublishTarget, deps: PublishDeps): Promise
     // まま WAITING_HUMAN になる。人間に届かない関門は鳴っていないのと同じで、
     // 下の「関門が止めたティックは必ず書く」が守ろうとしているものが消える。
     if (prNumber === null) {
-      return nothing(`PR を確保できなかった: ${errorMessage(error)}`);
+      return nothing(`Could not secure a pull request: ${errorMessage(error)}`);
     }
     pushFailure = errorMessage(error);
   }
@@ -283,12 +283,12 @@ export async function publish(target: PublishTarget, deps: PublishDeps): Promise
       commented: false,
       report,
       held,
-      skipped: `進捗は PR ではなく ${report.destination} に書いた`,
+      skipped: `Wrote the progress to ${report.destination} instead of the pull request`,
     };
   }
 
   if (prNumber === null) {
-    return nothing("PR がまだ無いのでコメントできない");
+    return nothing("There is no pull request yet, so there is nothing to comment on");
   }
 
   // 同じ状態を毎ティック通知しない。読まれなくなる通知は無いのと同じ。
@@ -321,7 +321,7 @@ export async function publish(target: PublishTarget, deps: PublishDeps): Promise
       commented: false,
       report,
       held,
-      skipped: "観測が前のティックと同じ",
+      skipped: "The observation is identical to the previous tick",
     };
   }
 
@@ -341,7 +341,7 @@ export async function publish(target: PublishTarget, deps: PublishDeps): Promise
       commented: false,
       report,
       held,
-      skipped: `コメントできなかった: ${errorMessage(error)}`,
+      skipped: `Could not post the comment: ${errorMessage(error)}`,
     };
   }
 }
@@ -367,7 +367,7 @@ async function deliver(sink: ProgressSink, body: string): Promise<ReportResult> 
  * 宛先の本文のどこに足したかを、読む側が探せるようにする。文言を変えると
  * 探し方が変わるので、`tests/publish-review-body.test.ts` と対にしてある。
  */
-const REVIEW_HEADING = "## レビュー役の本文";
+const REVIEW_HEADING = "## Review role message";
 
 /**
  * `--report` の宛先の本文に、レビュー役の最終メッセージを足す（issue #59 の案1）。
@@ -408,7 +408,7 @@ async function reviewSection(review: ReviewPort | undefined): Promise<string | n
       REVIEW_HEADING,
       "",
       "> [!WARNING]",
-      "> レビュー役の本文を読めなかった。理由は次のとおり。",
+      "> Could not read the review role's message. The reason follows.",
       "",
       errorMessage(error),
     ].join("\n");
@@ -433,14 +433,14 @@ async function reviewSection(review: ReviewPort | undefined): Promise<string | n
     return [
       REVIEW_HEADING,
       "",
-      `直近のレビュー役の Run \`${snapshot.runId}\` を読んだが、本文が残っていなかった。`,
+      `Read the latest review role Run \`${snapshot.runId}\`, but no message was left behind.`,
     ].join("\n");
   }
 
   return [
     REVIEW_HEADING,
     "",
-    `直近のレビュー役の Run \`${snapshot.runId}\` が最後に返した本文。`,
+    `The last message returned by the latest review role Run \`${snapshot.runId}\`.`,
     "",
     // ここだけは加工しない。取り返したいのは本文そのものになる。
     snapshot.finalMessage,
@@ -485,7 +485,8 @@ async function ensurePullRequest(
       prNumber: target.prNumber,
       created: false,
       held: null,
-      skipped: "保護パスの関門が通っていないので push も PR 作成もしない",
+      skipped:
+        "The protected path gate did not pass, so neither push nor pull request creation runs",
     };
   }
 
@@ -499,7 +500,7 @@ async function ensurePullRequest(
       created: false,
       // remote には1行も出ていない。`pushed: false` がそれを言う唯一の値になる。
       held: { step: "push_branch", reason: "declared_manual", pushed: false, branch, base },
-      skipped: "policies.publish.push_branch: manual の宣言があるので push しない",
+      skipped: "policies.publish.push_branch: manual is declared, so nothing is pushed",
     };
   }
   // **Run の有無で push を決めない。** ここは以前「完了した Run が無いティックでは
@@ -522,7 +523,7 @@ async function ensurePullRequest(
       prNumber: target.prNumber,
       created: false,
       held: null,
-      skipped: "base との差分が無い",
+      skipped: "There is no diff against base",
     };
   }
   if (target.prNumber !== null) {
@@ -558,7 +559,8 @@ async function ensurePullRequest(
         branch: pushed.branch,
         base,
       },
-      skipped: "policies.publish.open_pull_request: manual の宣言があるので PR を作らない",
+      skipped:
+        "policies.publish.open_pull_request: manual is declared, so no pull request is created",
     };
   }
 
@@ -619,7 +621,7 @@ function blocksPush(decision: Decision): boolean {
  */
 function pullRequestBody(goal: Goal): string {
   return [
-    `entelecheia の Goal \`${goal.goal.id}\` に対する変更。`,
+    `Changes for the entelecheia Goal \`${goal.goal.id}\`.`,
     "",
     "## Desired State",
     "",
@@ -631,7 +633,7 @@ function pullRequestBody(goal: Goal): string {
       (c) => `- \`${c.id}\` (${c.verification.type}) ${c.description}`,
     ),
     "",
-    "進捗は controller がコメントで積む。承認は次の定型文で行う。",
+    "The controller stacks progress as comments. Approve with the following phrase.",
     "",
     "```",
     "/ent approve <criterion-id>",
@@ -676,7 +678,7 @@ function commentBody(
     // 作業ツリーを見た結果なので、全部緑でも remote には何も出ていない。
     ...(pushFailure === null
       ? []
-      : [`> [!WARNING]`, `> push できなかった: ${oneLine(pushFailure)}`, ""]),
+      : [`> [!WARNING]`, `> Could not push: ${oneLine(pushFailure)}`, ""]),
     // 宣言で止めたことも先頭に出す。落ちたのではないので WARNING にはしない。
     // 下の criteria が全部緑でも、その先は人間が進める、という但し書きになる。
     ...(held === null
@@ -692,10 +694,7 @@ function commentBody(
     "",
     ...(target.run === null
       ? []
-      : [
-          `Run \`${target.run.id}\`: ${target.run.status}（tokens: ${target.run.tokens ?? 0}）`,
-          "",
-        ]),
+      : [`Run \`${target.run.id}\`: ${target.run.status} (tokens: ${target.run.tokens ?? 0})`, ""]),
     `<sub>decided_by: ${target.decision.decidedBy} / digest: \`${target.digest.slice(0, 12)}\` / ${now.toISOString()}</sub>`,
   ].join("\n");
 }
@@ -722,19 +721,19 @@ function commentBody(
  * 文面が無いことに気づける形にしておくより、あるほうが壊れ方が小さい。
  */
 function heldNotes(step: PublishStep, goalId: string): string[] {
-  const declaration = `\`.goals/${goalId}.yaml\` の \`policies.publish.${step}\``;
+  const declaration = `\`policies.publish.${step}\` in \`.goals/${goalId}.yaml\``;
   if (step === "open_pull_request") {
     return [
-      "`policies.publish.open_pull_request: manual` の宣言があるので、controller は PR を作らない。",
+      "`policies.publish.open_pull_request: manual` is declared, so the controller does not open the pull request.",
     ];
   }
   return [
-    "`policies.publish.push_branch: manual` の宣言があるので push していない。" +
-      "この PR は、宣言より前に押された分のままになる。",
-    "**手で push しても controller には見えない。** 押さないと決めた口が remote を知る" +
-      "唯一の経路なので、押したことは次のティックの判断に入らない。",
-    `進めるには ${declaration} を \`auto\` に戻す。` +
-      `もう追わないなら \`ent abandon ${goalId} --reason <理由>\` で終端にする。`,
+    "`policies.publish.push_branch: manual` is declared, so nothing was pushed. " +
+      "This PR stays at whatever was pushed before the declaration.",
+    "**Pushing by hand stays invisible to the controller.** The step it was told not to run is its " +
+      "only path to the remote, so a manual push does not enter the next tick's decision.",
+    `To resume, set ${declaration} back to \`auto\`. ` +
+      `To stop tracking this Goal, terminate it with \`ent abandon ${goalId} --reason <reason>\`.`,
   ];
 }
 

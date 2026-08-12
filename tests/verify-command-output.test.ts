@@ -78,7 +78,7 @@ describe("落ちたコマンドの出力を残す", () => {
     const detail = await evidenceFor({ exitCode: 1 });
 
     expect(detail).toContain("exit_code=1");
-    expect(detail).toContain("出力なし");
+    expect(detail).toContain("no output");
   });
 
   it("長い出力は末尾を残す", async () => {
@@ -95,7 +95,7 @@ describe("落ちたコマンドの出力を残す", () => {
     // 切ったと分からないと、読む側は「これで全部」と読む。
     const detail = await evidenceFor({ exitCode: 1, stderr: "x".repeat(5000) });
 
-    expect(detail).toContain("切った");
+    expect(detail).toContain("truncated");
   });
 });
 

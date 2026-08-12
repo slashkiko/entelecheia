@@ -142,13 +142,13 @@ describe("読めなかったときに黙らない", () => {
 
     // null にすると「まだレビューを回していない」に化ける。observe は
     // これを port_failed として unobserved に残す。
-    await expect(review.latest()).rejects.toThrow(/生ログを読めなかった/);
+    await expect(review.latest()).rejects.toThrow(/could not read the raw log/);
   });
 
   it("生ログの置き場所が残っていなければ throw する", async () => {
     const { review } = port([run({ logRef: null })]);
 
-    await expect(review.latest()).rejects.toThrow(/生ログの置き場所/);
+    await expect(review.latest()).rejects.toThrow(/no raw-log location recorded/);
   });
 
   it("Run の一覧そのものを読めなければ throw する", async () => {
@@ -158,7 +158,7 @@ describe("読めなかったときに黙らない", () => {
       },
     });
 
-    await expect(review.latest()).rejects.toThrow(/Run の一覧を読めなかった/);
+    await expect(review.latest()).rejects.toThrow(/could not read the list of Runs/);
   });
 
   it("result の行が無い（途中で切れた）ログは空の本文として返す", async () => {

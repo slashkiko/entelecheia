@@ -16,6 +16,13 @@ This README covers the design essentials, where the project stands, and how to u
 design, the reasoning behind each decision, and the phase plan live in
 [`docs/design.md`](docs/design.md). Read that first when you start working in this repository.
 
+> [!NOTE]
+> **Issue and PR numbers in the body text point at the repository this code was migrated from.** The
+> history was rewritten on the way here, so this repository holds zero issues and zero PRs. Numbers
+> written as `issue #58` or `PR #34` therefore do not resolve here, and once issues start being filed
+> they are numbered from 1 — the same number will end up belonging to something unrelated. Read them
+> as labels for the record left behind, not as links.
+
 ## Design essentials
 
 **The MVP is complete.** All nine completion conditions in design.md §9 have been confirmed. But §9
@@ -456,6 +463,27 @@ code 1. The template is filled in only as far as schema validity requires; `desi
 under
 "[Excluding permanently failing workflows from the count](#excluding-permanently-failing-workflows-from-the-count)".
 
+**`ent init` also writes outside the target repository.** It places a symlink at
+`~/.claude/skills/ent` pointing at ent's own `.claude/skills/ent` directory, so that an agent working
+in the target repository can read ent's procedure as a Claude Code skill. The link is user scope
+because ent itself is installed once per machine; placed inside the target repository the target
+would be a machine-specific absolute path and would break for everyone else once committed. Nothing
+is copied — update ent and what the link resolves to is updated with it. `$HOME` is the only thing
+touched outside the target repository; the repository itself gains no `.claude/`.
+
+**That name is never taken over silently.** If `~/.claude/skills/ent` already holds anything other
+than a link to this ent — a link pointing elsewhere, a broken link, or a real directory someone
+wrote — init refuses the entire run with exit code 1 and creates nothing, neither in `$HOME` nor in
+the repository (not even `.goals/`). Which of the two is right is not ent's call to make: move the
+existing one aside, then run it again. If the link already points here it is kept, and that is where
+idempotence holds — a second run neither relinks nor rewrites it. If ent's own `.claude/skills/ent`
+cannot be found (a build artifact shipped on its own, say), a line saying so goes to stderr and init
+finishes without the link rather than refusing.
+
+With `--json` the entry appears in `entries` along with the rest, `created` on the first run and
+`kept` after that. Its `path` is absolute where the in-repository entries are relative: the one thing
+placed outside the repository has to read as such. To undo it, remove the symlink.
+
 **Pin which Node starts.** `node:sqlite` requires Node 24 or later. Left to `/usr/bin/env node`, the
 target repository's mise or nvm may take effect and select an older Node. `node_version` in
 `ent doctor` tells you on the spot.
@@ -624,7 +652,7 @@ goes in `report.body`. Only `run` accepts it, and it cannot be combined with `--
 into the JSON, and what happens when it could not be written, are in `.claude/skills/ent/SKILL.md`.
 
 **This output also carries the review body the review role returned last, as a
-`## レビュー役の本文` section.** On its way to becoming Facts, the review role's reply is folded into
+`## Review role message` section.** On its way to becoming Facts, the review role's reply is folded into
 just two things — `review.verdict` and `review.reviewed_sha` — so the reasons and reservations behind
 an `approved` are left unreadable by anyone, sitting in
 `.goals/.state/runs/<id>/log.jsonl`. The section is placed at the **end** of `report.body`. The

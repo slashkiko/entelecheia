@@ -87,7 +87,7 @@ export function nextStatus(current: GoalStatus, action: Action): GoalStatus {
 }
 
 function assertNever(action: never): never {
-  throw new Error(`未知の Action: ${JSON.stringify(action)}`);
+  throw new Error(`unknown Action: ${JSON.stringify(action)}`);
 }
 
 /** Goal の実行時状態。Goal YAML には現れない側 */

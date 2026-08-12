@@ -380,9 +380,9 @@ describe("値の符号化", () => {
     // 呼び出し側（controller）はこの throw を `ESCALATE(guard_unavailable)` に倒す
     // （`tests/controller-state-db-writes.test.ts`）。「確かめられなかった」を
     // 「変わっていない」にしない（design.md §3.1）。
-    expect(() => encodeCell({})).toThrow(/載せられない型/);
-    expect(() => encodeCell(true)).toThrow(/載せられない型/);
-    expect(() => encodeCell(undefined)).toThrow(/載せられない型/);
+    expect(() => encodeCell({})).toThrow(/type that cannot go into the state DB digest/);
+    expect(() => encodeCell(true)).toThrow(/type that cannot go into the state DB digest/);
+    expect(() => encodeCell(undefined)).toThrow(/type that cannot go into the state DB digest/);
   });
 
   it("列の並びが違っても、同じ中身なら同じ行になる", () => {

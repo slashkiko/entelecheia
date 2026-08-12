@@ -15,7 +15,7 @@ export function parseGoal(source: string, slug: string): Goal {
   if (goal.goal.id !== slug) {
     // ファイル名と id がズレると `ent get <slug>` と YAML の id が食い違い、
     // どちらを正とするかが人間にも controller にも決められなくなる。
-    throw new Error(`goal.id (${goal.goal.id}) がファイル名の slug (${slug}) と一致しない`);
+    throw new Error(`goal.id (${goal.goal.id}) does not match the filename slug (${slug})`);
   }
   return goal;
 }

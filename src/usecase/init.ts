@@ -86,9 +86,9 @@ export function initRepository(repoRoot: string, json: boolean, probes: InitProb
   const gitRoot = probes.gitRoot(repoRoot);
   if (gitRoot === null) {
     return refuse(
-      `${repoRoot} は git リポジトリの中ではない。` +
-        "controller は worktree を作れず、.goals/.state/ の gitignore も意味を持たない" +
-        "（git init を先に叩くか、リポジトリのルートで叩き直す）",
+      `${repoRoot} is not inside a git repository. ` +
+        "The controller cannot create worktrees, and gitignoring .goals/.state/ means nothing " +
+        "(run git init first, or run again from the repository root)",
     );
   }
   // 「中にいる」だけでは足りない。`repoRoot` は常に process.cwd() なので、
@@ -96,8 +96,8 @@ export function initRepository(repoRoot: string, json: boolean, probes: InitProb
   // 状態 DB もそこに置かれる。人間はリポジトリのルートに置いたつもりでいる。
   if (resolve(gitRoot) !== resolve(repoRoot)) {
     return refuse(
-      `${repoRoot} は git リポジトリのルートではない（ルートは ${gitRoot}）。` +
-        "ent は cwd を対象リポジトリとして扱うので、ルートで叩き直す",
+      `${repoRoot} is not the git repository root (the root is ${gitRoot}). ` +
+        "ent treats cwd as the target repository, so run again from the root",
     );
   }
 
@@ -107,7 +107,9 @@ export function initRepository(repoRoot: string, json: boolean, probes: InitProb
     // 書き込み系はどれもリンクを辿るので、`.gitignore -> ~/.zshrc` のような
     // リポジトリなら、clone して init を叩いた人の設定ファイルに書くことになる。
     if (isSymbolicLink(path)) {
-      return refuse(`${path} はシンボリックリンクなので書かない（リンクを外してから叩き直す）`);
+      return refuse(
+        `${path} is a symbolic link, so nothing is written (remove the link and run again)`,
+      );
     }
   }
 
@@ -145,10 +147,10 @@ export function initRepository(repoRoot: string, json: boolean, probes: InitProb
  */
 function nextStep(template: InitEntry): string {
   if (template.action === "kept") {
-    return `.goals/ に既に Goal があるので雛形は置いていない。ent doctor で前提を確かめる`;
+    return ".goals/ already holds a Goal, so no template was placed. Run ent doctor to check the prerequisites";
   }
   const slug = basename(template.path, extname(template.path));
-  return `${template.path} の goal.name / desired_state / acceptance_criteria / repository を埋めてから、ent doctor と ent start ${slug} を叩く`;
+  return `Fill in goal.name / desired_state / acceptance_criteria / repository in ${template.path}, then run ent doctor and ent start ${slug}`;
 }
 
 /**
@@ -199,7 +201,7 @@ function planSkillLink(): SkillPlan {
     // ここで 1 を返すと `.goals/` を作る道まで塞がる。
     return {
       kind: "unavailable",
-      message: `${SKILL_SOURCE_DIR} が見当たらないので skill は張らない（ent 本体のリポジトリを確かめる）`,
+      message: `${SKILL_SOURCE_DIR} is missing, so no skill is linked (check the ent repository itself)`,
     };
   }
 
@@ -213,8 +215,8 @@ function planSkillLink(): SkillPlan {
     return {
       kind: "conflict",
       message:
-        `${link} は既に ent 本体以外を指している（または実体がある）ので触らない。` +
-        `中身を確かめて、外すか退避してから叩き直す（張りたい先は ${SKILL_SOURCE_DIR}）`,
+        `${link} already points somewhere other than ent itself (or is a real directory), so it is left alone. ` +
+        `Check what is there, then remove it or move it aside and run again (the intended target is ${SKILL_SOURCE_DIR})`,
     };
   }
   return { kind: "kept", link };
@@ -307,7 +309,7 @@ function ensureStateIgnored(path: string, stateIgnoreLine: string): InitEntry {
   const head = body === "" ? "" : body.endsWith("\n") ? `${body}\n` : `${body}\n\n`;
   writeFileSync(
     path,
-    `${head}# ent の実行時状態（goals.db / worktree / Agent の生ログ）\n${stateIgnoreLine}\n`,
+    `${head}# ent runtime state (goals.db / worktrees / Agent raw logs)\n${stateIgnoreLine}\n`,
   );
   return { path: ".gitignore", action: existed ? "appended" : "created" };
 }

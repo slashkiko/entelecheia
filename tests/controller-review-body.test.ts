@@ -162,7 +162,7 @@ describe("controller から publish へのレビュー本文の受け渡し", ()
     const body = written[0] ?? "";
 
     // 節が出ていること。ここが落ちるなら、controller が review を渡していない。
-    expect(body).toContain("## レビュー役の本文");
+    expect(body).toContain("## Review role message");
     expect(body).toContain("run-42");
     // 本文はそのまま。表もコードブロックも改行も残る。
     expect(body).toContain(REVIEW_BODY);
@@ -172,7 +172,7 @@ describe("controller から publish へのレビュー本文の受け渡し", ()
     // 表ごと消えても下の比較は通ってしまう。**黙って消えるものを捕まえるのが
     // この検査の目的なので、そこを開けたままにしない。**
     expect(body).toContain("ac-1");
-    expect(body.indexOf("ac-1")).toBeLessThan(body.indexOf("## レビュー役の本文"));
+    expect(body.indexOf("ac-1")).toBeLessThan(body.indexOf("## Review role message"));
   });
 
   it("レビュー役の Run が無ければ節を出さない", async () => {
@@ -182,7 +182,7 @@ describe("controller から publish へのレビュー本文の受け渡し", ()
 
     expect(result.ran).toBe(true);
     expect(written).toHaveLength(1);
-    expect(written[0] ?? "").not.toContain("## レビュー役の本文");
+    expect(written[0] ?? "").not.toContain("## Review role message");
   });
 
   it("`--report` を付けないティックでは、レビュー役の Run を読みに行かない", async () => {

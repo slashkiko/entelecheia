@@ -43,12 +43,12 @@ export interface AgentContext {
   exitCodes: { code: number; meaning: string }[];
 }
 
-const JSON_FLAG = { name: "--json", type: "boolean", summary: "JSON で出す" } as const;
+const JSON_FLAG = { name: "--json", type: "boolean", summary: "emit JSON" } as const;
 
 const LIMIT_FLAG = {
   name: "--limit",
   type: "integer",
-  summary: `出力の件数（既定 ${String(DEFAULT_LIMIT)}）`,
+  summary: `how many entries to print (default ${String(DEFAULT_LIMIT)})`,
 } as const;
 
 export function agentContextPayload(): AgentContext {
@@ -61,73 +61,82 @@ export function agentContextPayload(): AgentContext {
       {
         name: "init",
         summary:
-          "いまのリポジトリを回せる状態にする。.goals/ と gitignore の行と Goal の雛形を置く。冪等",
+          "make the current repository runnable. Places .goals/, the gitignore line, and a Goal template. Idempotent",
         args: [],
         flags: [JSON_FLAG],
       },
       {
         name: "start",
-        summary: "Goal を登録して ACTIVE にする",
+        summary: "register a Goal and make it ACTIVE",
         args: [slug],
         flags: [JSON_FLAG],
       },
       {
         name: "run",
-        summary: "1ティックだけ回して終了する。常駐しないので繰り返し叩く",
+        summary: "run exactly one tick and exit. Nothing stays resident, so invoke it repeatedly",
         args: [slug],
         flags: [
           JSON_FLAG,
-          { name: "--dry-run", type: "boolean", summary: "書かずに次のティックの中身を見る" },
-          { name: "--pr", type: "integer", summary: "観測する PR 番号" },
-          { name: "--issue", type: "integer", summary: "観測する Issue 番号" },
+          {
+            name: "--dry-run",
+            type: "boolean",
+            summary: "write nothing; see what the next tick would contain",
+          },
+          { name: "--pr", type: "integer", summary: "PR number to observe" },
+          { name: "--issue", type: "integer", summary: "Issue number to observe" },
           {
             name: "--report",
             type: "string",
             summary:
-              "進捗を PR に投稿せず、stdout（JSON の report.body）か指定したファイルに出す。この宛先にだけレビュー役の本文が1節付くので、PR コメントとは同じ内容にならない。ファイルは追記なので同じ本文が積まれる。--dry-run とは併用しない",
+              "send progress to stdout (report.body of the JSON) or to the given file instead of posting it to the PR. Only this destination carries an extra section holding the review role's text, so it never matches the PR comment. Files are appended to, so bodies accumulate. Not combined with --dry-run",
           },
         ],
         output: [
           {
             key: "publishHold",
-            when: "policies.publish で controller の publish を止めたティック",
+            when: "ticks where policies.publish held the controller's publish",
             summary:
-              "step（push_branch / open_pull_request）/ reason / pushed / branch / base。pushed が true なら branch は remote にあるので、叩いた側が代わりに PR を立てられる",
+              "step (push_branch / open_pull_request) / reason / pushed / branch / base. When pushed is true the branch is on the remote, so the caller can open the PR instead",
           },
-          { key: "dryRun", when: "--dry-run", summary: "wouldTransitionTo と observed も付く" },
-          { key: "report", when: "--report", summary: "destination / written / error（/ body）" },
+          {
+            key: "dryRun",
+            when: "--dry-run",
+            summary: "wouldTransitionTo and observed are added too",
+          },
+          { key: "report", when: "--report", summary: "destination / written / error (/ body)" },
         ],
       },
       {
         name: "get",
-        summary: "宣言部と実行時状態をまとめて出す",
+        summary: "emit the declaration and the runtime state together",
         args: [slug],
         flags: [JSON_FLAG, LIMIT_FLAG],
       },
       {
         name: "abandon",
-        summary: "もう追わないと宣言して ABANDONED にする。完了は名乗らせないので complete は無い",
+        summary:
+          "declare it no longer pursued and make it ABANDONED. Completion is never self-declared, so there is no complete",
         args: [slug],
         flags: [
           JSON_FLAG,
-          { name: "--reason", type: "string", summary: "なぜ追わないのか（必須）" },
+          { name: "--reason", type: "string", summary: "why it is no longer pursued (required)" },
         ],
       },
       {
         name: "list",
-        summary: "登録済みの Goal を一覧する",
+        summary: "list registered Goals",
         args: [],
         flags: [JSON_FLAG, LIMIT_FLAG],
       },
       {
         name: "doctor",
-        summary: "回す前の前提が揃っているかを読み取り専用で調べる",
+        summary: "read-only check that the prerequisites for running are in place",
         args: [],
         flags: [],
       },
       {
         name: "agent-context",
-        summary: "この構造そのものを出す",
+        summary: "emit this structure itself",
         args: [],
         flags: [],
       },
@@ -137,41 +146,44 @@ export function agentContextPayload(): AgentContext {
         name: "GITHUB_TOKEN",
         required: false,
         summary:
-          "無ければ GH_TOKEN と gh auth token に落ちる。どれも無いと GitHub の観測が unresolved",
+          "falls back to GH_TOKEN then gh auth token. With none of them, GitHub observation stays unresolved",
       },
       {
         name: "ENT_ACTOR",
         required: false,
-        summary: "全phaseの既定provider。claude-code / codex。既定はclaude-code",
+        summary: "default provider for every phase. claude-code / codex. Defaults to claude-code",
       },
-      { name: "ENT_MODEL", required: false, summary: "全phaseの既定モデル" },
-      { name: "ENT_EFFORT", required: false, summary: "全phaseの既定effort" },
+      { name: "ENT_MODEL", required: false, summary: "default model for every phase" },
+      { name: "ENT_EFFORT", required: false, summary: "default effort for every phase" },
       ...["DECIDE", "IMPLEMENT", "REVIEW", "INVESTIGATE"].flatMap((phase) => [
         {
           name: `ENT_${phase}_ACTOR`,
           required: false,
-          summary: `${phase}だけproviderを上書き`,
+          summary: `override the provider for ${phase} only`,
         },
         {
           name: `ENT_${phase}_MODEL`,
           required: false,
-          summary: `${phase}だけモデルを上書き`,
+          summary: `override the model for ${phase} only`,
         },
         {
           name: `ENT_${phase}_EFFORT`,
           required: false,
-          summary: `${phase}だけeffortを上書き`,
+          summary: `override the effort for ${phase} only`,
         },
       ]),
     ],
     exitCodes: [
-      { code: 0, meaning: "成功。ティックが最後まで回った（doctor では failed が1件も無い）" },
+      {
+        code: 0,
+        meaning: "success. The tick ran all the way through (for doctor, nothing failed)",
+      },
       {
         code: 1,
         meaning:
-          "実行時エラー、または実行できない状態。詳細は stderr（doctor では stdout の JSON）",
+          "runtime error, or a state that cannot be run. Details on stderr (for doctor, in the JSON on stdout)",
       },
-      { code: 2, meaning: "引数が不正。stderr に有効値が出る" },
+      { code: 2, meaning: "invalid arguments. Valid values are printed on stderr" },
     ],
   };
 }

@@ -220,7 +220,7 @@ export async function tick(goal: Goal, deps: ControllerDeps): Promise<TickResult
    */
   const lost = (status: GoalStatus, reclaimed: number, run: Run | null): TickResult => ({
     ran: false,
-    skipped: "ティックの途中で lease を失ったので何も書かない",
+    skipped: "lost the lease mid-tick, so nothing is written",
     reclaimed,
     decision: null,
     run,
@@ -229,17 +229,17 @@ export async function tick(goal: Goal, deps: ControllerDeps): Promise<TickResult
 
   // 終端の Goal を動かし続けると、完了判定が意味を失う。lease も取らない。
   if (state === null) {
-    return idle("DRAFT", "Goal が登録されていない");
+    return idle("DRAFT", "the Goal is not registered");
   }
   if (isTerminal(state.status)) {
-    return idle(state.status, `終端状態（${state.status}）なので回さない`);
+    return idle(state.status, `terminal state (${state.status}), so the tick is not run`);
   }
 
   // 使用量上限などで寝ている間は回さない（design.md §4.4 と §10-5）。
   // lease も取らない。取ると、寝ているだけの Goal が他のワーカーを塞ぐ。
   const sleeping = sleepingUntil(state.resumeAfter, deps.now());
   if (sleeping !== null) {
-    return idle(state.status, `resume_after まで寝ている: ${sleeping}`);
+    return idle(state.status, `sleeping until resume_after: ${sleeping}`);
   }
 
   // 依存する Goal が揃うまで進めない（design.md §10-12）。
@@ -274,7 +274,7 @@ export async function tick(goal: Goal, deps: ControllerDeps): Promise<TickResult
   const leaseUntil = (): Date => new Date(deps.now().getTime() + deps.leaseSeconds * 1000);
   if (!deps.store.acquireLease(goalId, deps.owner, leaseUntil(), deps.now())) {
     // 他のワーカーが処理中。今回のティックはスキップする（design.md §4.5）。
-    return idle(state.status, "他のワーカーが lease を持っている");
+    return idle(state.status, "another worker holds the lease");
   }
 
   // lease を失ったことを、走行中の Actor に伝えるための口。
@@ -344,7 +344,7 @@ export async function tick(goal: Goal, deps: ControllerDeps): Promise<TickResult
     // 新しい観測より先に確定させないと、同じ Run が二重に数えられる。
     const reclaimed = deps.store.reclaimOrphanRuns(
       goalId,
-      "前のティックが確定を書けずに終了した",
+      "the previous tick exited before writing the outcome",
       deps.now().toISOString(),
     );
 
@@ -745,7 +745,7 @@ async function reachableCode(state: GoalState, deps: ControllerDeps): Promise<Un
     return {
       key: "github",
       reason: "port_failed",
-      detail: `CodeProviderPort を読めなかった: ${errorMessage(error)}`,
+      detail: `could not read CodeProviderPort: ${errorMessage(error)}`,
     };
   }
 }
@@ -814,7 +814,7 @@ async function guardedDecision(
   const escalate = (reason: "protected_path_touched" | "guard_unavailable", detail: string) => ({
     decidedAt: deps.now().toISOString(),
     action: { type: "ESCALATE", reason } as const,
-    rationale: `${detail}（元の判断: ${decision.rationale}）`,
+    rationale: `${detail} (original decision: ${decision.rationale})`,
     decidedBy: "guard" as const,
   });
 
@@ -823,7 +823,7 @@ async function guardedDecision(
   if (base === null) {
     return escalate(
       "guard_unavailable",
-      "関門の基準（guard_base_sha）が commit id の形をしていないので停止する",
+      "stopping: the gate baseline (guard_base_sha) is not shaped like a commit id",
     );
   }
 
@@ -860,7 +860,7 @@ async function guardedDecision(
     } catch (error) {
       return escalate(
         "guard_unavailable",
-        `保護パスを検査できなかったので停止する: ${errorMessage(error)}`,
+        `stopping: could not inspect the protected paths: ${errorMessage(error)}`,
       );
     }
     // artifacts は SDK が申告する編集で、走った Actor の木にしか紐付かない。
@@ -871,7 +871,7 @@ async function guardedDecision(
   if ("error" in repoBefore) {
     return escalate(
       "guard_unavailable",
-      `本体リポジトリ側の状態を控えられなかったので停止する: ${repoBefore.error}`,
+      `stopping: could not record the main repository state: ${repoBefore.error}`,
     );
   }
 
@@ -903,7 +903,7 @@ async function guardedDecision(
   } catch (error) {
     return escalate(
       "guard_unavailable",
-      `本体リポジトリ側を検査できなかったので停止する: ${errorMessage(error)}`,
+      `stopping: could not inspect the main repository: ${errorMessage(error)}`,
     );
   }
 
@@ -927,7 +927,7 @@ async function guardedDecision(
 
   return escalate(
     "protected_path_touched",
-    `制御ループ自体に触れたので停止する: ${describeViolations(violations)}`,
+    `stopping: the control loop itself was touched: ${describeViolations(violations)}`,
   );
 }
 
@@ -990,14 +990,14 @@ async function commitVerifiedWork(
     .filter((verification) => verification.result === "passed")
     .map((verification) => verification.criterionId)
     .join(", ");
-  const message = `${goal.goal.name}\n\n機械側の criteria が通ったので controller が commit した（${passed}）。\nActor の実行は Run の生ログに残る（design.md §10-11）。`;
+  const message = `${goal.goal.name}\n\nThe controller committed this because the machine-checkable criteria passed (${passed}).\nThe Actor's execution stays in the Run's raw log (design.md §10-11).`;
 
   try {
     return await deps.worktree.commit(worktreeNameFor(goal.goal.id, DEFAULT_ACTOR_ROLE), message);
   } catch (error) {
     // 検査ではないので、確かめられなかったことにはしない。次のティックで
     // 未 commit の関門が同じ状態を拾う。
-    deps.log?.(`commit できなかった: ${errorMessage(error)}`);
+    deps.log?.(`could not commit: ${errorMessage(error)}`);
     return false;
   }
 }
@@ -1084,14 +1084,14 @@ function uncommittedDecision(
     decidedAt: deps.now().toISOString(),
     action: { type: "ESCALATE", reason: "uncommitted_changes" },
     rationale:
-      `Actor が書いた変更が worktree（${worktreePath}、ブランチ ${worktreeBranch}）に` +
-      "未 commit のまま残っている。commit されていない差分は push されないので、" +
-      `${describeClaim(decision.action)} remote には実装が1行も出ないまま止まる。` +
-      `進めるには、\`git -C ${worktreePath} status\` で差分を確かめたうえで、` +
-      `残すなら commit し（\`git -C ${worktreePath} add -A && git -C ${worktreePath} commit\`）、` +
-      `捨てるなら元に戻して（\`git -C ${worktreePath} checkout -- .\`）から、` +
-      `この Goal をもう一度回す（\`ent run ${goal.goal.id}\`）` +
-      `（元の判断: ${decision.rationale}）`,
+      `Changes written by the Actor are left uncommitted in the worktree ` +
+      `(${worktreePath}, branch ${worktreeBranch}). Uncommitted diffs are never pushed, which means ` +
+      `${describeClaim(decision.action)} leave the remote without a single line of the implementation. ` +
+      `To move forward, inspect the diff with \`git -C ${worktreePath} status\`, then either keep it ` +
+      `by committing (\`git -C ${worktreePath} add -A && git -C ${worktreePath} commit\`) ` +
+      `or drop it by reverting (\`git -C ${worktreePath} checkout -- .\`), ` +
+      `and run this Goal again (\`ent run ${goal.goal.id}\`) ` +
+      `(original decision: ${decision.rationale})`,
     decidedBy: "guard",
   };
 }
@@ -1147,25 +1147,27 @@ function publishHeldDecision(
   // 文面と payload が食い違いうる。読む側は同じティックの出力の中で矛盾を見る。
   const branch = held.branch;
   const base = held.base;
-  const declaration = `.goals/${goal.goal.id}.yaml の policies.publish.${held.step}`;
+  const declaration = `policies.publish.${held.step} in .goals/${goal.goal.id}.yaml`;
 
   const rationale =
     held.step === "push_branch"
-      ? `policies.publish.push_branch: manual を宣言しているので、controller は push しなかった。` +
-        `worktree（${worktreePath}、ブランチ ${branch}）に commit 済みの差分が残っていても ` +
-        `remote には1行も出ない。進めるには、人間が中身を確かめてから自分で押す` +
-        `（\`git -C ${worktreePath} push -u origin HEAD:${branch}\`）。` +
-        `**押しても controller はここを通り続ける。** 押さないと決めた口が remote を知る` +
-        `唯一の経路なので、人間が押したことを観測できない。${declaration} を auto に戻すまで` +
-        `毎ティック同じ理由で止まり、そのあいだ reconcile の予算は減り続ける。` +
-        `もう追わないなら \`ent abandon ${goal.goal.id} --reason <理由>\` で終端にする` +
-        `（元の判断: ${decision.rationale}）`
-      : `policies.publish.open_pull_request: manual を宣言しているので、controller は PR を` +
-        `作らなかった。push は済んでいるので、ブランチ ${branch} は remote にある。` +
-        `進めるには、人間が中身を確かめてから PR を立てる` +
-        `（\`gh pr create --head ${branch} --base ${base}\`）。` +
-        `次のティックはその PR を見つけて先へ進むので、${declaration} はそのままでよい` +
-        `（元の判断: ${decision.rationale}）`;
+      ? `policies.publish.push_branch: manual is declared, so the controller did not push. ` +
+        `Even with committed diffs left in the worktree (${worktreePath}, branch ${branch}), ` +
+        `not a single line reaches the remote. To move forward, a human reviews the contents and ` +
+        `pushes it themselves (\`git -C ${worktreePath} push -u origin HEAD:${branch}\`). ` +
+        `**Pushing does not get the controller past this point.** The port that was declared closed ` +
+        `is the only path by which the controller learns about the remote, so a human push cannot be ` +
+        `observed. Until ${declaration} is set back to auto, every tick stops for the same reason, ` +
+        `and the reconcile budget keeps draining meanwhile. ` +
+        `If this Goal is no longer worth following, terminate it with ` +
+        `\`ent abandon ${goal.goal.id} --reason <reason>\` ` +
+        `(original decision: ${decision.rationale})`
+      : `policies.publish.open_pull_request: manual is declared, so the controller did not open a ` +
+        `pull request. The push is done, so branch ${branch} is on the remote. ` +
+        `To move forward, a human reviews the contents and opens the pull request ` +
+        `(\`gh pr create --head ${branch} --base ${base}\`). ` +
+        `The next tick finds that pull request and moves on, so ${declaration} can stay as it is ` +
+        `(original decision: ${decision.rationale})`;
 
   return {
     decidedAt: deps.now().toISOString(),
@@ -1262,8 +1264,8 @@ function ownRunDrift(
     return {
       reason: "guard_unavailable",
       detail:
-        `このティックで作った Run の行を読めなかったので停止する` +
-        `（${CONTROLLER_STATE_DB_KEY}）: ${errorMessage(error)}`,
+        `stopping: could not read the Run rows this tick created` +
+        ` (${CONTROLLER_STATE_DB_KEY}): ${errorMessage(error)}`,
     };
   }
 
@@ -1274,8 +1276,8 @@ function ownRunDrift(
       return {
         reason: "protected_path_touched",
         detail:
-          `このティックで作った Run ${own.id} の行が、この Goal から消えている` +
-          `（${CONTROLLER_STATE_DB_KEY}）`,
+          `the row for Run ${own.id}, created by this tick, has disappeared from this Goal` +
+          ` (${CONTROLLER_STATE_DB_KEY})`,
       };
     }
     const changed = OWN_RUN_IMMUTABLE.filter(
@@ -1285,15 +1287,15 @@ function ownRunDrift(
       return {
         reason: "protected_path_touched",
         detail:
-          `このティックで作った Run ${own.id} の、controller しか書かない列が` +
-          `書き換えられている（${CONTROLLER_STATE_DB_KEY}）: ` +
+          `columns only the controller writes have been rewritten on Run ${own.id}, ` +
+          `created by this tick (${CONTROLLER_STATE_DB_KEY}): ` +
           changed
             .map(
               (column) =>
-                `${column.name} は ${JSON.stringify(own.intent[column.key])} のはずが ` +
+                `${column.name} should be ${JSON.stringify(own.intent[column.key])} but is ` +
                 `${JSON.stringify(row[column.key])}`,
             )
-            .join("、"),
+            .join(", "),
       };
     }
   }

@@ -140,7 +140,7 @@ function nodeVersionCheck(probes: DoctorProbes): DoctorCheck {
     return {
       name: "node_version",
       result: "unknown",
-      detail: `Node のバージョンを読めなかった: ${version}（node:sqlite は Node ${String(MIN_NODE_MAJOR)} 以上を要求する）`,
+      detail: `Could not read the Node version: ${version} (node:sqlite requires Node ${String(MIN_NODE_MAJOR)} or later)`,
     };
   }
   if (major < MIN_NODE_MAJOR) {
@@ -148,15 +148,15 @@ function nodeVersionCheck(probes: DoctorProbes): DoctorCheck {
       name: "node_version",
       result: "failed",
       detail:
-        `node:sqlite が Node ${String(MIN_NODE_MAJOR)} 以上を要求するが、いま動いているのは ${version}。` +
-        "このまま叩くと store の import が例外になり、ent の話であることがメッセージから読み取れない" +
-        `（起動する Node を ${String(MIN_NODE_MAJOR)} 以上に固定する）`,
+        `node:sqlite requires Node ${String(MIN_NODE_MAJOR)} or later, but this process runs ${version}. ` +
+        "Running as-is makes the store import throw, and the message will not reveal that ent is involved " +
+        `(pin the Node that launches ent to ${String(MIN_NODE_MAJOR)} or later)`,
     };
   }
   return {
     name: "node_version",
     result: "ok",
-    detail: `${version} で動いている（node:sqlite は Node ${String(MIN_NODE_MAJOR)} 以上を要求する）`,
+    detail: `Running on ${version} (node:sqlite requires Node ${String(MIN_NODE_MAJOR)} or later)`,
   };
 }
 
@@ -167,11 +167,11 @@ async function gitRepositoryCheck(probes: DoctorProbes): Promise<DoctorCheck> {
       name: "git_repository",
       result: "failed",
       detail:
-        "ここは git リポジトリの中ではない。controller は Actor 用の worktree を作れず、" +
-        ".goals/.state/ の gitignore も意味を持たない（git init を叩くか、リポジトリのルートで叩き直す）",
+        "This is not inside a git repository. The controller cannot create a worktree for the Actor, " +
+        "and gitignoring .goals/.state/ means nothing (run git init, or run again from the repository root)",
     };
   }
-  return { name: "git_repository", result: "ok", detail: "git リポジトリの中で叩いている" };
+  return { name: "git_repository", result: "ok", detail: "Running inside a git repository" };
 }
 
 /** `.goals/.state/` が gitignore されているか。されていないと状態が git に載る */
@@ -183,8 +183,8 @@ async function stateIgnoredCheck(probes: DoctorProbes): Promise<DoctorCheck> {
       name: "state_ignored",
       result: "unknown",
       detail:
-        "git check-ignore で確かめられなかった。.goals/.state/ が無視されていないと、" +
-        "状態 DB と worktree と Agent の生ログが対象リポジトリの git に載る",
+        "git check-ignore could not confirm this. If .goals/.state/ is not ignored, " +
+        "the state DB, the worktrees, and the Agent raw logs land in the target repository's git",
     };
   }
   if (!ignored) {
@@ -192,11 +192,11 @@ async function stateIgnoredCheck(probes: DoctorProbes): Promise<DoctorCheck> {
       name: "state_ignored",
       result: "failed",
       detail:
-        ".goals/.state が .gitignore に無い。状態 DB（goals.db）と Actor の worktree と " +
-        "Agent の生ログが、そのまま対象リポジトリの git に載る（ent init が足す）",
+        ".goals/.state is not in .gitignore. The state DB (goals.db), the Actor worktrees, and " +
+        "the Agent raw logs land in the target repository's git as they are (ent init adds the line)",
     };
   }
-  return { name: "state_ignored", result: "ok", detail: ".goals/.state は gitignore されている" };
+  return { name: "state_ignored", result: "ok", detail: ".goals/.state is gitignored" };
 }
 
 function githubTokenCheck(probes: DoctorProbes): DoctorCheck {
@@ -206,16 +206,16 @@ function githubTokenCheck(probes: DoctorProbes): DoctorCheck {
       name: "github_token",
       result: "failed",
       detail:
-        "GitHub の token を読めない。読む順は GITHUB_TOKEN → GH_TOKEN → gh auth token で、" +
-        "環境変数に空文字を設定してあれば gh は呼ばない。" +
-        "github.pr.* と github.ci.* が観測できず、" +
-        "type: fact の criteria は永久に unobserved のままになる。PR の作成とコメントも通らない",
+        "No GitHub token. The lookup order is GITHUB_TOKEN → GH_TOKEN → gh auth token, and " +
+        "gh is not called when the environment variable is set to an empty string. " +
+        "github.pr.* and github.ci.* cannot be observed, so type: fact criteria stay unobserved forever. " +
+        "Creating PRs and posting comments fail too",
     };
   }
   return {
     name: "github_token",
     result: "ok",
-    detail: "GitHub のトークンを読めた（環境変数か gh auth token。値は出さない）",
+    detail: "Read a GitHub token (from the environment or gh auth token; the value is not printed)",
   };
 }
 
@@ -244,8 +244,8 @@ function goalsCheck(read: GoalsRead): DoctorCheck {
       name: "goals",
       result: "failed",
       detail:
-        `.goals/ を読めなかった: ${read.reason}。` +
-        "このリポジトリでまだ始めていないなら ent init を叩く（.goals/ と雛形と gitignore の行を置く）",
+        `Could not read .goals/: ${read.reason}. ` +
+        "If this repository has not been set up yet, run ent init (it places .goals/, a Goal template, and the gitignore line)",
     };
   }
 
@@ -262,7 +262,7 @@ function goalsCheck(read: GoalsRead): DoctorCheck {
   return {
     name: "goals",
     result: "ok",
-    detail: `.goals/*.yaml を ${read.goals.length} 件読めた`,
+    detail: `Read ${String(read.goals.length)} declaration(s) from .goals/*.yaml`,
   };
 }
 
@@ -292,7 +292,8 @@ function dependenciesCheck(read: GoalsRead): DoctorCheck {
     return {
       name: "dependencies",
       result: "unknown",
-      detail: ".goals/ を読めていないので依存は確かめられない（goals の検査を先に読む）",
+      detail:
+        ".goals/ could not be read, so dependencies cannot be checked (read the goals check first)",
     };
   }
 
@@ -305,8 +306,8 @@ function dependenciesCheck(read: GoalsRead): DoctorCheck {
       name: "dependencies",
       result: "unknown",
       detail:
-        `読めなかった Goal が ${String(unreadable.length)} 件あり、その depends_on も読めていない。` +
-        "欠けた辺を含む宣言では不在も循環も確かめられないので、goals の検査を先に直す",
+        `${String(unreadable.length)} Goal declaration(s) could not be read, so their depends_on is unknown too. ` +
+        "Neither missing dependencies nor cycles can be checked while edges are absent, so fix the goals check first",
     };
   }
 
@@ -323,10 +324,11 @@ function dependenciesCheck(read: GoalsRead): DoctorCheck {
     .filter((entry) => entry.absent.length > 0);
   if (missing.length > 0) {
     problems.push(
-      "依存先の .goals/<id>.yaml が無い: " +
+      "Dependency has no .goals/<id>.yaml: " +
         missing.map((entry) => `${entry.slug} → ${entry.absent.join(", ")}`).join(" / ") +
-        "。実行時は「まだ始めていない」と同じ pending にしか見えず、" +
-        "どの停止条件にも掛からないまま永久に止まる（綴りを直すか、依存先を ent start で立てる）",
+        ". At runtime this is indistinguishable from a Goal that has not started — both read as pending — " +
+        "so it stalls forever without hitting any stopping condition " +
+        "(fix the spelling, or create the dependency with ent start)",
     );
   }
 
@@ -338,10 +340,10 @@ function dependenciesCheck(read: GoalsRead): DoctorCheck {
   const cycles = findCycles(edges);
   if (cycles.length > 0) {
     problems.push(
-      "depends_on が循環している: " +
+      "depends_on forms a cycle: " +
         cycles.map((cycle) => [...cycle, cycle[0] ?? ""].join(" → ")).join(" / ") +
-        "。閉じた輪の中は全員が依存の完了待ちのままで、どれも先に進まない" +
-        "（輪のうち1本の depends_on を外す）",
+        ". Every Goal inside a closed cycle waits for its dependency to finish, so none of them progresses " +
+        "(drop depends_on from one Goal in the cycle)",
     );
   }
 
@@ -355,8 +357,8 @@ function dependenciesCheck(read: GoalsRead): DoctorCheck {
     result: "ok",
     detail:
       declaredEdges === 0
-        ? "depends_on は1本も書かれていない"
-        : `depends_on を ${String(declaredEdges)} 本たどれた（依存先はすべて実在し、循環は無い）`,
+        ? "No depends_on is declared"
+        : `Followed ${String(declaredEdges)} depends_on edge(s) (every dependency exists and there is no cycle)`,
   };
 }
 
@@ -417,7 +419,7 @@ async function stateDirCheck(probes: DoctorProbes): Promise<DoctorCheck> {
     return {
       name: "state_dir",
       result: "failed",
-      detail: `.goals/.state を確かめられなかった: ${errorMessage(error)}`,
+      detail: `Could not check .goals/.state: ${errorMessage(error)}`,
     };
   }
 
@@ -426,10 +428,10 @@ async function stateDirCheck(probes: DoctorProbes): Promise<DoctorCheck> {
       name: "state_dir",
       result: "failed",
       detail:
-        ".goals/.state に書けない。goals.db も worktree も生ログも置けないので、ティックの結果が残らない",
+        ".goals/.state is not writable. goals.db, the worktrees, and the raw logs cannot be placed, so nothing a tick produces is recorded",
     };
   }
-  return { name: "state_dir", result: "ok", detail: ".goals/.state に書ける" };
+  return { name: "state_dir", result: "ok", detail: ".goals/.state is writable" };
 }
 
 /**
@@ -440,13 +442,13 @@ async function stateDirCheck(probes: DoctorProbes): Promise<DoctorCheck> {
  */
 function actorLoginCheck(actor: Exclude<ActorKind, "human">): DoctorCheck {
   const label = actor === "codex" ? "Codex CLI" : "Claude Code";
-  const command = actor === "codex" ? "codex login status" : "claudeを起動して/login";
+  const command = actor === "codex" ? "codex login status" : "run claude, then /login";
   return {
     name: actor === "codex" ? "codex_login" : "claude_login",
     result: "unknown",
     detail:
-      `${label} のログイン状態は ent doctor から確定しないので unknown にする。` +
-      "未ログインだと、そのproviderを選んだphaseの呼び出しが失敗する。" +
-      `疑わしければ ${command} で確かめる`,
+      `ent doctor cannot determine the ${label} login state, so it reports unknown. ` +
+      "If not logged in, every phase that selects this provider fails its call. " +
+      `Check with ${command} if in doubt`,
   };
 }

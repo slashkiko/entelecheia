@@ -253,7 +253,7 @@ describe("PR を確保する", () => {
 
     expect(result.prNumber).toBeNull();
     expect(s.created).toEqual([]);
-    expect(result.skipped).toContain("差分");
+    expect(result.skipped).toContain("diff");
   });
 
   it("Run が無いティックでも push して PR を確保する", async () => {
@@ -318,7 +318,7 @@ describe("PR を確保する", () => {
     const result = await publish(target({ prNumber: 42 }), deps(s));
 
     expect(result.commented).toBe(true);
-    expect(s.comments[0]?.body).toContain("push できなかった");
+    expect(s.comments[0]?.body).toContain("Could not push");
   });
 
   it("観測が前のティックと同じでも、push が落ちたら書く", async () => {
@@ -448,7 +448,7 @@ describe("保護パスに触れたとき", () => {
 
     expect(s.created).toEqual([]);
     expect(s.pushes).toEqual([]);
-    expect(result.skipped).toContain("保護パス");
+    expect(result.skipped).toContain("protected path");
   });
 
   it("既に PR があればコメントで知らせる", async () => {

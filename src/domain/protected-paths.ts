@@ -112,8 +112,8 @@ export function describeViolations(violations: readonly Violation[]): string {
   return violations
     .map((v) =>
       v.kind === "escaped_worktree"
-        ? `worktree の外を編集した: ${v.path}`
-        : `保護パスを編集した: ${v.path}（${v.pattern}）`,
+        ? `edited outside the worktree: ${v.path}`
+        : `edited a protected path: ${v.path} (${v.pattern})`,
     )
     .join(" / ");
 }

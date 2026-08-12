@@ -320,7 +320,7 @@ const DURATION_UNITS = { s: 1, m: 60, h: 3600 } as const;
 
 /** `30s` / `10m` / `6h` 形式。controller が待機と打ち切りの判定に使う */
 const DURATION = new RegExp(`^(\\d+)([${Object.keys(DURATION_UNITS).join("")}])$`);
-const durationSchema = z.string().regex(DURATION, "duration は 30s / 10m / 6h の形式で書く");
+const durationSchema = z.string().regex(DURATION, "duration must be written as 30s / 10m / 6h");
 
 /**
  * `30s` / `10m` / `6h` を秒に直す。解釈できなければ null。
@@ -465,7 +465,7 @@ export const goalSchema = z.strictObject({
   goal: z
     .strictObject({
       /** ファイル名の slug と一致させる。突き合わせはローダーの責務 */
-      id: z.string().regex(SLUG, "id は kebab-case で書く"),
+      id: z.string().regex(SLUG, "id must be kebab-case"),
       name: z.string().min(1),
       desired_state: z.string().min(1),
       /**
@@ -481,7 +481,7 @@ export const goalSchema = z.strictObject({
        * 既定は空。書いていない既存の Goal はこれまでどおり単独で回る。
        */
       depends_on: z
-        .array(z.string().regex(SLUG, "depends_on は kebab-case の id で書く"))
+        .array(z.string().regex(SLUG, "depends_on entries must be kebab-case ids"))
         .default([]),
     })
     .superRefine((goal, ctx) => {
@@ -491,7 +491,7 @@ export const goalSchema = z.strictObject({
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
           path: ["depends_on"],
-          message: "depends_on に自分自身は書けない",
+          message: "depends_on must not list the goal itself",
         });
       }
       const duplicated = goal.depends_on.filter(
@@ -501,7 +501,7 @@ export const goalSchema = z.strictObject({
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
           path: ["depends_on"],
-          message: `depends_on に同じ id が2回ある: ${[...new Set(duplicated)].join(", ")}`,
+          message: `depends_on lists the same id twice: ${[...new Set(duplicated)].join(", ")}`,
         });
       }
     }),
@@ -574,58 +574,60 @@ export function goalTemplate(slug: string): string {
   return `version: 1
 
 goal:
-  # ファイル名の slug と一致させる。改名するなら両方を直す。
-  # 揃っていないと ent start の前に goal-parse が弾く。
+  # Must match the filename slug. Rename both together.
+  # If they diverge, goal-parse rejects the file before ent start runs.
   id: ${slug}
-  # 達成したいことの短い名前。ここも埋める。
-  name: 達成したいことの短い名前
+  # A short name for what you want to achieve. Fill this in too.
+  name: short name for what you want to achieve
 
-  # 手順ではなく「終わった状態」を書く。読んだ人が同じものを思い浮かべられる
-  # ところまで具体的に書く。ここが Actor に渡る本文になる。
+  # Write the finished state, not the steps. Be concrete enough that a
+  # reader pictures the same thing. This text is what reaches the Actor.
   desired_state: |
-    ここに、何が成立していれば終わりなのかを書く。
+    Describe here what must hold for this Goal to be done.
 
-  # 先に COMPLETED になっていなければならない Goal の id（design.md §10-12）。
-  # 粗いタスクを複数の Goal に割ったときの順序をここに書く。
-  # 空なら単独で回る。依存が揃うまで ent run は lease も取らずに待つ。
+  # ids of Goals that must reach COMPLETED first (design.md §10-12).
+  # Declare the ordering here when you split coarse work across Goals.
+  # Empty means this Goal runs on its own. Until the dependencies are
+  # satisfied, ent run waits without even taking the lease.
   depends_on: []
 
-# 対象リポジトリに合わせて埋める。埋め忘れても ent start は通るが、
-# 最初のティックで GitHub の 404 として出る。
+# Fill this in for the target repository. ent start still passes if you
+# forget, but the first tick surfaces it as a GitHub 404.
 repository:
   provider: github
   owner: your-org
   name: your-repo
   default_branch: main
-  # 対象リポジトリに「まず draft で出す」運用があるなら、次の2行を外す。
-  # 書かなければ ready で立つ（これまでどおり）。
+  # If the target repository opens pull requests as drafts first, uncomment
+  # the next two lines. Left out, pull requests open ready (as before).
   # pull_request:
   #   draft: true
 
-# VERIFY が criteria を1件でも実行する前に1度だけ流す。冪等であること。
+# Run once before VERIFY executes any criterion. Must be idempotent.
 setup: []
 
-# design.md §3.2: ここに落とせない Goal は ACTIVE にしない。
-# type は command / fact / human の3つ。
+# design.md §3.2: a Goal that cannot be reduced to criteria is not made ACTIVE.
+# type is one of command / fact / human.
 acceptance_criteria:
   - id: ac-1
-    description: 満たされたことを外から確かめられる条件
+    description: a condition whose satisfaction can be checked from outside
     verification:
       type: command
-      run: "echo 'ここを実際の検証コマンドに置き換える' && exit 1"
+      run: "echo 'replace this with the real verification command' && exit 1"
 
 context:
   background: |
-    なぜこれをやるのか。Actor がそのまま読む。
+    Why this is being done. The Actor reads this as written.
   constraints:
-    - 触ってほしくないものがあればここに書く
+    - List anything you do not want touched here
   references: []
 
 policies:
-  # 書いたゲートだけが Agent の拒否ルールになる。**書かなければ許可される。**
-  # 6つ全部を並べておく。緩めるなら、消す側を意識的な操作にする。
-  # secret_access と external_send だけは APPROVAL_GATE_FLOOR が必ず混ぜるので、
-  # 消しても効き続ける。
+  # Only the gates you write become deny rules for the Agent.
+  # **What you leave out is permitted.** All six are listed here. To relax
+  # one, deleting it has to be a deliberate act. secret_access and
+  # external_send are always merged in by APPROVAL_GATE_FLOOR, so they keep
+  # applying even if you delete them.
   require_human_approval:
     - merge
     - force_push
@@ -633,17 +635,20 @@ policies:
     - deploy
     - secret_access
     - external_send
-  # Agent に書き換えさせないパス。ここが空でも PROTECTED_PATH_FLOOR は必ず効く。
+  # Paths the Agent must not rewrite. PROTECTED_PATH_FLOOR always applies
+  # even when this is empty.
   protected_paths: []
-  # controller 自身の publish を、どこまで自動で進めるか。上の
-  # require_human_approval は「Agent に許さない操作」で、こちらは
-  # 「controller が行わない段」になる。主体が違うので宣言も分けてある。
-  # manual にした段は controller が行わず、そのティックは WAITING_HUMAN で止まる。
-  # 止めた理由と次にすることは ent get の decision に出る。
+  # How far the controller carries its own publish automatically.
+  # require_human_approval above covers operations the Agent is not allowed
+  # to perform; this covers stages the controller does not perform. The
+  # subject differs, so the declarations are kept separate.
+  # The controller does not perform a stage set to manual, and that tick
+  # stops at WAITING_HUMAN. Why it stopped and what to do next appear in
+  # the decision shown by ent get.
   publish:
     push_branch: auto
-    # チームで使うリポジトリなら manual にする。PR の作成はレビュアーへの
-    # 通知を伴い、取り消しても通知は戻らない。
+    # Set this to manual for a repository shared with a team. Opening a pull
+    # request notifies reviewers, and undoing it does not recall the notice.
     open_pull_request: auto
 
 budget:

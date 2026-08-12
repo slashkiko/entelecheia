@@ -100,9 +100,9 @@ describe("describeViolations", () => {
       { kind: "escaped_worktree", path: "/etc/hosts", pattern: null },
     ]);
 
-    expect(text).toContain("保護パス");
+    expect(text).toContain("protected path");
     expect(text).toContain("src/controller/**");
-    expect(text).toContain("worktree の外");
+    expect(text).toContain("outside the worktree");
     expect(text).toContain("/etc/hosts");
   });
 });

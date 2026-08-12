@@ -100,7 +100,7 @@ export function toVerifications(
       result: "unresolved",
       reason: "pending",
       evidence: null,
-      detail: `${key} が VERIFIED な Fact としても unresolved としても残っていない`,
+      detail: `${key} is present neither as a VERIFIED Fact nor as unresolved`,
       verifiedAt,
     };
   });
@@ -128,9 +128,9 @@ function dependsOnReview(criterion: AcceptanceCriterion): boolean {
  * 目的そのもので、文面が仕様にあたるため。
  */
 export const REVIEW_PENDING_DETAIL =
-  `実装役がこのティックで走ったので、レビュー系の criterion はこのティックでは判定しない。` +
-  `${REVIEW_REVIEWED_SHA_KEY} も ${LOCAL_HEAD_SHA_KEY} も ACT より前の観測で、` +
-  `このティックで積まれた commit はまだ誰も読んでいない`;
+  `The implement role ran this tick, so review criteria are not judged this tick. ` +
+  `Both ${REVIEW_REVIEWED_SHA_KEY} and ${LOCAL_HEAD_SHA_KEY} were observed before ACT, ` +
+  `and nobody has read the commits added during this tick yet`;
 
 /**
  * 実装役が走ったティックの検証結果から、レビュー系の criteria を pending に倒す。

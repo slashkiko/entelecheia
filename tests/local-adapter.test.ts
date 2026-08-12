@@ -280,7 +280,7 @@ describe("gitBranch", () => {
     await git(worktree.path, ["checkout", "-b", "develop"]);
 
     await expect(gitBranch(worktreeRoot).push("sample-goal", "develop")).rejects.toThrow(
-      "base ブランチには push しない",
+      "refusing to push to the base branch",
     );
   });
 
@@ -294,7 +294,7 @@ describe("gitBranch", () => {
     await git(worktreePath, ["checkout", "-b", `evil;touch\${IFS}${marker}`]);
 
     await expect(gitBranch(worktreeRoot).push("sample-goal", "main")).rejects.toThrow(
-      "push 先にできないブランチ名",
+      "branch name is not usable as a push target",
     );
     expect(existsSync(marker)).toBe(false);
   });

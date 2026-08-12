@@ -42,7 +42,7 @@ import {
  */
 
 /** 節の見出し。宛先の本文のどこに足したかを、読む側が探せるようにする */
-const HEADING = "## レビュー役の本文";
+const HEADING = "## Review role message";
 
 const NOW = new Date("2026-08-12T06:00:00.000Z");
 

@@ -38,7 +38,10 @@ export function reviewRunLog(options: ReviewRunOptions): ReviewPort {
       try {
         runs = options.listRuns();
       } catch (error) {
-        throw new PortError("unavailable", `Run の一覧を読めなかった: ${errorMessage(error)}`);
+        throw new PortError(
+          "unavailable",
+          `could not read the list of Runs: ${errorMessage(error)}`,
+        );
       }
 
       const run = latestReviewRun(runs);
@@ -52,7 +55,7 @@ export function reviewRunLog(options: ReviewRunOptions): ReviewPort {
       if (logRef === null) {
         throw new PortError(
           "unavailable",
-          `レビュー役の Run ${run.id} に生ログの置き場所が残っていない`,
+          `Run ${run.id} of the review role has no raw-log location recorded`,
         );
       }
 
@@ -63,7 +66,7 @@ export function reviewRunLog(options: ReviewRunOptions): ReviewPort {
       } catch (error) {
         throw new PortError(
           "unavailable",
-          `レビュー役の Run ${run.id} の生ログを読めなかった（${logRef}）: ${errorMessage(error)}`,
+          `could not read the raw log of Run ${run.id} of the review role (${logRef}): ${errorMessage(error)}`,
         );
       }
 

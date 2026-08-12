@@ -148,7 +148,7 @@ async function runCommand(argv: readonly string[]): Promise<number> {
     // DRAFT から COMPLETED まで進めた。唯一の承認ゲートが飛ばせていた。
     if (command.kind === "run" && store.getState(goal.goal.id) === null) {
       process.stderr.write(
-        `${goal.goal.id} は登録されていない。先に ent start ${goal.goal.id} を叩くこと\n`,
+        `${goal.goal.id} is not registered. Run ent start ${goal.goal.id} first\n`,
       );
       process.stdout.write(`${JSON.stringify(summarize(draftIdle()), null, 2)}\n`);
       return 0;
@@ -170,8 +170,8 @@ async function runCommand(argv: readonly string[]): Promise<number> {
       const current = store.getState(goal.goal.id);
       if (current !== null && isTerminal(current.status)) {
         process.stderr.write(
-          `${goal.goal.id} は ${current.status} なので start できない。` +
-            "やり直すなら .goals/.state/goals.db の状態を明示的に戻すこと\n",
+          `${goal.goal.id} is ${current.status}, so it cannot be started. ` +
+            "To rerun it, roll the state in .goals/.state/goals.db back explicitly\n",
         );
         // 2 ではなく 1 を返す。2 は「引数が不正」で、SKILL.md はそこに
         // 「stderr に有効値が並ぶ」と書いている。argv は妥当で打ち直せる値も
@@ -205,8 +205,8 @@ async function runCommand(argv: readonly string[]): Promise<number> {
         }
       } catch (error) {
         process.stderr.write(
-          `関門の基準にする HEAD を読めなかったので、${goal.repository.default_branch} を基準にする` +
-            `（人間が書いた分も Actor の編集として並ぶ）: ${errorMessage(error)}\n`,
+          `Could not read the HEAD to use as the gate baseline, so ${goal.repository.default_branch} is used instead. ` +
+            `What the human wrote will line up as Actor edits too: ${errorMessage(error)}\n`,
         );
       }
       // --json を渡さないときの出力は変えない。cron と既存の呼び出しが読んでいる。
@@ -268,7 +268,7 @@ async function runCommand(argv: readonly string[]): Promise<number> {
     if (record.error !== null) {
       // 終了コードは変えない。通知の失敗でティックの成否を塗り替えない
       // （design.md §9）。ただし黙らない。stdout は JSON 専用なので stderr に出す。
-      process.stderr.write(`進捗を書けなかった: ${record.error}\n`);
+      process.stderr.write(`Could not write progress: ${record.error}\n`);
     }
     return 0;
   } finally {
@@ -301,7 +301,7 @@ function abandonGoal(
   // という読めない記録ができる。
   if (current === null) {
     process.stderr.write(
-      `${goal.goal.id} は登録されていない。降りる先の状態が無い（ent start から始める）\n`,
+      `${goal.goal.id} is not registered. There is no state to step down from (start with ent start)\n`,
     );
     return 1;
   }
@@ -311,7 +311,7 @@ function abandonGoal(
   // 書いている。COMPLETED を ABANDONED で塗り替えられるなら、同じことになる。
   if (isTerminal(current.status)) {
     process.stderr.write(
-      `${goal.goal.id} は既に ${current.status} なので abandon できない。終端は塗り替えない\n`,
+      `${goal.goal.id} is already ${current.status}, so it cannot be abandoned. A terminal state is never overwritten\n`,
     );
     return 1;
   }
@@ -320,8 +320,8 @@ function abandonGoal(
   // 横から終端へ落とすと、走っている controller が終端の Goal に書き戻す。
   if (current.leaseOwner !== null) {
     process.stderr.write(
-      `${goal.goal.id} は ${current.leaseOwner} が回している。` +
-        "終わるのを待つか、lease が切れてから叩くこと\n",
+      `${goal.goal.id} is being run by ${current.leaseOwner}. ` +
+        "Wait for it to finish, or run this after the lease expires\n",
     );
     return 1;
   }
@@ -330,7 +330,7 @@ function abandonGoal(
   process.stdout.write(
     command.json === true
       ? `${JSON.stringify({ id: goal.goal.id, status: "ABANDONED", reason: command.reason }, null, 2)}\n`
-      : `${goal.goal.id}: ABANDONED（${command.reason}）\n`,
+      : `${goal.goal.id}: ABANDONED (${command.reason})\n`,
   );
   return 0;
 }
@@ -344,7 +344,7 @@ function abandonGoal(
 function draftIdle(): TickResult {
   return {
     ran: false,
-    skipped: "Goal が登録されていない",
+    skipped: "the Goal is not registered",
     reclaimed: 0,
     decision: null,
     run: null,

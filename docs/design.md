@@ -5,6 +5,13 @@ you newly join (or when you open a new session).
 
 *English | [日本語](design.ja.md)*
 
+> [!NOTE]
+> **Issue and PR numbers in the body text point at the repository this code was migrated from.** The
+> history was rewritten on the way here, so this repository holds zero issues and zero PRs. Numbers
+> written as `issue #58` or `PR #34` therefore do not resolve here, and once issues start being filed
+> they are numbered from 1 — the same number will end up belonging to something unrelated. Read them
+> as labels for the record left behind, not as links.
+
 Last updated: 2026-08-12. This update brings in the following 11 items.
 
 - **Decided the granularity of task decomposition.** The policy is to stand up one Goal per
@@ -25,7 +32,7 @@ Last updated: 2026-08-12. This update brings in the following 11 items.
   `publishHold` in the output of `ent run` (§7)
 - **The review role's body now goes to the destination of `--report`** (§4.3). The path that turns
   only the single word `verdict` into a Fact stays as it is; the body that used to be folded away is
-  appended after the main text as a `## レビュー役の本文` section. It does not go into PR comments
+  appended after the main text as a `## Review role message` section. It does not go into PR comments
 - **Moved observation of the state DB from a byte string to a per-Goal logical digest** (§10-6). The
   invariant columns of Run that were dropped from the projection are reconciled by `ownRunDrift`.
   The `status` of the `depends_on` Goals is in the projection too. The false positive that was
@@ -515,7 +522,7 @@ produces neither a Fact nor an `unobserved`.
 issue #59).** The path above leaves only two things, the single word `verdict` and the sha, and both
 the reasons attached to an `approved` and its reservations sink into `runs/<run-id>/log.jsonl`.
 `approved` does not mean "there is nothing to say," so `publish` reads `ReviewPort.latest()` once
-more and appends it as a `## レビュー役の本文` section **after** the destination's body. It goes
+more and appends it as a `## Review role message` section **after** the destination's body. It goes
 after in order to keep the position of the criteria table the same regardless of destination — cut
 in front of it, and you cannot reach the pass status without skimming past a long body. The body is
 not summarized, and no line break, table, or code block is dropped (it goes through neither

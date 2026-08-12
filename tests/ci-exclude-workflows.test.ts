@@ -66,7 +66,7 @@ const EXCLUDED_KEY = "github.ci.excluded_workflows";
 const COUNT_KEY = "github.ci.failed_job_count";
 
 /** 宣言が無いときの detail。PR #71 が出しているものと1文字も変えない */
-const DETAIL_WITHOUT_DECLARATION = "failed_job_count=0 (head sha の全 workflow run を横断)";
+const DETAIL_WITHOUT_DECLARATION = "failed_job_count=0 (across all workflow runs for the head sha)";
 
 interface Route {
   match: string;
@@ -422,8 +422,8 @@ describe("observe が除外を隠さない", () => {
     );
 
     expect(byKey(result.facts, COUNT_KEY)?.evidence?.detail).toBe(
-      "failed_job_count=0 (head sha の全 workflow run を横断" +
-        " / 除外: Require owner approval (1 run / waiting), Require ownr approval (一致なし))",
+      "failed_job_count=0 (across all workflow runs for the head sha" +
+        " / excluded: Require owner approval (1 run / waiting), Require ownr approval (no match))",
     );
   });
 
@@ -447,8 +447,8 @@ describe("observe が除外を隠さない", () => {
     );
 
     expect(byKey(result.facts, COUNT_KEY)?.evidence?.detail).toBe(
-      "failed_job_count=0 (head sha の全 workflow run を横断" +
-        " / 除外: Require owner approval (2 run / waiting, failure))",
+      "failed_job_count=0 (across all workflow runs for the head sha" +
+        " / excluded: Require owner approval (2 run / waiting, failure))",
     );
   });
 
@@ -536,7 +536,7 @@ describe("進捗レポートでも除外が読める", () => {
     // 進捗コメントが出すのは criteria の detail だけなので、観測が残した文脈が
     // ここまで届かないと、人間が読む場所からは除外が消える。
     const observed =
-      "failed_job_count=0 (head sha の全 workflow run を横断 / 除外: Require owner approval (1 run / waiting))";
+      "failed_job_count=0 (across all workflow runs for the head sha / excluded: Require owner approval (1 run / waiting))";
     const detail = await detailOf(factCriterion(COUNT_KEY, 0), factOf(COUNT_KEY, 0, observed));
 
     // **書式まで固定する。** ここは人間が読む場所の書式そのものなので、

@@ -162,7 +162,7 @@ describe("resume_after を読む", () => {
     // 「寝ている」「他のワーカーが処理中」「終端」はどれも ran: false になる。
     store.setStatus(GOAL.goal.id, "COMPLETED", null);
     const terminal = await tick(GOAL, deps(store));
-    expect(terminal.skipped).toContain("終端");
+    expect(terminal.skipped).toContain("terminal");
 
     store.setStatus(GOAL.goal.id, "ACTIVE", null);
     // 期限判定も注入した時計で行う。NOW より先に置いておけば奪われない。

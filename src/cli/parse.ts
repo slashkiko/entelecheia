@@ -13,20 +13,20 @@ import { DEFAULT_LIMIT } from "../usecase/inspect.js";
 
 export const USAGE = `ent — Declare the end state; the controller converges to it.
 
-  ent init             いまのリポジトリを ent で回せる状態にする（冪等）
-  ent start <slug>     Goal を登録して ACTIVE にする
-  ent run <slug>       1ティック回して終了する（--once は既定）
-                       --pr <n> / --issue <n> で観測対象を指定する
-                       --dry-run で、書かずに次のティックの中身だけを見る
-                       --report stdout|<path> で、進捗を PR に投稿せず手元に出す
-  ent get <slug>       宣言部と実行時状態をまとめて表示する
-  ent abandon <slug>   もう追わないと宣言して終端にする（--reason は必須）
-  ent list             登録済みの Goal を一覧する
-  ent doctor           回す前の前提が揃っているかを読み取り専用で調べる
-  ent agent-context    CLI の構造を機械可読な JSON で出す
+  ent init             Make the current repository runnable with ent (idempotent)
+  ent start <slug>     Register a Goal and make it ACTIVE
+  ent run <slug>       Run one tick and exit (--once is the default)
+                       --pr <n> / --issue <n> names what to observe
+                       --dry-run writes nothing; it only shows what the next tick would contain
+                       --report stdout|<path> sends progress to your hands instead of the PR
+  ent get <slug>       Show the declaration and the runtime state together
+  ent abandon <slug>   Declare it no longer pursued and terminate it (--reason is required)
+  ent list             List registered Goals
+  ent doctor           Read-only check that the prerequisites for running are in place
+  ent agent-context    Emit the CLI's structure as machine-readable JSON
 
-  --json               出力を JSON にする（run / get / list は既定で JSON）
-  --limit <n>          出力の件数を絞る（get / list。既定は ${String(DEFAULT_LIMIT)}）
+  --json               Emit JSON (run / get / list are JSON by default)
+  --limit <n>          Cap how many entries are printed (get / list; default ${String(DEFAULT_LIMIT)})
 `;
 
 /** エージェントが叩けるサブコマンド。エラーはこの集合をそのまま並べる（gist 2.3） */
@@ -132,14 +132,14 @@ export function parseCommand(argv: readonly string[]): Command {
   if (sub === "show") {
     // 別名としても残さない。同じ操作に2つ名前があると、どちらが正かを
     // 確かめる分だけ無駄が出る（gist 3.1）。打ち直す先はここで示す。
-    return { kind: "error", message: "show は get に変わった: ent get <slug>" };
+    return { kind: "error", message: "show became get: ent get <slug>" };
   }
   if (!isSubcommand(sub)) {
     // 黙って無視すると、打ち間違いが「何も起きなかった」に見える。
     // 推測させても無駄な再試行になるので、有効値をその場で全部並べる（gist 2.3）。
     return {
       kind: "error",
-      message: `不明なサブコマンド: ${sub}（使えるのは ${SUBCOMMANDS.join(" / ")}）`,
+      message: `unknown subcommand: ${sub} (valid: ${SUBCOMMANDS.join(" / ")})`,
     };
   }
 
@@ -156,7 +156,7 @@ export function parseCommand(argv: readonly string[]): Command {
     // slug を取らないサブコマンド。余分な引数は打ち間違いとして error にする。
     if (sub === "init" || sub === "list" || sub === "doctor" || sub === "agent-context") {
       if (positionals.length > 0) {
-        return { kind: "error", message: `引数が多い: ${positionals.join(" ")}` };
+        return { kind: "error", message: `too many arguments: ${positionals.join(" ")}` };
       }
       if (sub === "agent-context") {
         return { kind: "agent-context" };
@@ -177,10 +177,10 @@ export function parseCommand(argv: readonly string[]): Command {
     const slug = positionals[0];
     if (slug === undefined) {
       // どの Goal を回すかは既定値で埋められない。打ち直せる形を添える（gist 2.3）。
-      return { kind: "error", message: `${sub} には Goal の slug が要る: ent ${sub} <slug>` };
+      return { kind: "error", message: `${sub} needs a Goal slug: ent ${sub} <slug>` };
     }
     if (positionals.length > 1) {
-      return { kind: "error", message: `引数が多い: ${positionals.join(" ")}` };
+      return { kind: "error", message: `too many arguments: ${positionals.join(" ")}` };
     }
     if (!SLUG.test(slug)) {
       // slug はそのまま `.goals/<slug>.yaml` のパスになる。`../` を通すと
@@ -189,7 +189,7 @@ export function parseCommand(argv: readonly string[]): Command {
       // ディレクトリを縛らないので、そこでは止まらない。
       return {
         kind: "error",
-        message: `slug の形が不正: ${slug}（kebab-case のみ。パス区切りは使えない）`,
+        message: `malformed slug: ${slug} (kebab-case only; path separators are not allowed)`,
       };
     }
 
@@ -211,7 +211,7 @@ export function parseCommand(argv: readonly string[]): Command {
       if (reason === "") {
         return {
           kind: "error",
-          message: `abandon には理由が要る: ent abandon ${slug} --reason "<なぜ追わないのか>"`,
+          message: `abandon needs a reason: ent abandon ${slug} --reason "<why it is no longer pursued>"`,
         };
       }
       return { kind: "abandon", slug, reason, ...json };
@@ -237,8 +237,8 @@ export function parseCommand(argv: readonly string[]): Command {
       return {
         kind: "error",
         message:
-          "--dry-run と --report は一緒に使えない。--dry-run は publish を通らないので進捗を書かない" +
-          "（criteria の結果は出力の observed.verifications に入る）",
+          "--dry-run and --report cannot be combined. --dry-run never reaches publish, so no progress is written" +
+          " (criteria results land in observed.verifications of the output)",
       };
     }
 
@@ -319,7 +319,7 @@ function positiveInteger(value: unknown, flag: string): number | string | undefi
   }
   const parsed = Number(value);
   if (!Number.isInteger(parsed) || parsed <= 0) {
-    return `${flag} は正の整数で指定する: ${String(value)}`;
+    return `${flag} takes a positive integer: ${String(value)}`;
   }
   return parsed;
 }
@@ -335,7 +335,7 @@ function reportTarget(value: unknown): ReportTarget | string | undefined {
   }
   const raw = typeof value === "string" ? value.trim() : "";
   if (raw === "") {
-    return "--report には宛先が要る: stdout かファイルのパス";
+    return "--report needs a destination: stdout or a file path";
   }
   return raw === "stdout" ? { kind: "stdout" } : { kind: "file", path: raw };
 }

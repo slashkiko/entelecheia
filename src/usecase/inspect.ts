@@ -190,5 +190,5 @@ export function truncationHint(shown: number, total: number, flag: string): stri
   if (total <= shown) {
     return null;
   }
-  return `${total} 件のうち ${shown} 件だけ出した。全部読むなら ${flag} <n> で上限を上げる`;
+  return `Printed ${String(shown)} of ${String(total)}. Raise the cap with ${flag} <n> to read them all`;
 }

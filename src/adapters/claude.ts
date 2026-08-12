@@ -219,10 +219,10 @@ export function claudeLlm(options: ClaudeOptions): LlmPort {
 function unavailableMessage(result: Outcome["result"]): string {
   if (result === null) {
     // 途中で切れたのに空の出力として扱うと、壊れた出力と区別できなくなる。
-    return "LlmPort が result を返さないままストリームが終わった";
+    return "The stream ended before LlmPort returned a result";
   }
   const body = result.text.trim();
-  return `LlmPort がエラー result を返した（${result.subtype}）: ${body === "" ? "本文なし" : body}`;
+  return `LlmPort returned an error result (${result.subtype}): ${body === "" ? "no body" : body}`;
 }
 
 /** 生ログの置き場所を決める id。`decide-2026-08-09T04-40-56-280Z-1` の形になる */
@@ -345,7 +345,7 @@ function throwIfUsageLimit(message: unknown, lastStatus: string | null): string 
     if (info.status === "rejected") {
       throw new PortError(
         "usage_limit",
-        `使用量上限に達した（${info.rateLimitType ?? "unknown"}）`,
+        `Usage limit reached (${info.rateLimitType ?? "unknown"})`,
         resumeAfterFrom(info.resetsAt),
       );
     }
@@ -356,9 +356,9 @@ function throwIfUsageLimit(message: unknown, lastStatus: string | null): string 
   if (assistant.success && assistant.data.error === "rate_limit") {
     if (lastStatus === "rejected") {
       // リセット時刻はこの経路では分からない。指数バックオフに任せる。
-      throw new PortError("usage_limit", "使用量上限に達した（assistant error）");
+      throw new PortError("usage_limit", "Usage limit reached (assistant error)");
     }
-    throw new PortError("unavailable", "429 を受けた（一時的な容量制限の可能性）");
+    throw new PortError("unavailable", "Received 429 (possibly a temporary capacity limit)");
   }
 
   return lastStatus;

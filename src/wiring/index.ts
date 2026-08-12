@@ -283,7 +283,7 @@ function withGithub<T>(
 /** トークンが無いときに呼ばれたら throw する口 */
 function offline(): () => Promise<never> {
   return async (): Promise<never> => {
-    throw new PortError("unavailable", "GITHUB_TOKEN が設定されていない");
+    throw new PortError("unavailable", "GITHUB_TOKEN is not set");
   };
 }
 
@@ -506,7 +506,7 @@ function actorKindFrom(value: string | undefined, key = "ENT_ACTOR"): Exclude<Ac
   if (raw === "claude-code" || raw === "codex") {
     return raw;
   }
-  throw new Error(`${key} が不正: ${raw}（claude-code / codex）`);
+  throw new Error(`${key} is invalid: ${raw} (claude-code / codex)`);
 }
 
 function nonEmpty(value: string | undefined): string | undefined {
@@ -524,7 +524,7 @@ function effortFrom(value: string | undefined, key = "ENT_EFFORT"): EffortLevel 
     return undefined;
   }
   if (!EFFORT_LEVELS.includes(raw as EffortLevel)) {
-    throw new Error(`${key} が不正: ${raw}（${EFFORT_LEVELS.join(" / ")}）`);
+    throw new Error(`${key} is invalid: ${raw} (${EFFORT_LEVELS.join(" / ")})`);
   }
   return raw as EffortLevel;
 }
@@ -535,7 +535,7 @@ function codexEffortFrom(value: string | undefined, key = "ENT_EFFORT"): CodexEf
     return undefined;
   }
   if (!CODEX_EFFORT_LEVELS.includes(raw as CodexEffort)) {
-    throw new Error(`${key} が不正: ${raw}（${CODEX_EFFORT_LEVELS.join(" / ")}）`);
+    throw new Error(`${key} is invalid: ${raw} (${CODEX_EFFORT_LEVELS.join(" / ")})`);
   }
   return raw as CodexEffort;
 }

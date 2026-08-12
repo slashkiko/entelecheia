@@ -185,7 +185,7 @@ describe("進めない理由を人間に届ける", () => {
     );
 
     expect(reason).toContain("alpha");
-    expect(reason).toContain("待っても解けない");
+    expect(reason).toContain("Waiting will not resolve this");
     expect(reason).toContain("depends_on");
   });
 });
@@ -312,7 +312,7 @@ describe("依存が揃うまでティックを進めない", () => {
     const result = await tick(goal, deps(store));
 
     expect(result.ran).toBe(false);
-    expect(result.skipped).toContain("待っても解けない");
+    expect(result.skipped).toContain("Waiting will not resolve this");
   });
 
   it("--dry-run でも、依存待ちなら中身を見せずに理由を返す", async () => {

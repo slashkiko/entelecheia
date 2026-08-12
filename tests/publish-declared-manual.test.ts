@@ -296,7 +296,7 @@ describe("止めたことを PR の側から読める", () => {
     const note = await noteOf({ push_branch: "manual", open_pull_request: "auto" });
 
     expect(note).toContain("policies.publish.push_branch");
-    expect(note).toContain("手で push しても");
+    expect(note).toContain("Pushing by hand");
     expect(note).toContain("auto");
     expect(note).toContain("ent abandon");
   });

@@ -149,13 +149,13 @@ export function describeCommandResult(result: CommandResult): string {
   const output = result.stderr.trim() === "" ? result.stdout : result.stderr;
   const trimmed = output.trim();
   if (trimmed === "") {
-    return `${head}（出力なし）`;
+    return `${head} (no output)`;
   }
 
   const tail =
     trimmed.length <= COMMAND_OUTPUT_LIMIT
       ? trimmed
-      : `…（先頭を切った）\n${trimmed.slice(-COMMAND_OUTPUT_LIMIT)}`;
+      : `...(earlier output truncated)\n${trimmed.slice(-COMMAND_OUTPUT_LIMIT)}`;
   return `${head}\n${tail}`;
 }
 
@@ -165,10 +165,10 @@ async function runSetup(setup: readonly string[], deps: VerifyDeps): Promise<str
     try {
       const result = await deps.command.run(command);
       if (result.exitCode !== 0) {
-        return `setup が失敗した: ${command} → exit_code=${result.exitCode}`;
+        return `The setup step failed: ${command} → exit_code=${result.exitCode}`;
       }
     } catch (error) {
-      return `setup を実行できなかった: ${command} → ${errorMessage(error)}`;
+      return `Could not run the setup step: ${command} → ${errorMessage(error)}`;
     }
   }
   return null;
@@ -203,7 +203,7 @@ function judgeReviewVerdict(
     return {
       resolved: false,
       reason: "pending",
-      detail: `${REVIEW_VERDICT_KEY} は観測できているが、${missing} が VERIFIED な Fact として観測されていない。どの commit へのレビューかを突き合わせられないので合否を出さない`,
+      detail: `${missing} is not a VERIFIED Fact, so ${REVIEW_VERDICT_KEY} cannot be tied to a commit; no pass/fail is issued`,
     };
   }
 
@@ -215,8 +215,8 @@ function judgeReviewVerdict(
     evidence: {
       source: verdict.evidence.source,
       detail: current
-        ? `${REVIEW_VERDICT_KEY}=${JSON.stringify(verdict.value)} expected=${JSON.stringify(expected)}（${shas}: 現在の HEAD へのレビュー）`
-        : `${REVIEW_VERDICT_KEY}=${JSON.stringify(verdict.value)} expected=${JSON.stringify(expected)}（${shas}: レビュー後に実装が進んでおり、いまの HEAD は誰も読んでいない）`,
+        ? `${REVIEW_VERDICT_KEY}=${JSON.stringify(verdict.value)} expected=${JSON.stringify(expected)} (reviewed the current HEAD: ${shas})`
+        : `${REVIEW_VERDICT_KEY}=${JSON.stringify(verdict.value)} expected=${JSON.stringify(expected)} (stale, the implementation moved on and nobody has read the current HEAD: ${shas})`,
     },
   };
 }
@@ -246,7 +246,7 @@ async function judge(
         return {
           resolved: false,
           reason: "port_failed",
-          detail: `${command} を実行できなかった: ${errorMessage(error)}`,
+          detail: `Could not run ${command}: ${errorMessage(error)}`,
         };
       }
     }
@@ -260,7 +260,7 @@ async function judge(
         return {
           resolved: false,
           reason: "pending",
-          detail: `${verification.key} が VERIFIED な Fact として観測されていない`,
+          detail: `${verification.key} is not observed as a VERIFIED Fact`,
         };
       }
 

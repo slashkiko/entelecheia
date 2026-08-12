@@ -58,7 +58,7 @@ function decode<S extends z.ZodType>(schema: S, raw: unknown, source: string): z
   if (!parsed.success) {
     throw new PortError(
       "shape_mismatch",
-      `${source}: 応答の形が想定と違う: ${parsed.error.message}`,
+      `${source}: response shape differs from what was expected: ${parsed.error.message}`,
     );
   }
   return parsed.data;

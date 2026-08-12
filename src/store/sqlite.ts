@@ -835,7 +835,7 @@ export function encodeCell(value: unknown): string {
   if (value instanceof Uint8Array) {
     return `b:${Array.from(value, (byte) => byte.toString(16).padStart(2, "0")).join("")}`;
   }
-  throw new Error(`状態 DB のダイジェストに載せられない型の値がある: ${typeof value}`);
+  throw new Error(`value of a type that cannot go into the state DB digest: ${typeof value}`);
 }
 
 /** ロックが空くのを待つ上限（ミリ秒）。busy_timeout と WAL への切り替え待ちに使う */
@@ -940,7 +940,7 @@ function toFact(row: FactRow): Fact {
 function parseRows<S extends z.ZodType>(schema: S, raw: unknown, source: string): z.infer<S>[] {
   const parsed = z.array(schema).safeParse(raw);
   if (!parsed.success) {
-    throw new Error(`${source}: DB の行が想定と違う: ${parsed.error.message}`);
+    throw new Error(`${source}: DB row differs from what was expected: ${parsed.error.message}`);
   }
   return parsed.data;
 }
@@ -973,13 +973,15 @@ function parseArtifacts(raw: string, source: string): string[] {
     decoded = JSON.parse(raw);
   } catch (error) {
     throw new Error(
-      `${source}: DB の行が想定と違う: artifacts が JSON として読めない: ${errorMessage(error)}`,
+      `${source}: DB row differs from what was expected: artifacts is not readable as JSON: ${errorMessage(error)}`,
     );
   }
 
   const parsed = runSchema.shape.artifacts.safeParse(decoded);
   if (!parsed.success) {
-    throw new Error(`${source}: DB の行が想定と違う: artifacts: ${parsed.error.message}`);
+    throw new Error(
+      `${source}: DB row differs from what was expected: artifacts: ${parsed.error.message}`,
+    );
   }
   return parsed.data;
 }
@@ -995,7 +997,7 @@ function parseRow<S extends z.ZodType>(
   }
   const parsed = schema.safeParse(raw);
   if (!parsed.success) {
-    throw new Error(`${source}: DB の行が想定と違う: ${parsed.error.message}`);
+    throw new Error(`${source}: DB row differs from what was expected: ${parsed.error.message}`);
   }
   return parsed.data;
 }

@@ -85,14 +85,20 @@ export function codexActor(options: CodexOptions): ActorPort {
         if (invocation.signal.aborted) {
           return partial();
         }
-        throw new PortError("unavailable", `Codex CLI を起動できなかった: ${errorMessage(error)}`);
+        throw new PortError(
+          "unavailable",
+          `Could not launch the Codex CLI: ${errorMessage(error)}`,
+        );
       }
 
       const outcome = outcomeOf(execution);
       try {
         await writeCodexLog(options, logRef, execution);
       } catch (error) {
-        throw new PortError("unavailable", `Codex の生ログを書けなかった: ${errorMessage(error)}`);
+        throw new PortError(
+          "unavailable",
+          `Could not write the Codex raw log: ${errorMessage(error)}`,
+        );
       }
       if (outcome.usageLimit) {
         return {
@@ -102,7 +108,7 @@ export function codexActor(options: CodexOptions): ActorPort {
           artifacts: outcome.artifacts,
           errorKind: "usage_limit",
           resumeAfter: null,
-          detail: outcome.failure ?? "Codex の使用量上限に達した",
+          detail: outcome.failure ?? "Codex usage limit reached",
         };
       }
 
@@ -118,7 +124,7 @@ export function codexActor(options: CodexOptions): ActorPort {
           ? {}
           : {
               errorKind: "unavailable" as const,
-              detail: outcome.failure ?? "Codex CLI が最終メッセージを返さなかった",
+              detail: outcome.failure ?? "The Codex CLI returned no final message",
             }),
       };
     },
@@ -149,7 +155,10 @@ export function codexLlm(options: CodexOptions): LlmPort {
       } catch (error) {
         await writeFailureLog(options, logRef, error);
         options.onCall?.({ purpose: "decide", tokens: 0, logRef, ok: false, calledAt });
-        throw new PortError("unavailable", `Codex CLI を起動できなかった: ${errorMessage(error)}`);
+        throw new PortError(
+          "unavailable",
+          `Could not launch the Codex CLI: ${errorMessage(error)}`,
+        );
       }
 
       const outcome = outcomeOf(execution);
@@ -172,13 +181,16 @@ export function codexLlm(options: CodexOptions): LlmPort {
         await writeCodexLog(options, logRef, execution);
       } catch (error) {
         notify(false);
-        throw new PortError("unavailable", `Codex の生ログを書けなかった: ${errorMessage(error)}`);
+        throw new PortError(
+          "unavailable",
+          `Could not write the Codex raw log: ${errorMessage(error)}`,
+        );
       }
 
       if (execution.exitCode !== 0 || outcome.finalMessage === null || outcome.failure !== null) {
         notify(false);
         const kind = outcome.usageLimit ? "usage_limit" : "unavailable";
-        throw new PortError(kind, outcome.failure ?? "Codex CLI が最終メッセージを返さなかった");
+        throw new PortError(kind, outcome.failure ?? "The Codex CLI returned no final message");
       }
 
       try {
@@ -278,7 +290,7 @@ function outcomeOf(execution: CodexExecution): CodexOutcome {
   if (failure === null && execution.exitCode !== 0) {
     const stderr = execution.stderr.trim();
     failure =
-      stderr === "" ? `Codex CLI が終了コード ${String(execution.exitCode)} で終了した` : stderr;
+      stderr === "" ? `The Codex CLI exited with code ${String(execution.exitCode)}` : stderr;
   }
 
   return {
@@ -326,13 +338,15 @@ function pathsInFileChange(item: z.infer<typeof codexItemSchema>): string[] {
 function failureMessageOf(event: unknown): string | null {
   const direct = errorEventSchema.safeParse(event);
   if (direct.success) {
-    return direct.data.message ?? direct.data.error?.message ?? "Codex CLI が error event を返した";
+    return (
+      direct.data.message ?? direct.data.error?.message ?? "The Codex CLI returned an error event"
+    );
   }
   const failed = turnFailedSchema.safeParse(event);
   if (failed.success) {
     return typeof failed.data.error === "string"
       ? failed.data.error
-      : (failed.data.error?.message ?? "Codex CLI の turn が失敗した");
+      : (failed.data.error?.message ?? "The Codex CLI turn failed");
   }
   return null;
 }

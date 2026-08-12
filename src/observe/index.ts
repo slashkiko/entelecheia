@@ -298,14 +298,14 @@ export async function observe(target: ObserveTarget, deps: ObserveDeps): Promise
       };
       const verdictDetail =
         verdict === null
-          ? `${where} の最終メッセージから verdict の行を1つに決められなかった（${REVIEW_VERDICTS.join(" / ")} のどちらかを1行だけ）`
-          : `${where} は verdict=${verdict} と述べているが、読んだ commit の sha が決まらないので単独では Fact にしない`;
+          ? `could not determine a single verdict line from the final message of ${where} (exactly one line reading ${REVIEW_VERDICTS.join(" / ")})`
+          : `${where} states verdict=${verdict}, but the sha of the commit it read could not be determined, so this is not recorded as a Fact on its own`;
       pending(REVIEW_VERDICT_KEY, verdictDetail);
       pending(
         REVIEW_REVIEWED_SHA_KEY,
         sha === null
-          ? `${where} の最終メッセージから読んだ commit の sha を1つに決められなかった`
-          : `${where} の sha は ${sha} と読めたが、verdict が決まらないので対にできない`,
+          ? `could not determine a single sha of the commit read from the final message of ${where}`
+          : `the sha of ${where} read as ${sha}, but the verdict could not be determined, so the two cannot be paired`,
       );
     }
   }
@@ -330,7 +330,7 @@ export async function observe(target: ObserveTarget, deps: ObserveDeps): Promise
         "github.pr.review_decision",
         pr.reviewDecision,
         prSource,
-        `review_decision=${pr.reviewDecision ?? "null (レビュー未要求)"}`,
+        `review_decision=${pr.reviewDecision ?? "null (no review requested)"}`,
       );
       push(
         "github.pr.requested_reviewers",
@@ -348,13 +348,13 @@ export async function observe(target: ObserveTarget, deps: ObserveDeps): Promise
         GITHUB_PR_TITLE_KEY,
         pr.title,
         prSource,
-        pr.title === null ? "title=null (応答に無し)" : `title=${pr.title}`,
+        pr.title === null ? "title=null (absent from response)" : `title=${pr.title}`,
       );
       push(
         GITHUB_PR_BODY_KEY,
         pr.body,
         prSource,
-        pr.body === null ? "body=null (本文が空)" : `body=${pr.body.length}文字`,
+        pr.body === null ? "body=null (body is empty)" : `body=${pr.body.length} chars`,
       );
       // 未解決スレッドの件数。**0 は Fact にする。** ここが
       // `verification: { type: fact, key: github.pr.unresolved_threads, equals: 0 }`
@@ -405,7 +405,7 @@ export async function observe(target: ObserveTarget, deps: ObserveDeps): Promise
             "github.ci.failed_job_count",
             ci.failedJobCount,
             ciSource,
-            `failed_job_count=${ci.failedJobCount} (head sha の全 workflow run を横断${excluded === null ? "" : ` / 除外: ${excluded}`})`,
+            `failed_job_count=${ci.failedJobCount} (across all workflow runs for the head sha${excluded === null ? "" : ` / excluded: ${excluded}`})`,
           );
         }
         // 除外そのものも Fact にする。数が確定していなくても出す。数を出さない
@@ -458,7 +458,7 @@ export async function observe(target: ObserveTarget, deps: ObserveDeps): Promise
         "github.issue.linked_pr",
         issue.linkedPr,
         issueSource,
-        `linked_pr=${issue.linkedPr ?? "null (未リンク)"}`,
+        `linked_pr=${issue.linkedPr ?? "null (not linked)"}`,
       );
     }
   }
@@ -486,7 +486,7 @@ function describeExcluded(
   }
   return excluded
     .map((w) =>
-      w.runs === 0 ? `${w.name} (一致なし)` : `${w.name} (${w.runs} run / ${w.states.join(", ")})`,
+      w.runs === 0 ? `${w.name} (no match)` : `${w.name} (${w.runs} run / ${w.states.join(", ")})`,
     )
     .join(", ");
 }

@@ -248,11 +248,11 @@ export function gitWorktree(repoRoot: string, root: string): WorktreePort {
     async commit(name, message): Promise<boolean> {
       const path = pathOf(name);
       if (!existsSync(path)) {
-        throw new Error(`作業ツリーが無いので commit できない: ${path}`);
+        throw new Error(`cannot commit: the worktree does not exist: ${path}`);
       }
       if (!existsSync(join(path, ".git"))) {
         // 親をたどって controller 本体のリポジトリを commit してしまう。
-        throw new Error(`作業ツリーが壊れている（.git が無い）: ${path}`);
+        throw new Error(`worktree is broken (no .git): ${path}`);
       }
 
       await gitRaw(path, ["add", "--all"]);
@@ -277,7 +277,7 @@ export function gitWorktree(repoRoot: string, root: string): WorktreePort {
         // git は親をたどって controller 本体のリポジトリに当たり、
         // 本体の汚れを「worktree の中の変更」として返す。
         // 確かめられなかったこととして扱う（design.md §3.1）。
-        throw new Error(`作業ツリーが壊れている（.git が無い）: ${path}`);
+        throw new Error(`worktree is broken (no .git): ${path}`);
       }
 
       const paths = new Set<string>();
@@ -543,12 +543,12 @@ export function gitBranch(root: string): BranchPort {
       const branch = await git(cwd, ["rev-parse", "--abbrev-ref", "HEAD"]);
       if (branch === baseBranch) {
         // ここを通すと controller が main を書き換えられる。設定ではなく実装で塞ぐ。
-        throw new Error(`base ブランチには push しない: ${branch}`);
+        throw new Error(`refusing to push to the base branch: ${branch}`);
       }
       if (!PUSHABLE_BRANCH.test(branch)) {
         // ブランチ名は worktree 側、つまり Actor が決める。argv で渡すので実行は
         // されないが、どの remote ref を作るかまで委ねる理由は無い。
-        throw new Error(`push 先にできないブランチ名: ${branch}`);
+        throw new Error(`branch name is not usable as a push target: ${branch}`);
       }
 
       // base との差分が無ければ push しない。空の PR は通知にも検証にも使えない。

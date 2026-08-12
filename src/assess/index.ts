@@ -66,7 +66,7 @@ export function assess(target: AssessTarget, deps: AssessDeps): Assessment {
     gaps.push({
       criterionId: criterion.id,
       kind: "unmet",
-      detail: `${criterion.description} が満たされていない（${fact.evidence.source}: ${fact.evidence.detail}）`,
+      detail: `${criterion.description} is not satisfied (${fact.evidence.source}: ${fact.evidence.detail})`,
     });
   }
 
@@ -81,14 +81,14 @@ export function assess(target: AssessTarget, deps: AssessDeps): Assessment {
 function unknownDetail(key: string, target: AssessTarget): string {
   const unresolved = target.unresolved.find((u) => u.key === key);
   if (unresolved !== undefined) {
-    return `${key} の結論が出ていない（${unresolved.reason}: ${unresolved.detail}）`;
+    return `${key} has no conclusion (${unresolved.reason}: ${unresolved.detail})`;
   }
 
   // verified に無くて facts にあるなら INFERRED しか無いということ。
   // 落ちたのではなく、完了判定に使えないだけ（design.md §3.1）。
   if (target.facts.some((f) => f.key === key)) {
-    return `${key} は INFERRED な Fact しか無い。完了判定には使えないので未検証として扱う`;
+    return `${key} has only an INFERRED Fact. Inference cannot judge completion, so it counts as unverified`;
   }
 
-  return `${key} を検証した Fact がまだ無い`;
+  return `No Fact has verified ${key} yet`;
 }

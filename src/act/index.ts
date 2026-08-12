@@ -302,13 +302,13 @@ export async function act(target: ActTarget, deps: ActDeps): Promise<ActResult> 
   const action = target.decision.action;
   if (action.type !== "ACT") {
     // 無言で握り潰すと、呼び出し側が「起動したが何も起きなかった」と読む。
-    return { acted: false, reason: `action が ${action.type} なので Actor を起動しない` };
+    return { acted: false, reason: `not launching the Actor because action is ${action.type}` };
   }
 
   // 起動前に中断されていたら、Run も worktree も作らない。
   // 何も書いていない状態なので、回収すべきものが残らない。
   if (deps.signal?.aborted === true) {
-    return { acted: false, reason: "Actor を起動する前に中断された" };
+    return { acted: false, reason: "interrupted before the Actor was launched" };
   }
 
   // role を書いていない Decision は実装役として読む。既に走っている Goal の
@@ -331,7 +331,10 @@ export async function act(target: ActTarget, deps: ActDeps): Promise<ActResult> 
   try {
     runId = await deps.runs.start(intent);
   } catch (error) {
-    return { acted: false, reason: `Run を書けなかったので起動しない: ${errorMessage(error)}` };
+    return {
+      acted: false,
+      reason: `not launching because the Run could not be written: ${errorMessage(error)}`,
+    };
   }
 
   // ここから先は Run(starting) が残っているので、どの経路でも必ず finish で確定させる。
@@ -357,7 +360,7 @@ export async function act(target: ActTarget, deps: ActDeps): Promise<ActResult> 
         ...intent,
         id: runId,
         ...outcome,
-        detail: appendDetail(outcome.detail, `Run を確定できなかった: ${errorMessage(error)}`),
+        detail: appendDetail(outcome.detail, `could not finalize the Run: ${errorMessage(error)}`),
       },
     };
   }
@@ -409,7 +412,7 @@ async function runActor(
   } catch (error) {
     // 隔離できていない状態で Agent を走らせると、controller 本体を書き換えうる。
     // 起動しなかったので exit_code は無い。
-    return failed(`worktree を用意できなかった: ${errorMessage(error)}`, null);
+    return failed(`could not prepare the worktree: ${errorMessage(error)}`, null);
   }
 
   try {
@@ -449,13 +452,13 @@ async function runActor(
       logRef: result.logRef,
       tokens: result.tokens,
       artifacts: [...result.artifacts],
-      detail: result.detail ?? `Actor が exit_code=${result.exitCode} で終了した`,
+      detail: result.detail ?? `Actor exited with exit_code=${result.exitCode}`,
       ...(result.errorKind === undefined ? {} : { errorKind: result.errorKind }),
       ...(result.errorKind === "usage_limit" ? { resumeAfter: result.resumeAfter ?? null } : {}),
     };
   } catch (error) {
     return failed(
-      `Actor の実行に失敗した: ${errorMessage(error)}`,
+      `Actor execution failed: ${errorMessage(error)}`,
       null,
       portErrorKindOf(error),
       resumeAfterOf(error),

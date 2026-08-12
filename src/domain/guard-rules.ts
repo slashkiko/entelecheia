@@ -110,7 +110,7 @@ export function actorUsageLimitDecision(decision: Decision, run: Run | null): De
   return {
     decidedAt: run.finishedAt ?? decision.decidedAt,
     action: { type: "WAIT", reason: "usage_limit", resumeAfter: run.resumeAfter ?? null },
-    rationale: `Actor が使用量上限で停止したため、利用可能になるまで待つ（元の判断: ${decision.rationale}）`,
+    rationale: `Actor stopped at its usage limit; waiting until it is available again (original decision: ${decision.rationale})`,
     decidedBy: "guard",
   };
 }
@@ -144,13 +144,13 @@ export function leavesWorkUncommitted(decision: Decision): boolean {
 export function describeClaim(action: Action): string {
   switch (action.type) {
     case "COMPLETE":
-      return "COMPLETE にすると";
+      return "completing now would";
     case "WAIT":
-      return `WAIT(${action.reason}) で待つと`;
+      return `waiting on WAIT(${action.reason}) would`;
     case "VERIFY":
-      return "VERIFY を回しても worktree には1行も書かないので";
+      return "VERIFY writes nothing to the worktree, so running it would";
     default:
-      return `${action.type} にすると`;
+      return `switching to ${action.type} would`;
   }
 }
 
@@ -363,14 +363,14 @@ export function describeDependencyGate(gate: DependencyGate): string | null {
   const parts: string[] = [];
   if (gate.unreachable.length > 0) {
     parts.push(
-      `依存が終端に落ちている（${gate.unreachable.join(", ")}）。待っても解けないので、` +
-        "依存側をやり直すか depends_on を書き換える",
+      `dependencies have reached a terminal state (${gate.unreachable.join(", ")}). ` +
+        "Waiting will not resolve this, so rerun the dependency or rewrite depends_on",
     );
   }
   if (gate.pending.length > 0) {
-    parts.push(`依存の完了待ち（${gate.pending.join(", ")}）`);
+    parts.push(`waiting for dependencies to complete (${gate.pending.join(", ")})`);
   }
-  return parts.join("。");
+  return parts.join(". ");
 }
 
 /**

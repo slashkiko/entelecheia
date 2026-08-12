@@ -108,7 +108,9 @@ describe("DB の行の検証", () => {
 
     const store = openStore(dbPath);
     try {
-      expect(() => store.listLlmCalls("rows-goal")).toThrow(/DB の行が想定と違う/);
+      expect(() => store.listLlmCalls("rows-goal")).toThrow(
+        /DB row differs from what was expected/,
+      );
     } finally {
       store.close();
     }
@@ -150,7 +152,9 @@ describe("DB の行の検証", () => {
 
     const store = openStore(dbPath);
     try {
-      expect(() => store.listLlmCalls("rows-goal")).toThrow(/DB の行が想定と違う/);
+      expect(() => store.listLlmCalls("rows-goal")).toThrow(
+        /DB row differs from what was expected/,
+      );
     } finally {
       store.close();
     }

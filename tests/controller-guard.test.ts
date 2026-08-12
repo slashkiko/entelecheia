@@ -213,7 +213,7 @@ describe("保護パスの関門", () => {
     const result = await run(goalWith([]), ["/repo/entelecheia/src/cli.ts"]);
 
     expect(result.decision?.action).toMatchObject({ reason: "protected_path_touched" });
-    expect(result.decision?.rationale).toContain("worktree の外");
+    expect(result.decision?.rationale).toContain("outside the worktree");
   });
 
   it("PR を作らない", async () => {
@@ -241,7 +241,7 @@ describe("保護パスの関門", () => {
       `${WORKTREE_ROOT}/sample-goal/src/controller/index.ts`,
     ]);
 
-    expect(result.decision?.rationale).toContain("元の判断");
+    expect(result.decision?.rationale).toContain("original decision");
   });
 
   it("差し替えた判断を DB に残す", async () => {
@@ -346,7 +346,7 @@ describe("保護パスの関門", () => {
       type: "ESCALATE",
       reason: "protected_path_touched",
     });
-    expect(result.decision?.rationale).toContain("worktree の外");
+    expect(result.decision?.rationale).toContain("outside the worktree");
     expect(sink.pushes).toBe(0);
     expect(sink.created).toBe(0);
   });

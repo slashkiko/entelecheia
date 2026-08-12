@@ -225,7 +225,7 @@ describe("宣言で publish を止めたティック", () => {
       reason: "push_branch_declared_manual",
     });
     // 進むには宣言を戻すしかない。それを rationale が言っていること。
-    expect(second.decision?.rationale).toContain("auto に戻す");
+    expect(second.decision?.rationale).toContain("set back to auto");
   });
 
   it("予算を使い切っても BLOCKED にはならない", async () => {

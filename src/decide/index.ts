@@ -144,7 +144,7 @@ export async function decide(target: DecideTarget, deps: DecideDeps): Promise<De
   if (exhausted !== null) {
     return guard(
       { type: "ESCALATE", reason: "budget_exhausted" },
-      `予算の上限に到達したので停止する: ${exhausted}`,
+      `stopping: a budget limit was reached: ${exhausted}`,
     );
   }
 
@@ -163,7 +163,7 @@ export async function decide(target: DecideTarget, deps: DecideDeps): Promise<De
     return guard(
       { type: "ESCALATE", reason: "shape_mismatch" },
       // 何が読めなかったかを残す。人間が直す先は detail からしか読めない。
-      `届いたが読めなかった観測が ${mismatched.length} 件ある。待っても直らないので停止する: ${describeUnresolved(mismatched)}`,
+      `${mismatched.length} observation(s) arrived but could not be read. Waiting will not fix them, so stopping: ${describeUnresolved(mismatched)}`,
     );
   }
 
@@ -175,14 +175,14 @@ export async function decide(target: DecideTarget, deps: DecideDeps): Promise<De
     if (target.unresolved.length === 0) {
       return guard(
         { type: "COMPLETE" },
-        "全 criteria が VERIFIED な Fact で満たされ、結論の出ていない対象も無い",
+        "every criterion is satisfied by VERIFIED Facts, and nothing is left unresolved",
       );
     }
 
     const reason = waitReason(target);
     return guard(
       { type: "WAIT", reason, resumeAfter: null },
-      `Gap は無いが結論の出ていない対象が ${target.unresolved.length} 件ある（${reason}）: ${describeUnresolved(target.unresolved)}`,
+      `No Gap remains, but ${target.unresolved.length} target(s) are still unresolved (${reason}): ${describeUnresolved(target.unresolved)}`,
     );
   }
 
@@ -193,7 +193,7 @@ export async function decide(target: DecideTarget, deps: DecideDeps): Promise<De
   if (unchanged >= target.budget.max_unchanged_reconciles) {
     return guard(
       { type: "ESCALATE", reason: "loop_detected" },
-      `観測が変わらないまま ${unchanged}/${target.budget.max_unchanged_reconciles} 回続いたので停止する`,
+      `stopping: the observation stayed unchanged for ${unchanged}/${target.budget.max_unchanged_reconciles} reconciles`,
     );
   }
 
@@ -208,23 +208,23 @@ export async function decide(target: DecideTarget, deps: DecideDeps): Promise<De
  */
 function exhaustedBudget(budget: Budget, usage: BudgetUsage): string | null {
   if (usage.actorRuns >= budget.max_actor_runs) {
-    return `actor 実行 ${usage.actorRuns}/${budget.max_actor_runs}`;
+    return `actor runs ${usage.actorRuns}/${budget.max_actor_runs}`;
   }
   if (usage.reconciles >= budget.max_reconciles) {
-    return `reconcile ${usage.reconciles}/${budget.max_reconciles}`;
+    return `reconciles ${usage.reconciles}/${budget.max_reconciles}`;
   }
   if (usage.consecutiveFailures >= budget.max_consecutive_failures) {
-    return `連続失敗 ${usage.consecutiveFailures}/${budget.max_consecutive_failures}`;
+    return `consecutive failures ${usage.consecutiveFailures}/${budget.max_consecutive_failures}`;
   }
 
   const limit = durationSeconds(budget.max_wall_clock);
   if (limit === null) {
     // goalSchema を通っていれば起きない。解釈できない上限を「上限なし」と読むと
     // 停止条件が黙って消えるので、人間を呼ぶ側に倒す。
-    return `max_wall_clock を解釈できない: ${budget.max_wall_clock}`;
+    return `cannot parse max_wall_clock: ${budget.max_wall_clock}`;
   }
   if (usage.elapsedSeconds >= limit) {
-    return `経過時間 ${usage.elapsedSeconds}s/${budget.max_wall_clock}`;
+    return `elapsed time ${usage.elapsedSeconds}s/${budget.max_wall_clock}`;
   }
 
   return null;
@@ -393,7 +393,7 @@ async function askLlm(
         return {
           decidedAt,
           action: { type: "WAIT", reason: "usage_limit", resumeAfter: resumeAfterOf(error) },
-          rationale: `LlmPort が使用量上限に達した: ${errorMessage(error)}`,
+          rationale: `LlmPort hit its usage limit: ${errorMessage(error)}`,
           decidedBy: "guard",
         };
       }
@@ -403,7 +403,7 @@ async function askLlm(
         return {
           decidedAt,
           action: { type: "ESCALATE", reason: "invalid_decision" },
-          rationale: `LlmPort が呼べなかった。呼び直しても直らないので再試行しない: ${errorMessage(error)}`,
+          rationale: `LlmPort could not be called. Calling it again will not fix that, so no retry: ${errorMessage(error)}`,
           decidedBy: "guard",
         };
       }
@@ -465,7 +465,7 @@ async function askLlm(
       return {
         decidedAt,
         action,
-        rationale: `Gap が ${target.assessment.gaps.length} 件あるので LlmPort に委ね、${describeAction(action)} を採用した`,
+        rationale: `${target.assessment.gaps.length} Gap(s) remain, so the choice went to LlmPort and ${describeAction(action)} was adopted`,
         decidedBy: "llm",
       };
     }
@@ -486,7 +486,7 @@ async function askLlm(
     return {
       decidedAt,
       action: { type: "ESCALATE", reason: "review_not_converging" },
-      rationale: `実装が進まないまま、レビュー済みの commit（${reviewedHead}）を ${reviewRejections} 回ともレビューさせようとした。同じ commit を2度レビューしても Gap は埋まらない`,
+      rationale: `The implementation has not moved, yet all ${reviewRejections} attempts tried to review an already-reviewed commit (${reviewedHead}). Reviewing the same commit twice fills no Gap`,
       decidedBy: "guard",
     };
   }
@@ -496,7 +496,7 @@ async function askLlm(
   return {
     decidedAt,
     action: { type: "ESCALATE", reason: "invalid_decision" },
-    rationale: `LlmPort の出力を ${MAX_LLM_RETRIES + 1} 回とも採用できなかった: ${failures.join(" / ")}`,
+    rationale: `None of the ${MAX_LLM_RETRIES + 1} LlmPort outputs could be adopted: ${failures.join(" / ")}`,
     decidedBy: "guard",
   };
 }

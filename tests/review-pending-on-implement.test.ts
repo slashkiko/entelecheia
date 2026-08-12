@@ -226,7 +226,7 @@ describe("実装役が走ったティックでは、レビュー系の criteria 
 
     await tick(goal, deps(store));
 
-    expect(verificationFor("ac-review")?.detail).toContain("実装役");
+    expect(verificationFor("ac-review")?.detail).toContain("implement role");
   });
 
   it("判定できなかった criterion の Fact を残さない", async () => {
@@ -297,7 +297,7 @@ describe("実装役が走ったティックでは、レビュー系の criteria 
       .split("\n")
       .find((line) => line.startsWith("| `ac-review` |"));
     expect(row).toContain("🟡 unresolved");
-    expect(row).toContain("実装役");
+    expect(row).toContain("implement role");
   });
 });
 

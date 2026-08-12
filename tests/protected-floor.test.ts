@@ -315,7 +315,7 @@ describe("ent init の雛形", () => {
     // 方針と、雛形だけがずれることになる。
     const yaml = goalTemplate(TEMPLATE_SLUG);
 
-    expect(yaml).toContain("対象リポジトリに合わせて埋める");
-    expect(yaml).toContain("ファイル名の slug と一致させる");
+    expect(yaml).toContain("Fill this in for the target repository");
+    expect(yaml).toContain("Must match the filename slug");
   });
 });
