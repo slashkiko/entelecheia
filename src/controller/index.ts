@@ -376,6 +376,11 @@ export async function tick(goal: Goal, deps: ControllerDeps): Promise<TickResult
     // 鳴る。**`run` の id を使わずにここへ溜めるのは、Run を書いてから ACT が
     // 失敗した回でも id が要るため**になる。`maybeAct` は `acted: false` の回に
     // null を返すが、行は残る。
+    //
+    // **下の `repoBaseline` は、この配列がまだ空のうちに読む。** ベースラインの
+    // 時点では Run の行そのものが無いので、空で読んで初めて検査時の射影と
+    // 揃う。ここを遅延させる（あとで読み直す形にする）と、ベースラインだけが
+    // 自分の Run を含んだ射影になり、前後が食い違う。
     const ownRunIds: string[] = [];
 
     // 本体リポジトリ側の汚れを ACT の前に控える。自己ホストなので、人間が

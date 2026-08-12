@@ -546,6 +546,24 @@ function guardDigestOf(
   goalId: string,
   ownRunIds: readonly string[],
 ): string {
+  // 節ごとに別々のクエリを流すので、そのあいだに別プロセスが commit すると
+  // 前半と後半で別の時点を読む。1つの読み取りトランザクションに包んで、
+  // 全部の節を同じ時点から読む。
+  db.exec("BEGIN DEFERRED");
+  try {
+    return digestSections(db, path, goalId, ownRunIds);
+  } finally {
+    // 読むだけなので、閉じ方は COMMIT でも ROLLBACK でも同じになる。
+    db.exec("COMMIT");
+  }
+}
+
+function digestSections(
+  db: DatabaseSync,
+  path: string,
+  goalId: string,
+  ownRunIds: readonly string[],
+): string {
   const hash = createHash("sha256");
   const write = (section: string, rows: readonly Record<string, unknown>[], skip: Set<string>) => {
     // 節の名前も混ぜる。混ぜないと「空のテーブル」と「節ごと無い」が同じになる。

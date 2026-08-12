@@ -34,7 +34,7 @@ import { findViolations } from "../src/domain/protected-paths.js";
  * `.goals/` の他のサブディレクトリも、これまでどおり保護する。
  *
  * **根拠3には穴があった。** 「worktree の外なので `..` から始まる」が成り立つのは
- * 絶対パスで来るものだけで、`outOfSightState` は `.goals/.state/goals.db` を
+ * 絶対パスで来るものだけで、本体側の観測は `.goals/.state/goals.db` を
  * repoRoot 相対の**文字列**で返す（人間が読める形で残すため）。脱出の判定に
  * 引っかからず、そのままこの除外に落ちていた。goals.db を偽造されても関門が
  * 鳴らない、という形になる。除外を掛けてよいかは文字列ではなく出どころで決める。
@@ -137,8 +137,10 @@ describe("隔離の検知は弱めない", () => {
 });
 
 describe("本体リポジトリ側を出どころとするパスには、除外を掛けない", () => {
-  // `outOfSightState` が返すキーは repoRoot 相対の表示用パスで、worktree の中の
-  // 同名パスと文字列では見分けが付かない。出どころを渡して判定を分ける。
+  // 本体側の観測が返すキーは repoRoot 相対の表示用パスで、worktree の中の同名パスと
+  // 文字列では見分けが付かない。出どころを渡して判定を分ける。状態 DB のキーは
+  // controller が置く（`observedRepoState`）が、値の作り方が変わっても
+  // **このキーが `.goals/**` に一致し続けること**がここで固定される。
   it("repoRoot 相対で来た goals.db の改竄を違反にする", () => {
     const violations = findViolations([".goals/.state/goals.db"], ROOT, PROTECTED, "repo_root");
 

@@ -140,13 +140,21 @@ describe("状態 DB の論理ダイジェスト", () => {
     expect(store.guardDigest("goal-a")).not.toBe(withNull);
   });
 
-  it("この Goal の状態を書き換えると値が変わる", () => {
+  it("この Goal の状態を書き換えると、バイト列が動かなくても値が変わる", () => {
     // `UPDATE goals SET status='COMPLETED'` の1行で、以降の全ティックを
     // 短絡させられる。保護を外さない、がこの変更の前提になる。
+    //
+    // **バイト列が動かないことも一緒に測る。** SQLite 経由の書き込みは WAL に
+    // 載るだけで、次の checkpoint まで `goals.db` に現れない。かつての指紋は
+    // ファイルを読んでいたので、この改竄をそのティックで取りこぼしえた
+    // （design.md §10-6 の (g)）。論理ダイジェストは SQLite 経由で読むので、
+    // まだ WAL にしか無い行も見える。ここが「バイト列を捨てて強くなった」分になる。
+    const beforeBytes = bytesOf(dbPath);
     const before = store.guardDigest("goal-a");
 
     tamper("UPDATE goals SET status = 'COMPLETED' WHERE id = 'goal-a'");
 
+    expect(bytesOf(dbPath)).toBe(beforeBytes);
     expect(store.guardDigest("goal-a")).not.toBe(before);
   });
 
@@ -181,6 +189,16 @@ describe("状態 DB の論理ダイジェスト", () => {
     );
 
     expect(store.guardDigest("goal-a")).not.toBe(before);
+  });
+
+  it("`sqlite_` で始まる名前は SQLite 自身が拒む", () => {
+    // スキーマの節から `sqlite_%` を外しているのは、`sqlite_sequence` が最初の
+    // AUTOINCREMENT な INSERT で生えるため（外さないと新しい DB の1回目の ACT が
+    // 鳴る）。**そこが隠し場所にならないこと**をここで確かめる。SQLite は
+    // 予約された接頭辞での作成を拒むので、この名前で trigger を仕込む経路は無い。
+    expect(() =>
+      tamper("CREATE TRIGGER sqlite_evil AFTER INSERT ON runs BEGIN SELECT 1; END"),
+    ).toThrow(/reserved for internal use/);
   });
 
   it("DB ファイルを消すと値が変わる", () => {
