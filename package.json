@@ -2,6 +2,7 @@
   "name": "entelecheia",
   "version": "0.0.0",
   "private": true,
+  "license": "MIT",
   "description": "Declare the end state; the controller converges to it.",
   "type": "module",
   "engines": {
