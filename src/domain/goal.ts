@@ -54,6 +54,10 @@ export const ciOptionsSchema = z.strictObject({
    * 出るので外から読める。ここで数を出さない側に倒すと「除外したのに数が出ない」になり、
    * 宣言した通りに動いていないように見える。
    *
+   * **外れるのは数だけではない。** 外した run の失敗ジョブは `github.ci.failed_jobs` からも
+   * 消えるので、次の ACT に渡る材料が除外分だけ欠ける（`CiRunSnapshot.failedJobs`）。
+   * 外した run が赤かったかは `github.ci.excluded_workflows` の `states` から読む。
+   *
    * 一致しなかった名前を弾かない。宣言を読む時点ではリポジトリを見ないので解析では
    * 決まらず、対象リポジトリは手元の checkout とは限らないので doctor でも決まらない。
    * そもそも「一致しない」は typo と「今回は起動しなかった workflow」（path filter や

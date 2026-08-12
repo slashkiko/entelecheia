@@ -46,8 +46,11 @@ export interface PullRequestSnapshot {
  * head sha に紐づく CI の状態。
  *
  * `status` / `conclusion` / `headSha` は**最新の run 1本**のもので、
- * `failedJobs` / `failedJobCount` は**その sha の全 run を横断**したものになる。
+ * `failedJobs` / `failedJobCount` は**その sha の run を横断**したものになる。
  * 見ている範囲が違うので、片方を読んでもう片方を推し量らない（issue #58）。
+ *
+ * 横断する範囲は `repository.ci.exclude_workflows` で削れる。**削れるのは
+ * `failedJobs` と `failedJobCount` の両方で、片方だけではない**（それぞれの注記）。
  */
 export interface CiRunSnapshot {
   /** 対応する PR の head sha */
@@ -56,30 +59,46 @@ export interface CiRunSnapshot {
   status: "queued" | "in_progress" | "completed";
   /** 最新の run の conclusion。実行中なら null */
   conclusion: "success" | "failure" | "cancelled" | "timed_out" | null;
-  /** 全 run を横断して集めた失敗ジョブ。次の ACT が何を直すかを決める材料になる */
+  /**
+   * **除外後の** run を横断して集めた失敗ジョブ。次の ACT が何を直すかを決める材料になる。
+   *
+   * `repository.ci.exclude_workflows` で外した run の失敗ジョブは、数だけでなく
+   * ここからも消える。**次の ACT に渡る材料が除外分だけ欠ける**ことになるが、
+   * 残す側に倒すと「数から外した＝直さなくてよい」と宣言したはずの失敗を ACT に
+   * 渡すことになり、除外の意味が消える。外した run について何が起きていたかは
+   * `excludedWorkflows` の状態から読む。
+   */
   failedJobs: { name: string; logUrl: string }[];
   /**
-   * 全 run を横断して数えた失敗ジョブの数。まだ終わっていない run が
-   * 1本でもあれば null。
+   * 除外後の run を横断して数えた失敗ジョブの数。**数え切れていなければ null。**
+   *
+   * null になるのは2通り。まだ終わっていない run が1本でもあるときと、
+   * 1ページ（`per_page: 100`）で run を読み切れていないとき。
    *
    * **null と 0 を混ぜない。** 0 は「数え切って1件も無かった」で、
    * null は「まだ数が決まらない」にあたる。混ぜると push した直後の
-   * queued な状態が「落ちている job は 0 件」に見える。
+   * queued な状態や、100 本を超えて読み切れていない状態が
+   * 「落ちている job は 0 件」に見える。
    */
   failedJobCount: number | null;
   /**
-   * `repository.ci.exclude_workflows` に書かれた名前と、それが実際に外した run の数。
+   * `repository.ci.exclude_workflows` に書かれた名前と、それが実際に外した run。
    * 宣言が無ければ空配列になる。
    *
    * **宣言をそのまま写す。** 一致した分だけを残すと、書いたのに何も外していない名前
    * （typo か、今回は起動しなかった workflow か）が観測から消える。`runs: 0` として
    * 残せば、外から読んで気づける。
    *
+   * `states` は外した run 1本ずつの見え方（`waiting` / `failure` / `success` …）を
+   * 一致した順に並べたもの。**数だけでは「保留のままの gate を外した」と「本物の
+   * 失敗を含む run を外した」を読み分けられない。** `failedJobs` から除外分が消える
+   * 以上、消えたものが赤かったかはここでしか読めない。
+   *
    * observe はこれを `github.ci.excluded_workflows` の Fact と
    * `failed_job_count` の detail の両方に出す。「全部緑」と「除外した上で緑」が
    * 同じ見た目になると、issue #58 が直そうとした壊れ方を作り直すことになる。
    */
-  excludedWorkflows: { name: string; runs: number }[];
+  excludedWorkflows: { name: string; runs: number; states: string[] }[];
 }
 
 export interface IssueSnapshot {
@@ -364,7 +383,11 @@ export async function observe(target: ObserveTarget, deps: ObserveDeps): Promise
         if (excluded !== null) {
           push(
             "github.ci.excluded_workflows",
-            ci.excludedWorkflows.map((w) => ({ name: w.name, runs: w.runs })),
+            ci.excludedWorkflows.map((w) => ({
+              name: w.name,
+              runs: w.runs,
+              states: [...w.states],
+            })),
             ciSource,
             excluded,
           );
@@ -417,13 +440,22 @@ export async function observe(target: ObserveTarget, deps: ObserveDeps): Promise
  * 一致しなかった名前を落とさない。`runs: 0` は「書いたのに何も外していない」で、
  * typo かもしれないし、今回は起動しなかった workflow かもしれない。観測の側から
  * 区別できないので、数のまま出して人間に読ませる（`ciOptionsSchema` 参照）。
+ *
+ * 数の後ろに run 1本ずつの見え方を並べる。**数だけだと「保留のままの gate を
+ * 外した」と「本物の失敗を含む run を外した」が同じ行になる。** 外した run の
+ * 失敗ジョブは `github.ci.failed_jobs` からも消えるので、消えたものが赤かったかは
+ * この行でしか読めない（`CiRunSnapshot.excludedWorkflows`）。
  */
-function describeExcluded(excluded: readonly { name: string; runs: number }[]): string | null {
+function describeExcluded(
+  excluded: readonly { name: string; runs: number; states: string[] }[],
+): string | null {
   if (excluded.length === 0) {
     return null;
   }
   return excluded
-    .map((w) => `${w.name} (${w.runs === 0 ? "一致なし" : `${w.runs} run`})`)
+    .map((w) =>
+      w.runs === 0 ? `${w.name} (一致なし)` : `${w.name} (${w.runs} run / ${w.states.join(", ")})`,
+    )
     .join(", ");
 }
 

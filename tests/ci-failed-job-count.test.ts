@@ -24,7 +24,7 @@ import {
  * そこで数えた数を Fact にする（issue #58 の案1）。`github.ci.conclusion` の意味は
  * 変えない（案2 は既存 Goal の意味が変わるので採らない）。
  *
- * 満たすべき性質は3つ。
+ * 満たすべき性質は4つ。
  *
  *   横断   数える対象は head sha に紐づく**全 workflow run**。1本だけ見ると
  *          `conclusion == success` と同じものになり、issue #58 は直らない
@@ -33,6 +33,10 @@ import {
  *          直そうとしている誤収束より悪いものを作ることになる
  *   0 を出す  0 件でも Fact にする。`failed_jobs` の側は「1件以上あるとき」しか
  *          push しないので、そこを真似ると `equals: 0` が永久に届かない
+ *   数え切る  1ページ（`per_page: 100`）で読み切れていないなら数を出さない。
+ *          `total_count` が件数を上回るときが「まだ読んでいない run がある」で、
+ *          そこで数を確定させると 101 本目以降の失敗が数から落ちる。**確定と同じ
+ *          規則**（数え切れていないなら数を出さない）を、切り捨てにも当てる
  */
 
 const NOW = new Date("2026-08-12T03:00:00.000Z");
@@ -209,6 +213,7 @@ describe("githubCodeProvider が run を横断して数える", () => {
       {
         match: "/actions/runs?",
         body: {
+          total_count: 2,
           workflow_runs: [
             { id: 8, head_sha: SHA, status: "completed", conclusion: "success" },
             { id: 7, head_sha: SHA, status: "completed", conclusion: "failure" },
@@ -244,6 +249,7 @@ describe("githubCodeProvider が run を横断して数える", () => {
       {
         match: "/actions/runs?",
         body: {
+          total_count: 2,
           workflow_runs: [
             { id: 8, head_sha: SHA, status: "completed", conclusion: "success" },
             { id: 7, head_sha: SHA, status: "completed", conclusion: "success" },
@@ -262,6 +268,7 @@ describe("githubCodeProvider が run を横断して数える", () => {
       {
         match: "/actions/runs?",
         body: {
+          total_count: 2,
           workflow_runs: [
             { id: 8, head_sha: SHA, status: "completed", conclusion: "success" },
             { id: 7, head_sha: SHA, status: "in_progress", conclusion: null },
@@ -284,6 +291,7 @@ describe("githubCodeProvider が run を横断して数える", () => {
       {
         match: "/actions/runs?",
         body: {
+          total_count: 2,
           workflow_runs: [
             { id: 9, head_sha: SHA, status: "completed", conclusion: "timed_out" },
             { id: 8, head_sha: SHA, status: "completed", conclusion: "cancelled" },
@@ -305,8 +313,88 @@ describe("githubCodeProvider が run を横断して数える", () => {
 
   it("run が1本も無ければ null のまま", async () => {
     // 「まだ push していない」を「落ちている job は 0 件」と読まない。
-    const code = provider([{ match: "/actions/runs?", body: { workflow_runs: [] } }]);
+    const code = provider([
+      { match: "/actions/runs?", body: { total_count: 0, workflow_runs: [] } },
+    ]);
 
     expect(await code.getLatestCiRun(SHA)).toBeNull();
+  });
+});
+
+describe("1ページで読み切れていないなら数を出さない", () => {
+  /**
+   * `GET /actions/runs` は `per_page: 100` の1ページしか読まない。同じ head sha に
+   * 紐づく run が 100 本を超えると、101 本目以降に落ちている run があっても数に
+   * 入らず、`failed_job_count=0` が VERIFIED な Fact として出る。
+   *
+   * **それは issue #58 の「誤って収束する側の壊れ方」そのものになる。**
+   * `on: pull_request_review` の gate はレビューのたびに run が増えるし、除外は
+   * ページを取ったあとに走るので、除外予定の run も 100 本の枠を消費する。
+   *
+   * 数え切れなかったなら数を出さない。`settled()` が「終わっていない run が1本でも
+   * あれば数を出さない」としているのと同じ立場を、切り捨てにも当てる。
+   */
+  it("total_count が件数を上回れば数を出さない", async () => {
+    const code = provider([
+      {
+        match: "/actions/runs?",
+        body: {
+          // 150 本あるうち、返ってきたのは 2 本。
+          total_count: 150,
+          workflow_runs: [
+            { id: 8, head_sha: SHA, status: "completed", conclusion: "success" },
+            { id: 7, head_sha: SHA, status: "completed", conclusion: "success" },
+          ],
+        },
+      },
+    ]);
+
+    const ci = await code.getLatestCiRun(SHA);
+
+    expect(ci?.failedJobCount).toBeNull();
+  });
+
+  it("読み切れていなくても、最新の run から読める分は落とさない", async () => {
+    // GitHub は新しい順に返すので、切り捨てられても先頭は最新のまま。
+    // 数が確定しないことを理由に `conclusion` まで落とすと、いま緑の
+    // `conclusion == success` を書いている Goal が丸ごと止まる。
+    const code = provider([
+      {
+        match: "/actions/runs?",
+        body: {
+          total_count: 150,
+          workflow_runs: [{ id: 8, head_sha: SHA, status: "completed", conclusion: "success" }],
+        },
+      },
+    ]);
+
+    const ci = await code.getLatestCiRun(SHA);
+
+    expect(ci?.conclusion).toBe("success");
+    expect(ci?.status).toBe("completed");
+    expect(ci?.headSha).toBe(SHA);
+    expect(ci?.failedJobCount).toBeNull();
+  });
+
+  it("total_count が応答に無ければ数を出さない", async () => {
+    // 読めないなら「読み切れた」と決めない。ここを「切り捨て無し」に倒すと、
+    // GitHub が形を変えた日に静かに 0 が出る。
+    //
+    // **`shape_mismatch` にはしない。** ここを必須にすると、フィールド1つ欠けた
+    // 応答で `github.ci` の観測ごと落ち、`status` も `conclusion` も `head_sha` も
+    // 失う（`name` と PR の `title` / `body` を nullish にしてあるのと同じ理由）。
+    const code = provider([
+      {
+        match: "/actions/runs?",
+        body: {
+          workflow_runs: [{ id: 8, head_sha: SHA, status: "completed", conclusion: "success" }],
+        },
+      },
+    ]);
+
+    const ci = await code.getLatestCiRun(SHA);
+
+    expect(ci?.conclusion).toBe("success");
+    expect(ci?.failedJobCount).toBeNull();
   });
 });

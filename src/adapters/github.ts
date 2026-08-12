@@ -151,13 +151,33 @@ export function githubCodeProvider(options: GitHubOptions): CodeProviderPort {
       if (raw === null) {
         return null;
       }
-      const runs = decode(runsSchema, raw, "GET /actions/runs").workflow_runs;
+      const page = decode(runsSchema, raw, "GET /actions/runs");
+      const runs = page.workflow_runs;
       const latest = runs[0];
       if (latest === undefined) {
         // run が1本も無い。「まだ push していない」を「落ちている job は 0 件」と
         // 読まないために、数の側も作らずに null を返す。
         return null;
       }
+
+      // **1ページしか読んでいない。** 100 本を超えた分は手元に無いので、そこに
+      // 落ちている run があっても数に入らない。数え切れていないまま確定させると
+      // `failed_job_count=0` が VERIFIED な Fact として出て、「全部緑」と区別が
+      // 付かなくなる——issue #58 の誤収束をそのまま作り直すことになる。
+      //
+      // 数え切れていないなら数を出さない。`settled()` が「終わっていない run が
+      // 1本でもあれば数を出さない」としているのと同じ立場を、切り捨てにも当てる。
+      //
+      // `total_count` が読めなかったときも数を出さない。「読み切れた」と決める
+      // 根拠がないので、決めない側に倒す。
+      //
+      // **ページングはしない。** 2ページ目以降を引くと同じレート制限の枠
+      // （`check` が回す pinact と共用）を run の本数だけ食う。数え切れない側に
+      // 倒れても criterion が埋まらないだけで、外から見て分かる。
+      const truncated =
+        page.total_count === null ||
+        page.total_count === undefined ||
+        page.total_count > runs.length;
 
       // 宣言で外した workflow を数の対象から落とす（`repository.ci.exclude_workflows`）。
       // 恒久的に赤い／保留のままの gate を数に入れると、`equals: 0` が永久に埋まらない。
@@ -171,12 +191,15 @@ export function githubCodeProvider(options: GitHubOptions): CodeProviderPort {
       // 宣言を1行足しただけで既存の `conclusion == success` の意味が変わる。
       const excludedNames = new Set(options.excludeWorkflows ?? []);
       const counted = runs.filter((run) => !excludedNames.has(run.name ?? ""));
-      // 宣言をそのまま写して、一致した run の数を添える。一致した分だけを残すと、
-      // 書いたのに何も外していない名前が観測から消える（`CiRunSnapshot` 参照）。
-      const excludedWorkflows = [...excludedNames].map((name) => ({
-        name,
-        runs: runs.filter((run) => run.name === name).length,
-      }));
+      // 宣言をそのまま写して、一致した run の数と見え方を添える。一致した分だけを
+      // 残すと、書いたのに何も外していない名前が観測から消える（`CiRunSnapshot` 参照）。
+      //
+      // 数だけでは「保留のままの gate を外した」と「本物の失敗を含む run を外した」を
+      // 読み分けられない。run は手元にあるので、API の往復を増やさずに添えられる。
+      const excludedWorkflows = [...excludedNames].map((name) => {
+        const matched = runs.filter((run) => run.name === name);
+        return { name, runs: matched.length, states: matched.map(stateOf) };
+      });
 
       // 失敗ジョブ名とログ URL まで取る。「CI が落ちた」だけでは
       // 次の ACT に渡す材料がない（design.md §4.3）。数だけを出して名前を
@@ -198,7 +221,9 @@ export function githubCodeProvider(options: GitHubOptions): CodeProviderPort {
         failedJobs,
         // まだ終わっていない run が1本でもあれば数は確定しない。ここで
         // 「いま時点の 0」を返すと、押した直後の緑を掴む（`CiRunSnapshot` 参照）。
-        failedJobCount: counted.every((run) => settled(run.status)) ? failedJobs.length : null,
+        // 1ページで読み切れていないとき（`truncated`）も同じ扱いにする。
+        failedJobCount:
+          !truncated && counted.every((run) => settled(run.status)) ? failedJobs.length : null,
         excludedWorkflows,
       } satisfies CiRunSnapshot;
     },
@@ -661,6 +686,27 @@ function mayHaveFailedJobs(conclusion: string | null): boolean {
   return conclusion !== "success" && conclusion !== "skipped";
 }
 
+/**
+ * 除外した run が「いまどう見えているか」を1語にする。
+ *
+ * 終わっていれば結論（`failure` / `success`）、終わっていなければ status
+ * （`waiting` / `queued` / `in_progress`）を出す。**その run について読める中で
+ * いちばん強い情報**がそれになる。終わっていない run の conclusion は必ず null で、
+ * 終わった run の status は必ず `completed` なので、片方だけを出すと常に片側が
+ * 空になる。
+ *
+ * `statusOf` / `conclusionOf` を通さず生の語を出す。あの2つは Fact にする値を
+ * 決められた集合に畳むためのもので、畳むと `waiting`（環境の承認待ち）が
+ * `completed` に見える。ここは「何を外したか」を人間に読ませる場所なので、
+ * 畳まない方が読める。
+ */
+function stateOf(run: { status: string | null; conclusion: string | null }): string {
+  if (!settled(run.status)) {
+    return run.status ?? "unknown";
+  }
+  return run.conclusion ?? "completed";
+}
+
 function statusOf(status: string | null): CiRunSnapshot["status"] {
   return status === "queued" || status === "in_progress" ? status : "completed";
 }
@@ -721,6 +767,19 @@ type Review = z.infer<typeof reviewsSchema>[number];
 const prAuthorSchema = z.object({ user: z.object({ login: z.string() }).nullish() });
 
 const runsSchema = z.object({
+  /**
+   * その head sha に紐づく run の総数。**1ページで読み切れたかの判定に使う。**
+   *
+   * ここを読まずに `workflow_runs` の件数だけで数を確定させると、run が `per_page` を
+   * 超えたときに 101 本目以降の失敗が数から落ちたまま `failed_job_count=0` が出る。
+   * 出た値は「全部緑」と1文字も変わらない——issue #58 の壊れ方をそのまま作り直す。
+   *
+   * **無くても落とさない**（`name` や PR の `title` / `body` と同じ）。必須にすると、
+   * このフィールド1つ欠けた応答で `github.ci` の観測ごと `shape_mismatch` になり、
+   * `status` も `conclusion` も `head_sha` も失う。読めなかったときは「読み切れたか
+   * 分からない」として数を出さない側に倒す（`getLatestCiRun`）。
+   */
+  total_count: z.number().nullish(),
   workflow_runs: z.array(
     z.object({
       id: z.number(),

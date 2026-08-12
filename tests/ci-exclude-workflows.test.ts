@@ -33,16 +33,30 @@ import {
  *
  * 満たすべき性質は4つ。
  *
- *   既定は除外なし  宣言が無ければ PR #71 の挙動から1文字も変わらない。detail の文言も含めて
+ *   既定は除外なし  宣言が無ければ**観測の側は**1文字も変わらない。`failed_job_count` の
+ *                  detail の文言も含めて（`DETAIL_WITHOUT_DECLARATION`）。
+ *                  ただし判定の側は変わる。除外を人間が読む場所まで通すために
+ *                  `observedContext`（src/verify/index.ts）を足しており、あれは
+ *                  `type: fact` の criterion **全部**の detail に観測の detail を繋ぐ。
+ *                  除外を1つも書いていない Goal でも、進捗コメントの detail 列は伸びる。
+ *                  値を言い直しただけの detail は繋がないので、`conclusion=success` の
+ *                  ような大半のキーは伸びない（下の「値を言い直しただけの detail は繋がない」）
  *   run 単位       除外の単位は workflow run。`failedJobCount` は「未確定の run が1本でも
  *                  あれば null」で決まるので、恒久的に pending の gate を数から外すには
  *                  run ごと外すしかない。job 名で外しても run が pending であることは変わらず、
  *                  数は永久に null のままになる
  *   黙って隠さない  何を除外したかが Fact の detail と `github.ci.excluded_workflows` から読める。
+ *                  外した run 1本ずつの見え方（`waiting` / `failure` …）まで出す。
+ *                  **除外した run の失敗ジョブは `github.ci.failed_jobs` からも消える**ので、
+ *                  消えたものが赤かったかはここでしか読めない。
  *                  「全部緑」と「除外した上で緑」が同じ見た目になると、issue #58 が直そうと
  *                  した壊れ方を作り直すことになる
  *   意味を変えない  `github.ci.conclusion` と `headSha` は最新の run 1本のまま。除外を宣言しても
  *                  「最新の run」の選び方は動かさない（PR #71 が変えないと約束した箇所）
+ *
+ * run の総数と1ページの上限（`per_page: 100`）の関係は tests/ci-failed-job-count.test.ts の
+ * 「1ページで読み切れていないなら数を出さない」で固定してある。**除外はページを取った
+ * あとに走る**ので、除外予定の run も 100 本の枠を消費する。
  */
 
 const NOW = new Date("2026-08-12T03:00:00.000Z");
@@ -173,6 +187,7 @@ describe("除外した run は数に入らない", () => {
   const RUNS = {
     match: "/actions/runs?",
     body: {
+      total_count: 2,
       workflow_runs: [
         { id: 9, name: "CI", head_sha: SHA, status: "completed", conclusion: "failure" },
         {
@@ -231,6 +246,7 @@ describe("恒久的に pending の gate を外せる", () => {
   const RUNS = {
     match: "/actions/runs?",
     body: {
+      total_count: 2,
       workflow_runs: [
         { id: 9, name: "CI", head_sha: SHA, status: "completed", conclusion: "success" },
         {
@@ -254,7 +270,10 @@ describe("恒久的に pending の gate を外せる", () => {
     const ci = await provider([RUNS], ["Require owner approval"]).getLatestCiRun(SHA);
 
     expect(ci?.failedJobCount).toBe(0);
-    expect(ci?.excludedWorkflows).toEqual([{ name: "Require owner approval", runs: 1 }]);
+    // 外した run が保留のままだったことが、外した側から読める。
+    expect(ci?.excludedWorkflows).toEqual([
+      { name: "Require owner approval", runs: 1, states: ["waiting"] },
+    ]);
   });
 });
 
@@ -267,6 +286,7 @@ describe("全部の run を外したとき", () => {
     const runs = {
       match: "/actions/runs?",
       body: {
+        total_count: 1,
         workflow_runs: [
           {
             id: 8,
@@ -282,8 +302,14 @@ describe("全部の run を外したとき", () => {
     const ci = await provider([runs], ["Require owner approval"]).getLatestCiRun(SHA);
 
     expect(ci?.failedJobCount).toBe(0);
-    expect(ci?.excludedWorkflows).toEqual([{ name: "Require owner approval", runs: 1 }]);
-    // 最新の run はそのまま残るので、conclusion からは赤いことが読める。
+    // **外したのが赤い run だったことが読める。** ここが数だけだと、保留のままの
+    // gate を外したのか本物の失敗を外したのかが区別できない。除外した run の
+    // 失敗ジョブは failedJobs からも消えるので、消えたものの色はここでしか読めない。
+    expect(ci?.excludedWorkflows).toEqual([
+      { name: "Require owner approval", runs: 1, states: ["failure"] },
+    ]);
+    expect(ci?.failedJobs).toEqual([]);
+    // 最新の run はそのまま残るので、conclusion からも赤いことが読める。
     expect(ci?.conclusion).toBe("failure");
   });
 });
@@ -296,6 +322,7 @@ describe("除外しても conclusion の意味は変わらない", () => {
     const runs = {
       match: "/actions/runs?",
       body: {
+        total_count: 2,
         workflow_runs: [
           {
             id: 8,
@@ -330,6 +357,7 @@ describe("一致しなかった除外名が読める", () => {
     const runs = {
       match: "/actions/runs?",
       body: {
+        total_count: 1,
         workflow_runs: [
           { id: 7, name: "CI", head_sha: SHA, status: "completed", conclusion: "success" },
         ],
@@ -338,7 +366,7 @@ describe("一致しなかった除外名が読める", () => {
 
     const ci = await provider([runs], ["Require ownr approval"]).getLatestCiRun(SHA);
 
-    expect(ci?.excludedWorkflows).toEqual([{ name: "Require ownr approval", runs: 0 }]);
+    expect(ci?.excludedWorkflows).toEqual([{ name: "Require ownr approval", runs: 0, states: [] }]);
     expect(ci?.failedJobCount).toBe(0);
   });
 });
@@ -346,7 +374,7 @@ describe("一致しなかった除外名が読める", () => {
 describe("observe が除外を隠さない", () => {
   function snapshotOf(over: {
     failedJobCount: number | null;
-    excludedWorkflows: { name: string; runs: number }[];
+    excludedWorkflows: { name: string; runs: number; states: string[] }[];
   }) {
     return {
       headSha: SHA,
@@ -372,6 +400,10 @@ describe("observe が除外を隠さない", () => {
   });
 
   it("除外したら数の detail にそれが出る", async () => {
+    // **書式まで固定する。**「除外したことが人間の読む場所から読める」という主張が
+    // 乗っているのはこの1行なので、含まれているかだけを見ると、名前が消えても
+    // 数が消えても通ってしまう。一致しなかった名前も同じところに出す（読む側が
+    // 2箇所を突き合わせずに済む）。
     const result = await observe(
       { prNumber: 12, issueNumber: null },
       deps({
@@ -380,19 +412,43 @@ describe("observe が除外を隠さない", () => {
             snapshotOf({
               failedJobCount: 0,
               excludedWorkflows: [
-                { name: "Require owner approval", runs: 1 },
-                { name: "Require ownr approval", runs: 0 },
+                { name: "Require owner approval", runs: 1, states: ["waiting"] },
+                { name: "Require ownr approval", runs: 0, states: [] },
               ],
             }),
         },
       }),
     );
 
-    const detail = byKey(result.facts, COUNT_KEY)?.evidence?.detail ?? "";
-    expect(detail).toContain("除外");
-    expect(detail).toContain("Require owner approval");
-    // 一致しなかった名前も同じところに出す。読む側が2箇所を突き合わせずに済む。
-    expect(detail).toContain("Require ownr approval");
+    expect(byKey(result.facts, COUNT_KEY)?.evidence?.detail).toBe(
+      "failed_job_count=0 (head sha の全 workflow run を横断" +
+        " / 除外: Require owner approval (1 run / waiting), Require ownr approval (一致なし))",
+    );
+  });
+
+  it("同じ名前で複数の run を外したら、1本ずつの見え方が並ぶ", async () => {
+    // 1つの workflow 名が run 複数本に当たることがある（再実行や
+    // `on: pull_request_review` の gate）。まとめて1語にすると、赤い run を
+    // 外したことが保留の run に紛れる。
+    const result = await observe(
+      { prNumber: 12, issueNumber: null },
+      deps({
+        code: {
+          getLatestCiRun: async () =>
+            snapshotOf({
+              failedJobCount: 0,
+              excludedWorkflows: [
+                { name: "Require owner approval", runs: 2, states: ["waiting", "failure"] },
+              ],
+            }),
+        },
+      }),
+    );
+
+    expect(byKey(result.facts, COUNT_KEY)?.evidence?.detail).toBe(
+      "failed_job_count=0 (head sha の全 workflow run を横断" +
+        " / 除外: Require owner approval (2 run / waiting, failure))",
+    );
   });
 
   it("除外そのものを Fact にする", async () => {
@@ -403,14 +459,14 @@ describe("observe が除外を隠さない", () => {
           getLatestCiRun: async () =>
             snapshotOf({
               failedJobCount: 0,
-              excludedWorkflows: [{ name: "Require owner approval", runs: 1 }],
+              excludedWorkflows: [{ name: "Require owner approval", runs: 1, states: ["waiting"] }],
             }),
         },
       }),
     );
 
     const fact = byKey(result.facts, EXCLUDED_KEY);
-    expect(fact?.value).toEqual([{ name: "Require owner approval", runs: 1 }]);
+    expect(fact?.value).toEqual([{ name: "Require owner approval", runs: 1, states: ["waiting"] }]);
     expect(fact?.confidence).toBe("VERIFIED");
     expect(fact?.evidence?.source).toContain("getLatestCiRun");
   });
@@ -427,7 +483,7 @@ describe("observe が除外を隠さない", () => {
             conclusion: null,
             failedJobs: [],
             failedJobCount: null,
-            excludedWorkflows: [{ name: "Require owner approval", runs: 1 }],
+            excludedWorkflows: [{ name: "Require owner approval", runs: 1, states: ["waiting"] }],
           }),
         },
       }),
@@ -478,17 +534,13 @@ describe("進捗レポートでも除外が読める", () => {
     // ここを落とすと「全部緑」と「除外した上で緑」が同じ行になる。
     // 進捗コメントが出すのは criteria の detail だけなので、観測が残した文脈が
     // ここまで届かないと、人間が読む場所からは除外が消える。
-    const detail = await detailOf(
-      factCriterion(COUNT_KEY, 0),
-      factOf(
-        COUNT_KEY,
-        0,
-        "failed_job_count=0 (head sha の全 workflow run を横断 / 除外: Require owner approval (1 run))",
-      ),
-    );
+    const observed =
+      "failed_job_count=0 (head sha の全 workflow run を横断 / 除外: Require owner approval (1 run / waiting))";
+    const detail = await detailOf(factCriterion(COUNT_KEY, 0), factOf(COUNT_KEY, 0, observed));
 
-    expect(detail).toContain("expected=0");
-    expect(detail).toContain("Require owner approval");
+    // **書式まで固定する。** ここは人間が読む場所の書式そのものなので、
+    // 含まれているかだけを見ると、判定の側の値が消えても除外の側が消えても通る。
+    expect(detail).toBe(`github.ci.failed_job_count=0 expected=0 / ${observed}`);
   });
 
   it("値を言い直しただけの detail は繋がない", async () => {
