@@ -68,8 +68,10 @@ function spyLlm(replies: unknown[] = []): LlmPort & { calls: string[] } {
 function target(over: Partial<DecideTarget> = {}): DecideTarget {
   return {
     criteria: [commandCriterion("ac-1")],
-    // レビュー役を起動してよいかを見る材料。この fixture では観測が無い。
+    // レビュー役と WAIT を選択肢に載せてよいかを見る材料。この fixture では観測が無い。
     facts: [],
+    // 今ティックの観測。`facts` と同じにしておく（この fixture では両方空）
+    observedFacts: [],
     assessment: assessment([]),
     unresolved: [],
     observedDigest: "digest-1",
@@ -148,7 +150,7 @@ describe("decide", () => {
       expect(decision.action).toEqual({ type: "ESCALATE", reason: "budget_exhausted" });
     });
 
-    it("Gap は無いが人間の承認待ちが残っていれば WAIT(review_pending)", async () => {
+    it("Gap は無いが人間の承認待ちが残っていれば WAIT(human_review_pending)", async () => {
       const unresolved: Unresolved[] = [
         { key: criterionFactKey("ac-6"), reason: "pending", detail: "承認待ち" },
       ];
@@ -158,7 +160,7 @@ describe("decide", () => {
         deps(llm),
       );
 
-      expect(decision.action).toMatchObject({ type: "WAIT", reason: "review_pending" });
+      expect(decision.action).toMatchObject({ type: "WAIT", reason: "human_review_pending" });
       expect(decision.decidedBy).toBe("guard");
       expect(llm.calls).toEqual([]);
     });

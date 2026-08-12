@@ -30,6 +30,10 @@ export interface ReconcileResult {
    * 落ちるのは `expireStaleFacts` が名指ししたキーだけ）。「今この瞬間そうなっている」を根拠に止める
    * 関門がそこを読むと、「確かめられなかった」が「そうなっている」に化ける
    * （design.md §3.1）。今の観測に限りたい読み手のために別に返す。
+   *
+   * 読み手は2つ。呼び出し側の関門と、DECIDE の `DecideTarget.observedFacts`
+   * （選択肢から WAIT とレビュー役を外す判定が「いま HEAD がこの commit のまま」を
+   * ここから読む）になる。
    */
   observedFacts: Fact[];
   unresolved: Unresolved[];
@@ -69,14 +73,21 @@ export async function reconcile(
   //
   // 上書きは同じキーが来たときしか起きないので、土台に載せる前に
   // 陳腐化した分を落としておく。詳細は expireStaleFacts のコメント。
-  const observedFacts = mergeFacts(
+  //
+  // **名前で `observed.facts` と区別する。** こちらは引き継ぎ込みで、あちらは
+  // 今ティックの観測だけになる。両方を `observedFacts` と呼んでいたときに、
+  // 「今ティックの観測」を要求する読み手（DECIDE）へ引き継ぎ込みの方が渡っていた。
+  const carriedAndObserved = mergeFacts(
     expireStaleFacts(target.carriedFacts, observed.facts),
     observed.facts,
   );
 
   // VERIFY。type: fact の criteria は観測結果を参照するので OBSERVE の後に回す。
-  const verified = await verify({ setup: target.goal.setup, criteria, facts: observedFacts }, deps);
-  const facts = mergeFacts(observedFacts, verified.facts);
+  const verified = await verify(
+    { setup: target.goal.setup, criteria, facts: carriedAndObserved },
+    deps,
+  );
+  const facts = mergeFacts(carriedAndObserved, verified.facts);
 
   // 「観測できなかった」と「検証できなかった」は DECIDE から見れば同じ「結論が出ていない対象」。
   // 区別は Unresolved.key と reason が持っているので、ここでは並べるだけでよい。
@@ -90,8 +101,15 @@ export async function reconcile(
     {
       criteria,
       // 検証結果まで含めた Fact を渡す。DECIDE がここを読むのは
-      // 「レビュー役を選択肢に載せてよいか」の1点だけで、guard の判定には使わない。
+      // 「レビュー役を選択肢に載せてよいか」と「WAIT を選択肢に載せてよいか」の
+      // 2点だけで、guard の判定には使わない。
       facts,
+      // 今ティックの観測だけを別に渡す。上の `facts` は前ティックの Fact を
+      // 土台にしているので、Port が落ちたティックには前ティックの値が VERIFIED の
+      // まま残る。「いま HEAD がこの commit のまま」を根拠に選択肢を消す判定が
+      // そこを読むと、確かめられなかったことが「そうなっている」に化ける
+      // （design.md §3.1 / `ReconcileResult.observedFacts`）。
+      observedFacts: observed.facts,
       assessment,
       unresolved,
       observedDigest,

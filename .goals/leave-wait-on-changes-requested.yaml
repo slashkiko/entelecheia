@@ -1,0 +1,225 @@
+version: 1
+
+goal:
+  id: leave-wait-on-changes-requested
+  name: changes_requested を受け取ったティックで WAIT に居着かない
+  desired_state: |
+    レビュー役が `changes_requested` を返しても、DECIDE は実装役に戻らず
+    `WAIT(review_pending)` を選び続ける（issue #61）。1つの Goal を収束させる間、
+    19 ティック中6ティックがそれだった。うち数ティックは command 系の criteria が
+    すべて通っており、「レビュー指摘を直す」以外にやることが無い局面だった。
+    動いたのは、人間が新しい command criterion を1本足したときだけになる。
+
+    **実質のハンドルが「criteria を足すこと」になっている。** 宣言を書き換えずに
+    収束させる、という使い方ができない。
+
+    どう作るかは Actor が決める。以下は「何が満たされていればよいか」を書く。
+
+    1. changes_requested のティックから WAIT を外す
+
+      `review.verdict` が `changes_requested` で、その結論が読んだ commit
+      （`review.reviewed_sha`）がまだ実装役の HEAD（`local.head_sha`）のままなら、
+      LLM に見せる選択肢から WAIT を外す。この局面で待つ相手はいない。
+      レビューはもう結論を出しており、次に動くのは実装役になる。
+
+      `reviewActionLines` が既に使っている「起動できないティックには形を見せない」と
+      同じ手になる。**形だけ消して誘い文句を残さない。** いまのプロンプトは選択肢の
+      JSON とは別に「人間を待つべきだと判断したら WAIT(…) を選ぶ」と書いており、
+      片方だけ消すと、残った方が読まれる。
+
+      **黙って消さない。** 外した理由と、その commit の sha をプロンプトに書く。
+      なぜ選べないかが読めないと、LLM も人間も同じ出力を繰り返す。
+
+      **外す条件はプロンプトだけに置かない。** 同じ条件を受け取り側にも置き、
+      外したはずの WAIT を返してきた出力は採用しない。同じファイルの
+      `LLM_MAY_CHOOSE` が、「書いていない選択肢は選ばれない」に受け取り側を
+      預けて焼かれた記録を残している。
+
+      3つとも VERIFIED な Fact で確かめられたときだけ外す。確かめられなかったことを
+      「changes_requested だ」と読むと、待つべきティックで選択肢が消える
+      （design.md §3.1）。
+
+    2. 人間を待つ WAIT を名指しする
+
+      `review_pending` という語が、人間の承認待ちと controller 自身のレビュー役の
+      結論とで共用されている。前者として読ませたいので `human_review_pending` にする。
+
+      **controller のレビュー役に対応する語は作らない。** レビュー役は ACT で
+      同期に走るので「レビュー役を待つ」状態がそもそも無く、1 のとおり
+      changes_requested のティックでは WAIT そのものを外す。emitter の無い語を
+      enum に足すと、選べない語が選択肢に並ぶ。
+
+      `human_review_pending` は `WAITING_HUMAN` になる。`nextStatus` は
+      `review_pending` を名指しした三項で分岐しているので、語を足しただけでは
+      型エラーにならないまま `WAITING_EXTERNAL` に落ちる。
+
+      **`review_pending` は enum から消さない。** decisions テーブルは読むたびに
+      `actionSchema.parse` を通る（`listDecisions`）ので、消すと既に走っている
+      Goal の行がそこで落ちる。読めるまま残し、`WAITING_HUMAN` のままにする。
+      新しく書き込む側だけを `human_review_pending` に寄せる。
+
+    3. guard は増やさない
+
+      `decide()` の 1〜4 は5つのままにする。ここで決めるのは LLM に渡す行動の範囲
+      ——見せる選択肢と、受け取る出力——だけで、完了判定の境界には触れない。
+      新しい `ESCALATE` の理由も足さない。外した WAIT を返し続けた出力は
+      「選択肢に無い行動を返してきた」なので、既存の `invalid_decision` で止まる。
+      `review_not_converging` に混ぜない。あちらは「実装が進まないまま
+      レビューだけを回そうとしている」を指しており、止めた理由を読む人間には
+      別のものとして届く必要がある。
+
+    4. 状態機械の記述を合わせる
+
+      docs/design.md §4.4 の「待機の種類」が `WAITING_HUMAN(reason: review_pending)`
+      と書いている。新しく書き込まれる語に直し、`review_pending` が過去の行のために
+      読めるまま残ることも書く。§4.4 以外の記述（過去に何が起きたかの説明）は
+      そのままにする。
+
+    5. 触る先
+
+      `src/decide/index.ts` と `src/domain/action.ts` と `src/domain/goal-state.ts` で
+      足りる。`src/domain/goal.ts` と `src/adapters/agent-prompt.ts` と
+      `src/adapters/claude.ts` は `PROTECTED_PATH_FLOOR` の中なので、触った時点で
+      関門が鳴る。触る必要が出たら、それは設計が変わったということなので人間を呼ぶ。
+
+    テストは tests/decide-changes-requested.test.ts に書いてある。着手時点では
+    21 本中 9 本が落ちる。仕様はテストが正で、この記述と食い違ったらテストに合わせる。
+
+    **着手時点では型チェックも落ちる。** テストが `human_review_pending` を
+    `WaitReason` として書いており、その語がまだ enum に無い。テストを直す合図では
+    なく、enum に足す合図になる。
+
+    既存テストのうち1本だけ、この変更で意味が変わる。
+    `tests/decide.test.ts` の「Gap は無いが人間の承認待ちが残っていれば
+    WAIT(review_pending)」は、guard が返す語が変わるので更新する。
+    **それ以外の既存テストは弱めない。** `review_pending` を enum に残すので、
+    `tests/goal-state.test.ts` `tests/decide-llm-boundary.test.ts`
+    `tests/wall-clock-waiting.test.ts` `tests/list-progress.test.ts`
+    `tests/cli-show.test.ts` `tests/publish-human-commit.test.ts`
+    `tests/controller-uncommitted.test.ts` は1文字も触らずに通るはず。
+    落ちたなら、`review_pending` を消したか `nextStatus` の分岐を壊している。
+
+repository:
+  provider: github
+  owner: slashkiko
+  name: entelecheia
+  default_branch: main
+
+setup:
+  - pnpm install --frozen-lockfile
+
+acceptance_criteria:
+  - id: ac-1
+    description: decide-changes-requested のテストが通る（着手時点では9本落ちている）
+    verification: { type: command, run: mise run test }
+
+  - id: ac-2
+    description: 型チェックが通る
+    verification: { type: command, run: mise run typecheck }
+
+  - id: ac-3
+    description: lint と format が通る
+    verification: { type: command, run: mise run lint }
+
+  - id: ac-4
+    description: サプライチェーンと workflow のチェックが通る（baseline 由来）
+    verification: { type: command, run: mise run check }
+
+  - id: ac-5
+    description: 変更を載せた PR の CI が成功している
+    verification: { type: fact, key: github.ci.conclusion, equals: success }
+
+  - id: ac-6
+    description: 境界を跨いでいないこと、待つべきティックで待てることを人間が確認する
+    verification:
+      type: human
+      prompt: |
+        この Goal は「LLM に見せる選択肢と受け取る出力」だけを動かすもので、
+        guard の判定も完了判定の境界も変えません。次を確認してください。
+
+        1. `decide()` の guard が5つのままか。レビューの結論を見に行く判定が
+           guard に増えていないか
+        2. WAIT を外す条件が、プロンプトと受け取り側の両方に置かれているか。
+           片方だけなら「書いていない選択肢は選ばれない」に預けたことになる
+        3. VERIFIED な Fact が3つ揃ったときだけ外しているか。観測できていない
+           ティックで WAIT が消えていないか
+        4. `review_pending` が enum に残っていて、過去の Decision 行を
+           読み直せるか。`nextStatus` が `WAITING_HUMAN` を返すか
+        5. `human_review_pending` が `WAITING_HUMAN` になっているか。
+           `nextStatus` の三項に落ちて `WAITING_EXTERNAL` に化けていないか
+        6. 新しい `ESCALATE` の理由が増えていないか
+
+        あわせて、この Goal 自身を回した記録を読んでください。issue #61 は
+        「DECIDE が WAIT に居着く」というバグで、これを回している最中に
+        同じ症状が出たなら、それ自体が再現の証拠になります。
+
+context:
+  background: |
+    issue #61（P2）。Goal が自力で進まなくなり、人間が criteria を足して
+    押し出すことになっている。
+
+    issue は3つの案を並べている。1（changes_requested のティックから WAIT を外す）と
+    2（WAIT の reason を分ける）を両方採る。3（プロンプトに「レビュー指摘が未解決なら
+    WAIT は選べない」と明示する）は、書いた形を残したまま「選ぶな」と添えるだけで
+    弱いので、1 の中の「外した理由を書く」に畳む。
+
+    1 は `reviewActionLines` が既に使っている手と同じ形になる。あちらは
+    「同じ commit を2度レビューさせない」ために、レビュー済みの commit が HEAD の
+    ままのティックからレビュー役を外している。今回外すのは同じ局面の WAIT で、
+    条件の材料（`local.head_sha` と `review.reviewed_sha`）も同じになる。
+    足りないのは `review.verdict` の1つだけ。
+
+  constraints:
+    - テストから実際の GitHub と Claude API を叩かない
+    - tests/decide-changes-requested.test.ts は仕様なので変更しない。通らないなら実装側を直す
+    - 既存の tests/ を弱めない。更新してよいのは tests/decide.test.ts の
+      「Gap は無いが人間の承認待ちが残っていれば WAIT(review_pending)」1本だけ
+    - guard を増やさない。decide() の 1〜4 は5つのままにする
+    - 新しい ESCALATE の理由を足さない
+    - review_pending を enum から消さない。decisions テーブルを読み直せなくなる
+    - 下限（src/domain/goal.ts / src/adapters/agent-prompt.ts / src/adapters/claude.ts）は触らない
+    - 依存パッケージを増やさない
+    - mise run check（サプライチェーン検査）を壊さない
+    - PR の作成とコメントの投稿はしない。controller が行う
+
+  references:
+    - title: 設計ドキュメント
+      path: docs/design.md
+    - title: いまの DECIDE
+      path: src/decide/index.ts
+    - title: 行動と待ちの理由
+      path: src/domain/action.ts
+    - title: 待ちの理由から次の状態を決めるところ
+      path: src/domain/goal-state.ts
+    - title: Decision を読み直すところ
+      path: src/store/sqlite.ts
+
+policies:
+  require_human_approval:
+    - merge
+    - force_push
+    - push_to_default_branch
+    - deploy
+    - secret_access
+    - external_send
+  protected_paths:
+    # 下限（PROTECTED_PATH_FLOOR）は Zod が読み込み時に混ぜるので、
+    # ここに並べるのはこの Goal で追加する分だけにする。
+    # 検証系。ここを書き換えられると Agent が自分の criteria を通せる。
+    - mise.toml
+    - mise-tasks/**
+    - vitest.config.ts
+    - biome.json
+    - tsconfig*.json
+    - .github/**
+    # 依存の追加は人間が通す。この Goal の constraints にも
+    # 「依存パッケージを増やさない」と書いてある。
+    - package.json
+    - pnpm-lock.yaml
+
+budget:
+  max_actor_runs: 8
+  max_reconciles: 15
+  max_wall_clock: 3h
+  max_consecutive_failures: 3
+  max_unchanged_reconciles: 4

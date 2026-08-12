@@ -146,6 +146,7 @@ describe("shape_mismatch の倒し方", () => {
           },
         ],
         facts: [],
+        observedFacts: [],
         assessment: { assessedAt: NOW, gaps: [], satisfied: true },
         unresolved: [
           { key: "github.pr", reason: "shape_mismatch", detail: "応答の形が想定と違う" },
