@@ -84,7 +84,7 @@ export function agentContextPayload(): AgentContext {
             name: "--report",
             type: "string",
             summary:
-              "進捗を PR に投稿せず、stdout（JSON の report.body）か指定したファイルに出す。--dry-run とは併用しない",
+              "進捗を PR に投稿せず、stdout（JSON の report.body）か指定したファイルに出す。この宛先にだけレビュー役の本文が1節付くので、PR コメントとは同じ内容にならない。ファイルは追記なので同じ本文が積まれる。--dry-run とは併用しない",
           },
         ],
         output: [

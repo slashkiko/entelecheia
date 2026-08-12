@@ -4,6 +4,7 @@ import { errorMessage } from "../domain/error-message.js";
 import { type Goal, type PublishStep, publishPolicyOf } from "../domain/goal.js";
 import { DEFAULT_ACTOR_ROLE, type Run } from "../domain/run.js";
 import type { Verification } from "../domain/verification.js";
+import type { ReviewPort } from "../observe/index.js";
 
 /**
  * PR を確保して進捗を書く。design.md §9 の「PR と通知」にあたる。
@@ -94,6 +95,18 @@ export interface PublishDeps {
    * 指定されたら PR には**投稿しない**。両方に出すと「投稿しない」を満たさない。
    */
   report?: ProgressSink | undefined;
+  /**
+   * 直近のレビュー役の Run を読む口（issue #59）。
+   *
+   * 読むのは `report` があるティックだけになる。PR コメントには載せないので、
+   * 付けないティックで開くと、使わない本文のために毎回生ログを開くことになる。
+   * 失敗する口が1つ増えるだけで、誰も読まない。
+   *
+   * 任意にしてあるのは、publish を単体で呼ぶ経路（既存のテストを含む）を
+   * 壊さないため。controller からは `ControllerDeps`（`ObserveDeps` を継承する）
+   * がそのまま渡るので、実運用では常に入っている。
+   */
+  review?: ReviewPort | undefined;
 }
 
 /** PR の外に進捗を書いた結果。`--report` が無ければ null になる */
@@ -169,15 +182,35 @@ export interface PublishResult {
  * - どの経路でも throw しない。失敗は skipped の理由として返す。
  *   通知に失敗しただけでティック全体を落とさない
  * - `deps.report` があれば、進捗は PR ではなくそちらに書く（`ent run --report`）。
- *   push と PR の確保は止めない。移すのは通知の宛先だけになる
+ *   push と PR の確保は止めない。移るのは通知の宛先で、そこにレビュー役の本文が
+ *   1節ぶん増える（`withReviewMessage`）
  * - `policies.publish` で `manual` と宣言された段は行わない。行わなかったことを
  *   `held` に載せて返す。**黙って何もしない経路は作らない。** 押せなかったのと
  *   押さないと決めていたのが同じ見た目になると、人間はどちらかを確かめに
  *   ログを掘ることになる（design.md §7）
  */
 export async function publish(target: PublishTarget, deps: PublishDeps): Promise<PublishResult> {
-  // 本文は宛先に関わらず1つ。宛先で内容が変わると、PR で読んだ人と手元で
-  // 読んだ人が別のものを見ることになる。
+  // ここで組み立てる本文は、宛先を問わず1つになる。criteria の pass 状況が
+  // PR で読んだ人と手元で読んだ人で食い違わないのは、この1本を両方に渡すため。
+  //
+  // **ただし `--report` の宛先にだけ、この後ろにレビュー役の本文が1節付く**
+  // （issue #59 の案1）。したがって「本文は宛先に関わらず完全に同じ」は、
+  // もう成り立たない。事故ではなく判断で、issue #59 の3案のうち案3（PR に
+  // 投稿する）を採らなかった結果になる。PR コメントは人間が購読していて、
+  // 毎ティック 14,000 字が積まれると読むのをやめる。`--report stdout` は
+  // 1回叩いて1回出すので、長い本文を置いても積み上がらない。
+  //
+  // **`--report <path>` は積み上がる。** あちらは追記で（`src/cli/present.ts` の
+  // `reportSink`）、追記なのは cron から回したときに最後の1ティックしか残らない
+  // のを避けるための選択になる。しかも `ReviewPort.latest()` が返すのは直近の
+  // 完了したレビュー役の Run なので、次のレビューが終わるまで毎ティック同じ本文が
+  // 返る（`WAIT(review_pending)` が続く区間がこれにあたる）。**案3 を退けた理由は、
+  // 採った案1のこの宛先でそのまま再現する。** 畳む口はまだ無い——前ティックに
+  // どの Run を出したかを publish は持っておらず、渡すには `PublishTarget` を
+  // 足すことになる。作るのは controller で、そちらは PROTECTED_PATH_FLOOR の中になる。
+  //
+  // 動かさないのは criteria の表の位置で、節は必ずこの本文の**後ろ**に足す
+  // （`withReviewMessage`）。宛先が違っても、表は同じ位置で読める。
   //
   // 末尾に入る時刻は、以前は push と PR 作成の往復を終えてから取っていた。ここに
   // 移したので、その往復ぶん（数秒）だけ早くなる。示したいのは「このティックが
@@ -192,7 +225,13 @@ export async function publish(target: PublishTarget, deps: PublishDeps): Promise
   // ダイジェストが前ティックと同じでも書く。PR コメントを飛ばすのは、同じ通知が
   // 積まれると人間が読むのをやめるため。1回叩いて1回出す宛先では、黙って何も
   // 出さない方が読めない（「回したのに出ない」と「回っていない」が同じ見た目になる）。
-  const report = deps.report === undefined ? null : await deliver(deps.report, body);
+  //
+  // レビュー役の本文は**この宛先にだけ**足す（issue #59 の案1）。読みに行くのも
+  // ここだけになるので、`--report` を付けないティックでは生ログを開かない。
+  const report =
+    deps.report === undefined
+      ? null
+      : await deliver(deps.report, await withReviewMessage(body, deps.review));
 
   /** 宣言で止めた段。`ensurePullRequest` が決める。null なら止めていない */
   let held: PublishHold | null = null;
@@ -320,6 +359,92 @@ async function deliver(sink: ProgressSink, body: string): Promise<ReportResult> 
   } catch (error) {
     return { destination: sink.destination, written: false, error: errorMessage(error) };
   }
+}
+
+/**
+ * レビュー役の本文の節の見出し。
+ *
+ * 宛先の本文のどこに足したかを、読む側が探せるようにする。文言を変えると
+ * 探し方が変わるので、`tests/publish-review-body.test.ts` と対にしてある。
+ */
+const REVIEW_HEADING = "## レビュー役の本文";
+
+/**
+ * `--report` の宛先の本文に、レビュー役の最終メッセージを足す（issue #59 の案1）。
+ *
+ * 満たすべき性質:
+ * - **いまの本文の後ろに足す。** criteria の表の位置を動かさない。前に割り込ませると、
+ *   14,000 字の本文を読み飛ばさないと pass 状況に辿り着けなくなる
+ * - **本文はそのまま出す。** `flatten` も `oneLine` も通さない。改行・表・コード
+ *   ブロックが落ちれば、要約を読ませることになって取り返した意味が消える
+ * - **読めなかったときも黙らない。** 理由を節に出す。黙って落とすと、この Goal が
+ *   直そうとしている壊れ方（本文が verdict の1語に畳まれて消える）をもう1つ作る
+ * - **どの経路でも throw しない。** publish の既存の性質を、この節のために崩さない。
+ *   ここで throw すると、レビューの生ログが1つ壊れているだけでティックが落ちる
+ *
+ * `latest()` が null を返したときだけ、節そのものを出さない。書くことが無いのと、
+ * 書けなかったのを同じ見た目にしない。null になる条件は「1度も起動していない」
+ * だけではないので、下の分岐のコメントに書いてある。
+ */
+async function withReviewMessage(body: string, review: ReviewPort | undefined): Promise<string> {
+  const section = await reviewSection(review);
+  return section === null ? body : `${body}\n\n${section}`;
+}
+
+/** レビュー役の本文の節。出すものが無ければ null */
+async function reviewSection(review: ReviewPort | undefined): Promise<string | null> {
+  if (review === undefined) {
+    return null;
+  }
+
+  let snapshot: Awaited<ReturnType<ReviewPort["latest"]>>;
+  try {
+    snapshot = await review.latest();
+  } catch (error) {
+    // 理由をそのまま出す。Adapter は「どの Run の、どのファイルを、なぜ」を
+    // 詰めて投げてくる（`src/adapters/review-run.ts`）ので、ここで畳むと
+    // 生ログに戻る道が消える。
+    return [
+      REVIEW_HEADING,
+      "",
+      "> [!WARNING]",
+      "> レビュー役の本文を読めなかった。理由は次のとおり。",
+      "",
+      errorMessage(error),
+    ].join("\n");
+  }
+
+  // Port が出すものを持っていない。書くことが無いので節を出さない。
+  //
+  // **null は「1度も起動していない」だけではない。** `latestReviewRun()`
+  // （`src/adapters/review-run.ts`）は `role: review` かつ `status: "completed"` の
+  // Run だけを候補にするので、レビュー役が `interrupted`（SIGTERM）や `failed` でしか
+  // 終わっていない Goal でも null になる。**その見た目は1度も起動していないときと
+  // 完全に同じで、ここからは区別を作れない。** Port が返すのは snapshot か null かの
+  // 2値で、どちらの理由で null かは載っていない。Adapter は PROTECTED_PATH_FLOOR の
+  // 中なので、区別が要るなら向こう側の戻り値を足すところから始まる。
+  if (snapshot === null) {
+    return null;
+  }
+
+  // 途中で切れた Run。Adapter は空文字で返す。「本文が空だった」と
+  // 「レビューを回していない」を同じ見た目にしないので、読んだ Run の id は出す。
+  if (snapshot.finalMessage.trim() === "") {
+    return [
+      REVIEW_HEADING,
+      "",
+      `直近のレビュー役の Run \`${snapshot.runId}\` を読んだが、本文が残っていなかった。`,
+    ].join("\n");
+  }
+
+  return [
+    REVIEW_HEADING,
+    "",
+    `直近のレビュー役の Run \`${snapshot.runId}\` が最後に返した本文。`,
+    "",
+    // ここだけは加工しない。取り返したいのは本文そのものになる。
+    snapshot.finalMessage,
+  ].join("\n");
 }
 
 /**
