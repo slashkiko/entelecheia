@@ -29,6 +29,15 @@ export interface GitHubOptions {
    * ここを口にしておくことで、テストが実際の GitHub を叩かずに済む。
    */
   fetch?: typeof fetch;
+  /**
+   * 落ちている job の数から外す workflow の名前（`repository.ci.exclude_workflows`）。
+   * 省略すれば除外なしで、`failed_job_count` はこれまでどおり全 run を数える。
+   *
+   * **Port にメソッドも引数も増やさずに済むよう、構築時に受け取る。** どの run を
+   * 数えるかは Goal ごとに決まって観測のたびには変わらないので、`getLatestCiRun` の
+   * 引数にするより合成の側で1度決める方が形に合う。
+   */
+  excludeWorkflows?: readonly string[];
 }
 
 /**
@@ -145,11 +154,30 @@ export function githubCodeProvider(options: GitHubOptions): CodeProviderPort {
         return null;
       }
 
+      // 宣言で外した workflow を数の対象から落とす（`repository.ci.exclude_workflows`）。
+      // 恒久的に赤い／保留のままの gate を数に入れると、`equals: 0` が永久に埋まらない。
+      //
+      // **落とすのは run ごと**で、job 名では落とさない。数が確定するのは「未確定の
+      // run が1本も無い」ときなので、承認待ちで `completed` にならない gate は run ごと
+      // 外さないと数が null のままになる。job 名で外しても run の status は動かない。
+      //
+      // **`latest` の選び方には触らない。** 除外は数の側だけの話で、
+      // `github.ci.conclusion` は最新の run 1本の結論のまま残す。ここを動かすと、
+      // 宣言を1行足しただけで既存の `conclusion == success` の意味が変わる。
+      const excludedNames = new Set(options.excludeWorkflows ?? []);
+      const counted = runs.filter((run) => !excludedNames.has(run.name ?? ""));
+      // 宣言をそのまま写して、一致した run の数を添える。一致した分だけを残すと、
+      // 書いたのに何も外していない名前が観測から消える（`CiRunSnapshot` 参照）。
+      const excludedWorkflows = [...excludedNames].map((name) => ({
+        name,
+        runs: runs.filter((run) => run.name === name).length,
+      }));
+
       // 失敗ジョブ名とログ URL まで取る。「CI が落ちた」だけでは
       // 次の ACT に渡す材料がない（design.md §4.3）。数だけを出して名前を
       // 出さないと、2件落ちているのにどれを直せばよいか分からない状態になる。
       const failedJobs: { name: string; logUrl: string }[] = [];
-      for (const run of runs) {
+      for (const run of counted) {
         if (!settled(run.status) || !mayHaveFailedJobs(run.conclusion)) {
           continue;
         }
@@ -165,7 +193,8 @@ export function githubCodeProvider(options: GitHubOptions): CodeProviderPort {
         failedJobs,
         // まだ終わっていない run が1本でもあれば数は確定しない。ここで
         // 「いま時点の 0」を返すと、押した直後の緑を掴む（`CiRunSnapshot` 参照）。
-        failedJobCount: runs.every((run) => settled(run.status)) ? failedJobs.length : null,
+        failedJobCount: counted.every((run) => settled(run.status)) ? failedJobs.length : null,
+        excludedWorkflows,
       } satisfies CiRunSnapshot;
     },
 
@@ -675,6 +704,15 @@ const runsSchema = z.object({
   workflow_runs: z.array(
     z.object({
       id: z.number(),
+      /**
+       * workflow の名前（`.github/workflows/*.yml` の `name:`）。除外の照合に使う。
+       *
+       * 無くても落とさない。ここは除外を宣言したときだけ読む値で、読めなければ
+       * 何にも一致しない——つまり除外なしと同じになる。名前が取れないことを
+       * `shape_mismatch` にすると、除外を1つも書いていない Goal の観測まで止まる。
+       * 一致しなかったことは `excluded_workflows` の `runs: 0` として観測に出る。
+       */
+      name: z.string().nullish(),
       head_sha: z.string(),
       status: z.string().nullable(),
       conclusion: z.string().nullable(),

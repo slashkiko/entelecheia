@@ -56,6 +56,19 @@ export const observedFactKeySchema = z.enum([
    * 掴ませないため。
    */
   "github.ci.failed_job_count",
+  /**
+   * `repository.ci.exclude_workflows` で数から外した workflow と、実際に外した run の数
+   * （`[{ name, runs }]`）。**宣言があるときだけ観測に出る。**
+   *
+   * このキーが Fact として出ているかどうかが、そのまま「除外したかどうか」になる。
+   * `failed_job_count=0` を出しておいて何を外したかを言わないと、「落ちている job が
+   * 1つも無い」と「外した上で1つも無い」が同じ見た目になる。**issue #58 が直そうと
+   * したのは、まさにその読み違いだった。**
+   *
+   * `runs: 0` は「書いたのに何も外していない」。typo かもしれないし、今回は起動
+   * しなかった workflow かもしれない。観測の側から区別できないので、弾かずに数を出す。
+   */
+  "github.ci.excluded_workflows",
 
   // CodeProviderPort.getIssue()
   "github.issue.number",

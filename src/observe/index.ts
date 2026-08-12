@@ -47,6 +47,19 @@ export interface CiRunSnapshot {
    * queued な状態が「落ちている job は 0 件」に見える。
    */
   failedJobCount: number | null;
+  /**
+   * `repository.ci.exclude_workflows` に書かれた名前と、それが実際に外した run の数。
+   * 宣言が無ければ空配列になる。
+   *
+   * **宣言をそのまま写す。** 一致した分だけを残すと、書いたのに何も外していない名前
+   * （typo か、今回は起動しなかった workflow か）が観測から消える。`runs: 0` として
+   * 残せば、外から読んで気づける。
+   *
+   * observe はこれを `github.ci.excluded_workflows` の Fact と
+   * `failed_job_count` の detail の両方に出す。「全部緑」と「除外した上で緑」が
+   * 同じ見た目になると、issue #58 が直そうとした壊れ方を作り直すことになる。
+   */
+  excludedWorkflows: { name: string; runs: number }[];
 }
 
 export interface IssueSnapshot {
@@ -293,12 +306,29 @@ export async function observe(target: ObserveTarget, deps: ObserveDeps): Promise
         // 逆に、まだ回っている run があるあいだ（null）は Fact にしない。
         // conclusion が null の run を Fact にしないのと同じ規則で、そこで 0 を
         // 出すと push した直後の queued な状態で criterion が通る。
+        //
+        // 除外を宣言していれば、その内訳を同じ detail に書く。除外した結果を
+        // 黙って隠すと、「落ちている job は 0 件」と「除外した上で 0 件」が
+        // 同じ見た目になる。**それは issue #58 の壊れ方そのものになる。**
+        const excluded = describeExcluded(ci.excludedWorkflows);
         if (ci.failedJobCount !== null) {
           push(
             "github.ci.failed_job_count",
             ci.failedJobCount,
             ciSource,
-            `failed_job_count=${ci.failedJobCount} (head sha の全 workflow run を横断)`,
+            `failed_job_count=${ci.failedJobCount} (head sha の全 workflow run を横断${excluded === null ? "" : ` / 除外: ${excluded}`})`,
+          );
+        }
+        // 除外そのものも Fact にする。数が確定していなくても出す。数を出さない
+        // 理由（まだ回っている run がある）と、何を除外したかは別のことになる。
+        //
+        // 宣言が無ければ push しない。**Fact の有無が「除外したかどうか」になる。**
+        if (excluded !== null) {
+          push(
+            "github.ci.excluded_workflows",
+            ci.excludedWorkflows.map((w) => ({ name: w.name, runs: w.runs })),
+            ciSource,
+            excluded,
           );
         }
         // 失敗ジョブ名とログ URL。ここまで載せないと次の ACT が何を直すか決められない。
@@ -341,6 +371,22 @@ export async function observe(target: ObserveTarget, deps: ObserveDeps): Promise
   }
 
   return { observedAt, facts, unobserved };
+}
+
+/**
+ * 除外の内訳を1行にする。宣言が無ければ null。
+ *
+ * 一致しなかった名前を落とさない。`runs: 0` は「書いたのに何も外していない」で、
+ * typo かもしれないし、今回は起動しなかった workflow かもしれない。観測の側から
+ * 区別できないので、数のまま出して人間に読ませる（`ciOptionsSchema` 参照）。
+ */
+function describeExcluded(excluded: readonly { name: string; runs: number }[]): string | null {
+  if (excluded.length === 0) {
+    return null;
+  }
+  return excluded
+    .map((w) => `${w.name} (${w.runs === 0 ? "一致なし" : `${w.runs} run`})`)
+    .join(", ");
 }
 
 /**

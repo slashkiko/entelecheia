@@ -25,6 +25,41 @@ import { observedFactKeySchema } from "./fact-keys.js";
 const shellCommandSchema = z.string().min(1);
 
 /**
+ * CI の観測をどう絞るか。対象リポジトリの運用に合わせる口になる。
+ *
+ * `repository` の下に置く。どの check を数えるかは対象リポジトリの運用で決まるもので、
+ * Goal の中身（`desired_state` や criteria）とは別の軸になる。
+ */
+export const ciOptionsSchema = z.strictObject({
+  /**
+   * `github.ci.failed_job_count` の数から外す workflow の名前。
+   * `.github/workflows/*.yml` の `name:`（PR の checks 欄に出る名前）で書く。
+   *
+   * **リポジトリによっては、恒久的に赤いまま／保留のままにしてある gate がある。**
+   * 「特定の人のレビューが通るまで mergeable にしない」種類のものがそれで、
+   * 数に入れると `equals: 0` の criterion が永久に埋まらない。
+   *
+   * **除外の単位を job 名ではなく workflow にしてある。** 数が確定するのは
+   * 「未確定の run が1本も無い」ときで、これは run の属性になる。承認待ちの gate は
+   * `completed` にならないので、job 名で外しても run が pending であることは変わらず、
+   * 数は永久に null のままになる。run ごと外せる粒度でないと、この要望は満たせない。
+   *
+   * **ここで外せるのは GitHub Actions の workflow run だけ。** `failed_job_count` は
+   * もともと Actions の run の job しか数えていないので、third-party の check run や
+   * branch protection の required review は最初から数に入っていない。そういう gate を
+   * ここに書いても何も起きない（一致した run の数が 0 として観測に出る）。
+   *
+   * 一致しなかった名前を弾かない。宣言を読む時点ではリポジトリを見ないので解析では
+   * 決まらず、対象リポジトリは手元の checkout とは限らないので doctor でも決まらない。
+   * そもそも「一致しない」は typo と「今回は起動しなかった workflow」（path filter や
+   * branch filter で走らないことがある）の両方を指すので、観測の側から区別できない。
+   * 代わりに**一致した run の数を観測ごとに出す**（`github.ci.excluded_workflows`）。
+   */
+  exclude_workflows: z.array(z.string().min(1)).default([]),
+});
+export type CiOptions = z.infer<typeof ciOptionsSchema>;
+
+/**
  * 観測対象のリポジトリ。
  *
  * Phase 0 では evidence.source に `GET /repos/{owner}/{repo}/pulls/12` を書けなかった。
@@ -40,6 +75,15 @@ export const repositorySchema = z.strictObject({
   owner: z.string().min(1),
   name: z.string().min(1),
   default_branch: z.string().min(1),
+  /**
+   * CI の観測の絞り方。省略できる。
+   *
+   * **`.default({})` にしない。** 既定を入れると、いま `.goals/` にある Goal 全部の
+   * 解析結果に `ci` が生える。宣言部は `ent get` がそのまま出し、store も保存するので、
+   * 1本も YAML を触っていないのに出力が変わることになる。
+   * 「書かなければ何も起きない」を、値ではなくキーの有無で表す。
+   */
+  ci: ciOptionsSchema.optional(),
 });
 export type Repository = z.infer<typeof repositorySchema>;
 

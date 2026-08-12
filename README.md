@@ -415,6 +415,54 @@ ent doctor          # その場所で回せるかを読み取り専用で調べ�
   見えないまま残るのは、`goals.db` 以外の gitignore されたパスと repoRoot の外に
   なる（design.md §10-6 の穴 (a)(b)）
 
+### 恒久的に落ちる check を数から外す
+
+`github.ci.failed_job_count` は head sha に紐づく**全 workflow run**を横断して、落ちている
+job を数える。`{ type: fact, key: github.ci.failed_job_count, equals: 0 }` と書けば
+「この commit で落ちている job が1つも無い」を criteria にできる。
+
+横断するので、**リポジトリの運用として意図的に赤いまま／保留のままにしてある gate も
+数に入る。**「特定の人のレビューが通るまで mergeable にしない」種類の workflow がそれで、
+数に入れると `equals: 0` は永久に埋まらない。外すなら宣言部に書く。
+
+```yaml
+repository:
+  provider: github
+  owner: your-org
+  name: your-repo
+  default_branch: main
+  ci:
+    # .github/workflows/*.yml の name:（PR の checks 欄に出る名前）で書く
+    exclude_workflows:
+      - Require owner approval
+```
+
+**外れるのは workflow run ごと**で、job 名では書けない。数が確定するのは「未確定の run が
+1本も無い」ときなので、承認待ちで `completed` にならない gate は run ごと外さないと数が
+永久に決まらない。job 名で外しても run の status は動かない。
+
+**外れるのは数だけ。** `github.ci.conclusion` は最新の run 1本の結論のままで、除外を書いても
+選び方は変わらない。宣言を1行足しただけで既存の `conclusion == success` の意味が動く形に
+しないため。
+
+**外せるのは GitHub Actions の workflow run だけ。** この数はもともと Actions の run の job
+しか数えていないので、third-party の check run や branch protection の required review は
+最初から入っていない。そういう gate をここに書いても何も起きない。
+
+除外した結果は隠れない。何をいくつ外したかが `github.ci.excluded_workflows` の Fact と
+`failed_job_count` の detail の両方に出て、criteria の判定結果（進捗コメントの detail 列）
+にも載る。「全部緑」と「除外した上で緑」が同じ見た目にならないようにしてある。
+
+```sh
+ent get <slug> | jq '.snapshot.facts[] | select(.key == "github.ci.excluded_workflows")'
+```
+
+一致しなかった名前は弾かず、`runs: 0` として観測に出す。宣言を読む時点ではリポジトリを
+見ないので解析では決まらず、対象リポジトリは手元の checkout とは限らないので `ent doctor`
+でも決まらない。そもそも「一致しない」は typo と「今回は起動しなかった workflow」（path
+filter や branch filter で走らないことがある）の両方を指すので、観測の側から区別できない。
+数を出して人間に読ませる方に倒してある。
+
 ### 進捗を PR に投稿しない
 
 既定では、criteria の pass 状況を PR コメントに積む。`--report` を付けると、同じ内容を

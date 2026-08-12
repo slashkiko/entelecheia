@@ -122,6 +122,7 @@ function deps(over: Partial<ReconcileDeps> = {}): ReconcileDeps {
         failedJobs: [],
         // 回っている最中は落ちている job の数も確定しない。
         failedJobCount: null,
+        excludedWorkflows: [],
       }),
       getIssue: async () => null,
     },

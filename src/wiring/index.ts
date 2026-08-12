@@ -244,10 +244,20 @@ function isWritable(dir: string): boolean {
  * （design.md §3.1）。
  */
 function codeProvider(goal: Goal): CodeProviderPort {
-  return withGithub(goal, githubCodeProvider, () => {
-    const fail = offline();
-    return { getPullRequest: fail, getLatestCiRun: fail, getIssue: fail };
-  });
+  return withGithub(
+    goal,
+    // 数から外す workflow は宣言部にある（`repository.ci.exclude_workflows`）。
+    // 書いていなければ空で、除外なしの挙動そのままになる。
+    (options) =>
+      githubCodeProvider({
+        ...options,
+        excludeWorkflows: goal.repository.ci?.exclude_workflows ?? [],
+      }),
+    () => {
+      const fail = offline();
+      return { getPullRequest: fail, getLatestCiRun: fail, getIssue: fail };
+    },
+  );
 }
 
 /**
