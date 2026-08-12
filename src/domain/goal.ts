@@ -49,6 +49,11 @@ export const ciOptionsSchema = z.strictObject({
    * branch protection の required review は最初から数に入っていない。そういう gate を
    * ここに書いても何も起きない（一致した run の数が 0 として観測に出る）。
    *
+   * **全部の run を外すと数は 0 になる。** 数えた結果 1件も無かったのと同じ値が出る。
+   * 「1本も見ていないのに緑」に見えるが、除外したことは `github.ci.excluded_workflows` に
+   * 出るので外から読める。ここで数を出さない側に倒すと「除外したのに数が出ない」になり、
+   * 宣言した通りに動いていないように見える。
+   *
    * 一致しなかった名前を弾かない。宣言を読む時点ではリポジトリを見ないので解析では
    * 決まらず、対象リポジトリは手元の checkout とは限らないので doctor でも決まらない。
    * そもそも「一致しない」は typo と「今回は起動しなかった workflow」（path filter や

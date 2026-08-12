@@ -256,6 +256,36 @@ describe("恒久的に pending の gate を外せる", () => {
   });
 });
 
+describe("全部の run を外したとき", () => {
+  it("数は 0 になる。除外したことは観測に残る", async () => {
+    // 数えた結果 1件も無かったのと同じ値が出る。「1本も見ていないのに緑」に
+    // 見えるが、ここで数を出さない側に倒すと「除外したのに数が出ない」になり、
+    // 宣言した通りに動いていないように見える。除外したことは
+    // excludedWorkflows に出るので、外から読めば区別できる。
+    const runs = {
+      match: "/actions/runs?",
+      body: {
+        workflow_runs: [
+          {
+            id: 8,
+            name: "Require owner approval",
+            head_sha: SHA,
+            status: "completed",
+            conclusion: "failure",
+          },
+        ],
+      },
+    };
+
+    const ci = await provider([runs], ["Require owner approval"]).getLatestCiRun(SHA);
+
+    expect(ci?.failedJobCount).toBe(0);
+    expect(ci?.excludedWorkflows).toEqual([{ name: "Require owner approval", runs: 1 }]);
+    // 最新の run はそのまま残るので、conclusion からは赤いことが読める。
+    expect(ci?.conclusion).toBe("failure");
+  });
+});
+
 describe("除外しても conclusion の意味は変わらない", () => {
   it("最新の run が除外対象でも、conclusion はその run のまま", async () => {
     // PR #71 は「`github.ci.conclusion` の意味を変えない」を約束している。
