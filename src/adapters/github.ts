@@ -122,6 +122,11 @@ export function githubCodeProvider(options: GitHubOptions): CodeProviderPort {
         headSha: pr.head.sha,
         reviewDecision: reviewDecisionOf(reviews, requestedReviewers),
         requestedReviewers,
+        title: pr.title ?? null,
+        // 本文の無い PR は `body: null` で返る。空文字で返す個体もあるので、
+        // どちらも null に寄せる。読む側が「空だった」を1通りに扱えるようにする
+        // （`PullRequestSnapshot.body`）。
+        body: pr.body === null || pr.body === undefined || pr.body === "" ? null : pr.body,
         // PR が読めたときだけ数えに行く。存在しない対象のスレッドは引かない。
         unresolvedThreads: await unresolvedThreadsOf(octokit, options, prNumber),
       } satisfies PullRequestSnapshot;
@@ -194,12 +199,17 @@ export function githubCodeWriter(options: GitHubOptions): CodeWriterPort {
       return found?.number ?? null;
     },
 
-    async createPullRequest(draft) {
+    async createPullRequest(pr) {
       const response = await request(octokit, "POST /repos/{owner}/{repo}/pulls", options, {
-        head: draft.head,
-        base: draft.base,
-        title: draft.title,
-        body: draft.body,
+        head: pr.head,
+        base: pr.base,
+        title: pr.title,
+        body: pr.body,
+        // 宣言が無ければキーごと送らない。GitHub の既定は false なので `draft: false` を
+        // 常に送っても結果は同じはずだが、**宣言を足していないリポジトリに対して
+        // 送る中身を1バイトも変えない**方を採る。「既定は現状維持」を、意味の側だけで
+        // なく通信の側でも成り立たせる（issue #65）。
+        ...(pr.draft === undefined ? {} : { draft: pr.draft }),
       });
       // 捏造した番号を返さない。形が違えばここで throw する。
       return decode(createdPullSchema, response, "POST /pulls").number;
@@ -700,6 +710,16 @@ const pullRequestSchema = z.object({
   mergeable: z.boolean().nullish(),
   head: z.object({ sha: z.string() }),
   requested_reviewers: z.array(z.object({ login: z.string() })).nullish(),
+  /**
+   * タイトルと本文。**どちらも欠けていて構わない**（`mergeable` と同じ扱い）。
+   *
+   * この2つはレビュー役に渡すためだけに読む値で、完了判定には使わない。必須に
+   * すると、欠けた応答1回で PR の観測ごと shape_mismatch になり、`state` も
+   * `head_sha` も落ちたうえで人間が呼ばれる。読む側は取れなかったものを
+   * 「未取得」として扱えるようにしてある（`pullRequestTextFrom`）。
+   */
+  title: z.string().nullish(),
+  body: z.string().nullish(),
 });
 
 const reviewsSchema = z.array(

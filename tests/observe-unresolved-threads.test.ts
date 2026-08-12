@@ -38,6 +38,8 @@ function pullRequest(unresolvedThreads: number | null): PullRequestSnapshot {
     headSha: HEAD,
     reviewDecision: "REVIEW_REQUIRED",
     requestedReviewers: ["pr-author"],
+    title: "サンプル PR",
+    body: "本文",
     unresolvedThreads,
   };
 }
@@ -145,6 +147,11 @@ describe("未解決レビュースレッドの観測", () => {
       headSha: HEAD,
       reviewDecision: null,
       requestedReviewers: [],
+      // title と body は埋める。**欠けているのを unresolvedThreads 1つだけに保つ。**
+      // 他のフィールドも一緒に落とすと、@ts-expect-error はそちらの欠落でも
+      // 満たされてしまい、このテストが押さえている対象がぼやける。
+      title: "サンプル PR",
+      body: "本文",
     };
 
     expect(incomplete.number).toBe(12);
