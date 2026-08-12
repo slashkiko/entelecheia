@@ -68,6 +68,9 @@ function prSnapshot(over: { title?: string; body?: string | null } = {}) {
     requestedReviewers: [],
     title: over.title ?? "レビュー役に PR のタイトルと本文を渡す",
     body: over.body === undefined ? "この判断をした理由はここに書いてある" : over.body,
+    // issue #64 で `PullRequestSnapshot` の必須フィールドになった。ここのテストは
+    // タイトルと本文だけを見るので、件数は「数え切れなかった」側に倒しておく。
+    unresolvedThreads: null,
   };
 }
 

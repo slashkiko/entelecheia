@@ -67,6 +67,7 @@ describe("observe", () => {
             requestedReviewers: ["pr-author"],
             title: "サンプル PR",
             body: "本文",
+            unresolvedThreads: 2,
           }),
         },
       }),
@@ -91,6 +92,7 @@ describe("observe", () => {
             requestedReviewers: [],
             title: "サンプル PR",
             body: "本文",
+            unresolvedThreads: null,
           }),
           getLatestCiRun: async () => ({
             headSha: "d".repeat(40),
@@ -135,6 +137,7 @@ describe("observe", () => {
             requestedReviewers: [],
             title: "サンプル PR",
             body: "本文",
+            unresolvedThreads: 0,
           }),
         },
       }),
@@ -191,6 +194,7 @@ describe("observe", () => {
             requestedReviewers: [],
             title: "サンプル PR",
             body: "本文",
+            unresolvedThreads: null,
           }),
           getLatestCiRun: async () => ({
             headSha: "f".repeat(40),

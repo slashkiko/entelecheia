@@ -27,7 +27,7 @@ export interface ReconcileResult {
    *
    * `facts` は前ティックの Fact を土台にして今ティックの観測で上書きしたものなので、
    * Port が落ちたティックには前ティックの値が VERIFIED のまま残る（陳腐化して
-   * 落ちるのは `github.ci.*` だけ）。「今この瞬間そうなっている」を根拠に止める
+   * 落ちるのは `expireStaleFacts` が名指ししたキーだけ）。「今この瞬間そうなっている」を根拠に止める
    * 関門がそこを読むと、「確かめられなかった」が「そうなっている」に化ける
    * （design.md §3.1）。今の観測に限りたい読み手のために別に返す。
    */
@@ -118,36 +118,85 @@ const HEAD_SHA_KEY = "github.pr.head_sha";
 /** head sha に紐づく観測。sha が変われば、前ティックの値は今の値ではない */
 const CI_KEY_PREFIX = "github.ci.";
 
+/** PR そのものを読めたか。読めたティックには必ず作られるので、可否の目印に使える */
+const PR_NUMBER_KEY = "github.pr.number";
+
+/** 未解決のレビュースレッドの件数。head sha に紐づかず、時間とともに変わる */
+const UNRESOLVED_THREADS_KEY = "github.pr.unresolved_threads";
+
 /**
  * 陳腐化した観測を引き継がない。
  *
- * CI が実行中のあいだ observe は `github.ci.conclusion` の Fact を作らない
- * （conclusion が null なので未観測扱い）。上書きは同じキーが来たときしか
- * 起きないので、前のコミットで観測した `conclusion=success` が head_sha の
- * 変わったあとも生き残る。ティックの順序は reconcile → act なので、Actor が
- * push した次のティックでは「head_sha は新しいのに conclusion は古い success」
- * という状態が必ず一度できる。そこで `type: fact` の criterion が古い evidence で
- * passed になり、新しいコミットの CI を待たずに COMPLETE が出る。
+ * 上書きは同じキーが来たときしか起きないので、今ティックの観測が作らなかったキーは
+ * 前ティックの値が VERIFIED のまま残る。「いま確かめられなかった」が
+ * 「いまもそうなっている」に化けるこの経路を、キーごとに塞ぐ。
  *
- * 「捏造した観測を作らない」（design.md §3.1）を守るなら、古い観測を今の観測として
- * 使うこの経路も塞ぐ。CI の Fact は head sha に紐づくので、head_sha が違う値で
- * 観測できたときだけ、引き継いだ `github.ci.*` を落とす。
+ * 今ティックの観測が作った Fact は落とさない。落とすのは引き継いだ分だけになる。
+ *
+ * 条件は独立に評価する。**片方の条件で早期 return しない。** 件数の失効は
+ * head_sha が動かないティックでこそ効くので、sha の判定の後ろに置くと、
+ * 直したい経路でだけ効かない関門になる。
+ */
+function expireStaleFacts(carried: readonly Fact[], observed: readonly Fact[]): Fact[] {
+  const stale: ((key: string) => boolean)[] = [];
+  if (headShaChanged(carried, observed)) {
+    stale.push((key) => key.startsWith(CI_KEY_PREFIX));
+  }
+  if (threadCountUnread(observed)) {
+    stale.push((key) => key === UNRESOLVED_THREADS_KEY);
+  }
+
+  if (stale.length === 0) {
+    return [...carried];
+  }
+  return carried.filter((fact) => !stale.some((matches) => matches(fact.key)));
+}
+
+/**
+ * head sha が違う値で観測できたか。引き継いだ `github.ci.*` を落とす条件になる。
+ *
+ * CI が実行中のあいだ observe は `github.ci.conclusion` の Fact を作らない
+ * （conclusion が null なので未観測扱い）。そのため、前のコミットで観測した
+ * `conclusion=success` が head_sha の変わったあとも生き残る。ティックの順序は
+ * reconcile → act なので、Actor が push した次のティックでは「head_sha は新しいのに
+ * conclusion は古い success」という状態が必ず一度できる。そこで `type: fact` の
+ * criterion が古い evidence で passed になり、新しいコミットの CI を待たずに
+ * COMPLETE が出る。
  *
  * 落とす条件を「違う値で観測できた」に限るのは、確かめられなかったことを
  * 「変わった」と読まないため。PR の Port が落ちたティックで CI の結論まで捨てると、
  * 観測の失敗が既に確かめた事実を消すことになる。
- *
- * 今ティックの観測が作った Fact は落とさない。落とすのは引き継いだ分だけになる。
  */
-function expireStaleFacts(carried: readonly Fact[], observed: readonly Fact[]): Fact[] {
+function headShaChanged(carried: readonly Fact[], observed: readonly Fact[]): boolean {
   const before = carried.find((f) => f.key === HEAD_SHA_KEY);
   const now = observed.find((f) => f.key === HEAD_SHA_KEY);
   // 片方でも観測できていないなら「変わった」とは言えない。確かめた事実を残す。
-  if (before === undefined || now === undefined || before.value === now.value) {
-    return [...carried];
-  }
+  return before !== undefined && now !== undefined && before.value !== now.value;
+}
 
-  return carried.filter((fact) => !fact.key.startsWith(CI_KEY_PREFIX));
+/**
+ * PR そのものは読めたのに、未解決スレッドの件数だけ読めなかったか。
+ * 引き継いだ `github.pr.unresolved_threads` を落とす条件になる。
+ *
+ * **`github.ci.*` とは性質が違うので、sha では判定できない。** CI の conclusion は
+ * head sha に紐づき、同じ sha なら不変なので、sha が動かない限り引き継いで安全になる。
+ * 未解決スレッドの件数は sha に紐づかない。**bot は新しいコミットが無くても
+ * スレッドを立てられる**ので、同じ sha のまま件数だけが変わる。
+ *
+ * 件数の読み取り（GraphQL）は失敗しても Fact を作らず、`unobserved` も積まない
+ * （design.md §4.3）。1ティックだけを見れば criterion は埋まらないが、前ティックで
+ * 0 を観測していれば、その 0 が引き継がれて `equals: 0` が passed になる。
+ * 1時間前の件数を今の件数として使うのは §3.1 が禁じている「捏造した観測」で、
+ * `unobserved` を積まない以上、WAIT でも止まらない。
+ *
+ * PR ごと読めなかったティックでは落とさない。`headShaChanged` と同じく、
+ * 確かめられなかったことを「変わった」と読まないため。そのティックは件数以外も
+ * 欠けており、`github.pr` の `port_failed` が WAIT(observation_failed) を立てる。
+ */
+function threadCountUnread(observed: readonly Fact[]): boolean {
+  const readPr = observed.some((f) => f.key === PR_NUMBER_KEY);
+  const readCount = observed.some((f) => f.key === UNRESOLVED_THREADS_KEY);
+  return readPr && !readCount;
 }
 
 /** 同じキーは後から来た方を採る。キーごとに1件だけ残す */

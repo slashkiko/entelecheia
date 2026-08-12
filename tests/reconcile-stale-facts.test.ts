@@ -106,6 +106,7 @@ function pullRequest(headSha: string) {
     requestedReviewers: [],
     title: "サンプル PR",
     body: "本文",
+    unresolvedThreads: null,
   };
 }
 

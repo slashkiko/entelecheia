@@ -1,0 +1,183 @@
+version: 1
+
+goal:
+  id: observe-unresolved-threads
+  name: 未解決のレビュースレッドの件数を観測する
+  desired_state: |
+    issue #64 の案1。OBSERVE が PR について作る Fact は `github.pr.review_decision` までで、
+    未解決のレビュースレッドの件数は観測されない。自動レビュー bot の指摘はたいてい
+    COMMENTED で出るので `review_decision` は `REVIEW_REQUIRED` のまま動かず、
+    **bot の指摘を収束条件に組み込む口が無い。** いまは人間が読んで `desired_state` と
+    `acceptance_criteria` に書き戻して代替している。
+
+    観測キーを1つ足して、Goal YAML が次の1行を書けるようにする。
+
+      verification: { type: fact, key: github.pr.unresolved_threads, equals: 0 }
+
+    **案2（レビューコメントの本文をレビュー役のプロンプトに載せる）はこの Goal では
+    作らない。** 触る先の `src/adapters/agent-prompt.ts` と `src/adapters/claude.ts` は
+    `PROTECTED_PATH_FLOOR` の中にあり、別の issue で人間が実装する。案3（コメントを
+    Fact 化して criteria から参照できるようにする）も採らない。
+
+    「読み取りは controller の仕事、書き込みは controller だけ、資格情報は Agent に
+    渡さない」という既存の分担は変えない。
+
+    どう作るかは Actor が決める。以下は「何が満たされていればよいか」を書く。
+
+    1. 観測キーを1つ足す
+
+      `github.pr.unresolved_threads`。値は未解決スレッドの件数で、`0` も観測できた
+      結果として Fact にする。ここが収束条件そのものになるので、`0` を falsy として
+      落とすと `equals: 0` は永久に成立しない。
+
+    2. 件数の出どころは GraphQL になる
+
+      REST には「スレッドが解決済みか」を表すフィールドが無い。`pulls/{n}/comments` が
+      返すのは個々のレビューコメントだけで、解決状態は
+      `pullRequest.reviewThreads.isResolved` にしか出ない。design.md §4.3 は
+      「GraphQL なら1回で取れるが、ETag による conditional request が効くのは REST の
+      GET だけ」という理由で `review_decision` を REST から導出しているが、こちらは
+      REST に相当物が無いので例外にあたる。`@octokit/rest` の Octokit は `graphql` を
+      持っているので依存は増えず、テストが注入した fetch もそのまま通る。
+
+    3. 数え切れなかったぶんを 0 と読まない
+
+      `reviewThreads` は `totalCount` を返す。取れたノードが全件に足りなければ、件数は
+      決まらなかったことにする。1ページ目が全部解決済みでも、残りに未解決が混じって
+      いれば答えは 0 ではない。**足りない数え上げを 0 と読むと、指摘を残したまま
+      `equals: 0` が成立する。**
+
+    4. この読み取りの失敗を、PR の観測全体に波及させない
+
+      GraphQL が失敗しても、応答の形が想定と違っても throw しない。件数を null にして、
+      `number` / `state` / `head_sha` / `review_decision` は埋めたまま返す。throw すると
+      observe が `github.pr` をまとめて unobserved に落とすので、このキーを1文字も
+      参照していない Goal まで PR が見えなくなる。ETag が効かないぶん、この読み取りは
+      毎ティック実際に飛ぶ。失敗する機会は他の観測より多い。
+
+    5. 件数が決まらないティックで unobserved を増やさない
+
+      `mergeable` の null と同じ扱いにする。Fact も unobserved も作らない。ここで
+      unresolved を積むと、Gap がゼロの Goal は DECIDE が COMPLETE ではなく WAIT を
+      返すようになり（`src/decide/index.ts`）、**このキーを参照していない Goal まで
+      完了できなくなる。** 件数を求めている Goal の側は、Fact が無ければ criteria が
+      Gap(unknown) を立てるので、待つ理由はそちらに残る。
+
+    6. Port の型で省略可能にしない
+
+      `PullRequestSnapshot.unresolvedThreads` は `number | null` の必須フィールドにする。
+      省略可能にすると、型チェックを通す最も安いやり方が「フィールドを埋めない
+      Adapter を書く」になり、Port の契約が「数えたら入っているかもしれない」に弱まる。
+
+    7. design.md に2〜3文だけ足す
+
+      §4.3 の PR の行に `unresolved_threads` を加え、この読み取りだけ GraphQL を使う
+      理由（REST に相当物が無い）と、ETag が効かないことを記す。§4.3 の他の記述と
+      「3. 中核の設計判断」は変えない。
+
+    テストは tests/observe-unresolved-threads.test.ts と
+    tests/github-unresolved-threads.test.ts に書いてある。着手時点では両方落ちる。
+    仕様はテストが正で、この記述と食い違ったらテストに合わせる。
+
+    既存の `PullRequestSnapshot` を組み立てているテスト（tests/observe.test.ts と
+    tests/reconcile-stale-facts.test.ts）は、フィールドを足すぶんだけ直してよい。
+    判定を緩めるのは「弱める」ことにあたるので、しない。
+
+repository:
+  provider: github
+  owner: slashkiko
+  name: entelecheia
+  default_branch: main
+
+setup:
+  - pnpm install --frozen-lockfile
+
+acceptance_criteria:
+  - id: ac-1
+    description: observe-unresolved-threads と github-unresolved-threads のテストが通る（着手時点では落ちている）
+    verification: { type: command, run: mise run test }
+
+  - id: ac-2
+    description: 型チェックが通る
+    verification: { type: command, run: mise run typecheck }
+
+  - id: ac-3
+    description: lint と format が通る
+    verification: { type: command, run: mise run lint }
+
+context:
+  background: |
+    対象リポジトリの PR に自動レビュー bot が入っており、実装の方針そのものを覆す
+    指摘を出した。ent のレビュー役はその点を見ていなかった。指摘は正しく、
+    宣言部のほうが間違っていた。指摘を ent に届ける経路が無いので、人間が読んで
+    `desired_state` と `acceptance_criteria` に書き戻した。書き戻した結果、次の
+    ティックで実装役が動いて解決した。**ent は直せるが、気づく口だけが無い。**
+
+    issue #64 は3つの案を挙げている。ここで採るのは案1（件数を Fact に足す）だけで、
+    最も軽く、既存の分担を1つも動かさずに済む。案2は Actor が触れない
+    `PROTECTED_PATH_FLOOR` の中に手を入れる話なので、別の issue で人間が実装する。
+
+    なお `src/observe/index.ts` / `src/adapters/github.ts` / `src/domain/fact-keys.ts` は
+    別の issue の worktree でも同時に触られている。差分は issue #64 の範囲に閉じる。
+    マージ時の衝突は人間が解く。
+
+  constraints:
+    - テストから実際の GitHub と Claude API を叩かない
+    - tests/observe-unresolved-threads.test.ts と tests/github-unresolved-threads.test.ts は
+      仕様なので変更しない。通らないなら実装側を直す
+    - 既存の tests/ も弱めない。PullRequestSnapshot にフィールドを足したことによる
+      組み立て箇所の修正だけは行ってよい
+    - 案2と案3は作らない。レビューコメントの本文を Fact にもプロンプトにも載せない
+    - src/adapters/agent-prompt.ts と src/adapters/claude.ts は触らない（下限にある）
+    - 依存パッケージを増やさない。GraphQL は @octokit/rest の Octokit が持つ graphql を使う
+    - 資格情報を Agent に渡さない。GitHub を読むのは controller 側の Adapter だけ
+    - docs/design.md は §4.3 に2〜3文足すだけにする。「3. 中核の設計判断」は変えない
+    - mise run check（サプライチェーン検査）を壊さない
+    - PR の作成とコメントの投稿はしない。controller が行う
+
+  references:
+    - title: 設計ドキュメント
+      path: docs/design.md
+    - title: 観測キーのレジストリ
+      path: src/domain/fact-keys.ts
+    - title: いまの observe
+      path: src/observe/index.ts
+    - title: いまの GitHub Adapter
+      path: src/adapters/github.ts
+
+policies:
+  require_human_approval:
+    - merge
+    - force_push
+    - push_to_default_branch
+    - deploy
+    - secret_access
+    - external_send
+  protected_paths:
+    # 制御ループ本体と、Goal の宣言部。
+    - src/controller/**
+    - .goals/**
+    # 関門そのものと、Agent の許可・拒否ツールを決めるファイル。
+    - src/domain/protected-paths.ts
+    - src/adapters/claude.ts
+    # 案2（レビューコメントの本文をプロンプトに載せる）はこの Goal の範囲外。
+    - src/adapters/agent-prompt.ts
+    # 検証系。ここを書き換えられると Agent が自分の criteria を通せる。
+    # tests/** は入れない（理由は guard-the-controller.yaml に書いた）。
+    - mise.toml
+    - mise-tasks/**
+    - vitest.config.ts
+    - biome.json
+    - tsconfig*.json
+    - .github/**
+    # 依存の追加は人間が通す。この Goal の constraints にも
+    # 「依存パッケージを増やさない」と書いてある。
+    - package.json
+    - pnpm-lock.yaml
+
+budget:
+  max_actor_runs: 10
+  max_reconciles: 20
+  max_wall_clock: 3h
+  max_consecutive_failures: 3
+  max_unchanged_reconciles: 4

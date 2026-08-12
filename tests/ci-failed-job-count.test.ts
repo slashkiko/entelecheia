@@ -61,6 +61,7 @@ function deps(over: {
         requestedReviewers: [],
         title: "サンプル PR",
         body: "本文",
+        unresolvedThreads: null,
       }),
       getLatestCiRun: async () => null,
       getIssue: async () => null,
