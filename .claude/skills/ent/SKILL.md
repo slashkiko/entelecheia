@@ -245,17 +245,24 @@ Goal の宣言に `policies.publish` があると、controller は `manual` と�
 判定はこのキーで行う。`skipped` と `decision.rationale` は人間が読む1行なので、
 文面で分岐すると文言を直した時点で黙って壊れる。
 
-**`step: open_pull_request`（`pushed: true`）なら、代わりに PR を立ててよい。**
-ブランチは既に remote にあり、controller は作らないと宣言されているだけになる。
+**`step: open_pull_request`（`pushed: true`）なら、代わりに PR を立てる。**
+ブランチは既に remote にあり、止まっているのは controller が作らないと宣言されている
+からだけになる。この宣言は controller に作らせない口であって、叩いた側に作らせない
+口ではない。
 
 ```
-gh pr create --head <publishHold.branch> --base <publishHold.base>
+gh pr create --head <publishHold.branch> --base <publishHold.base> \
+  --title <Goal の name> --body <本文>
 ```
+
+本文には Goal の Desired State と acceptance criteria の一覧、そして承認の定型文
+（`/ent approve <criterion-id>`）を入れる。controller が立てる PR がその形で、
+`verification.type: human` の criteria はその定型文が本文に無いと、レビュアーが
+承認の口を見つけられない。中身は `ent get <slug>` から取れる。
 
 次のティックがその PR を見つけて先へ進む。宣言はそのままでよい。
-ただし**宣言した人間が中身を見てから立てたい**場合もある。止めた口は controller に
-作らせないためのもので、叩いた側に作らせないためのものではない。代行してよいかを
-指示されていないなら、立てずに `publishHold` の中身を人間に渡す。
+**人間が先に中身を見てから立てたいと言われている場合だけ**、立てずに `publishHold` を
+そのまま渡す。
 
 **`step: push_branch`（`pushed: false`）は代行しない。** ブランチが remote に無いので
 PR は立てられない。手で push しても controller はそれを観測できないため、宣言を `auto` に
