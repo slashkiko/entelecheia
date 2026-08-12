@@ -121,5 +121,33 @@ export interface Store {
   reclaimOrphanRuns(goalId: string, detail: string, finishedAt: string): number;
   listRuns(goalId: string): Run[];
 
+  /**
+   * 保護パスの関門が状態 DB を見るときの値（issue #62）。
+   *
+   * `.goals/.state/goals.db` は関門が見る保護対象でありながら、controller 自身の
+   * 書き込み先でもある。**ファイルのバイト列ではなく、この Goal に属する行の
+   * 内容から作る。** バイト列だと SQLite の WAL が自動 checkpoint に当たった回
+   * だけ値が動き、controller 自身の書き込みが外部からの改竄と同じ差になっていた。
+   *
+   * この口が Store 側にあるのは、行を読めるのが store だけだからになる。関門は
+   * ACT の前後でこの値を比べるだけで、DB の形を知らない（`src/controller/index.ts`
+   * の `observedRepoState`）。
+   *
+   * `ownRunIds` には、そのティックで controller 自身が作った Run の id を渡す。
+   * write-ahead（`startRun`）と確定（`finishRun`）は ACT の窓のちょうど真ん中で
+   * 書かれるので、これを渡さないと自分の書き込みで関門が鳴る。渡した Run **だけ**
+   * が射影から落ちる。テーブルごと落ちるわけではない。落とした行の不変列は、
+   * controller 側の別の関門（`ownRunDrift`）が突き合わせる。
+   *
+   * `dependsOn` には、その Goal が `depends_on` に挙げた id を渡す。依存ゲート
+   * （`dependencyGate`）はそこの `status` を直接読んで進むかどうかを決めるので、
+   * 渡さないと、依存先の1行を書き換えるだけでゲートを開けられる。射影に入るのは
+   * `status` だけになる。
+   *
+   * 何を見て何を見ないか、そこで何を諦めたかは実装側（`src/store/sqlite.ts` の
+   * `guardDigestOf`）に書いてある。
+   */
+  guardDigest(goalId: string, ownRunIds?: readonly string[], dependsOn?: readonly string[]): string;
+
   close(): void;
 }

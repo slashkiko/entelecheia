@@ -120,10 +120,14 @@ function deps(store: Store, options: Options): ControllerDeps {
   };
 }
 
+// 状態 DB はここには並べない。あれは adapter ではなく controller が store の
+// 論理ダイジェストから作るようになった（issue #62）。fake の値を置いても
+// controller 自身の観測に上書きされるので、ここで見ても何も確かめられない。
+// 状態 DB の改竄が関門を鳴らすことは `tests/controller-state-db-writes.test.ts` が、
+// 本物の DB を通して固定している。
 const CLEAN = new Map([
   [".git/hooks/pre-push", "sha-clean"],
   [".git/config#core.hooksPath", "unset"],
-  [".goals/.state/goals.db", "sha-db"],
 ]);
 
 let store: Store;
@@ -156,14 +160,6 @@ describe("git に見えない書き込みが controller の関門を鳴らす", 
     expect(result.decision?.action.type).toBe("ESCALATE");
   });
 
-  it("状態 DB を書き換えられたら ESCALATE する", async () => {
-    const after = new Map(CLEAN).set(".goals/.state/goals.db", "sha-forged");
-
-    const result = await tick(GOAL, deps(store, { outOfSight: [CLEAN, after] }));
-
-    expect(result.decision?.action.type).toBe("ESCALATE");
-  });
-
   it("hook を消されても ESCALATE する", async () => {
     // 消された分は after 側に現れない。after だけを走査していると取りこぼす。
     const after = new Map(CLEAN);
@@ -175,7 +171,7 @@ describe("git に見えない書き込みが controller の関門を鳴らす", 
   });
 
   it("何も変わっていなければ ESCALATE しない", async () => {
-    // 上の4本が「常に ESCALATE する」で通っていないことを示す。
+    // 上の3本が「常に ESCALATE する」で通っていないことを示す。
     // 鳴りっぱなしの関門は誰も見なくなる。
     const result = await tick(GOAL, deps(store, { outOfSight: [CLEAN, CLEAN] }));
 

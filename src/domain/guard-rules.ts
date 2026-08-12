@@ -32,6 +32,22 @@ import type { Verification } from "./verification.js";
 const SHA = /^[0-9a-f]{40}$/;
 
 /**
+ * 本体リポジトリ側の観測に現れる、状態 DB のキー。
+ *
+ * 実体のパスではなく repoRoot 相対の表示用パスになる（`PathOrigin` の
+ * `repo_root`）。関門はこのキーを `.goals/.state/**` と突き合わせるので、
+ * ここを変えると保護が黙って外れる。
+ *
+ * **値を作るのは controller 側になる**（`src/controller/index.ts` の
+ * `observedRepoState`）。ファイルのバイト列ではなく、その Goal に属する行から
+ * 作った論理ダイジェスト（`Store.guardDigest`）を入れる。DB は関門が見る保護
+ * 対象でありながら controller 自身の書き込み先でもあり、バイト列で見ていると
+ * SQLite の WAL が自動 checkpoint に当たった回だけ、自分の書き込みが外部からの
+ * 改竄と同じ差として現れていた（issue #62）。
+ */
+export const CONTROLLER_STATE_DB_KEY = ".goals/.state/goals.db";
+
+/**
  * 関門が差分を取る相手。解決できなければ null。
  *
  * `ent start` を叩いた時点の repoRoot の HEAD（`GoalState.guardBaseSha`）を使う。

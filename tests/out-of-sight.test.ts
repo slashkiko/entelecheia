@@ -23,6 +23,10 @@ import { PROTECTED_PATH_FLOOR } from "../src/domain/goal.js";
  *
  * どちらも「git で見る」という手段を変えないと塞がらない。ACT の前後で
  * 指紋を比べる、という既存の手法をこちらにも当てる。
+ *
+ * **ただし状態 DB だけは、この adapter では見ない**（issue #62）。あれは
+ * controller 自身の書き込み先でもあるので、観測は store の論理ダイジェストから
+ * 作る。下の「状態 DB はここでは見ない」を参照。
  */
 
 const run = promisify(execFile);
@@ -101,15 +105,23 @@ describe("git に見えない書き込みの検知", () => {
     expect(after?.get(".git/config#core.hooksPath")).toBe("evil-hooks");
   });
 
-  it("状態 DB を直接書き換えると指紋が変わる", async () => {
+  it("状態 DB はここでは見ない", async () => {
+    // **観測の作り方だけを変えた。保護対象からは外していない**（issue #62）。
+    // `goals.db` は controller 自身の書き込み先でもあり、ファイルのバイト列で
+    // 見ていると SQLite の WAL が自動 checkpoint に当たった回だけ、自分の
+    // 書き込みが外部からの改竄と同じ差になっていた。いまは controller が
+    // `Store.guardDigest`——その Goal に属する行から作る論理ダイジェスト——を
+    // 取り、同じ観測に同じキーで混ぜる（`src/controller/index.ts` の
+    // `observedRepoState`）。行を読めるのは store だけなので adapter からは作れない。
+    //
+    // 改竄が関門を鳴らすことは `tests/controller-state-db-writes.test.ts` が、
+    // ダイジェストの性質は `tests/state-db-digest.test.ts` が固定している。
     const dbPath = join(repoRoot, ".goals", ".state", "goals.db");
     writeFileSync(dbPath, "original");
-    const before = await port().outOfSightState?.();
 
-    writeFileSync(dbPath, "forged");
-    const after = await port().outOfSightState?.();
+    const state = await port().outOfSightState?.();
 
-    expect(after?.get(".goals/.state/goals.db")).not.toBe(before?.get(".goals/.state/goals.db"));
+    expect(state?.has(".goals/.state/goals.db")).toBe(false);
   });
 
   it("何も触らなければ指紋は変わらない", async () => {

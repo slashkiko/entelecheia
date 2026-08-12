@@ -19,16 +19,17 @@ import { isAbsolute, relative, resolve } from "node:path";
  * `worktree` は Actor が編集したパス（`Run.artifacts`・`changedPaths`）。絶対パスか
  * worktree からの相対で、中の `.goals/.state/` は Agent の空きスペースになる。
  *
- * `repo_root` は本体リポジトリ側の観測（`repoDirtyState`・`outOfSightState`）。
- * `repoDirtyState` は絶対パスを返すので脱出の判定で捕まるが、`outOfSightState` は
- * **repoRoot 相対の表示用パス**を返す（`src/adapters/local.ts` の
- * `outOfSightPaths`）。`.git/hooks/pre-push` を人間が読める形で残すためで、
- * その代わり文字列だけを見ても worktree の中の同名パスと見分けが付かない。
+ * `repo_root` は本体リポジトリ側の観測（`repoDirtyState`・`outOfSightState`、
+ * および状態 DB の論理ダイジェスト）。`repoDirtyState` は絶対パスを返すので脱出の
+ * 判定で捕まるが、他は **repoRoot 相対の表示用パス**をキーにする
+ * （`src/adapters/local.ts` の `outOfSightPaths` と、`src/controller/index.ts` の
+ * `observedRepoState` が置く `.goals/.state/goals.db`）。`.git/hooks/pre-push` を
+ * 人間が読める形で残すためで、その代わり文字列だけを見ても worktree の中の
+ * 同名パスと見分けが付かない。
  *
  * 見分けが付かないまま除外を掛けると、`.goals/.state/goals.db` の改竄——
- * まさに `outOfSightState` が見に行っている当のもの——が
- * 「worktree の中の実行時状態」として素通りする。出どころは呼び出し側しか
- * 知らないので、引数で受け取る。
+ * まさにこの関門が見に行っている当のもの——が「worktree の中の実行時状態」として
+ * 素通りする。出どころは呼び出し側しか知らないので、引数で受け取る。
  */
 export type PathOrigin = "worktree" | "repo_root";
 
@@ -123,9 +124,9 @@ export function describeViolations(violations: readonly Violation[]): string {
  * **本体側の state dir はこの除外の対象外になる（`origin: "repo_root"`）。**
  * かつてここには「本体側への書き込みは worktree の外なので escaped_worktree で
  * 先に捕まる」と書いてあったが、絶対パスで来るもの（`repoDirtyState`）にしか
- * 当てはまらなかった。`outOfSightState` は `.goals/.state/goals.db` を
- * repoRoot 相対の文字列で返すので `..` から始まらず、脱出の判定を素通りして
- * この除外に落ちていた。DB を偽造されても関門が鳴らない、という形になる。
+ * 当てはまらなかった。本体側の観測は `.goals/.state/goals.db` を repoRoot 相対の
+ * 文字列で返すので `..` から始まらず、脱出の判定を素通りしてこの除外に落ちていた。
+ * DB を偽造されても関門が鳴らない、という形になる。
  * 除外を掛けてよいかは文字列ではなく出どころで決める（PathOrigin）。
  */
 const RUNTIME_STATE_DIR = ".goals/.state";

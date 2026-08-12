@@ -19,6 +19,10 @@
 - **publish を宣言で止める口を足した。** `policies.publish` の `push_branch` /
   `open_pull_request` を `auto` / `manual` で宣言する。止めたことは `ent run` の出力の
   `publishHold` に構造で出す（§7）
+- **状態 DB の観測を、バイト列から Goal ごとの論理ダイジェストへ移した**（§10-6）。射影から
+  落とした Run の不変列は `ownRunDrift` が突き合わせる。`depends_on` の Goal の `status` も
+  射影に入れた。同一ディレクトリの並列を塞いでいた誤検知は外れたが、実プロセス2本での
+  確認は済んでいない（§5）
 
 ---
 
@@ -745,9 +749,12 @@ PRAGMA foreign_keys = ON;
   ティックをまたいだ交代で成立させる。同じティックに2体を走らせると、Run の確定・
   lease・write-ahead の前提（§3.6 / §4.5）まで変わる。
   **ここで言う並列は1ティックの内側の話になる。** Goal単位のleaseがあるためデータモデル上は
-  N本を別プロセスで扱えるが、同一ディレクトリでの並列実行は状態DBの指紋変化を
-  保護パス違反と誤検知するため現在未対応。README「複数のGoalを同時に回す」のとおり、
-  この制約が解けるまでは1本ずつ回す
+  N本を別プロセスで扱える。同一ディレクトリでの並列実行を塞いでいた保護パスの関門は、
+  状態DBの観測をGoalごとの論理ダイジェストに移したことで外れた（§10-6）。
+  ただし**確かめたのはVitestの中で2本のティックを同じDBへ同時に流したところまで**で、
+  `ent run`のプロセスを2本立てて回してはいない。gitのロック競合（初回の
+  `git worktree add`が`.git/index.lock`を取る）とSQLiteのbusy競合は残る。
+  README「複数のGoalを同時に回す」を参照
 - ~~Codex CLI の実装~~（`ENT_ACTOR=codex`またはphase別指定で非対話JSONL Adapterを選ぶ）
 - L5 改善レイヤー（History は貯めるだけ、学習はしない）
 
@@ -1580,7 +1587,79 @@ remote に出た時点で、通常の変更として流れる余地が生まれ�
 PR がまだ無いうちに違反したティックでは、PR を作らないので通知も残らない。
 その場合に人間へ届くのは `ent get` と Decision の履歴だけになる。
 
-**残る穴を5つ書いておく。**
+**状態 DB だけは、ファイルではなく行を見る。** `.goals/.state/goals.db` は
+関門が見る保護対象でありながら、**controller 自身の書き込み先**でもある。
+ACT の窓——ベースラインを控えてから検査するまでの間——で、controller は必ず
+この DB に書く。Run の write-ahead（`startRun`）と確定（`finishRun`）、そして
+lease の延長になる。
+
+かつてこれも `outOfSightState` が**ファイルのバイト列**で見ていた。SQLite は
+WAL なので、その書き込みは普段 `goals.db-wal` に載るだけで `goals.db` の中身は
+1バイトも動かない。動くのは **WAL が既定の閾値（1000 ページ）を越えたコミットで
+自動 checkpoint が走り、WAL の内容が `goals.db` へ畳み込まれたとき**になる。
+ティックの形が同じでも、そのプロセスがそれまでに書いた量が閾値を跨いだ回だけ
+指紋が変わり、`ESCALATE(protected_path_touched)` になっていた。人間も Actor も
+触っていないのに関門が鳴り、実装役の成果が publish されないまま worktree に残る。
+
+**保護するかどうかは変えない。** `.goals/.state/**` は `PROTECTED_PATH_FLOOR` に
+残る。外せば、DB を直接書き換えて状態を偽造されても関門が鳴らない。変えたのは
+観測の作り方で、**バイト列ではなく、その Goal に属する行の内容**から決定的な
+ハッシュを作る（`Store.guardDigest`。実装は `src/store/sqlite.ts` の
+`guardDigestOf`）。checkpoint でも VACUUM でもページの再配置でも値は動かない。
+
+**Goal ごとに閉じる。** 見るのはそのティックが回している Goal の行だけになる。
+別の Goal の行がいくら増えても値が動かないので、同じディレクトリで2本目の ent が
+別の Goal を回してもこちらの関門は鳴らない。行が `goal_id` を持つこと自体は
+最初からそうなっており（`facts` と `unresolved` は `snapshots` 経由で辿れる）、
+§4.5 のスキーマは変えていない。**行を分けるだけでは解けなかったのは、WAL が DB
+ファイルに1つしか無いため**で、論理ダイジェストと組にして初めて Goal ごとに
+閉じた観測になる。
+
+**`depends_on` に挙げた Goal の `status` も射影に入れる。** 依存ゲート
+（`dependencyGate`）はそこを直接読んで進むかどうかを決めるうえ、その呼び出しは
+lease を取る前——どのティックの ACT の窓の外——にある。入れないと、依存先へ
+`UPDATE goals SET status='COMPLETED'` を1行流すだけでゲートを開けられて、
+どちらの Goal のダイジェストにも差が出なかった。見るのは `status` だけにする。
+`reconciles` や lease や `pr_number` は、依存先を回す2本目の ent や人間の
+`ent start` で動くので、入れると鳴りっぱなしになる。`status` はゲートを通る条件が
+`COMPLETED`（終端）で、終端の Goal は誰も回さないため動かない。
+
+**controller 自身が ACT の窓で書く分だけを射影から外す。** 外すのは2つで、
+`goals` の lease 列（ティックのあいだ延長し続ける）と、そのティックで controller が
+作った Run の行になる。落とすのは**渡した Run だけ**で、テーブルごとではない。
+ACT の窓で誰かに Run を差し込まれれば鳴る。
+
+**落とした Run の行は、別の関門が不変列だけ受け持つ**（`ownRunDrift`、
+`src/controller/index.ts`）。controller が ACT の窓で書き換えるのは `finishRun` の
+9列（`status` / `finished_at` / `exit_code` / `log_ref` / `tokens` / `artifacts` /
+`detail` / `error_kind` / `actor_resume_after`）だけで、`intent` / `actor` / `role` /
+`worktree` / `attempt` / `started_at` は `startRun` が1回書いたきり動かない。
+行ごと落とすと、その不変列まで観測の外に出る。**とくに `role` が外に出ていると、
+実装役が自分でレビューを承認できた。** 実装役の ACT の窓の中で
+`UPDATE runs SET role='review' WHERE goal_id=? AND status='starting'` を流すと
+（Run の id を知る必要すら無い）、次のティックで `latestReviewRun` がその Run を
+「直近のレビュー役の Run」として選ぶ。`log_ref` は controller が正しく書いている
+ので生ログの偽造も要らず、実装役が自分で書いた最終メッセージが `review.verdict` と
+`review.reviewed_sha` の Fact になり、`judgeReviewVerdict` が criterion を passed に
+する。だから ACT の後に、`startRun` へ渡した組と DB の行を突き合わせる。
+行が `listRuns` から消えていること（`goal_id` の書き換え）も改竄として数え、
+値がスキーマに載らず読めなければ `guard_unavailable` に倒す。
+**ただし鳴るのは書き換えたティックだけで、書き換えられた行は DB に残る。**
+次のティックではその Run が `ownRuns` から外れて射影の内側に入るので鳴り止み、
+人間が掃除しなければ `role='review'` の行はそのまま残る（(h)）。
+
+スキーマ（`sqlite_master`）も見る。
+trigger を1つ仕込めば、行を1つも変えずに以降の書き込みへ副作用を付けられる。
+**ファイルの存在と inode も見る。** 開いたままのコネクションは unlink された
+ファイルを読み続けるので、行だけを見ていると、消されたことにも、同じパスへ別の
+ファイルを置かれたことにも気づけない。存在だけでは後者が素通りするので、
+inode を組で見る。
+
+**バイト列を捨てて諦めたものは (h) に書いた。代わりに (g) が閉じた。**
+論理ダイジェストは SQLite 経由で読むので、まだ WAL にしか無い行も見える。
+
+**残る穴を7つ書いておく**（記号は動かさない。(g) は閉じたが、他の穴の呼び名が
+ずれると過去のレビューが指す先が変わるので、消さずに取り消し線で残す）。
 
 (a) repoRoot の外（`~/.zshrc` や `~/.claude/**`）は git で観測できないので見えない。
 
@@ -1588,10 +1667,11 @@ PR がまだ無いうちに違反したティックでは、PR を作らない�
 gitignore とは無関係に `git status` が原理的に出さないもの（`.git/hooks/**` と、
 そもそもパスではない `core.hooksPath` の設定値）。前者は `--ignored` を付ければ出るが、
 controller 自身が毎ティック書くので、自分の書き込みが毎回違反として並ぶ。
-**どちらの系統も、実行に繋がる3つ——`.goals/.state/goals.db`・`.git/hooks/**`・
-`core.hooksPath`——だけは `outOfSightState` が名指しで指紋を取り、ACT の前後で
-比べる**（MVP レビューの SEC2 / SEC3）。残る穴は `goals.db` 以外の gitignore された
-パスで、そこを書き換えられても検知しない。
+**どちらの系統も、実行に繋がる3つだけは ACT の前後で比べる**（MVP レビューの
+SEC2 / SEC3）。`.git/hooks/**` と `core.hooksPath` は `outOfSightState` が名指しで
+指紋を取り、`.goals/.state/goals.db` は controller が `Store.guardDigest` の論理
+ダイジェストで見る。残る穴は `goals.db` 以外の gitignore されたパスで、そこを
+書き換えられても検知しない。
 
 (c) 本体側の違反は、同じファイルが次のティックまで**そのまま**なら、
 その内容がベースラインに入るので鳴り止む。指紋で比べているので、同じファイルを
@@ -1606,6 +1686,58 @@ controller のソースはディスクに残る。
 追うが、本体側のブランチは controller が動かさないので `status` だけにしてある。
 `git -C ../../../.. commit` や `git -C ../../../.. stash` は拒否リストに無いので、
 本体側で書いてから commit されると、汚れの集合から消えて検査の外に出る。
+
+(f) 状態 DB の改竄で見えるのは、そのティックが回している Goal の行と、
+`depends_on` に挙げた Goal の `status` だけになる。それ以外の Goal の行を
+書き換えられても、こちらのティックは気づかない。あちらのティックが自分の窓の中で
+気づく余地はあるが、窓の外で起きた分は誰も見ない。これは Goal ごとに閉じた観測に
+した代償で、同じディレクトリで別の Goal を回せることとは表裏になる。
+
+**依存ゲートだけは、他の Goal の行を読む唯一の例外**になる。
+`dependencyGate` は依存先の `status` を直接読み、しかもその呼び出しは lease を取る
+前——どのティックの ACT の窓の外——にある。射影に入れたので、**どこかのティックの
+ACT の窓の中で書き換えられた分は鳴る**。窓の外で書き換えられれば、こちらの
+ベースラインにも検査にも同じ値が入るので、やはり誰も見ない。読む先を射影に
+入れることと、窓の外を見られないことは別の話になる。
+
+**誤検知は増やしていない。** ゲートを通る依存先は `COMPLETED`（終端）に限られ、
+終端の Goal は `tick` が回さず、`ent start` も `ent abandon` も終端を理由に断る
+（`src/cli.ts`）。射影に入れた `status` を正規の経路で動かせる者はいないので、
+依存先を回す2本目の ent がいても鳴りっぱなしにはならない。lease や `reconciles`
+まで入れると鳴るので、入れるのは `status` だけにしてある。
+
+(g) ~~状態 DB の改竄も指紋で見るのは `goals.db` だけで、`goals.db-wal` は
+見ていない~~（閉じた）。論理ダイジェストは SQLite 経由で読むので、まだ WAL に
+しか無い行も見える。バイト列で見ていた頃は、SQLite 経由で書き換えられた行が
+次の checkpoint まで `goals.db` に現れず、そのティックの差に出ないことがあった。
+
+(h) 状態 DB について、「バイト列は違うが、この Goal の論理的な行は同じ」改竄は
+通る。射影から外してあるのは `goals` の lease 列と、そのティックで controller が
+作った Run の行の2つになる。
+
+前者は lease を奪える（＝ティックを落とせる）が、状態の偽造にはならない。
+
+後者は**可変列だけ**が残る。`finishRun` が書く9列——`status` / `finished_at` /
+`exit_code` / `log_ref` / `tokens` / `artifacts` / `detail` / `error_kind` /
+`actor_resume_after`——を書き換えられるので、予算の数え方（§7 の `max_actor_runs` /
+`max_consecutive_failures`）を1件分ごまかせる。**不変列（`intent` / `actor` /
+`role` / `worktree` / `attempt` / `started_at`）は `ownRunDrift` が突き合わせるので、
+そのティックでは鳴る。** かつてここは行ごと落ちており、`role` を `review` へ
+書き換えるだけで実装役が自分のレビューを承認できた（上の本文）。届く範囲は
+「予算1件分」では済んでいなかった。
+
+**ただし鳴るのは書き換えたティックだけになり、(c) と同じ形の穴が残る。**
+そのティックは `ESCALATE(protected_path_touched)` で `WAITING_HUMAN` に落ちるが、
+書き換えられた行は DB に残る。次のティックではその行が `ownRunIds` から外れて
+射影の内側に入るので、前後で差が出ず鳴り止む。止まった Goal を人間が掃除しない
+まま回し続ければ、`role='review'` の行はそのまま残り、次のティックの
+`latestReviewRun` はそれを選ぶ。**関門が保証するのは「人間に1度届くこと」までで、
+改竄を取り消しはしない。**（`tests/controller-state-db-writes.test.ts` の
+「鳴るのは書き換えたティックだけになる」がこの2周を固定する。）
+
+ファイルの側は、**存在と inode を見るので、消去（`rmSync`）と差し替え（unlink して
+同じパスに別のファイルを置く形）は鳴る**。残るのは、開いたままのコネクションから
+見える中身を変えない破損になる。
 
 (c) と (d) は逆向きのトレードオフで、どちらも検知を永続化するか
 Actor プロセスと編集を紐付けないと同時には解けない。MVP では両方残す。
