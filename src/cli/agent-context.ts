@@ -29,6 +29,15 @@ export interface AgentContext {
     summary: string;
     args: { name: string; required: boolean; type: string }[];
     flags: { name: string; type: string; summary: string }[];
+    /**
+     * 条件が揃ったときだけ出力 JSON に増える枝。常に出るキーは載せない。
+     *
+     * 常に出るものは1回叩けば読めるが、条件付きのものは条件を踏まない限り
+     * 存在すら分からない。`publishHold` がその典型で、宣言を書いた Goal を
+     * 回したときにしか出ない。ここに無ければ、読む側は毎ティック出るキーだけを
+     * 見て分岐を組むことになる。
+     */
+    output?: { key: string; when: string; summary: string }[];
   }[];
   env: { name: string; required: boolean; summary: string }[];
   exitCodes: { code: number; meaning: string }[];
@@ -46,7 +55,8 @@ export function agentContextPayload(): AgentContext {
   const slug = { name: "slug", required: true, type: "string" } as const;
 
   return {
-    schemaVersion: 2,
+    // 3 で commands[].output を足した。読む側から見れば増えただけになる。
+    schemaVersion: 3,
     commands: [
       {
         name: "init",
@@ -76,6 +86,16 @@ export function agentContextPayload(): AgentContext {
             summary:
               "進捗を PR に投稿せず、stdout（JSON の report.body）か指定したファイルに出す。この宛先にだけレビュー役の本文が1節付くので、PR コメントとは同じ内容にならない。ファイルは追記なので同じ本文が積まれる。--dry-run とは併用しない",
           },
+        ],
+        output: [
+          {
+            key: "publishHold",
+            when: "policies.publish で controller の publish を止めたティック",
+            summary:
+              "step（push_branch / open_pull_request）/ reason / pushed / branch / base。pushed が true なら branch は remote にあるので、叩いた側が代わりに PR を立てられる",
+          },
+          { key: "dryRun", when: "--dry-run", summary: "wouldTransitionTo と observed も付く" },
+          { key: "report", when: "--report", summary: "destination / written / error（/ body）" },
         ],
       },
       {

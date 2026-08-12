@@ -243,6 +243,99 @@ commit が消えたときがこれにあたる。`budget_exhausted` の `ESCALAT
 `status` に入るのは Goal の状態（`ACTIVE` / `WAITING_HUMAN` / `WAITING_EXTERNAL` /
 `BLOCKED` / `COMPLETED` など）で、`ESCALATE` や `WAIT` は `action` の側に出る。
 
+## controller が push や PR 作成をしなかったとき
+
+Goal の宣言に `policies.publish` があると、controller は `manual` と書かれた段を行わない。
+そのティックの出力に `publishHold` が入る（宣言を書いていない Goal には出ない）。
+
+| キー | 入るもの |
+| --- | --- |
+| `step` | 止めた段。`push_branch` か `open_pull_request` |
+| `reason` | `declared_manual`。宣言で止めたということ |
+| `pushed` | `branch` が remote にあるか |
+| `branch` | PR の head になるブランチ |
+| `base` | PR の base |
+
+判定はこのキーで行う。`skipped` と `decision.rationale` は人間が読む1行なので、
+文面で分岐すると文言を直した時点で黙って壊れる。
+
+同じティックの `action` は `ESCALATE(push_branch_declared_manual)` か
+`ESCALATE(open_pull_request_declared_manual)`、`status` は `WAITING_HUMAN` になる。
+
+`--dry-run` にはこの停止が映らない。publish を通らないので `publishHold` は出ず、
+`wouldTransitionTo` も止める前の判断のまま返る。宣言で止まる Goal では、dry-run の予告と
+実ティックの結果が食い違う。
+
+**`step: open_pull_request`（`pushed: true`）なら、代わりに PR を立てる。**
+ブランチは既に remote にあり、止まっているのは controller が作らないと宣言されている
+からだけになる。この宣言は controller に作らせない口であって、叩いた側に作らせない
+口ではない。
+
+```
+gh pr create --head <publishHold.branch> --base <publishHold.base> \
+  --title <Goal の name> --body <本文>
+```
+
+**代行に要る宣言は `.goals/<slug>.yaml` から読む。`ent get` には出ない。**
+`ent get` が宣言部から出すのは `goal`（`id` / `name` / `desired_state` / `depends_on`）だけで、
+`repository` も `acceptance_criteria` も1キーも出ない。`verifications` が持つのも criterion の
+id と結果までなので、description も `verification.type` もそちらには無い。`publishHold` に
+入るのは、宣言からは決まらないもの（`branch` と `pushed`）になる。
+
+| 代行に要るもの | どこから読む |
+| --- | --- |
+| head と base | `publishHold.branch` / `publishHold.base` |
+| `--draft` を付けるか | `.goals/<slug>.yaml` の `repository.pull_request.draft` |
+| PR のタイトル | `.goals/<slug>.yaml` の `goal.name`（`ent get` の `goal` でもよい） |
+| 本文の Desired State | 同じく `goal.desired_state` |
+| 本文の criteria 一覧 | `.goals/<slug>.yaml` の `acceptance_criteria`（id / `verification.type` / description） |
+
+`repository.pull_request.draft: true` なら `--draft` を付ける。controller が立てるときは
+渡している値なので、付け忘れると**代行した PR だけがレビュアーに通知を飛ばす**。
+`open_pull_request: manual` が止めようとしているのは、まさにその通知になる。
+
+本文は controller が立てるものと同じ形にする（`pullRequestBody`、`src/publish/index.ts`）。
+
+````markdown
+entelecheia の Goal `<goal.id>` に対する変更。
+
+## Desired State
+
+<goal.desired_state>
+
+## Acceptance Criteria
+
+- `<id>` (<verification.type>) <description>
+
+進捗は controller がコメントで積む。承認は次の定型文で行う。
+
+```
+/ent approve <criterion-id>
+```
+````
+
+`verification.type: human` の criteria は、この定型文が本文に無いとレビュアーが承認の口を
+見つけられない。**本文の `<criterion-id>` は実際の id に置き換えない。** 承認として数えるのは
+PR コメントの側で、行全体が `/ent approve <実際の id>` と一致したときだけになる。本文は
+書き方を見せる雛形にしておく。
+
+次のティックがその PR を見つけて先へ進む。宣言はそのままでよい。
+**人間が先に中身を見てから立てたいと言われている場合だけ**、立てずに `publishHold` を
+そのまま渡す。
+
+**`step: push_branch`（`pushed: false`）は代行しない。** ブランチが remote に無いので
+PR は立てられない。手で push しても controller はそれを観測できないため、宣言を `auto` に
+戻すまで毎ティック同じところで止まる。人間に渡す。
+
+**`BLOCKED` にはならない。** 予算を使い切っても `ESCALATE(push_branch_declared_manual)` が
+`ESCALATE(budget_exhausted)` を上書きするので、状態は `WAITING_HUMAN` のままになる。
+止まっているあいだ `max_reconciles` と `max_actor_runs` は進むが、`max_wall_clock` だけは
+止まる（予算切れ以外の `ESCALATE` は待ちとして経過時間から引かれる）。
+「そのうち `BLOCKED` になって気づく」は起きないので、人間に渡すまで止まったままになる。
+
+`ESCALATE(protected_path_touched)` などの関門で止まったティックには `publishHold` は
+出ない。そちらは push も PR も代行してはいけない停止になる。
+
 ## 終了コード
 
 | code | 意味 |
