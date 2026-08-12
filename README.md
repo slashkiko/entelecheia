@@ -182,7 +182,7 @@ configuration produced both ticks that committed and ticks that did not (design.
 tick stopped by the protected-path gate, nothing is committed — so that violating changes never
 enter the history.
 
-**On a tick that committed, the uncommitted-changes gate is not consulted.** `local.dirty` is an
+**On a tick that committed, the uncommitted-work gate is not consulted.** `local.dirty` is an
 observation from before the commit, so reading it would mean stopping yourself over the mess you
 just cleaned up. What remains in scope is the tick where nothing was committed (only gitignored
 files are dirty, or the commit itself failed). If uncommitted changes remain on a `COMPLETE` /
@@ -479,10 +479,12 @@ Three constraints remain.
   carries meaning in a target repository is three entries: `.goals/**`, `.git/**`, and
   `.goals/.state/**`. The latter two do not show up in `git status`, but `.git/hooks/**` and
   `core.hooksPath` are watched by a separate route that compares fingerprints before and after ACT
-  (`outOfSightState`), and `.goals/.state/goals.db` by a logical digest built from the rows belonging
-  to that Goal (`Store.guardDigest`) — and from there they connect to the gate. What stays invisible
-  is gitignored paths other than `goals.db`, and anything outside repoRoot (holes (a) and (b) in
-  design.md §10-6)
+  (`outOfSightState`), and `.goals/.state/goals.db` — together with the raw log of a completed
+  review-role Run (`.goals/.state/runs/<id>/log.jsonl`) — by a logical digest built from the rows
+  belonging to that Goal (`Store.guardDigest`), and from there they connect to the gate. The raw log
+  is watched because its body becomes the `review.verdict` Fact: protect the row but not what the row
+  points at, and the verdict can be forged. What stays invisible is gitignored paths other than these
+  two, and anything outside repoRoot (holes (a) and (b) in design.md §10-6)
 
 ### Excluding permanently failing workflows from the count
 
@@ -683,7 +685,7 @@ Once you split one coarse task into N Goals, write the order in `goal.depends_on
 ```yaml
 goal:
   id: wire-it-up
-  name: 配線する
+  name: wire it up
   desired_state: |
     …
   depends_on:

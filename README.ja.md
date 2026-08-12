@@ -14,6 +14,8 @@ Claude Code または Codex を起動する。CLI 名は `ent` になる。
 この README は、設計の要点・現在地・使い方を扱う。設計の全体像・判断の根拠・Phase 計画は
 [`docs/design.ja.md`](docs/design.ja.md) にある（英語は
 [`docs/design.md`](docs/design.md)）。このリポジトリで作業を始めるときは、まずそれを読む。
+以降の本文で `design.md §7` のように書いているのは、日本語版 `design.ja.md` の同じ節を指す。
+節番号は両方で揃えてある。
 
 ## 設計の要点
 
@@ -455,9 +457,12 @@ ent doctor          # その場所で回せるかを読み取り専用で調べ�
   両方が重なる）。対象リポジトリで意味を持つのは `.goals/**` と `.git/**` と
   `.goals/.state/**` の3つになる。後ろの2つは `git status` に出ないが、
   `.git/hooks/**` と `core.hooksPath` は ACT の前後で指紋を比べる別経路
-  （`outOfSightState`）が、`.goals/.state/goals.db` はその Goal に属する行から作る
+  （`outOfSightState`）が、`.goals/.state/goals.db` とレビュー役の完了した Run の
+  生ログ（`.goals/.state/runs/<id>/log.jsonl`）はその Goal に属する行から作る
   論理ダイジェスト（`Store.guardDigest`）が見ており、そこから関門に繋がる。
-  見えないまま残るのは、`goals.db` 以外の gitignore されたパスと repoRoot の外に
+  生ログまで見るのは、その本文が `review.verdict` の Fact になるからで、
+  行を守っても指す先を守らなければ verdict を偽造できる。
+  見えないまま残るのは、この2つ以外の gitignore されたパスと repoRoot の外に
   なる（design.md §10-6 の穴 (a)(b)）
 
 ### 恒久的に落ちる workflow を数から外す
@@ -848,5 +853,5 @@ MIT。[`LICENSE`](LICENSE) にある。
 
 `ent` が起動する Actor は Claude Code と Codex で、**どちらもこのライセンスの対象外になる。**
 それぞれベンダーの規約のもとで動くので、選んだ側の有効なログインが要る。とくにこのリポジトリが
-依存している `@anthropic-ai/claude-agent-sdk` は OSS ではなく、OSI ライセンスではなく Anthropic の
+依存している `@anthropic-ai/claude-agent-sdk` は OSS ではない。OSI ライセンスではなく、Anthropic の
 Commercial Terms of Service のもとで配布されている。
