@@ -890,3 +890,12 @@ mise run repository-initialize --configure-github # actually rewrites the settin
 
 For details see [`docs/security-baseline.md`](docs/security-baseline.md) and
 [`SECURITY.md`](SECURITY.md).
+
+## License
+
+MIT. See [`LICENSE`](LICENSE).
+
+The Actor `ent` launches is Claude Code or Codex, and **neither is covered by this license.** Each
+runs under its own vendor's terms, and you need a valid login for the one you select. In particular
+`@anthropic-ai/claude-agent-sdk`, which this repository depends on, is not open source: it ships
+under Anthropic's Commercial Terms of Service rather than an OSI license.
