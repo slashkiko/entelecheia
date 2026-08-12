@@ -532,6 +532,7 @@ cron の1周で回らなくなるからになる。判定は `ent start` では�
 
 ```sh
 # ワーカーを並べる側の例。slug ごとに1プロセス立てて、全部の終了を待つ
+# （同じディレクトリなので、上の未確認が残るあいだはこのまま使わない）
 for slug in goal-a goal-b goal-c; do
   ent run "$slug" &
 done

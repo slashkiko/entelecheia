@@ -3,7 +3,7 @@
 // 起動時に ExperimentalWarning が出る。API が変わったときの移行先は
 // better-sqlite3 で、Store インターフェースの内側に閉じている（design.md §6）。
 import { createHash } from "node:crypto";
-import { existsSync } from "node:fs";
+import { statSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { z } from "zod";
 import { actionSchema, decisionSchema } from "../domain/action.js";
@@ -487,8 +487,8 @@ export function openStore(path: string): Store {
       }));
     },
 
-    guardDigest(goalId, ownRunIds = []) {
-      return guardDigestOf(db, path, goalId, ownRunIds);
+    guardDigest(goalId, ownRunIds = [], dependsOn = []) {
+      return guardDigestOf(db, path, goalId, ownRunIds, dependsOn);
     },
 
     close() {
@@ -518,21 +518,37 @@ export function openStore(path: string): Store {
  * 解けなかったのは、WAL が DB ファイルに1つしか無いため**で、論理ダイジェストと
  * 組にして初めて Goal ごとに閉じた観測になる。
  *
+ * **`depends_on` に挙げた Goal の `status` も見る。** 依存ゲート
+ * （`dependencyGate`）はそこを直接読んで進むかどうかを決めるので、射影に
+ * 入れないと `UPDATE goals SET status='COMPLETED' WHERE id='<依存先>'` の1行で
+ * ゲートを開けられる。見るのは `status` だけにする。`reconciles` や lease や
+ * `pr_number` は依存先を回す2本目の ent や人間の `ent start` で動くので、
+ * 入れると鳴りっぱなしになる。`status` は依存先が終端に達したときしか動かず、
+ * 終端の Goal は誰も回さない。
+ *
  * **controller 自身が ACT の窓の中で書く分だけを射影から外す。** 外すのは2つ。
  * - `goals` の lease 列（`lease_owner` / `lease_until`）。ティックのあいだ
  *   延長し続けるので、必ず動く
  * - `ownRunIds` に渡された Run の行。write-ahead（`startRun`）と確定
  *   （`finishRun`）で、ACT の窓のちょうど真ん中に書かれる
  *
+ * **落とした Run の行は、controller 側の別の関門が受け持つ。** ここで行ごと
+ * 落とすと、`finishRun` が一度も書かない列——`role` / `intent` / `worktree` /
+ * `attempt` / `started_at`——まで観測の外に出る。とくに `role` が外に出ていると、
+ * 実装役が自分の Run を `role='review'` に書き換えるだけでレビューを自己承認できた。
+ * 不変列の突き合わせは `src/controller/index.ts` の `ownRunDrift` にある。
+ *
  * ほかは全部見る。スキーマ（`sqlite_master`）も見る。trigger を1つ仕込めば
- * 行を変えずに以降の書き込みへ副作用を付けられる。ファイルの存在も見る。
- * 開いたままのコネクションは unlink されたファイルを読み続けるので、行だけを
- * 見ていると消されたことに気づけない。
+ * 行を変えずに以降の書き込みへ副作用を付けられる。**ファイルの存在と inode も
+ * 見る。** 開いたままのコネクションは unlink されたファイルを読み続けるので、
+ * 行だけを見ていると、消されたことにも、同じパスへ別のファイルを置かれたことにも
+ * 気づけない。存在だけでは後者が素通りするので、inode を組で見る。
  *
  * **バイト列を捨てて諦めたもの。** 「バイト列は違うが、この Goal の論理的な行は
- * 同じ」改竄は通る。具体的には (1) 別の Goal の行、(2) この Goal の lease 列、
- * (3) このティックで controller が作った Run の行、(4) ファイルの差し替えや
- * 破損のうち上の射影に出ないもの。
+ * 同じ」改竄は通る。具体的には (1) 別の Goal（依存先を除く）の行、(2) この Goal の
+ * lease 列、(3) このティックで controller が作った Run の**可変列**（`status` /
+ * `tokens` など `finishRun` が書く9列）、(4) 開いたままのコネクションから見える
+ * 中身を変えないファイルの破損。
  *
  * **代わりに1つ強くなっている。** ここは SQLite 経由で読むので、まだ WAL に
  * しか無い行も見える。バイト列の指紋は次の checkpoint まで見えなかった
@@ -545,13 +561,14 @@ function guardDigestOf(
   path: string,
   goalId: string,
   ownRunIds: readonly string[],
+  dependsOn: readonly string[],
 ): string {
   // 節ごとに別々のクエリを流すので、そのあいだに別プロセスが commit すると
   // 前半と後半で別の時点を読む。1つの読み取りトランザクションに包んで、
   // 全部の節を同じ時点から読む。
   db.exec("BEGIN DEFERRED");
   try {
-    return digestSections(db, path, goalId, ownRunIds);
+    return digestSections(db, path, goalId, ownRunIds, dependsOn);
   } finally {
     // 読むだけなので、閉じ方は COMMIT でも ROLLBACK でも同じになる。
     db.exec("COMMIT");
@@ -563,6 +580,7 @@ function digestSections(
   path: string,
   goalId: string,
   ownRunIds: readonly string[],
+  dependsOn: readonly string[],
 ): string {
   const hash = createHash("sha256");
   const write = (section: string, rows: readonly Record<string, unknown>[], skip: Set<string>) => {
@@ -575,8 +593,8 @@ function digestSections(
     hash.update(SECTION);
   };
 
-  // ファイルの存在。`:memory:` は常に在ることにする（消せる先が無い）。
-  hash.update(`file:${path === ":memory:" || existsSync(path) ? "present" : "missing"}${SECTION}`);
+  // ファイルの存在と inode。`:memory:` は常に在ることにする（消せる先が無い）。
+  hash.update(`file:${fileIdentityOf(path)}${SECTION}`);
 
   // スキーマ。`sqlite_%` は SQLite が持つ内部テーブルなので外す。とくに
   // `sqlite_sequence` は**最初の AUTOINCREMENT な INSERT で初めて生える**ので、
@@ -602,6 +620,29 @@ function digestSections(
       new Set(section.skip ?? []),
     );
   }
+
+  // 依存先の `status` だけを別に組む。列を絞るので `SELECT *` は使わない
+  // （`GUARD_SECTIONS` の規則から外れる唯一の節になる）。
+  //
+  // 並びは id で固定する。`depends_on` の並びに寄せると、宣言の順を入れ替えた
+  // だけでダイジェストが動く。
+  //
+  // 登録されていない依存先は行が無い。ゲート側は「まだ start していない」として
+  // 待ちに数えるので、ここでも行が無いままにしておけば前後で揃う。
+  const dependencyIds = [...new Set(dependsOn)].sort();
+  write(
+    "depends_on",
+    dependencyIds.length === 0
+      ? []
+      : (db
+          .prepare(
+            `SELECT id, status FROM goals
+              WHERE id IN (${dependencyIds.map(() => "?").join(", ")})
+              ORDER BY id`,
+          )
+          .all(...dependencyIds) as unknown as Record<string, unknown>[]),
+    new Set(),
+  );
 
   // Run だけは行を落とすので別に組む。落とすのは `ownRunIds` に挙がったものだけで、
   // テーブルごとではない。ACT の窓で誰かに Run を差し込まれたら鳴る。
@@ -656,6 +697,29 @@ const GUARD_SECTIONS: readonly { name: string; sql: string; skip?: readonly stri
   { name: "decisions", sql: "SELECT * FROM decisions WHERE goal_id = ? ORDER BY id" },
 ];
 
+/**
+ * DB ファイルの同一性。存在と inode を組で返す。
+ *
+ * 存在だけでは**差し替え**が素通りする。unlink して同じパスに別のファイルを置くと
+ * `existsSync` は true を返し、開いたままのコネクションは旧 inode を読み続けるので
+ * 行にも差が出ない。inode を混ぜると、次のティックを待たずにその場で気づける。
+ *
+ * 読めなかったら `missing` に倒す。`statSync` は unlink の直後に throw するので、
+ * そのまま投げると「消された」が `protected_path_touched` ではなく
+ * `guard_unavailable` になる。消されたことは確かめられているので、倒す先は
+ * `missing` が正しい。
+ */
+function fileIdentityOf(path: string): string {
+  if (path === ":memory:") {
+    return "memory";
+  }
+  try {
+    return `present:${statSync(path).ino}`;
+  } catch {
+    return "missing";
+  }
+}
+
 /** 節・行・列の区切り。制御文字を使う（下の `encodeCell` が文字列側を必ず逃がす） */
 const SECTION = "\u001d";
 const ROW = "\u001e";
@@ -668,8 +732,12 @@ const CELL = "\u001f";
  * で足した列は末尾に付く。同じ中身の DB でも、作られ方（最初から在ったか
  * migrate で足したか）で順が変わりうるので、順に依存しない形にする。
  * 列名そのものも混ぜる。混ぜないと、値が隣の列へずれても同じ値になる。
+ *
+ * **export しているのはテストのため**になる。ここが崩れても症状は出ず、
+ * 「改竄が黙って通る」という形でしか現れないので、単体で当てる
+ * （`tests/state-db-digest.test.ts`）。
  */
-function encodeRow(row: Record<string, unknown>, skip: ReadonlySet<string>): string {
+export function encodeRow(row: Record<string, unknown>, skip: ReadonlySet<string>): string {
   return Object.keys(row)
     .filter((key) => !skip.has(key))
     .sort()
@@ -687,8 +755,10 @@ function encodeRow(row: Record<string, unknown>, skip: ReadonlySet<string>): str
  * 知らない型は throw する。黙って `String(value)` に落とすと、その列だけが
  * 実質的に射影から外れる。関門は throw を `guard_unavailable` に倒すので、
  * 「確かめられなかった」が「変わっていない」にはならない（design.md §3.1）。
+ *
+ * `encodeRow` と同じ理由で export している。
  */
-function encodeCell(value: unknown): string {
+export function encodeCell(value: unknown): string {
   if (value === null) {
     return "null";
   }

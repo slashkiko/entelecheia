@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -7,7 +7,7 @@ import type { Fact } from "../src/domain/fact.js";
 import type { Goal } from "../src/domain/goal.js";
 import type { RunIntent, RunOutcome } from "../src/domain/run.js";
 import type { Store } from "../src/store/port.js";
-import { openStore } from "../src/store/sqlite.js";
+import { encodeCell, encodeRow, openStore } from "../src/store/sqlite.js";
 
 /**
  * 関門が状態 DB を見る単位を、**ファイルのバイト列から論理的な行へ**移す（issue #62）。
@@ -313,6 +313,153 @@ describe("controller 自身が ACT の窓で書く分", () => {
     expect(store.guardDigest("goal-a", [own])).not.toBe(before);
   });
 });
+
+/**
+ * 符号化そのものの性質。
+ *
+ * ここが崩れると、行と列が「同じ中身なら同じ値・違えば違う値」を満たさなくなる。
+ * 関門はティックの前後で同じ関数を2回呼んで比べるだけなので、崩れても
+ * 症状は出ない——**改竄が黙って通る**という形でしか現れない。だから単体で当てる。
+ */
+describe("値の符号化", () => {
+  // 節・行・列の区切り。`src/store/sqlite.ts` の同名の定数と同じものになる。
+  // ここで欲しいのは「この3つが符号化した先に出てこない」なので、実装から
+  // export せず、確かめたい文字そのものをテスト側に書く。
+  const SECTION = "\u001d";
+  const ROW = "\u001e";
+  const CELL = "\u001f";
+
+  it('数値の 1 と文字列の "1" を区別する', () => {
+    // 接頭辞（`d:` / `s:`）が無いと、`tokens` を 1 から '1' へ書き換えても
+    // ダイジェストが動かない。
+    expect(encodeCell(1)).not.toBe(encodeCell("1"));
+  });
+
+  it("NULL と空文字と 0 を区別する", () => {
+    expect(new Set([encodeCell(null), encodeCell(""), encodeCell(0)]).size).toBe(3);
+  });
+
+  it("値の中に区切りを入れても、符号化した先に区切りは出てこない", () => {
+    // 区切りは制御文字（U+001D 節 / U+001E 行 / U+001F 列）で、`JSON.stringify` は
+    // 制御文字を必ず `\uXXXX` へ逃がす。逃がさないと、値の中身で「列がもう1つある」
+    // 「行がもう1つある」を偽装して、別の中身を同じ値に落とせる。
+    const forged = `a${SECTION}b${ROW}c${CELL}d`;
+    const encoded = encodeCell(forged);
+
+    expect(encoded).not.toContain(SECTION);
+    expect(encoded).not.toContain(ROW);
+    expect(encoded).not.toContain(CELL);
+    // 逃がしたうえで、別の値は別のままであること。
+    expect(encoded).not.toBe(encodeCell("abcd"));
+  });
+
+  it("区切りを跨いだ偽装が、行の連結でも成立しない", () => {
+    // 「1つの列に、隣の列ごと詰め込む」形。列名も混ぜてあるので、
+    // 値の側から `status=...` を生やしても本物の列とは並ばない。
+    const crafted = encodeRow(
+      { name: `x${CELL}status=s:"COMPLETED"`, status: "ACTIVE" },
+      new Set(),
+    );
+    const genuine = encodeRow({ name: "x", status: "COMPLETED" }, new Set());
+
+    expect(crafted).not.toBe(genuine);
+  });
+
+  it("bigint と Uint8Array を符号化できる", () => {
+    // `node:sqlite` は 2^53 を越える INTEGER を bigint で、BLOB を Uint8Array で返す。
+    // `JSON.stringify` は bigint を渡されると throw するので、文字列とは別に扱う。
+    expect(encodeCell(2n ** 60n)).toBe(`i:${(2n ** 60n).toString()}`);
+    expect(encodeCell(new Uint8Array([0, 15, 255]))).toBe("b:000fff");
+    // 見た目が同じでも型が違えば別の値になる。
+    expect(encodeCell(1n)).not.toBe(encodeCell(1));
+    expect(encodeCell(new Uint8Array([1]))).not.toBe(encodeCell("01"));
+  });
+
+  it("知らない型は throw する", () => {
+    // 黙って `String(value)` に落とすと、その列だけが実質的に射影から外れる。
+    // 呼び出し側（controller）はこの throw を `ESCALATE(guard_unavailable)` に倒す
+    // （`tests/controller-state-db-writes.test.ts`）。「確かめられなかった」を
+    // 「変わっていない」にしない（design.md §3.1）。
+    expect(() => encodeCell({})).toThrow(/載せられない型/);
+    expect(() => encodeCell(true)).toThrow(/載せられない型/);
+    expect(() => encodeCell(undefined)).toThrow(/載せられない型/);
+  });
+
+  it("列の並びが違っても、同じ中身なら同じ行になる", () => {
+    // `SELECT *` の列順はスキーマの順で、`ALTER TABLE` で足した列は末尾に付く。
+    // 同じ中身の DB でも、作られ方（最初から在ったか migrate で足したか）で順が
+    // 変わる。**本物の2つの DB から読んだ行**で確かめる。
+    const migratedPath = join(dir, "migrated.db");
+    const freshPath = join(dir, "fresh.db");
+
+    // `role` を持たない古いスキーマを手で作る。openStore の migrate が末尾に足す。
+    const old = new DatabaseSync(migratedPath);
+    old.exec(`CREATE TABLE runs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      goal_id TEXT NOT NULL,
+      intent TEXT NOT NULL,
+      actor TEXT NOT NULL,
+      worktree TEXT NOT NULL,
+      attempt INTEGER NOT NULL,
+      status TEXT NOT NULL,
+      started_at TEXT NOT NULL,
+      finished_at TEXT,
+      exit_code INTEGER,
+      log_ref TEXT,
+      tokens INTEGER,
+      artifacts TEXT NOT NULL DEFAULT '[]',
+      detail TEXT
+    )`);
+    old.close();
+
+    const migrated = openStore(migratedPath);
+    const fresh = openStore(freshPath);
+    try {
+      for (const target of [migrated, fresh]) {
+        target.upsertGoal(goalWith("goal-a"));
+        target.finishRun(target.startRun("goal-a", INTENT), OUTCOME);
+      }
+
+      const migratedRow = rowOf(migratedPath);
+      const freshRow = rowOf(freshPath);
+
+      // 前提。並びが同じなら、この test は何も測っていない。
+      expect(Object.keys(migratedRow)).not.toEqual(Object.keys(freshRow));
+      expect([...Object.keys(migratedRow)].sort()).toEqual([...Object.keys(freshRow)].sort());
+
+      expect(encodeRow(migratedRow, new Set())).toBe(encodeRow(freshRow, new Set()));
+    } finally {
+      migrated.close();
+      fresh.close();
+    }
+  });
+});
+
+describe("ファイルの差し替え", () => {
+  it("同じパスに別のファイルを置かれると値が変わる", () => {
+    // `rmSync` は存在で捕まるが、unlink して同じパスに別のファイルを置くと
+    // `existsSync` は true を返す。開いたままのコネクションは旧 inode を読み
+    // 続けるので、行にも差が出ない。inode も観測に混ぜて初めて捕まる。
+    const before = store.guardDigest("goal-a");
+
+    const replacement = join(dir, "replacement");
+    writeFileSync(replacement, "別のファイル");
+    rmSync(dbPath);
+    renameSync(replacement, dbPath);
+
+    expect(store.guardDigest("goal-a")).not.toBe(before);
+  });
+});
+
+/** `SELECT *` が返す1行を、列順を保ったまま取り出す */
+function rowOf(path: string): Record<string, unknown> {
+  const db = new DatabaseSync(path);
+  try {
+    return db.prepare("SELECT * FROM runs ORDER BY id").get() as unknown as Record<string, unknown>;
+  } finally {
+    db.close();
+  }
+}
 
 /**
  * 外から DB を書き換える。別プロセスの ent や、Bash を持つ Actor にあたる。

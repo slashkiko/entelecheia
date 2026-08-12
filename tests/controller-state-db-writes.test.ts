@@ -36,10 +36,10 @@ import { openStore } from "../src/store/sqlite.js";
 const NOW = new Date("2026-08-12T08:00:00.000Z");
 const WORKTREE_ROOT = "/tmp/entelecheia/worktrees";
 
-function goalWith(id: string): Goal {
+function goalWith(id: string, dependsOn: readonly string[] = []): Goal {
   return goalSchema.parse({
     version: 1,
-    goal: { id, name: "サンプル", desired_state: "何かが完成している" },
+    goal: { id, name: "サンプル", desired_state: "何かが完成している", depends_on: dependsOn },
     repository: {
       provider: "github",
       owner: "slashkiko",
@@ -242,6 +242,268 @@ describe("外からの改竄では止まる", () => {
     expect(result.decision?.action).toEqual({
       type: "ESCALATE",
       reason: "protected_path_touched",
+    });
+  });
+});
+
+/**
+ * 自分の Run の行は射影から丸ごと落ちる。落ちているのは「controller が ACT の窓の
+ * 中で書く列」だけのはずなのに、行ごと落とすと `role` / `intent` / `worktree` /
+ * `attempt` / `started_at` ——`finishRun` が一度も書かない列——まで観測の外に出る。
+ *
+ * **`role` が外に出ていると、実装役が自分でレビューを承認できる。** 実装役の ACT の
+ * 窓の中で `UPDATE runs SET role='review' WHERE goal_id=? AND status='starting'` を
+ * 流すと、次のティックで `latestReviewRun`（`src/adapters/review-run.ts`）が
+ * その Run を「直近のレビュー役の Run」として選ぶ。`log_ref` は controller が
+ * 正しく書いているのでログの偽造すら要らず、実装役が自分で書いた最終メッセージが
+ * `review.verdict` と `review.reviewed_sha` の Fact になり、`judgeReviewVerdict` が
+ * criterion を passed にする。
+ *
+ * 射影から落とす行の**不変列を、controller が `startRun` に渡した値と突き合わせる
+ * 関門**を ACT の後に置いた。ここが鳴らなくなると、この経路が丸ごと開く。
+ */
+describe("自分の Run の不変列を書き換えられたら止まる", () => {
+  it("ACT 中に role を書き換えられたら ESCALATE する", async () => {
+    const goal = goalWith("state-db-goal");
+    activate(store, goal);
+
+    const result = await tick(
+      goal,
+      deps(store, goal.goal.id, {
+        duringAct: () => {
+          // Run の id を知る必要は無い。`starting` の行はこのティックのものだけになる。
+          tamper(
+            "UPDATE runs SET role = 'review' WHERE goal_id = 'state-db-goal' AND status = 'starting'",
+          );
+        },
+      }),
+    );
+
+    expect(result.decision?.action).toEqual({
+      type: "ESCALATE",
+      reason: "protected_path_touched",
+    });
+    expect(result.decision?.rationale).toContain("role");
+    expect(result.decision?.rationale).toContain(CONTROLLER_STATE_DB_KEY);
+  });
+
+  it("ACT 中に intent / worktree / attempt / started_at を書き換えられたら ESCALATE する", async () => {
+    // role だけを名指しで守ると、次に足された不変列がまた観測の外に落ちる。
+    // 突き合わせるのは `startRun` に渡した組そのものにしてある。
+    const goal = goalWith("state-db-goal");
+    activate(store, goal);
+
+    const result = await tick(
+      goal,
+      deps(store, goal.goal.id, {
+        duringAct: () => {
+          tamper(
+            `UPDATE runs SET intent = '偽の意図', worktree = 'どこか', attempt = 99,
+                    started_at = '2000-01-01T00:00:00.000Z'
+              WHERE goal_id = 'state-db-goal' AND status = 'starting'`,
+          );
+        },
+      }),
+    );
+
+    expect(result.decision?.action).toEqual({
+      type: "ESCALATE",
+      reason: "protected_path_touched",
+    });
+  });
+
+  it("ACT 中に自分の Run を別の Goal へ移されたら ESCALATE する", async () => {
+    // `goal_id` を書き換えると、行は `listRuns(goalId)` から消える。
+    // 「消えた」も改竄として数える。
+    const goal = goalWith("state-db-goal");
+    activate(store, goal);
+    const other = openStore(dbPath);
+    activate(other, goalWith("other-goal"));
+    other.close();
+
+    const result = await tick(
+      goal,
+      deps(store, goal.goal.id, {
+        duringAct: () => {
+          tamper(
+            "UPDATE runs SET goal_id = 'other-goal' WHERE goal_id = 'state-db-goal' AND status = 'starting'",
+          );
+        },
+      }),
+    );
+
+    expect(result.decision?.action).toEqual({
+      type: "ESCALATE",
+      reason: "protected_path_touched",
+    });
+  });
+
+  it("ACT 中に role を読めない値へ書き換えられたら guard_unavailable にする", async () => {
+    // 行は読めるが値がスキーマに載らない。「触っていない」と「確かめられなかった」を
+    // 混ぜない（design.md §3.1）。ティックごと落とすのでもない。
+    const goal = goalWith("state-db-goal");
+    activate(store, goal);
+
+    const result = await tick(
+      goal,
+      deps(store, goal.goal.id, {
+        duringAct: () => {
+          tamper(
+            "UPDATE runs SET role = 'reviewer-x' WHERE goal_id = 'state-db-goal' AND status = 'starting'",
+          );
+        },
+      }),
+    );
+
+    expect(result.decision?.action).toEqual({
+      type: "ESCALATE",
+      reason: "guard_unavailable",
+    });
+  });
+
+  it("書き換えられていなければ、Run を作ったティックは通る", async () => {
+    // 突き合わせが常に鳴るようになっていないこと。
+    const goal = goalWith("state-db-goal");
+    activate(store, goal);
+
+    const result = await tick(goal, deps(store, goal.goal.id));
+
+    expect(result.decision?.action).toMatchObject({ type: "ACT" });
+  });
+
+  it("**鳴るのは書き換えたティックだけになる。** 次のティックでは行がそのまま残る", async () => {
+    // (c) と同じ形の残る穴になる。関門はティック内の前後差しか見ないので、
+    // 改竄された行は次のティックのベースラインに入って鳴り止む。止まった Goal を
+    // 人間が掃除しないまま回し続けると、`role='review'` の行は DB に残ったままになる。
+    // ここを固定しておかないと、docs の「塞いだ」がどこまでを指すのか読めなくなる。
+    const goal = goalWith("state-db-goal");
+    activate(store, goal);
+
+    const first = await tick(
+      goal,
+      deps(store, goal.goal.id, {
+        duringAct: () => {
+          tamper(
+            "UPDATE runs SET role = 'review' WHERE goal_id = 'state-db-goal' AND status = 'starting'",
+          );
+        },
+      }),
+    );
+    expect(first.decision?.action).toEqual({
+      type: "ESCALATE",
+      reason: "protected_path_touched",
+    });
+    expect(first.status).toBe("WAITING_HUMAN");
+
+    const second = await tick(goal, deps(store, goal.goal.id));
+
+    // 2周目は鳴らない。行は `role='review'` のまま残っている。
+    expect(second.decision?.action).not.toEqual({
+      type: "ESCALATE",
+      reason: "protected_path_touched",
+    });
+    expect(store.listRuns("state-db-goal").some((run) => run.role === "review")).toBe(true);
+  });
+});
+
+/**
+ * 依存ゲート（`dependencyGate`）は他の Goal の `status` を直接読む。しかもその
+ * 呼び出しは lease を取る前——**どのティックの ACT の窓の外**——にある。
+ * `UPDATE goals SET status='COMPLETED' WHERE id='dep-goal'` を流せばこちらのゲートが
+ * 開くのに、どちらのダイジェストにも差が出なかった（design.md §10-6 の (f)）。
+ *
+ * 読む先を射影に入れる。依存先は `COMPLETED`（終端）でなければゲートを通らず、
+ * 終端の Goal は誰も回さないので、鳴りっぱなしにはならない。
+ */
+describe("depends_on に挙げた Goal の行も見る", () => {
+  it("ACT 中に依存先の status を書き換えられたら ESCALATE する", async () => {
+    const goal = goalWith("state-db-goal", ["dep-goal"]);
+    activate(store, goal);
+    const other = openStore(dbPath);
+    other.upsertGoal(goalWith("dep-goal"));
+    other.setStatus("dep-goal", "COMPLETED", null, NOW.toISOString());
+    other.close();
+
+    const result = await tick(
+      goal,
+      deps(store, goal.goal.id, {
+        duringAct: () => {
+          tamper("UPDATE goals SET status = 'FAILED' WHERE id = 'dep-goal'");
+        },
+      }),
+    );
+
+    expect(result.decision?.action).toEqual({
+      type: "ESCALATE",
+      reason: "protected_path_touched",
+    });
+  });
+
+  it("依存先の lease を別のワーカーが動かしても ESCALATE しない", async () => {
+    // 見るのは `status` だけになる。lease や reconciles まで見ると、依存先を
+    // 回している2本目の ent の書き込みでこちらが鳴る。
+    const goal = goalWith("state-db-goal", ["dep-goal"]);
+    activate(store, goal);
+    const other = openStore(dbPath);
+    other.upsertGoal(goalWith("dep-goal"));
+    other.setStatus("dep-goal", "COMPLETED", null, NOW.toISOString());
+
+    try {
+      const result = await tick(
+        goal,
+        deps(store, goal.goal.id, {
+          duringAct: () => {
+            other.acquireLease("dep-goal", "worker-dep", new Date(NOW.getTime() + 300_000), NOW);
+          },
+        }),
+      );
+
+      expect(result.decision?.action).toMatchObject({ type: "ACT" });
+    } finally {
+      other.close();
+    }
+  });
+
+  it("依存に挙げていない Goal の status が動いても ESCALATE しない", async () => {
+    const goal = goalWith("state-db-goal");
+    activate(store, goal);
+    const other = openStore(dbPath);
+    activate(other, goalWith("other-goal"));
+    other.close();
+
+    const result = await tick(
+      goal,
+      deps(store, goal.goal.id, {
+        duringAct: () => {
+          tamper("UPDATE goals SET status = 'COMPLETED' WHERE id = 'other-goal'");
+        },
+      }),
+    );
+
+    expect(result.decision?.action).toMatchObject({ type: "ACT" });
+  });
+});
+
+describe("ダイジェストを作れなかったティック", () => {
+  it("guardDigest が throw したら guard_unavailable にする", async () => {
+    // `encodeCell` は知らない型で throw する。黙って `String(value)` に落とすと、
+    // その列だけが実質的に射影から外れるため。throw が握り潰されず
+    // `ESCALATE(guard_unavailable)` として人間に届くところまでを固定する。
+    const goal = goalWith("state-db-goal");
+    activate(store, goal);
+
+    const broken: Store = {
+      ...store,
+      guardDigest: () => {
+        throw new Error("状態 DB のダイジェストに載せられない型の値がある: object");
+      },
+    };
+
+    const result = await tick(goal, deps(broken, goal.goal.id));
+
+    expect(result.decision?.action).toEqual({
+      type: "ESCALATE",
+      reason: "guard_unavailable",
     });
   });
 });
