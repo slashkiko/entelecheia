@@ -1690,6 +1690,22 @@ push 側を Run に従わせるのではなく検査側を広げてある。
 macOS も Windows も既定でパスの大小を区別しないので、`src/Controller/index.ts` と
 書けば同じファイルに届くのに glob には一致しない、という抜け道ができる。
 
+**ただし、本体リポジトリ側の相対パスは解決しない。** `origin: "repo_root"` で来る
+もののうち、絶対パスは `repoDirtyState` の実パスになるが、残りは controller と
+Adapter が自分で組み立てた表示用のキーになる（`.goals/.state/goals.db`、
+`.git/hooks/**`、そしてファイルですらない `.git/config#core.hooksPath`）。
+これらを worktree の root へ resolve して実体に解決していたので、**解決の結果が
+Agent の握る FS に依存していた。** worktree の中に
+`.goals/.state/goals.db -> ../../package.json` を1つ置けば、キーは `package.json` へ
+解決されて `.goals/**` に一致しなくなり、状態 DB を直接書き換えても違反が出ない。
+`guard_base_sha` を worktree の HEAD にすれば、以後どのティックでも差分が空になり、
+関門は恒久的に目を潰される。symlink を置いたこと自体も、gitignore と
+`isRuntimeState` の両方に隠れて見えない。表示用のキーは controller が作る文字列で
+FS を引く必要が最初から無いので、解決せず文字列のまま glob に当てる
+（`tests/protected-paths-symlink-bypass.test.ts`）。**この穴が出荷されたのは、
+既存のテストが実在しないディレクトリを基点にしていて `realpathSync` が必ず
+throw していたため。** 関門のテストは FS を実際に触る。
+
 **関門が止めたティックは push も PR 作成も行わない。** 違反を含む worktree が
 remote に出た時点で、通常の変更として流れる余地が生まれる。
 そのうえで、**PR が既にあるなら、観測が前ティックと同じでもコメントを書く。**
@@ -1783,8 +1799,16 @@ controller 自身が毎ティック書くので、自分の書き込みが毎回
 **どちらの系統も、実行に繋がる3つだけは ACT の前後で比べる**（MVP レビューの
 SEC2 / SEC3）。`.git/hooks/**` と `core.hooksPath` は `outOfSightState` が名指しで
 指紋を取り、`.goals/.state/goals.db` は controller が `Store.guardDigest` の論理
-ダイジェストで見る。残る穴は `goals.db` 以外の gitignore されたパスで、そこを
-書き換えられても検知しない。
+ダイジェストで見る。**加えて、レビュー役の完了した Run の生ログ
+（`.goals/.state/runs/<id>/log.jsonl`）も同じダイジェストに載せる。** 行は
+守っていたのに、行が指している先は誰も見ていなかった。実装役はそれを worktree の
+外から上書きでき、`reviewRunLog` が読んだ本文はそのまま `review.verdict` と
+`review.reviewed_sha` の VERIFIED な Fact になる。自分で commit して HEAD を
+固定してから前のレビューのログに `verdict: approved` を書けば、次のティックで
+criterion が緑になり、`reviewedHeadOf` が同じ commit の再レビューを止めるので
+**本物のレビューはもう走らない**（`tests/state-db-review-log-digest.test.ts`）。
+載せるのは実際に Fact の材料になる行だけで、読む対象が増えたらここも増やす。
+残る穴は、この2つ以外の gitignore されたパスで、そこを書き換えられても検知しない。
 
 (c) 本体側の違反は、同じファイルが次のティックまで**そのまま**なら、
 その内容がベースラインに入るので鳴り止む。指紋で比べているので、同じファイルを

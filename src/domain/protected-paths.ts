@@ -58,6 +58,9 @@ export interface Violation {
  * - **本体リポジトリ側を出どころとするパスには、その除外を掛けない。**
  *   どこを基点にしたパスなのかは文字列からは読めないので、`origin` で受ける。
  *   詳しくは PathOrigin
+ * - **本体リポジトリ側の相対パス（表示用キー）は、解決せずに文字列で照合する。**
+ *   worktree を基点に resolve すると、Agent が同じ名前の symlink を1つ置くだけで
+ *   キーが別のパスへ解決され、照合をすり抜ける。詳しくは DISPLAY_KEY
  * - 判定できないものは違反にしない。捏造した違反で人間を呼ぶと、
  *   関門そのものが信用されなくなる
  */
@@ -71,6 +74,15 @@ export function findViolations(
   const violations: Violation[] = [];
 
   for (const artifact of artifacts) {
+    // 本体リポジトリ側の表示用キーは、解決せず文字列で照合する（displayKeyPattern）。
+    if (origin === "repo_root" && !isAbsolute(artifact)) {
+      const pattern = displayKeyPattern(artifact, protectedPaths);
+      if (pattern !== undefined) {
+        violations.push({ kind: "protected_path", path: artifact, pattern });
+      }
+      continue;
+    }
+
     const absolute = realpath(isAbsolute(artifact) ? resolve(artifact) : resolve(root, artifact));
     const inside = relative(root, absolute);
 
@@ -130,6 +142,36 @@ export function describeViolations(violations: readonly Violation[]): string {
  * 除外を掛けてよいかは文字列ではなく出どころで決める（PathOrigin）。
  */
 const RUNTIME_STATE_DIR = ".goals/.state";
+
+/**
+ * 本体リポジトリ側の相対パスを、解決せずに文字列で照合する理由。
+ *
+ * `origin: "repo_root"` で来るもののうち、絶対パスは `repoDirtyState` の実パスに
+ * なる。残りは controller と Adapter が自分で組み立てた**表示用キー**で、
+ * `.goals/.state/goals.db`（`observedRepoState`）、`.git/hooks/pre-push`、
+ * `.git/config#core.hooksPath`（`outOfSightPaths`）の3種類しかない。
+ * 最後のものはファイルですらなく、`#` で設定項目を指す合成キーになる。
+ *
+ * これらを worktree の root へ `resolve` して `realpathSync` に通していた。
+ * 基点が違ううえに、解決の結果が **Agent が握っている FS の状態に依存する。**
+ * worktree の中に `.goals/.state/goals.db -> ../../package.json` を1つ置けば、
+ * キーは `package.json` へ解決され、`.goals/**` に一致しなくなる。状態 DB を
+ * 直接書き換えても関門が鳴らない——`guard_base_sha` を worktree の HEAD に
+ * すれば、以後どのティックでも差分が空になり、関門は恒久的に目を潰される。
+ * symlink を置いたこと自体も見えない（`.goals/.state/` は gitignore 済みで
+ * `changedPaths` に出ず、出たとしても `origin: "worktree"` では
+ * `isRuntimeState` が落とす）。
+ *
+ * 表示用キーは controller が作る文字列で、FS を引く必要が最初から無い。
+ * `resolve` も `realpathSync` も通さず、そのまま glob に当てる。`escaped_worktree`
+ * の判定も掛けない。worktree からの脱出は絶対パス側（`repoDirtyState`）で見る。
+ */
+function displayKeyPattern(
+  artifact: string,
+  protectedPaths: readonly string[],
+): string | undefined {
+  return protectedPaths.find((glob) => matches(artifact, glob));
+}
 
 /**
  * worktree からの相対パスが実行時状態の下に入るかを、パスの区切りで判定する。

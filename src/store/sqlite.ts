@@ -3,7 +3,7 @@
 // 起動時に ExperimentalWarning が出る。API が変わったときの移行先は
 // better-sqlite3 で、Store インターフェースの内側に閉じている（design.md §6）。
 import { createHash } from "node:crypto";
-import { statSync } from "node:fs";
+import { readFileSync, statSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { z } from "zod";
 import { actionSchema, decisionSchema } from "../domain/action.js";
@@ -647,15 +647,16 @@ function digestSections(
   // Run だけは行を落とすので別に組む。落とすのは `ownRunIds` に挙がったものだけで、
   // テーブルごとではない。ACT の窓で誰かに Run を差し込まれたら鳴る。
   const own = new Set(ownRunIds);
-  write(
-    "runs",
-    (
-      db
-        .prepare("SELECT * FROM runs WHERE goal_id = ? ORDER BY id")
-        .all(goalId) as unknown as Record<string, unknown>[]
-    ).filter((row) => !own.has(String(row.id))),
-    new Set(),
-  );
+  const runs = (
+    db.prepare("SELECT * FROM runs WHERE goal_id = ? ORDER BY id").all(goalId) as unknown as Record<
+      string,
+      unknown
+    >[]
+  ).filter((row) => !own.has(String(row.id)));
+  write("runs", runs, new Set());
+
+  // 行が指している先の**中身**も見る。詳しくは reviewLogRows。
+  write("review_logs", reviewLogRows(runs), new Set());
 
   return hash.digest("hex");
 }
@@ -696,6 +697,64 @@ const GUARD_SECTIONS: readonly { name: string; sql: string; skip?: readonly stri
   { name: "llm_calls", sql: "SELECT * FROM llm_calls WHERE goal_id = ? ORDER BY id" },
   { name: "decisions", sql: "SELECT * FROM decisions WHERE goal_id = ? ORDER BY id" },
 ];
+
+/**
+ * レビュー役の生ログの中身を、行と同じ扱いでダイジェストに載せる。
+ *
+ * `runs` の行は守っていたのに、行が**指している先**は誰も見ていなかった。
+ * `log_ref` が指すのは `.goals/.state/runs/<id>/log.jsonl` で、実装役の Agent は
+ * worktree の外にあるそれを Bash で上書きできる。書き換えても、`changedPaths` は
+ * worktree の中しか見ず、`repoDirtyState` の `git status` は `--ignored` を
+ * 付けないので gitignore 済みのそこに届かず、`outOfSightState` が見るのは
+ * `.git/hooks/**` だけになる。
+ *
+ * そのファイルは飾りではない。`reviewRunLog`（`src/adapters/review-run.ts`）が
+ * 直近の完了したレビュー役の Run の本文をそこから読み、observe が
+ * `review.verdict` と `review.reviewed_sha` を **VERIFIED な Fact** にする。
+ * 実装役が自分で commit して HEAD を固定し、前のレビューのログに
+ * `verdict: approved` とその sha を書けば、次のティックで criterion が緑になる。
+ * しかも `reviewedHeadOf`（`src/decide/index.ts`）が「同じ commit を2度
+ * レビューさせない」ので、**本物のレビューはもう走らない。**
+ *
+ * `ownRunDrift` が `runs` の不変列を見て `UPDATE runs SET role='review'` を
+ * 止めているのに、その隣で生ログの上書きが通っていた。行と中身で守り方が
+ * 違う理由は無いので、中身もここに混ぜる。
+ *
+ * 載せるのは**実際に Fact の材料になる行だけ**にする。`latestReviewRun` が選ぶのと
+ * 同じ条件（`role='review'` かつ `status='completed'`）で、それ以外の生ログは
+ * 読まない。全部を読むと、ティックごとに Run の本数だけ I/O が増える。
+ * **読む対象が増えたら、ここも一緒に増やす。**
+ *
+ * 自分の Run は入らない。`runs` の節と同じ配列を受け取り、`ownRunIds` は
+ * そちらで既に落としてある。落とさないと、ACT のあいだ Adapter が書いている
+ * 最中のログを前後で比べることになり、毎ティック鳴る。
+ *
+ * 読めなかったら `missing` に倒す。throw すると `guard_unavailable` になり、
+ * 「消された」が「関門を計算できなかった」にすり替わる。
+ */
+function reviewLogRows(runs: readonly Record<string, unknown>[]): Record<string, unknown>[] {
+  const rows: Record<string, unknown>[] = [];
+  for (const run of runs) {
+    if (run.role !== "review" || run.status !== "completed") {
+      continue;
+    }
+    const logRef = run.log_ref;
+    if (typeof logRef !== "string" || logRef === "") {
+      continue;
+    }
+    rows.push({ id: String(run.id), log: contentDigestOf(logRef) });
+  }
+  return rows;
+}
+
+/** ファイルの中身のダイジェスト。読めなければ `missing` */
+function contentDigestOf(path: string): string {
+  try {
+    return createHash("sha256").update(readFileSync(path)).digest("hex");
+  } catch {
+    return "missing";
+  }
+}
 
 /**
  * DB ファイルの同一性。存在と inode を組で返す。
