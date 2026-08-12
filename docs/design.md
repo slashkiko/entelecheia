@@ -496,11 +496,25 @@ GET だけなので、レビュアーごとに最後の1件を見て組み立て
 相互参照された PR は timeline API が要るので、まだ観測しない。
 
 `github.pr.unresolved_threads` だけは GraphQL の `pullRequest.reviewThreads` から取る。
-REST には「スレッドが解決済みか」を表すフィールドが無く、解決状態は `isResolved` にしか
-出ないので、ETag が効くのは REST の GET だけという上の理由の例外になる。ETag が効かない
-ぶんこの読み取りは毎ティック実際に飛ぶが、失敗しても throw せず件数だけを null にする。
-数え切れなかったぶんを 0 と読むと、bot の指摘を残したまま
-`verification: { type: fact, key: github.pr.unresolved_threads, equals: 0 }` が成立する。
+上の「ETag が効くのは REST の GET だけなので REST から組み立てる」という**判断のほうの
+例外**になる。REST にはスレッドの解決状態を表すフィールドが無く、GraphQL の
+`reviewThreads.isResolved` にしか出ないので、ETag を諦めて GraphQL を選ぶしかない。
+そのぶんこの読み取りは毎ティック実際に飛ぶ（§3.4 が「ETag を使えばレート制限はほぼ
+消費しない」と書いているのは REST の話で、ここは当てはまらない）。
+
+> [!NOTE]
+> このキーの `unresolved` は GitHub のレビュースレッドの解決状態を指す。
+> §3.1 の `Unresolved`（結論が出なかった検証対象）とは別物になる。
+
+読み取りに失敗したときは throw せず件数を `null` にし、**Fact を作らない**。数え切れなかった
+ぶんを 0 と読むと、bot の指摘を残したまま
+`verification: { type: fact, key: github.pr.unresolved_threads, equals: 0 }` が成立してしまう。
+Fact が無ければ criterion は埋まらないので、収束の側には倒れない。
+
+**ただし §3.1 の扱いとは1点ずれている。** §3.1 は「確かめられなかった」を `unobserved` に
+積むと決めているが、このキーは Fact も `unobserved` も作らずに落ちる。criterion が通らない
+ことは保たれるが、**なぜ埋まらないのかが観測の側に残らない**。`port_failed` として積む形に
+寄せるのが筋で、そこは残件になる。
 
 **`github.pr.review_decision` *だけ* を人間の承認の観測源にはできない。** GitHub は自分が
 作った PR に Approve を押させないので、controller が Goal の所有者と同じアカウントで PR を
