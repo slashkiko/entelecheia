@@ -292,9 +292,9 @@ mise run check    # サプライチェーンと workflow のチェック（basel
 **`ent` は起動のたびに1ティックだけ回して終了する。** 前半はこのリポジトリで1本回すための
 手順を扱う。コマンドの一覧に続けて、「共通のオプション」「provider・model・effort を選ぶ」
 「Codex を使うとき」「関門の基準になる commit」「起動の仕方と、ent 自身を直すときの例外」の
-順になる。後半は運用にあたる。「この repo の外のリポジトリで使う」「進捗を PR に投稿しない」
-「PR を draft で立てる」「粗いタスクを複数の Goal に割る」「複数の Goal を同時に回す」の
-5つが続く。
+順になる。後半は運用にあたる。「この repo の外のリポジトリで使う」「恒久的に落ちる workflow を
+数から外す」「進捗を PR に投稿しない」「PR を draft で立てる」「粗いタスクを複数の Goal に
+割る」「複数の Goal を同時に回す」の6つが続く。
 
 ```sh
 mise run build                     # dist/cli.js を作る
@@ -450,6 +450,111 @@ ent doctor          # その場所で回せるかを読み取り専用で調べ�
   論理ダイジェスト（`Store.guardDigest`）が見ており、そこから関門に繋がる。
   見えないまま残るのは、`goals.db` 以外の gitignore されたパスと repoRoot の外に
   なる（design.md §10-6 の穴 (a)(b)）
+
+### 恒久的に落ちる workflow を数から外す
+
+`github.ci.failed_job_count` は head sha に紐づく**全 workflow run**を横断して、落ちている
+job を数える。`{ type: fact, key: github.ci.failed_job_count, equals: 0 }` と書けば
+「この commit で落ちている job が1つも無い」を criteria にできる。
+
+書かなければ、これまでどおり全 workflow run を数える。既存の `.goals/*.yaml` は1本も挙動が
+変わらない。
+
+**除外が効くのは `github.ci.failed_job_count` だけ。** いま `.goals/` にある Goal 28 本のうち、
+CI を見ている 27 本は**すべて** criterion を
+`{ type: fact, key: github.ci.conclusion, equals: success }` で書いており、
+こちらは最新の run 1本の結論のままになる（下の「外れるのは数だけ」）。つまり宣言に
+`exclude_workflows` を書き足しても、**既存の Goal の判定は1つも動かない。** 除外を効かせるには、
+その Goal の criterion を `github.ci.conclusion` から `github.ci.failed_job_count` に移す必要がある。
+移すかどうかは Goal ごとの判断になる（`conclusion` は1本の結論しか見ないので、
+issue #58 の誤収束はそちらに残る）。
+
+横断するので、**リポジトリの運用として意図的に赤いまま／保留のままにしてある workflow も
+対象に入る。**「特定の人のレビューが通るまで mergeable にしない」種類の workflow がそれで、
+落ちれば数に加わり、承認待ちのまま `completed` にならなければ数そのものが確定しない。
+どちらにしても `equals: 0` は埋まらない。外すなら宣言部に書く。
+
+```yaml
+repository:
+  provider: github
+  owner: your-org
+  name: your-repo
+  default_branch: main
+  ci:
+    # .github/workflows/*.yml の name:（PR の checks 欄に出る名前）で書く
+    exclude_workflows:
+      - Require owner approval
+```
+
+**外れるのは workflow run ごと**で、job 名では書けない。数が確定するのは「未確定の run が
+1本も無い」ときなので、承認待ちで `completed` にならない gate は run ごと外さないと数が
+永久に決まらない。job 名で外しても run の status は動かない。
+
+**外れるのは数だけ。** `github.ci.conclusion` は最新の run 1本の結論のままで、除外を書いても
+選び方は変わらない。宣言を1行足しただけで既存の `conclusion == success` の意味が動く形に
+しないため。
+
+> [!IMPORTANT]
+> **新しい Goal の CI の criterion は `github.ci.failed_job_count` で書く。**
+> `github.ci.conclusion == success` は最新の run 1本しか見ないので、他の run が
+> 落ちていても通る（issue #58）。除外が効くのも `failed_job_count` の側だけになる。
+>
+> ```yaml
+> - id: ac-5
+>   description: 変更を載せた PR の CI で、落ちている job が1つも無い
+>   verification: { type: fact, key: github.ci.failed_job_count, equals: 0 }
+> ```
+>
+> 既にある Goal がまだ `conclusion` で書かれているのは、`failed_job_count` より先に
+> あったからで、意味が正しいからではない。回っている Goal の判定を後から変えないために
+> そのまま残してある。
+
+**ただし `github.ci.failed_jobs` からも外れる。** 失敗ジョブの名前とログ URL を集めるのは
+除外したあとの run なので、外した run の失敗ジョブは数だけでなくこの Fact からも消える。
+**次の ACT に渡る材料が除外分だけ欠ける**ことになる。残す側に倒すと「数から外した＝直さなくて
+よい」と宣言したはずの失敗を ACT に渡すことになり、除外の意味が消えるので、消す側に倒してある。
+外した run に何が起きていたかは、次に書く `github.ci.excluded_workflows` の状態から読む。
+
+**外せるのは GitHub Actions の workflow run だけ。** この数はもともと Actions の run の job
+しか数えていないので、third-party の check run や branch protection の required review は
+最初から入っていない。そういう gate をここに書いても何も起きない。
+
+除外した結果は隠れない。何をいくつ外したかが `github.ci.excluded_workflows` の Fact と
+`failed_job_count` の detail の両方に出て、criteria の判定結果（進捗コメントの detail 列）
+にも載る。「全部緑」と「除外した上で緑」が同じ見た目にならないようにしてある。
+
+```sh
+ent get <slug> | jq '.snapshot.facts[] | select(.key == "github.ci.excluded_workflows")'
+```
+
+外した run 1本ずつの見え方（`waiting` / `failure` / `success` …）も添える。detail 側では
+`除外: Require owner approval (1 run / waiting)` の形になる。**数だけだと「保留のままの gate を
+外した」と「本物の失敗を含む run を外した」を読み分けられない。** 失敗ジョブの側からも消える
+以上、消えたものが赤かったかはここでしか読めない。終わっている run は結論、終わっていない
+run は status を出す（その run について読める中でいちばん強い情報がそれになる）。
+
+一致しなかった名前は弾かず、`runs: 0` として観測に出す。名前が実在するかは、宣言を読む
+時点では決められない。解析はリポジトリを見ないし、`ent doctor` から見ても対象リポジトリは
+手元の checkout とは限らない。そもそも「一致しない」は typo と「今回は起動しなかった
+workflow」（path filter や branch filter で走らないことがある）の両方を指すので、観測の
+側から区別できない。数を出して人間に読ませる方に倒してある。
+
+**run が 100 本を超えると数は出ない。** `GET /actions/runs` は `per_page: 100` の1ページしか
+読まない。応答の `total_count` が返ってきた件数を上回るとき——つまり読み切れていないとき——は、
+`failed_job_count` を Fact にしない。読んでいない run に落ちているものがあっても数に入らず、
+`failed_job_count=0` が「全部緑」と区別の付かない形で出てしまうため。数え切れていないなら
+数を出さない、という「回っている run があるあいだは出さない」と同じ規則になる。
+`total_count` そのものが応答に無いときも同じ扱いにする（読み切れたと決める根拠が無いため）。
+
+このとき criterion は**永久に埋まらない。** 誤って緑になるよりは埋まらない方がよいという
+判断だが、収束しない経路が1本増えたことになる。数が出ないまま止まっているときは、まず
+run の本数を疑う。**除外はページを取ったあとに走る**ので、除外予定の run も 100 本の枠を
+消費する。`on: pull_request_review` の gate はレビューのたびに run が増えるため、
+ちょうど除外を使いたいリポジトリで先に上限に当たりやすい。
+
+ページングは実装していない。2ページ目以降を引くと、`mise run check` が回す pinact と同じ
+GitHub API のレート制限の枠を run の本数だけ食う。1ティックあたりの往復が読めなくなる方が、
+数が出ないより重いと見た。
 
 ### 進捗を PR に投稿しない
 

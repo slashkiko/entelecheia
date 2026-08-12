@@ -29,6 +29,15 @@ export interface GitHubOptions {
    * ここを口にしておくことで、テストが実際の GitHub を叩かずに済む。
    */
   fetch?: typeof fetch;
+  /**
+   * 落ちている job の数から外す workflow の名前（`repository.ci.exclude_workflows`）。
+   * 省略すれば除外なしで、`failed_job_count` はこれまでどおり全 run を数える。
+   *
+   * **Port にメソッドも引数も増やさずに済むよう、構築時に受け取る。** どの run を
+   * 数えるかは Goal ごとに決まって観測のたびには変わらないので、`getLatestCiRun` の
+   * 引数にするより合成の側で1度決める方が形に合う。
+   */
+  excludeWorkflows?: readonly string[];
 }
 
 /**
@@ -131,28 +140,91 @@ export function githubCodeProvider(options: GitHubOptions): CodeProviderPort {
     },
 
     async getLatestCiRun(headSha) {
+      // **1本ではなく全部引く。** その sha に紐づく run は workflow の数だけあり、
+      // 最新の1本だけを見た結論は「CI が通っている」を意味しない。lint の run が
+      // 落ちていても test の run が後から success で終われば、最新は success に
+      // なる（issue #58）。GitHub は新しい順に返すので、先頭が最新のまま。
       const raw = await get("GET /repos/{owner}/{repo}/actions/runs", {
         head_sha: headSha,
-        per_page: 1,
+        per_page: 100,
       });
       if (raw === null) {
         return null;
       }
-      const run = decode(runsSchema, raw, "GET /actions/runs").workflow_runs[0];
-      if (run === undefined) {
+      const page = decode(runsSchema, raw, "GET /actions/runs");
+      const runs = page.workflow_runs;
+      const latest = runs[0];
+      if (latest === undefined) {
+        // run が1本も無い。「まだ push していない」を「落ちている job は 0 件」と
+        // 読まないために、数の側も作らずに null を返す。
         return null;
       }
 
+      // **1ページしか読んでいない。** 100 本を超えた分は手元に無いので、そこに
+      // 落ちている run があっても数に入らない。数え切れていないまま確定させると
+      // `failed_job_count=0` が VERIFIED な Fact として出て、「全部緑」と区別が
+      // 付かなくなる——issue #58 の誤収束をそのまま作り直すことになる。
+      //
+      // 数え切れていないなら数を出さない。`settled()` が「終わっていない run が
+      // 1本でもあれば数を出さない」としているのと同じ立場を、切り捨てにも当てる。
+      //
+      // `total_count` が読めなかったときも数を出さない。「読み切れた」と決める
+      // 根拠がないので、決めない側に倒す。
+      //
+      // **ページングはしない。** 2ページ目以降を引くと同じレート制限の枠
+      // （`check` が回す pinact と共用）を run の本数だけ食う。数え切れない側に
+      // 倒れても criterion が埋まらないだけで、外から見て分かる。
+      const truncated =
+        page.total_count === null ||
+        page.total_count === undefined ||
+        page.total_count > runs.length;
+
+      // 宣言で外した workflow を数の対象から落とす（`repository.ci.exclude_workflows`）。
+      // 恒久的に赤い／保留のままの gate を数に入れると、`equals: 0` が永久に埋まらない。
+      //
+      // **落とすのは run ごと**で、job 名では落とさない。数が確定するのは「未確定の
+      // run が1本も無い」ときなので、承認待ちで `completed` にならない gate は run ごと
+      // 外さないと数が null のままになる。job 名で外しても run の status は動かない。
+      //
+      // **`latest` の選び方には触らない。** 除外は数の側だけの話で、
+      // `github.ci.conclusion` は最新の run 1本の結論のまま残す。ここを動かすと、
+      // 宣言を1行足しただけで既存の `conclusion == success` の意味が変わる。
+      const excludedNames = new Set(options.excludeWorkflows ?? []);
+      const counted = runs.filter((run) => !excludedNames.has(run.name ?? ""));
+      // 宣言をそのまま写して、一致した run の数と見え方を添える。一致した分だけを
+      // 残すと、書いたのに何も外していない名前が観測から消える（`CiRunSnapshot` 参照）。
+      //
+      // 数だけでは「保留のままの gate を外した」と「本物の失敗を含む run を外した」を
+      // 読み分けられない。run は手元にあるので、API の往復を増やさずに添えられる。
+      const excludedWorkflows = [...excludedNames].map((name) => {
+        const matched = runs.filter((run) => run.name === name);
+        return { name, runs: matched.length, states: matched.map(stateOf) };
+      });
+
       // 失敗ジョブ名とログ URL まで取る。「CI が落ちた」だけでは
-      // 次の ACT に渡す材料がない（design.md §4.3）。
-      const failedJobs =
-        run.conclusion === "failure" ? await failedJobsOf(get, run.id) : ([] as const);
+      // 次の ACT に渡す材料がない（design.md §4.3）。数だけを出して名前を
+      // 出さないと、2件落ちているのにどれを直せばよいか分からない状態になる。
+      const failedJobs: { name: string; logUrl: string }[] = [];
+      for (const run of counted) {
+        if (!settled(run.status) || !mayHaveFailedJobs(run.conclusion)) {
+          continue;
+        }
+        failedJobs.push(...(await failedJobsOf(get, run.id)));
+      }
 
       return {
-        headSha: run.head_sha,
-        status: statusOf(run.status),
-        conclusion: conclusionOf(run.conclusion),
-        failedJobs: [...failedJobs],
+        // status / conclusion / headSha は最新の run のもの。**意味を変えない。**
+        // 既存の Goal は `github.ci.conclusion == success` を書いている。
+        headSha: latest.head_sha,
+        status: statusOf(latest.status),
+        conclusion: conclusionOf(latest.conclusion),
+        failedJobs,
+        // まだ終わっていない run が1本でもあれば数は確定しない。ここで
+        // 「いま時点の 0」を返すと、押した直後の緑を掴む（`CiRunSnapshot` 参照）。
+        // 1ページで読み切れていないとき（`truncated`）も同じ扱いにする。
+        failedJobCount:
+          !truncated && counted.every((run) => settled(run.status)) ? failedJobs.length : null,
+        excludedWorkflows,
       } satisfies CiRunSnapshot;
     },
 
@@ -587,6 +659,54 @@ function linkedPrOf(htmlUrl: string | undefined): number | null {
   return matched === null ? null : Number(matched[1]);
 }
 
+/**
+ * その run が終わっているか。**失敗ジョブの数を確定してよいか**の判定に使う。
+ *
+ * `statusOf` と違って生の値を厳密に見る。あちらは知らない語を `completed` に
+ * 畳むが、それは Fact にする status の表示のための既定であって、「終わった」と
+ * 確かめた結果ではない。`waiting`（環境の承認待ち）や `pending` をここで
+ * 終わったと読むと、まだ1つも job が走っていない run について 0 件を出す。
+ *
+ * 未知の語は「終わっていない」側に倒す。数が決まらないあいだ criterion は
+ * 埋まらないままになるが、埋まらないのは外から見て分かる。誤って 0 を出すと
+ * 直そうとしている誤収束（issue #58）をそのまま作り直すことになる。
+ */
+function settled(status: string | null): boolean {
+  return status === "completed";
+}
+
+/**
+ * その結論の run から失敗ジョブを取りに行くか。
+ *
+ * `failure` だけを見ると、時間切れや途中で止められた workflow の失敗ジョブが
+ * 数から漏れる。逆に `success` と `skipped` の run には落ちた job が無いので、
+ * 引くだけ API を1往復増やす（ETag が効くのは引いた後の話になる）。
+ */
+function mayHaveFailedJobs(conclusion: string | null): boolean {
+  return conclusion !== "success" && conclusion !== "skipped";
+}
+
+/**
+ * 除外した run が「いまどう見えているか」を1語にする。
+ *
+ * 終わっていれば結論（`failure` / `success`）、終わっていなければ status
+ * （`waiting` / `queued` / `in_progress`）を出す。**その run について読める中で
+ * いちばん強い情報**がそれになる。終わっていない run の conclusion は必ず null で、
+ * 終わった run の status は必ず `completed` なので、片方だけを出すと常に片側が
+ * 空になる。
+ *
+ * `statusOf` / `conclusionOf` を通さず生の語を出す。あの2つは Fact にする値を
+ * 決められた集合に畳むためのもので、畳むと `waiting`（環境の承認待ち）が
+ * `completed` に見える。ここは「何を外したか」を人間に読ませる場所なので、
+ * 畳まない方が読める。
+ */
+function stateOf(run: { status: string | null; conclusion: string | null }): string {
+  if (!settled(run.status)) {
+    return run.status ?? "unknown";
+  }
+  return run.conclusion ?? "completed";
+}
+
 function statusOf(status: string | null): CiRunSnapshot["status"] {
   return status === "queued" || status === "in_progress" ? status : "completed";
 }
@@ -647,9 +767,31 @@ type Review = z.infer<typeof reviewsSchema>[number];
 const prAuthorSchema = z.object({ user: z.object({ login: z.string() }).nullish() });
 
 const runsSchema = z.object({
+  /**
+   * その head sha に紐づく run の総数。**1ページで読み切れたかの判定に使う。**
+   *
+   * ここを読まずに `workflow_runs` の件数だけで数を確定させると、run が `per_page` を
+   * 超えたときに 101 本目以降の失敗が数から落ちたまま `failed_job_count=0` が出る。
+   * 出た値は「全部緑」と1文字も変わらない——issue #58 の壊れ方をそのまま作り直す。
+   *
+   * **無くても落とさない**（`name` や PR の `title` / `body` と同じ）。必須にすると、
+   * このフィールド1つ欠けた応答で `github.ci` の観測ごと `shape_mismatch` になり、
+   * `status` も `conclusion` も `head_sha` も失う。読めなかったときは「読み切れたか
+   * 分からない」として数を出さない側に倒す（`getLatestCiRun`）。
+   */
+  total_count: z.number().nullish(),
   workflow_runs: z.array(
     z.object({
       id: z.number(),
+      /**
+       * workflow の名前（`.github/workflows/*.yml` の `name:`）。除外の照合に使う。
+       *
+       * 無くても落とさない。ここは除外を宣言したときだけ読む値で、読めなければ
+       * 何にも一致しない——つまり除外なしと同じになる。名前が取れないことを
+       * `shape_mismatch` にすると、除外を1つも書いていない Goal の観測まで止まる。
+       * 一致しなかったことは `excluded_workflows` の `runs: 0` として観測に出る。
+       */
+      name: z.string().nullish(),
       head_sha: z.string(),
       status: z.string().nullable(),
       conclusion: z.string().nullable(),

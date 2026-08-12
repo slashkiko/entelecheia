@@ -274,7 +274,7 @@ async function judge(
         passed: fact.value === verification.equals,
         evidence: {
           source: fact.evidence.source,
-          detail: `${verification.key}=${JSON.stringify(fact.value)} expected=${JSON.stringify(verification.equals)}`,
+          detail: `${verification.key}=${JSON.stringify(fact.value)} expected=${JSON.stringify(verification.equals)}${observedContext(fact)}`,
         },
       };
     }
@@ -310,4 +310,22 @@ async function judge(
       }
     }
   }
+}
+
+/**
+ * 観測が Fact の detail に残した文脈を、判定の detail にも通す。無ければ空文字。
+ *
+ * verify が `key=value expected=...` を組み立て直すだけだと、observe が書いた文脈が
+ * ここで落ちる。**進捗コメントが出すのは criteria の detail だけ**なので、落とすと
+ * 人間が読む場所からその文脈が消える。`github.ci.failed_job_count` で言えば、
+ * 「落ちている job が1つも無い」と「除外した上で1つも無い」が同じ行になる。
+ *
+ * 値を言い直しただけの detail は繋がない。observe の detail は大半が
+ * `<キーの末尾>=<値>`（`conclusion=success` など）の形で、繋ぐと同じ値が1行に
+ * 2回並ぶだけになる。**判定を外したときは繋ぐ側に倒れる。** 重複は読めるが、欠落は読めない。
+ */
+function observedContext(fact: VerifiedFact): string {
+  const detail = fact.evidence.detail;
+  const restated = `${fact.key.split(".").at(-1)}=${String(fact.value)}`;
+  return detail === "" || detail === restated ? "" : ` / ${detail}`;
 }

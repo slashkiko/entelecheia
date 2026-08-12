@@ -238,6 +238,7 @@ describe("githubCodeProvider", () => {
       const runs = {
         match: "/actions/runs",
         body: {
+          total_count: 1,
           workflow_runs: [{ id: 7, head_sha: sha, status: "completed", conclusion: "success" }],
         },
       };
@@ -252,7 +253,9 @@ describe("githubCodeProvider", () => {
     });
 
     it("run が無ければ null", async () => {
-      const { code } = provider([{ match: "/actions/runs", body: { workflow_runs: [] } }]);
+      const { code } = provider([
+        { match: "/actions/runs", body: { total_count: 0, workflow_runs: [] } },
+      ]);
       expect(await code.getLatestCiRun(sha)).toBeNull();
     });
 
@@ -261,6 +264,7 @@ describe("githubCodeProvider", () => {
       const runs = {
         match: "/actions/runs?",
         body: {
+          total_count: 1,
           workflow_runs: [{ id: 7, head_sha: sha, status: "completed", conclusion: "failure" }],
         },
       };
@@ -284,6 +288,7 @@ describe("githubCodeProvider", () => {
       const runs = {
         match: "/actions/runs",
         body: {
+          total_count: 1,
           workflow_runs: [{ id: 7, head_sha: sha, status: "in_progress", conclusion: null }],
         },
       };
