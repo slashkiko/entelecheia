@@ -425,8 +425,9 @@ job を数える。`{ type: fact, key: github.ci.failed_job_count, equals: 0 }` 
 書かなければ、これまでどおり全 workflow run を数える。既存の `.goals/*.yaml` は1本も挙動が
 変わらない。
 
-**除外が効くのは `github.ci.failed_job_count` だけ。** いま `.goals/` にある Goal は 20 本とも
-CI の criterion を `{ type: fact, key: github.ci.conclusion, equals: success }` で書いており、
+**除外が効くのは `github.ci.failed_job_count` だけ。** いま `.goals/` にある Goal 28 本のうち、
+CI を見ている 27 本は**すべて** criterion を
+`{ type: fact, key: github.ci.conclusion, equals: success }` で書いており、
 こちらは最新の run 1本の結論のままになる（下の「外れるのは数だけ」）。つまり宣言に
 `exclude_workflows` を書き足しても、**既存の Goal の判定は1つも動かない。** 除外を効かせるには、
 その Goal の criterion を `github.ci.conclusion` から `github.ci.failed_job_count` に移す必要がある。
