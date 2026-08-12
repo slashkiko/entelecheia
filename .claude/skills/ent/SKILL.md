@@ -109,8 +109,8 @@ criteria が赤いまま「完了した」と書ける口は用意していな�
 
 前提が欠けていても `ent run` は入口で落ちない。GitHub のトークンが無くても
 ローカルの観測・検証コマンド・Actor の実行は進むので、入口で殺すと進められるものまで
-止まるため。その代わり、トークンを1つも読めないまま回すと `github.ci.conclusion` の
-ような `type: fact` の criteria が永久に unobserved のまま埋まらない。回り続けるので
+止まるため。その代わり、トークンを1つも読めないまま回すと `github.ci.failed_job_count`
+のような `type: fact` の criteria が永久に unobserved のまま埋まらない。回り続けるので
 気づけない。doctor は何が欠けているかをその場で出す。
 
 GitHub のトークンは `doctor` も `run` も同じ順で読む（`GITHUB_TOKEN` → `GH_TOKEN` →
