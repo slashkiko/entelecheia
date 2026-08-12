@@ -411,8 +411,9 @@ ent doctor          # その場所で回せるかを読み取り専用で調べ�
   対象リポジトリの中であって、ent 自身のコードではない**（自己ホストのときだけ
   両方が重なる）。対象リポジトリで意味を持つのは `.goals/**` と `.git/**` と
   `.goals/.state/**` の3つになる。後ろの2つは `git status` に出ないが、
-  `.goals/.state/goals.db` と `.git/hooks/**` と `core.hooksPath` は ACT の前後で
-  指紋を比べる別経路（`outOfSightState`）が見ており、そこから関門に繋がる。
+  `.git/hooks/**` と `core.hooksPath` は ACT の前後で指紋を比べる別経路
+  （`outOfSightState`）が、`.goals/.state/goals.db` はその Goal に属する行から作る
+  論理ダイジェスト（`Store.guardDigest`）が見ており、そこから関門に繋がる。
   見えないまま残るのは、`goals.db` 以外の gitignore されたパスと repoRoot の外に
   なる（design.md §10-6 の穴 (a)(b)）
 
@@ -515,20 +516,22 @@ cron の1周で回らなくなるからになる。判定は `ent start` では�
 `ent` は「同時に叩かれても壊れない」ところまでを受け持つ。
 
 > [!WARNING]
-> **いまは1本ずつ回すこと。以下のレシピは、この制約が解けるまで使えない。**
-> 同じディレクトリから複数プロセスを立てると、保護パスの関門が
-> `ESCALATE(protected_path_touched)` で止まる。状態 DB は WAL なので、別プロセスの
-> 書き込みや接続の切断で checkpoint が走り、`goals.db` の中身が変わる。関門は ACT の
-> 前後でこのファイルを sha256 で比べるため、先に ACT へ入っていた側が巻き添えになる。
-> 触ったのは Actor ではなく、もう1本の controller になる。
-> `.goals/.state/` は `process.cwd()` の下にできるので、worktree を分ければぶつからない。
-> ただし lease も分かれるので、**別 worktree では同じ Goal を回さない**（下の
+> **同じディレクトリからの並列は、実際に2本立てて確かめてはいない。**
+> かつてここは「保護パスの関門が `ESCALATE(protected_path_touched)` で止まるので
+> 1本ずつ回すこと」と書いていた。状態 DB は WAL なので、別プロセスの書き込みや
+> 接続の切断で checkpoint が走って `goals.db` の中身が変わり、それを sha256 で
+> 比べていた関門が巻き添えで鳴っていた。**その原因は塞いだ。** 関門は状態 DB を
+> ファイルではなく「その Goal に属する行」の論理ダイジェストで見るようになったので、
+> 別の Goal の書き込みでは動かない（issue #62、design.md §10-6）。
+> 確かめたのは **Vitest の中で2本のティックを同じ `goals.db` へ同時に流したところまで**で、
+> `ent run` のプロセスを2本立てて回してはいない。初回の `git worktree add` が
+> `.git/index.lock` を取る競合と、SQLite の busy 競合は残っている。
+> `.goals/.state/` は `process.cwd()` の下にできるので、worktree を分ければ DB ごと
+> 分かれる。ただし lease も分かれるので、**別 worktree では同じ Goal を回さない**（下の
 > 「同じ slug を2つのプロセスに渡しても安全」が効かず、両方が PR を立てる）。
-> 直すには関門の側に手を入れる必要がある。詳しくは `CLAUDE.md`。
 
 ```sh
 # ワーカーを並べる側の例。slug ごとに1プロセス立てて、全部の終了を待つ
-# （同じディレクトリなので、上の制約が解けるまでは使えない）
 for slug in goal-a goal-b goal-c; do
   ent run "$slug" &
 done
@@ -546,7 +549,7 @@ cron から回す場合も、対象repoへ移動してからNode 24以上とent�
 ```
 
 同じディレクトリのGoalを複数回す場合も、開始時刻をずらすだけでは直列性を保証できない。
-上の制約が解けるまでは、同じrepo単位ロックを使うか、重複起動を禁止できる外部scheduler
+上の未確認が残るあいだは、同じrepo単位ロックを使うか、重複起動を禁止できる外部scheduler
 から1本ずつ順番に起動する。ロック無しのcron行を直接並べない。
 
 ent自身を直すGoalでは、対象repoと本体が同じなのでtask経由にする。cronのPATHに
