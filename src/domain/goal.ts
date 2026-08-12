@@ -35,11 +35,47 @@ const shellCommandSchema = z.string().min(1);
  * Phase 0 の adapters（code / review / communication / ci を個別指定）はここに畳んだ。
  * MVP では4つとも GitHub 固定（design.md §5）で、Goal ごとに変える理由が無い。
  */
+/**
+ * publish が立てる PR の作り方。対象リポジトリの運用に合わせる口になる。
+ *
+ * `repository` の下に置く。PR をどう立てるかは対象リポジトリの規約で決まるもので、
+ * Goal の中身（`desired_state` や criteria）とは別の軸になる。
+ *
+ * **キーを1段挟むのは、ここに増えるものが分かっているため。** タイトル規約と
+ * PR テンプレートに合わせる口（`title_template` / `body_path`）は同じ「PR の
+ * 作り方」で、平らに置くと `repository` の直下に PR の話が散る。増える側を
+ * 先に受けておけば、足すときに名前を変えずに済む。
+ *
+ * `draft` の既定は false で、書かなければ ready で立つ。**既定を変えない。**
+ * 既存の Goal はどれもこれを書いていないので、既定を draft に倒すと
+ * 「宣言を足していない Goal の挙動が変わる」形になる。
+ */
+export const pullRequestOptionsSchema = z.strictObject({
+  /**
+   * draft として立てるか。
+   *
+   * 効くのは PR を作るときだけで、既に立っている PR を draft に戻すことはしない。
+   * publish は本文もタイトルも作成後は書き換えない（毎ティック書き換えると
+   * レビューが差分を追えなくなる）ので、そこと揃える。
+   */
+  draft: z.boolean().default(false),
+});
+export type PullRequestOptions = z.infer<typeof pullRequestOptionsSchema>;
+
 export const repositorySchema = z.strictObject({
   provider: z.literal("github"),
   owner: z.string().min(1),
   name: z.string().min(1),
   default_branch: z.string().min(1),
+  /**
+   * PR の作り方。省略できる。
+   *
+   * **`.default({})` にしない。** 既定を入れると、いま `.goals/` にある Goal 全部の
+   * 解析結果に `pull_request` が生える。宣言部は `ent get` がそのまま出し、
+   * store も保存するので、1本も YAML を触っていないのに出力が変わることになる。
+   * 「書かなければ何も起きない」を、値ではなくキーの有無で表す。
+   */
+  pull_request: pullRequestOptionsSchema.optional(),
 });
 export type Repository = z.infer<typeof repositorySchema>;
 
@@ -419,6 +455,10 @@ repository:
   owner: your-org
   name: your-repo
   default_branch: main
+  # 対象リポジトリに「まず draft で出す」運用があるなら、次の2行を外す。
+  # 書かなければ ready で立つ（これまでどおり）。
+  # pull_request:
+  #   draft: true
 
 # VERIFY が criteria を1件でも実行する前に1度だけ流す。冪等であること。
 setup: []

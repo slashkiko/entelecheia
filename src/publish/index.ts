@@ -19,6 +19,14 @@ export interface PullRequestDraft {
   base: string;
   title: string;
   body: string;
+  /**
+   * draft として立てるか。宣言が無ければ undefined になる。
+   *
+   * **false と undefined を混ぜない。** undefined は「Goal が何も言っていない」で、
+   * 実装側はその場合に draft を送らない。GitHub の既定は false なので結果は同じだが、
+   * 送る中身が変わらないことをここで型に残しておく（issue #65）。
+   */
+  draft?: boolean | undefined;
 }
 
 export interface CodeWriterPort {
@@ -419,6 +427,8 @@ async function ensurePullRequest(
     base: target.goal.repository.default_branch,
     title: target.goal.goal.name,
     body: pullRequestBody(target.goal),
+    // 宣言が無ければ undefined のまま渡す。Adapter がそのとき draft を送らない。
+    draft: target.goal.repository.pull_request?.draft,
   });
   return { prNumber: number, created: true, skipped: null };
 }

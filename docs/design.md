@@ -316,9 +316,10 @@ roleは次の5箇所を通る。
   読ませない判断はそのままで、controller が名指しした plugin（`plugins/ent-review/`）
   だけが Agent から見える。skill の一覧に出るのはその1件になる。
   中身は ent の外でも使う汎用の skill で、**Goal も criteria も verdict も知らない。**
-  PR ではなく作業ツリーの HEAD を見ること、意図の一次情報が `.goals/<goal.id>.yaml` で
+  PR の差分ではなく作業ツリーの HEAD を見ること、意図の一次情報が `.goals/<goal.id>.yaml` で
   あること、本文の後ろに `reviewed_sha:` と `verdict:` の2行を足すことは、すべて
   `REVIEW_PROMPT` の側に書く。観点は skill が持ち、契約は controller が持つ。
+  **PR のタイトルと本文は、意図の一次情報ではなくレビューの対象として渡す**（§4.3）。
   そのために `ActorInvocation` が `goalId` を運ぶ——宣言部は作業ツリーに commit 済みで
   入っているので、**どのファイルを読めばよいかだけを渡せば意図が届く**
   （`intent` に載るのは constraints だけで、`desired_state` は載らない）
@@ -359,7 +360,7 @@ roleは次の5箇所を通る。
 ### 4.3 OBSERVE が取得するもの
 
 ```
-PR        number, state, mergeable, head_sha, review_decision, requested_reviewers
+PR        number, state, mergeable, head_sha, review_decision, requested_reviewers, title, body
 Review    state (APPROVED / CHANGES_REQUESTED / COMMENTED), author, submitted_at
 CI        workflow_run の conclusion、失敗時は失敗ジョブ名とログ URL
 Issue     state, labels, linked_pr
@@ -368,6 +369,23 @@ local     current_branch, HEAD sha, worktree に未コミット変更がある�
 
 CI の失敗内容まで取るのが要点。「CI が落ちた」だけでは次の ACT に渡す材料がない。
 失敗ジョブ名とログがあれば、そのまま Claude Code に渡して修正させられる。
+
+**PR の `title` と `body` は完了判定のためではなく、レビュー役に渡すために取る。**
+レビュー役の Actor には資格情報を渡していない（§7 の `NEUTRALIZED_ENV`、§10-4）ので
+`gh` は未認証で、「宣言部の制約が PR 本文に反映されているか」のような観点は向こう側で
+確かめようがなく、毎回「未取得」で終わっていた。足りないのは資格情報ではなく、
+controller が既に読んでいる情報を渡す口になる。`act` が今ティックの観測から
+タイトルと本文（`github.pr.title` / `github.pr.body`）を取り出し（`pullRequestTextFrom`）、
+レビュー役のプロンプトに載せる（`renderPullRequestText`）。**読むのは controller、
+書くのも controller、Actor へ渡すのはその観測結果だけ**という分担は変えていない。
+
+渡すのは**今ティックの観測が作った Fact だけ**にする。持ち越しを混ぜた集合を渡すと、
+GitHub を読めなかったティックにも前回のタイトルと本文が届き、観測の失敗が古い値で
+埋まって見えなくなる。渡っていないことと本文が空であることも、プロンプトの文面で
+分ける。前者は「未取得」、後者は「本文は空」と書かせる。空であることは、確かめられ
+なかったのではなく観測できた結果にあたる（§3.1）。本文の中に `verdict:` /
+`reviewed_sha:` の行があると、レビュー役が引用したときに結論の行が2つになって観測が
+pending に落ちる（この節の下、`ReviewPort` の段落）ので、渡す側で印を付けて潰す。
 
 観測キーの実体は `src/domain/fact-keys.ts` に列挙してある。上の表は論理リソース側の
 呼び名で、Fact のキーは `github.pr.review_decision` のようなドット区切りの snake_case になる。
@@ -391,6 +409,30 @@ Phase 0 では Port の camelCase フィールド名との対応表がどこに�
 Fact が無い間は Gap が残り COMPLETE には届かない（§3.1）。guard に
 「レビューを通れ」という条件は足していない。完了判定の境界（§7）を動かさずに済む
 形を選んである。
+
+**実装役が走ったティックでは、この照合を通さない。** OBSERVE はティックの先頭にあり
+（§3.6）、commit と publish はその後ろに来る（§10-11）ので、VERIFY が読む
+`local.head_sha` は ACT より前の観測になる。実装役が commit を積むと、ティックが
+終わる時点の HEAD は誰も読んでいない commit なのに、観測時点どうしの一致が
+「現在の HEAD へのレビュー」として残る。実際、実装が入ったティックだけ
+`review.verdict == approved` の criterion が `passed` になり、次のティックで `failed` に
+戻った。そこで、実装役が走ったティックはレビュー系の criteria を判定せず、`pending`
+として `unresolved` に積む（`pendingReviewCriteria`、`src/domain/verification.ts`）。
+**不合格にはしない。** ACT のあとの HEAD を誰かが読んだかどうかは、そのティックでは
+確かめようがなく、確かめられないものを不合格として記録すると、観測の穴が実装の不備と
+して PR に出る（§3.1）。
+
+あわせて、そのティックで作った `criteria.<id>.passed` の Fact は落とす。Fact は次の
+ティックへ引き継がれるので、残すと誰も読んでいない commit への合格が VERIFIED のまま
+生き続ける。落とすのは `criteria.<id>.passed` だけで、観測そのもの
+（`review.verdict` / `review.reviewed_sha`）は残す。鮮度の判定そのもの
+（`judgeReviewVerdict`）は触っていない。順序の問題であって、判定ロジックの問題ではない。
+
+実装役が走らなかったティックは、押す木を書く役割がいないので通常は HEAD が動かず
+（レビュー役は同じ木を読むだけ、`investigate` は別の木を使う）、これまでどおり判定する。
+ただし controller の commit（§10-11）は role で分岐しないので、前のティックの未 commit
+差分が残ったまま機械側の criteria が通ると、実装役が走っていなくても HEAD が動く経路が
+残る。そこは塞いでいない。
 
 作る側は `ReviewPort`（`src/observe/index.ts`）になる。`role: review` で走った Run の
 生ログ（§4.6 の `runs/<run-id>/log.jsonl`）から最終メッセージを読み、observe が

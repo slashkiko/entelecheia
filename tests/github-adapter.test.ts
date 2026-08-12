@@ -79,6 +79,8 @@ const OPEN_PR = {
     mergeable: true,
     head: { sha: "a".repeat(40) },
     requested_reviewers: [{ login: "alice" }],
+    title: "サンプル PR",
+    body: "PR の本文",
   },
 };
 
@@ -97,6 +99,40 @@ describe("githubCodeProvider", () => {
         headSha: "a".repeat(40),
         requestedReviewers: ["alice"],
       });
+    });
+
+    it("タイトルと本文も snapshot に載せる", async () => {
+      // レビュー役に渡すために取る（issue #66 / src/act の `PullRequestText`）。
+      const { code } = provider([NO_REVIEWS, OPEN_PR]);
+
+      expect(await code.getPullRequest(12)).toMatchObject({
+        title: "サンプル PR",
+        body: "PR の本文",
+      });
+    });
+
+    it("本文が空の PR は body を null にする", async () => {
+      // GitHub は本文の無い PR に null を、編集で消された PR に "" を返す。
+      // どちらも「本文が空」なので1通りに寄せる。**「取れなかった」とは別物で、
+      // そちらはこの Snapshot 自体が作られない。**
+      for (const body of [null, ""]) {
+        const empty = { match: "/pulls/12", body: { ...OPEN_PR.body, body } };
+        const { code } = provider([NO_REVIEWS, empty]);
+
+        expect((await code.getPullRequest(12))?.body).toBeNull();
+      }
+    });
+
+    it("タイトルが欠けていても PR の観測ごと落とさない", async () => {
+      // タイトルはレビュー役に渡すためだけの値で、完了判定には使わない。必須に
+      // すると、欠けた応答1回で state も head_sha も落ちたうえ、shape_mismatch は
+      // 「待っても直らない」失敗なので人間が呼ばれる（design.md §3.1）。
+      const { title: _title, ...withoutTitle } = OPEN_PR.body;
+      const { code } = provider([NO_REVIEWS, { match: "/pulls/12", body: withoutTitle }]);
+      const pr = await code.getPullRequest(12);
+
+      expect(pr?.title).toBeNull();
+      expect(pr?.headSha).toBe("a".repeat(40));
     });
 
     it("存在しない PR は null。throw しない", async () => {
