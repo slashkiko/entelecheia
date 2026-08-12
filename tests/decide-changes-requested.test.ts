@@ -129,6 +129,10 @@ function target(facts: readonly Fact[], patch: Partial<DecideTarget> = {}): Deci
   return {
     criteria: CRITERIA,
     facts,
+    // 今ティックで観測できたことにする。この仕様が見ているのは「WAIT を外す条件」の
+    // 中身で、繰り越しと今ティックの観測を取り違える側は
+    // tests/reconcile-observed-head.test.ts が reconcile を通して固定している。
+    observedFacts: facts,
     assessment: ASSESSMENT,
     unresolved: [],
     observedDigest: "digest-1",

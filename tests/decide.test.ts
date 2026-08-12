@@ -68,8 +68,10 @@ function spyLlm(replies: unknown[] = []): LlmPort & { calls: string[] } {
 function target(over: Partial<DecideTarget> = {}): DecideTarget {
   return {
     criteria: [commandCriterion("ac-1")],
-    // レビュー役を起動してよいかを見る材料。この fixture では観測が無い。
+    // レビュー役と WAIT を選択肢に載せてよいかを見る材料。この fixture では観測が無い。
     facts: [],
+    // 今ティックの観測。`facts` と同じにしておく（この fixture では両方空）
+    observedFacts: [],
     assessment: assessment([]),
     unresolved: [],
     observedDigest: "digest-1",

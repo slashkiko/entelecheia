@@ -446,6 +446,37 @@ criteria に書いた Goal は verdict が欠ければ Gap が立って回復で
 criteria に閉じておけば、その Run が最初から存在しない。ここも guard の判定ではなく、
 LLM に見せる選択肢の範囲になる。
 
+**同じ手で `WAIT` も外す**（issue #61）。レビュー役が `changes_requested` を返し、その
+結論が読んだ commit（`review.reviewed_sha`）がまだ実装役の HEAD（`local.head_sha`）の
+ままなら、待って変わるものが何も無い。指摘を直せるのは実装役だけで、人間の承認も CI も
+この状態を先へは進めない。それでも DECIDE は `WAIT` を選び続けていた——1つの Goal を
+収束させる間、19 ティック中6ティックがそれで、動いたのは人間が criterion を1本
+足したときだけになる。**実質のハンドルが「criteria を足すこと」になっていた。**
+
+外し方はレビュー役と同じ3つで揃える。プロンプトからは JSON の書式ごと落とし
+（「人間を待つべきだと判断したら WAIT を選ぶ」という誘い文句も一緒に落とす。形だけ
+消して誘い文句を残すと、残った方が読まれる）、外した理由と commit の sha を書き、
+**同じ条件を受け取り側にも置く。** 外したはずの WAIT を返し続けて再試行を使い切ったら
+`ESCALATE(invalid_decision)` で止まる。新しい `ESCALATE` の理由は足さないし、
+`review_not_converging` にも数えない。あちらが指すのは「実装が進まないままレビューだけを
+回そうとしている」で、止めた理由を読む人間には別のものとして届く必要がある。
+reason は見ない。待つ相手を人間から CI に付け替えても、実装が1行も進んでいない事実は
+変わらない。guard には足さない（レビュー役と同じ理由。§7 の完了判定の境界を動かさない）。
+
+**`local.head_sha` は今ティックの OBSERVE が作った Fact からしか読まない**（§10-11 が
+`local.dirty` について書いているのと同じ規則）。VERIFIED であることは「このティックで
+確かめられた」ことを意味しない。reconcile は前ティックの Fact を土台にするので、
+`LocalRepoPort` が落ちたティックには前ティックの head が VERIFIED のまま残る。
+しかもこの穴は構造的になる。1ティックは OBSERVE → ACT の順なので、実装役が走った
+ティックの `reviewed_sha` と `local.head_sha` は同じ sha を指し、**次のティックで local の
+観測さえ落ちれば、繰り越した head は必ず reviewed_sha と一致する。** そのティックで
+選びたいのは `WAIT(observation_failed)` なのに、それが消える。DECIDE には引き継ぎ込みの
+`facts` と今ティックの `observedFacts` の両方を渡し、**選択肢を消す側だけ**を後者に限る
+（`ReconcileResult.observedFacts`）。2つの材料で出どころが違うのは腐り方が違うため。
+「commit X を読んだレビューがこう結論した」は後から変わらないが、「X がまだ HEAD だ」は
+Actor が push するたびに変わる。同じ規則をレビュー役を外す判定にも適用する。片方だけ
+今ティックに寄せると、`local.head_sha` の出どころが判定ごとに違う状態が残る。
+
 `github.pr.review_decision` は REST の `pulls/{n}` と `pulls/{n}/reviews` から導出する。
 GraphQL なら1回で取れるが、ETag による conditional request（§3.4）が効くのは REST の
 GET だけなので、レビュアーごとに最後の1件を見て組み立てる。変更要求を承認より優先する。

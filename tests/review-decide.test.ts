@@ -99,6 +99,9 @@ function target(facts: readonly Fact[]): DecideTarget {
   return {
     criteria: CRITERIA,
     facts,
+    // 今ティックで観測できたことにする。観測できなかったティックの側は
+    // tests/reconcile-observed-head.test.ts が reconcile を通して固定している。
+    observedFacts: facts,
     assessment: ASSESSMENT,
     unresolved: [],
     observedDigest: "digest-1",

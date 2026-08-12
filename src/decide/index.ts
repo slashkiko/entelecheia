@@ -54,12 +54,27 @@ export interface DecideTarget {
    */
   criteria: readonly AcceptanceCriterion[];
   /**
-   * OBSERVE と VERIFY が集めた Fact。
+   * OBSERVE と VERIFY が集めた Fact。前ティックからの引き継ぎを含む。
    *
    * guard の判定には使わない。読むのは「レビュー役を選択肢に載せてよいか」
-   * （`reviewedHeadOf`）だけで、行動を決めるのは変わらず LLM になる。
+   * （`reviewedHeadOf`）と「WAIT を選択肢に載せてよいか」
+   * （`changesRequestedHeadOf`）の2つだけで、行動を決めるのは変わらず LLM になる。
    */
   facts: readonly Fact[];
+  /**
+   * **このティックの OBSERVE だけが作った Fact。** 引き継ぎも検証結果も含まない
+   * （`ReconcileResult.observedFacts`）。
+   *
+   * 「いま HEAD がどの commit か」はここから読む。`facts` の側は前ティックの値を
+   * 土台にしているので、`LocalRepoPort.snapshot()` が落ちたティックには
+   * 前ティックの `local.head_sha` が VERIFIED のまま残る。それを今の HEAD として
+   * 読むと、確かめられなかったことが「そうなっている」に化ける（design.md §3.1）。
+   *
+   * **VERIFIED であることと、このティックで確かめられたことは別になる。**
+   * 選択肢を消す判定はどちらも「いま HEAD がこの commit のまま」を根拠にするので、
+   * 消す側だけは今ティックの観測に限る。
+   */
+  observedFacts: readonly Fact[];
   assessment: Assessment;
   unresolved: readonly Unresolved[];
   /** 今ティックの観測ダイジェスト。ループ検知が `usage.trailingDigest` と突き合わせる */
@@ -357,9 +372,9 @@ async function askLlm(
   // レビュー役は選択肢に無く、返ってきても採用しない。
   const asksForReview = criteriaAskForReview(target.criteria);
   // レビュー役を選択肢から外しているか。外している場合は、その commit の sha。
-  const reviewedHead = reviewedHeadOf(target.facts);
+  const reviewedHead = reviewedHeadOf(target);
   // WAIT を選択肢から外しているか。外している場合は、指摘の付いた commit の sha。
-  const changesRequestedHead = changesRequestedHeadOf(target.facts);
+  const changesRequestedHead = changesRequestedHeadOf(target);
   // 外したはずのレビュー役を返してきた回数。全試行がこれなら、出力の形が
   // 壊れているのではなく、実装が進まないままレビューだけを回そうとしている。
   let reviewRejections = 0;
@@ -500,11 +515,24 @@ async function askLlm(
  * どちらかが観測できていなければ外さない。確かめられなかったことを
  * 「同じ commit だ」と読むと、レビューが必要なティックで選択肢が消える。
  * 見るのは VERIFIED な Fact だけで、推論で選択肢を消さない（design.md §3.1）。
+ *
+ * **`local.head_sha` は今ティックの観測（`target.observedFacts`）からしか読まない。**
+ * VERIFIED であることは「このティックで確かめられた」ことを意味しない。`facts` は
+ * 前ティックの Fact を土台にしているので、`LocalRepoPort.snapshot()` が落ちた
+ * ティックには前ティックの head が VERIFIED のまま残り、上の「確かめられなければ
+ * 外さない」が成立しなくなる。
+ *
+ * 2つの材料で出どころを分けているのは、腐り方が違うため。「commit X を読んだ
+ * レビューがこう結論した」は後から変わらないので `facts` の繰り越しで足りる。
+ * 「X がまだ HEAD だ」は Actor が push するたびに変わるので、今ティックの観測を要る。
+ *
+ * 外さない側に倒れたティックでは、同じ commit をもう一度レビューさせる出力が
+ * 通りうる。予算1回分の代償になるが、確かめていない一致を根拠に選択肢を消して
+ * `ESCALATE(review_not_converging)` まで進む方が重い。
  */
-function reviewedHeadOf(facts: readonly Fact[]): string | null {
-  const verified = verifiedOnly(facts);
-  const reviewed = verified.find((f) => f.key === REVIEW_REVIEWED_SHA_KEY);
-  const head = verified.find((f) => f.key === LOCAL_HEAD_SHA_KEY);
+function reviewedHeadOf(target: DecideTarget): string | null {
+  const reviewed = verifiedOnly(target.facts).find((f) => f.key === REVIEW_REVIEWED_SHA_KEY);
+  const head = verifiedOnly(target.observedFacts).find((f) => f.key === LOCAL_HEAD_SHA_KEY);
   if (reviewed === undefined || head === undefined || reviewed.value !== head.value) {
     return null;
   }
@@ -527,15 +555,22 @@ function reviewedHeadOf(facts: readonly Fact[]): string | null {
  * 消さない（design.md §3.1）。確かめられていない `changes_requested` を根拠に
  * WAIT を消すと、レビューが走っていない Goal で人間を待つ手段が無くなる。
  *
+ * **HEAD の一致は今ティックの観測に限る**（`reviewedHeadOf`）。VERIFIED な Fact
+ * だけを見ても、繰り越した `local.head_sha` を今の HEAD として読めば同じ穴が開く。
+ * 1ティックは OBSERVE → ACT の順なので、実装役が走ったティックの `reviewed_sha` と
+ * `local.head_sha` は同じ sha を指す。次のティックで local の観測が落ちれば、
+ * 繰り越した head は必ず reviewed_sha と一致し、**そのティックで選びたい
+ * `WAIT(observation_failed)` が消える。**
+ *
  * これは guard ではない。`decide()` の 1〜4 は5つのままで、完了判定の境界には
  * 触れない。ここが決めるのは LLM に渡す行動の範囲だけになる。
  */
-function changesRequestedHeadOf(facts: readonly Fact[]): string | null {
-  const reviewedHead = reviewedHeadOf(facts);
+function changesRequestedHeadOf(target: DecideTarget): string | null {
+  const reviewedHead = reviewedHeadOf(target);
   if (reviewedHead === null) {
     return null;
   }
-  const verdict = verifiedOnly(facts).find((f) => f.key === REVIEW_VERDICT_KEY);
+  const verdict = verifiedOnly(target.facts).find((f) => f.key === REVIEW_VERDICT_KEY);
   return verdict?.value === "changes_requested" ? reviewedHead : null;
 }
 
