@@ -3,7 +3,7 @@
 このリポジトリの単一の設計ソース。新しく参加するとき（あるいは新しいセッションを開くとき）は、
 まずこれを読めば足りるように書いてある。
 
-最終更新: 2026-08-11。この更新で入ったのは次の5件になる。
+最終更新: 2026-08-12。この更新で入ったのは次の6件になる。
 
 - **タスク分解の粒度を決めた。** 分解した1本ごとに Goal を立てる方針にして、順序の宣言
   `goal.depends_on` を入れた。分解を機械にやらせる場合の宣言部の書き手も決めた。実装は保留
@@ -16,6 +16,10 @@
   evidence に残すようにした（§4.5）
 - **Codex CLI Adapterとphase別のprovider・model・effort選択を追加した。** Actorの使用量上限を
   Runからguardの待機判断へ伝播する（§3.5・§4.2）
+- **状態 DB の観測を、バイト列から Goal ごとの論理ダイジェストへ移した**（§10-6）。射影から
+  落とした Run の不変列は `ownRunDrift` が突き合わせる。`depends_on` の Goal の `status` も
+  射影に入れた。同一ディレクトリの並列を塞いでいた誤検知は外れたが、実プロセス2本での
+  確認は済んでいない（§5）
 
 ---
 
@@ -1452,7 +1456,7 @@ ACT の窓で誰かに Run を差し込まれれば鳴る。
 **落とした Run の行は、別の関門が不変列だけ受け持つ**（`ownRunDrift`、
 `src/controller/index.ts`）。controller が ACT の窓で書き換えるのは `finishRun` の
 9列（`status` / `finished_at` / `exit_code` / `log_ref` / `tokens` / `artifacts` /
-`detail` / `error_kind` / `actor_resume_after`）だけで、`role` / `intent` /
+`detail` / `error_kind` / `actor_resume_after`）だけで、`intent` / `actor` / `role` /
 `worktree` / `attempt` / `started_at` は `startRun` が1回書いたきり動かない。
 行ごと落とすと、その不変列まで観測の外に出る。**とくに `role` が外に出ていると、
 実装役が自分でレビューを承認できた。** 実装役の ACT の窓の中で
@@ -1464,6 +1468,9 @@ ACT の窓で誰かに Run を差し込まれれば鳴る。
 する。だから ACT の後に、`startRun` へ渡した組と DB の行を突き合わせる。
 行が `listRuns` から消えていること（`goal_id` の書き換え）も改竄として数え、
 値がスキーマに載らず読めなければ `guard_unavailable` に倒す。
+**ただし鳴るのは書き換えたティックだけで、書き換えられた行は DB に残る。**
+次のティックではその Run が `ownRuns` から外れて射影の内側に入るので鳴り止み、
+人間が掃除しなければ `role='review'` の行はそのまま残る（(h)）。
 
 スキーマ（`sqlite_master`）も見る。
 trigger を1つ仕込めば、行を1つも変えずに以降の書き込みへ副作用を付けられる。
@@ -1484,11 +1491,11 @@ inode を組で見る。
 gitignore とは無関係に `git status` が原理的に出さないもの（`.git/hooks/**` と、
 そもそもパスではない `core.hooksPath` の設定値）。前者は `--ignored` を付ければ出るが、
 controller 自身が毎ティック書くので、自分の書き込みが毎回違反として並ぶ。
-**どちらの系統も、実行に繋がる3つ——`.goals/.state/goals.db`・`.git/hooks/**`・
-`core.hooksPath`——だけは `outOfSightState` が名指しで指紋を取り、ACT の前後で
-比べる**（MVP レビューの SEC2 / SEC3。`goals.db` だけは指紋ではなく
-`Store.guardDigest` の論理ダイジェストで見る）。残る穴は `goals.db` 以外の
-gitignore されたパスで、そこを書き換えられても検知しない。
+**どちらの系統も、実行に繋がる3つだけは ACT の前後で比べる**（MVP レビューの
+SEC2 / SEC3）。`.git/hooks/**` と `core.hooksPath` は `outOfSightState` が名指しで
+指紋を取り、`.goals/.state/goals.db` は controller が `Store.guardDigest` の論理
+ダイジェストで見る。残る穴は `goals.db` 以外の gitignore されたパスで、そこを
+書き換えられても検知しない。
 
 (c) 本体側の違反は、同じファイルが次のティックまで**そのまま**なら、
 その内容がベースラインに入るので鳴り止む。指紋で比べているので、同じファイルを
@@ -1537,8 +1544,8 @@ ACT の窓の中で書き換えられた分は鳴る**。窓の外で書き換�
 後者は**可変列だけ**が残る。`finishRun` が書く9列——`status` / `finished_at` /
 `exit_code` / `log_ref` / `tokens` / `artifacts` / `detail` / `error_kind` /
 `actor_resume_after`——を書き換えられるので、予算の数え方（§7 の `max_actor_runs` /
-`max_consecutive_failures`）を1件分ごまかせる。**不変列（`role` / `intent` /
-`worktree` / `attempt` / `started_at`）は `ownRunDrift` が突き合わせるので、
+`max_consecutive_failures`）を1件分ごまかせる。**不変列（`intent` / `actor` /
+`role` / `worktree` / `attempt` / `started_at`）は `ownRunDrift` が突き合わせるので、
 そのティックでは鳴る。** かつてここは行ごと落ちており、`role` を `review` へ
 書き換えるだけで実装役が自分のレビューを承認できた（上の本文）。届く範囲は
 「予算1件分」では済んでいなかった。
