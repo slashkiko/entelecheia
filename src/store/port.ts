@@ -121,5 +121,27 @@ export interface Store {
   reclaimOrphanRuns(goalId: string, detail: string, finishedAt: string): number;
   listRuns(goalId: string): Run[];
 
+  /**
+   * 保護パスの関門が状態 DB を見るときの値（issue #62）。
+   *
+   * `.goals/.state/goals.db` は関門が見る保護対象でありながら、controller 自身の
+   * 書き込み先でもある。**ファイルのバイト列ではなく、この Goal に属する行の
+   * 内容から作る。** バイト列だと SQLite の WAL が自動 checkpoint に当たった回
+   * だけ値が動き、controller 自身の書き込みが外部からの改竄と同じ差になっていた。
+   *
+   * この口が Store 側にあるのは、行を読めるのが store だけだからになる。関門は
+   * ACT の前後でこの値を比べるだけで、DB の形を知らない（`src/controller/index.ts`
+   * の `observedRepoState`）。
+   *
+   * `ownRunIds` には、そのティックで controller 自身が作った Run の id を渡す。
+   * write-ahead（`startRun`）と確定（`finishRun`）は ACT の窓のちょうど真ん中で
+   * 書かれるので、これを渡さないと自分の書き込みで関門が鳴る。渡した Run **だけ**
+   * が射影から落ちる。テーブルごと落ちるわけではない。
+   *
+   * 何を見て何を見ないか、そこで何を諦めたかは実装側（`src/store/sqlite.ts` の
+   * `guardDigestOf`）に書いてある。
+   */
+  guardDigest(goalId: string, ownRunIds?: readonly string[]): string;
+
   close(): void;
 }

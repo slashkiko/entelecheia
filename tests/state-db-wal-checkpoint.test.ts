@@ -28,6 +28,10 @@ import { openStore } from "../src/store/sqlite.js";
  * 書くと、既定が変わった日にこのテストだけが落ちる。ここで固定するのは
  * 「1回では変わらない」「書き続ければ変わる」の2つで、その差こそが誤検知の
  * 間欠性を説明する。
+ *
+ * そのうえで、**同じ書き込みで論理ダイジェスト（`Store.guardDigest`）は動かない**
+ * ことを最後に固定する。バイト列から論理的な行へ観測を移した理由がこれになる。
+ * 詳しくは `tests/state-db-digest.test.ts`。
  */
 
 let dir: string;
@@ -70,8 +74,8 @@ afterEach(() => {
   rmSync(dir, { recursive: true, force: true });
 });
 
-/** ACT のたびに controller が書く1組。write-ahead と確定になる */
-function actRun(index: number): void {
+/** ACT のたびに controller が書く1組。write-ahead と確定になる。戻り値は Run の id */
+function actRun(index: number): string {
   const intent: RunIntent = {
     intent: `テストを直す ${index}`,
     actor: "claude-code",
@@ -89,8 +93,10 @@ function actRun(index: number): void {
     artifacts: [],
     detail: null,
   };
-  store.finishRun(store.startRun("g", intent), outcome);
+  const runId = store.startRun("g", intent);
+  store.finishRun(runId, outcome);
   store.acquireLease("g", "worker-a", new Date(Date.now() + 300_000), new Date());
+  return runId;
 }
 
 /**
@@ -125,5 +131,23 @@ describe("状態 DB の中身が動く条件", () => {
     }
 
     expect(changedAt).not.toBeNull();
+  });
+
+  it("同じ書き込みで論理ダイジェストは動かない", () => {
+    // 上の2本が示した「バイト列が動く条件」を、そのまま論理ダイジェストで測り直す。
+    // controller 自身が作った Run を渡せば、checkpoint が走ろうと値は動かない。
+    // ここが誤検知の消え方になる。
+    const before = store.guardDigest("g");
+
+    const own: string[] = [];
+    let bytesMoved = false;
+    const bytesBefore = contentOf(dbPath);
+    for (let i = 1; i <= 2000 && !bytesMoved; i += 1) {
+      own.push(actRun(i));
+      bytesMoved = contentOf(dbPath) !== bytesBefore;
+    }
+
+    expect(bytesMoved).toBe(true);
+    expect(store.guardDigest("g", own)).toBe(before);
   });
 });

@@ -4,7 +4,6 @@ import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { promisify } from "node:util";
 import { type Worktree, type WorktreePort, worktreeBranchFor } from "../act/index.js";
-import { CONTROLLER_STATE_DB_KEY, UNREADABLE_FINGERPRINT } from "../domain/guard-rules.js";
 import { VERIFY_WITHHELD_ENV, withheldEnv } from "../domain/withheld-env.js";
 import type { LocalRepoPort } from "../observe/index.js";
 import type { BranchPort, PushResult } from "../publish/index.js";
@@ -324,8 +323,9 @@ export function gitWorktree(repoRoot: string, root: string): WorktreePort {
      *   ここから先は git ベースの検査では原理的に届かない
      * - gitignore されたパス。`--ignored` を付ければ出るが、controller 自身が
      *   `.goals/.state/**` に毎ティック書くので、自分の書き込みが毎回違反として
-     *   並ぶ。ただし状態 DB そのものは相方の `outOfSightState` が指紋で見るので、
-     *   ここに残るのは `goals.db` 以外の gitignore されたパスになる
+     *   並ぶ。ただし状態 DB そのものは controller が論理ダイジェストで見るので
+     *   （`Store.guardDigest`）、ここに残るのは `goals.db` 以外の gitignore された
+     *   パスになる
      * - commit 済みの変更。本体側のブランチは controller が動かさないので
      *   作業ツリーの汚れだけを見ているが、`git -C ../../../.. commit` や
      *   `git -C ../../../.. stash` は拒否リストに無い。本体側で書いてから commit されると、
@@ -368,14 +368,18 @@ export function gitWorktree(repoRoot: string, root: string): WorktreePort {
      * なく、この計測手段では原理的に出てこない。一方 linked worktree は共通の
      * `.git/hooks` を共有し、Actor の cwd から `../../../../.git/hooks/pre-push` に
      * 届く。push のたびに controller のプロセス・全環境変数でそれが走る。
-     * gitignore 済みの `.goals/.state/` も同じ理由で見えず、`goals.db` を直接
-     * 書けば状態を偽造できる。
      *
      * 検知手段は `repoDirtyState` と同じでよい。ACT の前後で指紋を比べる。
+     *
+     * **状態 DB（`.goals/.state/goals.db`）はここには出さない。** gitignore 済みで
+     * git から見えないのは同じだが、あれは controller 自身の書き込み先でもあり、
+     * バイト列で見ると自分の書き込みと改竄が同じ差になる（issue #62）。
+     * 観測は controller が `Store.guardDigest` から作り、この Map と同じ集合に
+     * 混ぜる。保護対象から外したわけではない。
      */
     async outOfSightState(): Promise<Map<string, string>> {
       const state = new Map<string, string>();
-      for (const [key, path] of await outOfSightPaths(repoRoot, root)) {
+      for (const [key, path] of await outOfSightPaths(repoRoot)) {
         state.set(key, fingerprint(path));
       }
       // 設定値そのものも見る。hooks のファイルを1つも触らずに、実行される
@@ -397,7 +401,7 @@ export function gitWorktree(repoRoot: string, root: string): WorktreePort {
  * `core.hooksPath` も見る。hooks のファイルを1つも触らずに、設定で
  * まるごと別のディレクトリへ差し替えられるため。
  */
-async function outOfSightPaths(repoRoot: string, stateRoot: string): Promise<Map<string, string>> {
+async function outOfSightPaths(repoRoot: string): Promise<Map<string, string>> {
   const watched = new Map<string, string>();
 
   // hooks の実体。linked worktree でも共通の .git を指すので、
@@ -425,13 +429,17 @@ async function outOfSightPaths(repoRoot: string, stateRoot: string): Promise<Map
     watched.set(`.git/hooks/${name}`, join(hooksDir, name));
   }
 
-  // 状態 DB。gitignore 済みなので git status には出ない。
+  // **状態 DB はここでは見ない。** gitignore 済みで git status に出ないのは
+  // hooks と同じだが、あれは controller 自身の書き込み先でもある。ファイルの
+  // バイト列で見ていると、SQLite の WAL が自動 checkpoint に当たった回だけ
+  // 自分の書き込みが外部からの改竄と同じ差になり、ACT を含むティックが
+  // `protected_path_touched` で止まっていた（issue #62）。
   //
-  // キーは `CONTROLLER_STATE_DB_KEY` から取る。この観測は controller 自身の
-  // 書き込み先でもあり、関門は「その差分が自分の書き込みで説明できるか」を
-  // このキーで突き合わせる（`src/controller/index.ts` の `stateWitness`）。
-  // 文字列を2箇所に持つと、片方を直したときに説明だけが効かなくなる。
-  watched.set(CONTROLLER_STATE_DB_KEY, join(stateRoot, "..", "goals.db"));
+  // 代わりに controller が store から論理ダイジェストを取り、
+  // `CONTROLLER_STATE_DB_KEY` として同じ観測に混ぜる
+  // （`src/controller/index.ts` の `observedRepoState`、`Store.guardDigest`）。
+  // 行を読めるのは store だけなので、adapter からは作れない。
+  // **保護対象から外したわけではない。** 観測の作り方を変えただけになる。
 
   return watched;
 }
@@ -463,9 +471,7 @@ function fingerprint(path: string): string {
   try {
     return createHash("sha256").update(readFileSync(path)).digest("hex");
   } catch {
-    // 値は `UNREADABLE_FINGERPRINT` から取る。関門は「controller 自身の書き込みでは
-    // この値にならない」を根拠に、読めなくなった差分を説明の対象から外す。
-    return UNREADABLE_FINGERPRINT;
+    return "unreadable";
   }
 }
 

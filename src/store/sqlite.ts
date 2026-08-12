@@ -2,6 +2,8 @@
 // engines を ">=24" にしてあるのはこのため。標準ではあるが experimental のままで、
 // 起動時に ExperimentalWarning が出る。API が変わったときの移行先は
 // better-sqlite3 で、Store インターフェースの内側に閉じている（design.md §6）。
+import { createHash } from "node:crypto";
+import { existsSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { z } from "zod";
 import { actionSchema, decisionSchema } from "../domain/action.js";
@@ -485,10 +487,208 @@ export function openStore(path: string): Store {
       }));
     },
 
+    guardDigest(goalId, ownRunIds = []) {
+      return guardDigestOf(db, path, goalId, ownRunIds);
+    },
+
     close() {
       db.close();
     },
   };
+}
+
+/**
+ * 関門が状態 DB を見る単位。**ファイルのバイト列ではなく、論理的な行から作る**
+ * （issue #62）。
+ *
+ * `.goals/.state/goals.db` は関門が指紋で見る保護対象でありながら、controller
+ * 自身の書き込み先でもある。バイト列を見ているかぎり、この2つは同じ差として
+ * 現れる。SQLite は WAL なので普段 controller の書き込みは `goals.db-wal` に
+ * 載るだけだが、WAL が既定の閾値（1000 ページ）を越えたコミットでは自動
+ * checkpoint が走り、`goals.db` の中身が動く。ティックの形が同じでも、その
+ * プロセスがそれまでに書いた量が閾値を跨いだ回だけ `protected_path_touched` に
+ * なっていた（`tests/state-db-wal-checkpoint.test.ts`）。
+ *
+ * 論理的な行から作れば、checkpoint も VACUUM もページの再配置も値を動かさない。
+ *
+ * **Goal ごとに閉じる。** 引数の Goal に属する行だけを見る。同じディレクトリで
+ * 2本目の ent が別の Goal を回しても、こちらの値は動かない。行が goal_id を
+ * 持つこと自体は最初からそうなっており（`facts` と `unresolved` は
+ * `snapshots` 経由で辿れる）、スキーマは変えていない。**行を分けるだけでは
+ * 解けなかったのは、WAL が DB ファイルに1つしか無いため**で、論理ダイジェストと
+ * 組にして初めて Goal ごとに閉じた観測になる。
+ *
+ * **controller 自身が ACT の窓の中で書く分だけを射影から外す。** 外すのは2つ。
+ * - `goals` の lease 列（`lease_owner` / `lease_until`）。ティックのあいだ
+ *   延長し続けるので、必ず動く
+ * - `ownRunIds` に渡された Run の行。write-ahead（`startRun`）と確定
+ *   （`finishRun`）で、ACT の窓のちょうど真ん中に書かれる
+ *
+ * ほかは全部見る。スキーマ（`sqlite_master`）も見る。trigger を1つ仕込めば
+ * 行を変えずに以降の書き込みへ副作用を付けられる。ファイルの存在も見る。
+ * 開いたままのコネクションは unlink されたファイルを読み続けるので、行だけを
+ * 見ていると消されたことに気づけない。
+ *
+ * **バイト列を捨てて諦めたもの。** 「バイト列は違うが、この Goal の論理的な行は
+ * 同じ」改竄は通る。具体的には (1) 別の Goal の行、(2) この Goal の lease 列、
+ * (3) このティックで controller が作った Run の行、(4) ファイルの差し替えや
+ * 破損のうち上の射影に出ないもの。
+ *
+ * **代わりに1つ強くなっている。** ここは SQLite 経由で読むので、まだ WAL に
+ * しか無い行も見える。バイト列の指紋は次の checkpoint まで見えなかった
+ * （design.md §10-6 の (g)）。SQLite 経由で DB を書き換える改竄——`goals.db` を
+ * 直接開いて `UPDATE goals SET status='COMPLETED'` を流す形——は、いちばん
+ * 現実的な攻撃でありながら、バイト列では取りこぼしうるものだった。
+ */
+function guardDigestOf(
+  db: DatabaseSync,
+  path: string,
+  goalId: string,
+  ownRunIds: readonly string[],
+): string {
+  const hash = createHash("sha256");
+  const write = (section: string, rows: readonly Record<string, unknown>[], skip: Set<string>) => {
+    // 節の名前も混ぜる。混ぜないと「空のテーブル」と「節ごと無い」が同じになる。
+    hash.update(`${section}${SECTION}`);
+    for (const row of rows) {
+      hash.update(encodeRow(row, skip));
+      hash.update(ROW);
+    }
+    hash.update(SECTION);
+  };
+
+  // ファイルの存在。`:memory:` は常に在ることにする（消せる先が無い）。
+  hash.update(`file:${path === ":memory:" || existsSync(path) ? "present" : "missing"}${SECTION}`);
+
+  // スキーマ。`sqlite_%` は SQLite が持つ内部テーブルなので外す。とくに
+  // `sqlite_sequence` は**最初の AUTOINCREMENT な INSERT で初めて生える**ので、
+  // 残すと新しい DB の1回目の ACT が「スキーマが増えた」で鳴る。中身（採番の
+  // 現在値）は別の Goal の INSERT でも進むため、いずれにせよ見てはいけない。
+  // `rootpage` も読まない。VACUUM で動くが、意味のある変化ではない。
+  write(
+    "schema",
+    db
+      .prepare(
+        `SELECT type, name, tbl_name, sql FROM sqlite_master
+          WHERE name NOT LIKE 'sqlite~_%' ESCAPE '~'
+          ORDER BY type, name, tbl_name`,
+      )
+      .all() as unknown as Record<string, unknown>[],
+    new Set(),
+  );
+
+  for (const section of GUARD_SECTIONS) {
+    write(
+      section.name,
+      db.prepare(section.sql).all(goalId) as unknown as Record<string, unknown>[],
+      new Set(section.skip ?? []),
+    );
+  }
+
+  // Run だけは行を落とすので別に組む。落とすのは `ownRunIds` に挙がったものだけで、
+  // テーブルごとではない。ACT の窓で誰かに Run を差し込まれたら鳴る。
+  const own = new Set(ownRunIds);
+  write(
+    "runs",
+    (
+      db
+        .prepare("SELECT * FROM runs WHERE goal_id = ? ORDER BY id")
+        .all(goalId) as unknown as Record<string, unknown>[]
+    ).filter((row) => !own.has(String(row.id))),
+    new Set(),
+  );
+
+  return hash.digest("hex");
+}
+
+/**
+ * ダイジェストに載せる節。**列は `SELECT *` で取る。**
+ *
+ * 列を1つずつ並べると、あとから足した列が黙って射影から落ちる。落ちた列は
+ * 書き換えても関門が鳴らないので、増やした本人にも気づく手段が無い。
+ * 外す列は `skip` に名指しで書く。
+ *
+ * `facts` と `unresolved` は goal_id を持たないので `snapshots` 経由で辿る。
+ * 並びは主キーで固定する。SQLite は ORDER BY 無しの並びを保証しない。
+ */
+const GUARD_SECTIONS: readonly { name: string; sql: string; skip?: readonly string[] }[] = [
+  {
+    name: "goals",
+    sql: "SELECT * FROM goals WHERE id = ?",
+    // lease は ACT の窓のあいだ controller 自身が延長し続ける。
+    skip: ["lease_owner", "lease_until"],
+  },
+  { name: "snapshots", sql: "SELECT * FROM snapshots WHERE goal_id = ? ORDER BY id" },
+  {
+    name: "facts",
+    sql: `SELECT facts.* FROM facts
+            JOIN snapshots ON snapshots.id = facts.snapshot_id
+           WHERE snapshots.goal_id = ?
+           ORDER BY facts.snapshot_id, facts.seq`,
+  },
+  {
+    name: "unresolved",
+    sql: `SELECT unresolved.* FROM unresolved
+            JOIN snapshots ON snapshots.id = unresolved.snapshot_id
+           WHERE snapshots.goal_id = ?
+           ORDER BY unresolved.snapshot_id, unresolved.seq`,
+  },
+  { name: "verifications", sql: "SELECT * FROM verifications WHERE goal_id = ? ORDER BY id" },
+  { name: "llm_calls", sql: "SELECT * FROM llm_calls WHERE goal_id = ? ORDER BY id" },
+  { name: "decisions", sql: "SELECT * FROM decisions WHERE goal_id = ? ORDER BY id" },
+];
+
+/** 節・行・列の区切り。制御文字を使う（下の `encodeCell` が文字列側を必ず逃がす） */
+const SECTION = "\u001d";
+const ROW = "\u001e";
+const CELL = "\u001f";
+
+/**
+ * 1行を決定的な文字列にする。
+ *
+ * 列名で並べ替えてから連結する。`SELECT *` の列順はスキーマの順で、`ALTER TABLE`
+ * で足した列は末尾に付く。同じ中身の DB でも、作られ方（最初から在ったか
+ * migrate で足したか）で順が変わりうるので、順に依存しない形にする。
+ * 列名そのものも混ぜる。混ぜないと、値が隣の列へずれても同じ値になる。
+ */
+function encodeRow(row: Record<string, unknown>, skip: ReadonlySet<string>): string {
+  return Object.keys(row)
+    .filter((key) => !skip.has(key))
+    .sort()
+    .map((key) => `${key}=${encodeCell(row[key])}`)
+    .join(CELL);
+}
+
+/**
+ * 1つの値を決定的な文字列にする。型ごとに接頭辞を付けて、別の型の同じ見た目を
+ * 混ぜない（`1` と `"1"` と `NULL` と `""` は別のもの）。
+ *
+ * 文字列は `JSON.stringify` に通す。上の区切り（`\u001d`〜`\u001f`）はすべて
+ * 制御文字なので必ずエスケープされ、値の中身で区切りを偽装できない。
+ *
+ * 知らない型は throw する。黙って `String(value)` に落とすと、その列だけが
+ * 実質的に射影から外れる。関門は throw を `guard_unavailable` に倒すので、
+ * 「確かめられなかった」が「変わっていない」にはならない（design.md §3.1）。
+ */
+function encodeCell(value: unknown): string {
+  if (value === null) {
+    return "null";
+  }
+  if (typeof value === "string") {
+    return `s:${JSON.stringify(value)}`;
+  }
+  if (typeof value === "bigint") {
+    // node:sqlite は 2^53 を越える INTEGER を bigint で返す。`JSON.stringify` は
+    // bigint を渡されると throw するので、文字列側とは別に扱う。
+    return `i:${value.toString()}`;
+  }
+  if (typeof value === "number") {
+    return `d:${String(value)}`;
+  }
+  if (value instanceof Uint8Array) {
+    return `b:${Array.from(value, (byte) => byte.toString(16).padStart(2, "0")).join("")}`;
+  }
+  throw new Error(`状態 DB のダイジェストに載せられない型の値がある: ${typeof value}`);
 }
 
 /** ロックが空くのを待つ上限（ミリ秒）。busy_timeout と WAL への切り替え待ちに使う */

