@@ -144,7 +144,8 @@ export interface PublishResult {
  * - どの経路でも throw しない。失敗は skipped の理由として返す。
  *   通知に失敗しただけでティック全体を落とさない
  * - `deps.report` があれば、進捗は PR ではなくそちらに書く（`ent run --report`）。
- *   push と PR の確保は止めない。移すのは通知の宛先だけになる
+ *   push と PR の確保は止めない。移るのは通知の宛先で、そこにレビュー役の本文が
+ *   1節ぶん増える（`withReviewMessage`）
  */
 export async function publish(target: PublishTarget, deps: PublishDeps): Promise<PublishResult> {
   // ここで組み立てる本文は、宛先を問わず1つになる。criteria の pass 状況が

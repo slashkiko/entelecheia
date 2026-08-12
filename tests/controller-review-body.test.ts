@@ -167,6 +167,11 @@ describe("controller から publish へのレビュー本文の受け渡し", ()
     // 本文はそのまま。表もコードブロックも改行も残る。
     expect(body).toContain(REVIEW_BODY);
     // criteria の表は動かさない。節はその後ろに来る。
+    //
+    // 先に「表がある」を見ておく。`indexOf` は無いときに -1 を返すので、
+    // 表ごと消えても下の比較は通ってしまう。**黙って消えるものを捕まえるのが
+    // この検査の目的なので、そこを開けたままにしない。**
+    expect(body).toContain("ac-1");
     expect(body.indexOf("ac-1")).toBeLessThan(body.indexOf("## レビュー役の本文"));
   });
 
