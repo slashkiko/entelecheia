@@ -554,7 +554,9 @@ function commentBody(
       : [`> [!WARNING]`, `> push できなかった: ${oneLine(pushFailure)}`, ""]),
     // 宣言で止めたことも先頭に出す。落ちたのではないので WARNING にはしない。
     // 下の criteria が全部緑でも、その先は人間が進める、という但し書きになる。
-    ...(held === null ? [] : [`> [!NOTE]`, `> ${HELD_NOTES[held.step]}`, ""]),
+    ...(held === null
+      ? []
+      : [`> [!NOTE]`, ...heldNotes(held.step, target.goal.goal.id).map((line) => `> ${line}`), ""]),
     // 改行を潰す。承認の定型文は行単位で照合されるので、本文の途中に
     // 独立した1行を作らせない。目印による除外と二重にしておく。
     flatten(target.decision.rationale),
@@ -573,15 +575,43 @@ function commentBody(
   ].join("\n");
 }
 
-/** 宣言で止めた段を、PR を読む人間に1行で伝える文面 */
-const HELD_NOTES: Record<PublishStep, string> = {
-  push_branch:
+/**
+ * 宣言で止めた段を、PR を読む人間に伝える文面。
+ *
+ * **PR に出る説明はここだけになる。** `publishHeldDecision`（`src/controller/index.ts`）が
+ * 組み立てる rationale は publish の**後ろ**で判断を差し替えるので、この関数に渡る
+ * `target.decision` は差し替え前のものになる。同じファイルのもう1つの関門
+ * （`uncommittedDecision`）は publish の前で差し替わるため PR と `ent get` に同じ
+ * 文字列が出るが、こちらは出ない。**その分をここに書く。** 「push していない」だけを
+ * 書くと、人間が最も要る2つ——手で押しても解けないことと、`ent abandon` で終端に
+ * できること——が PR の側から読めない。
+ *
+ * 行で返す。呼ぶ側が1行ずつ `> ` を付けるので、引用の外に独立した行を作らない。
+ * 承認の定型文は行全体で照合されるので（`approves`、`src/adapters/github.ts`）、
+ * 引用の外に行を作る形にすると、そこに並んだ文字列が承認として数えられる。
+ *
+ * `open_pull_request` の側は、いまのところ PR に出ない。この段で止まるのは
+ * 「差分があり、まだ PR が無い」ティックだけで、書き込む先の PR がそもそも無いため
+ * `publish` は「PR がまだ無いのでコメントできない」で降りる。**それでも文面を
+ * 残しておく。** 段の並びが変わって PR がある状態で止まりうるようになったとき、
+ * 文面が無いことに気づける形にしておくより、あるほうが壊れ方が小さい。
+ */
+function heldNotes(step: PublishStep, goalId: string): string[] {
+  const declaration = `\`.goals/${goalId}.yaml\` の \`policies.publish.${step}\``;
+  if (step === "open_pull_request") {
+    return [
+      "`policies.publish.open_pull_request: manual` の宣言があるので、controller は PR を作らない。",
+    ];
+  }
+  return [
     "`policies.publish.push_branch: manual` の宣言があるので push していない。" +
-    "この PR は、宣言より前に押された分のままになる。",
-  open_pull_request:
-    "`policies.publish.open_pull_request: manual` の宣言があるので、" +
-    "controller は PR を作らない。",
-};
+      "この PR は、宣言より前に押された分のままになる。",
+    "**手で push しても controller には見えない。** 押さないと決めた口が remote を知る" +
+      "唯一の経路なので、押したことは次のティックの判断に入らない。",
+    `進めるには ${declaration} を \`auto\` に戻す。` +
+      `もう追わないなら \`ent abandon ${goalId} --reason <理由>\` で終端にする。`,
+  ];
+}
 
 const MARKERS: Record<Verification["result"], string> = {
   passed: "🟢",

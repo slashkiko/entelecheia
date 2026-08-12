@@ -265,6 +265,87 @@ describe("push_branch: manual", () => {
   });
 });
 
+describe("止めたことを PR の側から読める", () => {
+  /** PR コメントに載る `> [!NOTE]` の中身。引用記号を外して返す */
+  async function noteOf(policy: PublishPolicy): Promise<string> {
+    const s = sink();
+    await publish(target({ goal: goalWith(policy), prNumber: 7, previousDigest: "digest-2" }), {
+      ...deps(s),
+    });
+    const body = s.comments[0]?.body ?? "";
+    const lines = body.split("\n");
+    const start = lines.indexOf("> [!NOTE]");
+    if (start === -1) {
+      return "";
+    }
+    const note: string[] = [];
+    for (const line of lines.slice(start + 1)) {
+      if (!line.startsWith("> ")) {
+        break;
+      }
+      note.push(line.slice(2));
+    }
+    return note.join("\n");
+  }
+
+  it("push を止めたことに、手で押しても解けないことまで書く", async () => {
+    // rationale（`publishHeldDecision`）は publish の**後ろ**で組み立てるので、
+    // PR コメントに載るのは差し替え前の文面になる。止めた事情が PR に出るのは
+    // この NOTE の分だけで、「push していない」しか書かないと、人間が最も要る
+    // 2つ——手で押しても解けないことと、終端にする口があること——が PR から読めない。
+    const note = await noteOf({ push_branch: "manual", open_pull_request: "auto" });
+
+    expect(note).toContain("policies.publish.push_branch");
+    expect(note).toContain("手で push しても");
+    expect(note).toContain("auto");
+    expect(note).toContain("ent abandon");
+  });
+
+  it("PR を止めたほうは、そもそも PR が無いので何も書けない", async () => {
+    // `open_pull_request` で止まるのは「差分があり、まだ PR が無い」ティックだけに
+    // なる（既にあるティックは止めない）。書く先が1本も無いので、この段の停止は
+    // PR の側から読めない。**読むのは `ent get` と `publishHold` になる。**
+    // ここを「PR コメントにも出る」と書くと、無い PR を探させることになる。
+    const s = sink();
+
+    const result = await publish(
+      target({ goal: goalWith({ push_branch: "auto", open_pull_request: "manual" }) }),
+      deps(s),
+    );
+
+    expect(result.held?.step).toBe("open_pull_request");
+    expect(result.commented).toBe(false);
+    expect(s.comments).toEqual([]);
+  });
+
+  it("NOTE を何行に増やしても、独立した1行を本文に作らない", async () => {
+    // 承認の定型文は行全体で照合される（`approves`）。引用記号の付かない行を
+    // 作ると、そこに `/ent approve <criterion-id>` が並んだときに承認として
+    // 数えられる。増やす先は必ず `> ` の内側に留める。
+    const s = sink();
+    await publish(
+      target({
+        goal: goalWith({ push_branch: "manual", open_pull_request: "auto" }),
+        prNumber: 7,
+        previousDigest: "digest-2",
+      }),
+      deps(s),
+    );
+    const lines = (s.comments[0]?.body ?? "").split("\n");
+    const start = lines.indexOf("> [!NOTE]");
+
+    expect(start).toBeGreaterThan(-1);
+    // NOTE の直後の行は、空行になるまで全部引用のままであること。
+    const after = lines.slice(start + 1);
+    const end = after.indexOf("");
+    expect(end).toBeGreaterThan(0);
+    for (const line of after.slice(0, end)) {
+      expect(line.startsWith("> ")).toBe(true);
+    }
+    expect(lines.some((line) => line.trim().startsWith("/ent approve"))).toBe(false);
+  });
+});
+
 describe("open_pull_request: manual", () => {
   it("push はするが、PR は作らない", async () => {
     // ブランチが remote にあること自体は通知を伴わない。止めたいのは

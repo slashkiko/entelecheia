@@ -125,6 +125,24 @@ afterEach(() => {
   store.close();
 });
 
+/** 2ティック目で max_reconciles に当たる予算にする */
+function exhausting(goal: Goal): Goal {
+  return { ...goal, budget: { ...goal.budget, max_reconciles: 1 } };
+}
+
+/**
+ * criteria が落ち続ける構成。予算の枯渇を見るティックで COMPLETE に抜けさせない。
+ *
+ * 判定順は `budget_exhausted` → `COMPLETE` なので（design.md §4.4）、全部緑のまま
+ * だと1ティック目で終端に入り、2ティック目が回らない。
+ */
+function failingCriteria(s: Store): ControllerDeps {
+  return {
+    ...deps(s),
+    command: { run: async () => ({ exitCode: 1, stdout: "", stderr: "落ちた" }) },
+  };
+}
+
 function activate(goal: Goal): void {
   store.upsertGoal(goal);
   store.setStatus(GOAL_ID, "ACTIVE", null);
@@ -208,6 +226,37 @@ describe("宣言で publish を止めたティック", () => {
     });
     // 進むには宣言を戻すしかない。それを rationale が言っていること。
     expect(second.decision?.rationale).toContain("auto に戻す");
+  });
+
+  it("予算を使い切っても BLOCKED にはならない", async () => {
+    // 差し替えは publish の後ろにあるので、DECIDE が `ESCALATE(budget_exhausted)` を
+    // 選んでいても `*_declared_manual` で上書きされる。`BLOCKED` になるのは
+    // `budget_exhausted` だけなので（`nextStatus`）、止めているあいだ予算の枯渇は
+    // 表に出ない。SKILL.md の代行手順が「BLOCKED になる」と書いていた形は起きない。
+    const goal = exhausting(goalWith({ push_branch: "manual", open_pull_request: "auto" }));
+    activate(goal);
+
+    await tick(goal, failingCriteria(store));
+    const second = await tick(goal, failingCriteria(store));
+
+    expect(second.status).toBe("WAITING_HUMAN");
+    expect(second.decision?.action).toEqual({
+      type: "ESCALATE",
+      reason: "push_branch_declared_manual",
+    });
+  });
+
+  it("宣言が無ければ、同じ予算で BLOCKED になる", async () => {
+    // 上の1本が「上限を外した」のではなく「上書きしている」ことを示す対になる。
+    // 宣言だけを外せば、同じ予算・同じ criteria で budget_exhausted が表に出る。
+    const goal = exhausting(goalWith());
+    activate(goal);
+
+    await tick(goal, failingCriteria(store));
+    const second = await tick(goal, failingCriteria(store));
+
+    expect(second.status).toBe("BLOCKED");
+    expect(second.decision?.action).toEqual({ type: "ESCALATE", reason: "budget_exhausted" });
   });
 
   it("1ティックに書く Decision は1行のまま", async () => {

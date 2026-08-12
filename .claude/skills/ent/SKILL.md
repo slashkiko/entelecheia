@@ -262,14 +262,48 @@ gh pr create --head <publishHold.branch> --base <publishHold.base> \
   --title <Goal の name> --body <本文>
 ```
 
-本文には Goal の Desired State と acceptance criteria の一覧、そして承認の定型文
-（`/ent approve <criterion-id>`）を入れる。controller が立てる PR がその形で、
-`verification.type: human` の criteria はその定型文が本文に無いと、レビュアーが
-承認の口を見つけられない。中身は `ent get <slug>` から取れる。
+**代行に要る宣言は `.goals/<slug>.yaml` から読む。`ent get` には出ない。**
+`ent get` が宣言部から出すのは `goal`（`id` / `name` / `desired_state` / `depends_on`）だけで、
+`repository` も `acceptance_criteria` も1キーも出ない。`verifications` が持つのも criterion の
+id と結果までなので、description も `verification.type` もそちらには無い。`publishHold` に
+入るのは、宣言からは決まらないもの（`branch` と `pushed`）になる。
 
-`repository.pull_request.draft: true` が宣言されていれば `--draft` を付ける。controller が
-立てるときは渡している値なので、付け忘れると代行した PR だけがレビュアーに通知を飛ばす。
-宣言も `ent get <slug>` から読める。
+| 代行に要るもの | どこから読む |
+| --- | --- |
+| head と base | `publishHold.branch` / `publishHold.base` |
+| `--draft` を付けるか | `.goals/<slug>.yaml` の `repository.pull_request.draft` |
+| PR のタイトル | `.goals/<slug>.yaml` の `goal.name`（`ent get` の `goal` でもよい） |
+| 本文の Desired State | 同じく `goal.desired_state` |
+| 本文の criteria 一覧 | `.goals/<slug>.yaml` の `acceptance_criteria`（id / `verification.type` / description） |
+
+`repository.pull_request.draft: true` なら `--draft` を付ける。controller が立てるときは
+渡している値なので、付け忘れると**代行した PR だけがレビュアーに通知を飛ばす**。
+`open_pull_request: manual` が止めようとしているのは、まさにその通知になる。
+
+本文は controller が立てるものと同じ形にする（`pullRequestBody`、`src/publish/index.ts`）。
+
+````markdown
+entelecheia の Goal `<goal.id>` に対する変更。
+
+## Desired State
+
+<goal.desired_state>
+
+## Acceptance Criteria
+
+- `<id>` (<verification.type>) <description>
+
+進捗は controller がコメントで積む。承認は次の定型文で行う。
+
+```
+/ent approve <criterion-id>
+```
+````
+
+`verification.type: human` の criteria は、この定型文が本文に無いとレビュアーが承認の口を
+見つけられない。**本文の `<criterion-id>` は実際の id に置き換えない。** 承認として数えるのは
+PR コメントの側で、行全体が `/ent approve <実際の id>` と一致したときだけになる。本文は
+書き方を見せる雛形にしておく。
 
 次のティックがその PR を見つけて先へ進む。宣言はそのままでよい。
 **人間が先に中身を見てから立てたいと言われている場合だけ**、立てずに `publishHold` を
@@ -277,8 +311,13 @@ gh pr create --head <publishHold.branch> --base <publishHold.base> \
 
 **`step: push_branch`（`pushed: false`）は代行しない。** ブランチが remote に無いので
 PR は立てられない。手で push しても controller はそれを観測できないため、宣言を `auto` に
-戻すまで毎ティック同じところで止まり、`max_reconciles` に当たって `BLOCKED` になる。
-人間に渡す。
+戻すまで毎ティック同じところで止まる。人間に渡す。
+
+**`BLOCKED` にはならない。** 予算を使い切っても `ESCALATE(push_branch_declared_manual)` が
+`ESCALATE(budget_exhausted)` を上書きするので、状態は `WAITING_HUMAN` のままになる。
+止まっているあいだ `max_reconciles` と `max_actor_runs` は進むが、`max_wall_clock` だけは
+止まる（予算切れ以外の `ESCALATE` は待ちとして経過時間から引かれる）。
+「そのうち `BLOCKED` になって気づく」は起きないので、人間に渡すまで止まったままになる。
 
 `ESCALATE(protected_path_touched)` などの関門で止まったティックには `publishHold` は
 出ない。そちらは push も PR も代行してはいけない停止になる。

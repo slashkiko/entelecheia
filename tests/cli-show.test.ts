@@ -92,6 +92,33 @@ describe("showPayload", () => {
     expect(payload.runs).toEqual([]);
   });
 
+  it("宣言部から出すのは goal ブロックだけになる", () => {
+    // **SKILL.md の代行手順が読む先を決めている性質になる。** 代わりに PR を立てる
+    // エージェントが要るのは `repository.pull_request.draft` と
+    // `acceptance_criteria`（id / description / `verification.type`）だが、
+    // どちらもここには出ない。`verifications` が持つのも criterion の id と結果までで、
+    // description も `verification.type` も入らない。だから手順の参照先は
+    // `.goals/<slug>.yaml` にしてある。ここが出すようになったら手順も見直す。
+    const payload = showPayload(GOAL, store) as unknown as Record<string, unknown>;
+
+    expect(Object.keys(payload).sort()).toEqual([
+      "decision",
+      "goal",
+      "llm",
+      "runs",
+      "snapshot",
+      "state",
+      "verifications",
+    ]);
+    expect(payload.goal).toEqual(GOAL.goal);
+    expect(Object.keys(payload.goal as object).sort()).toEqual([
+      "depends_on",
+      "desired_state",
+      "id",
+      "name",
+    ]);
+  });
+
   it("facts と unresolved を組で出す", () => {
     // 片方だけ出すと §3.1 が避けたかった「Fact の不在に畳まれる」が表示層で再発する。
     store.saveSnapshot(GOAL.goal.id, {

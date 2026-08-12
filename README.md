@@ -92,8 +92,11 @@ remote に無いので代行できない。キーの内訳と代行の手順は 
 2つの段は解け方が違う。`open_pull_request` を止めた場合は、人間が PR を立てれば次のティックが
 それを見つけて先へ進む（宣言はそのままでよい）。`push_branch` はそうならない。押さないと決めた
 口（`BranchPort.push`）が remote を知る唯一の経路なので、人間が手で押しても controller は
-それを観測できない。宣言を `auto` に戻すまで毎ティック止まり続ける。名前を
-`require_human_approval` と分けた理由は design.md §7 にある。
+それを観測できない。宣言を `auto` に戻すまで毎ティック止まり続ける。**そのうち予算切れで
+`BLOCKED` に落ちて気づく、ということも起きない。** 止めた理由が `budget_exhausted` を
+上書きするので、状態は `WAITING_HUMAN` のままになる。止めた段は PR コメントにも出るので、
+そちらで気づける（PR がまだ無い `open_pull_request` の側は `ent get` と `ent list` で見る）。
+名前を `require_human_approval` と分けた理由は design.md §7 にある。
 
 ### Agent に渡さない資格情報
 

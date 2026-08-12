@@ -953,7 +953,24 @@ PR の作成はレビュアーへの通知を伴う。「ブランチは出し�
 意味を失う。理由を段ごとに分けてあるのは、`ent list` が出すのが種別と理由だけだから
 （`WAITING_HUMAN` には §10-6 の `protected_path_touched` など他の理由も畳まれる）。
 人間が何をすれば進むのかは
-`decision.rationale` に書いて `ent get` と PR コメントの両方に出す。
+`decision.rationale` に書く。
+
+**その rationale が出るのは `ent get` と `ent list` までになる。** 判断の差し替え
+（`publishHeldDecision`）は publish の**後ろ**にあるので、publish が進捗コメントに載せた
+`decision` は差し替え前のものになる。§10-11 の `uncommitted_changes` は publish の前で
+差し替わるため PR と `ent get` に同じ文字列が出るが、こちらはその規約から外れる。
+**差し替えを前へ動かす形は採れない。** `open_pull_request` を止めるかどうかは
+「push が通り、まだ PR が無い」を確かめたあと——publish の中——でしか決まらない。
+
+代わりに、PR には `heldNotes`（`src/publish/index.ts`）が `> [!NOTE]` を書く。文字列は
+rationale と別でも、**同じ事実を言う**——手で push しても controller には見えないこと、
+宣言を `auto` に戻すか `ent abandon` で終端にすること。ここを「push していない」の1行に
+留めると、人間が最も要る2つが PR の側から読めない。止めたことを知らせておいて
+次にすることを書かない通知は、鳴っていないのとほぼ同じになる。
+
+**`open_pull_request` を止めたティックは、PR の側に何も出ない。** この段で止まるのは
+「差分があり、まだ PR が無い」ティックだけなので、書き込む先が1本も無い。読むのは
+`ent get` と、次に出てくる `publishHold` になる。
 
 `open_pull_request` を止めた Goal は、**人間が PR を立てれば宣言を書き換えなくても進む**。
 publish は作る前に必ず同じ head の PR を探すので（`findPullRequest`）、次のティックが
@@ -972,10 +989,25 @@ publish は作る前に必ず同じ head の PR を探すので（`findPullReque
 **`BLOCKED` には落ちない。** 判断の差し替えは publish の後ろにあり、`held` があれば
 DECIDE が何を選んでいても `ESCALATE(*_declared_manual)` で上書きする。`BLOCKED` になるのは
 `ESCALATE(budget_exhausted)` だけなので（§4.4）、止めているあいだは上限に達しても
-そちらが表に出ない。**上限そのものは進み続ける**ので、宣言を `auto` に戻したティックで
-初めて `budget_exhausted` が表に出ることになる。人間を呼ぶ理由としては
-`*_declared_manual` のほうが具体的なので上書きの向きはこれでよいが、
-「止めているあいだは予算の枯渇が見えない」ことは宣言を書く側が知っておく必要がある。
+そちらが表に出ない。人間を呼ぶ理由としては `*_declared_manual` のほうが具体的なので
+上書きの向きはこれでよいが、「止めているあいだは予算の枯渇が見えない」ことは
+宣言を書く側が知っておく必要がある。
+
+**進み続ける上限と、止まる上限がある。** 3つを一緒に扱わない。
+
+| 上限 | 止めているあいだ | なぜ |
+|---|---|---|
+| `max_reconciles` | 進む | `saveSnapshot` が数えるのは publish より前で、止めても1ティックは1ティック |
+| `max_actor_runs` | 進む | ACT は publish より前になる。止めているのは push と PR 作成だけで、Actor は走る |
+| `max_wall_clock` | **止まる** | `waitsForOthers` が `budget_exhausted` 以外の `ESCALATE` を待ちに数える |
+
+壁時計だけは隠れるのではなく止まる。`*_declared_manual` は `ESCALATE` で、しかも
+`budget_exhausted` ではないので、`waitedSeconds`（`src/domain/guard-rules.ts`）がその窓を
+積み、`usageOf`（`src/controller/index.ts`）が `elapsedSeconds` から引く。止めていた分は
+まるごと予算から外れるので、宣言を `auto` に戻したティックで壁時計が上限に達している
+ことはない。**そこで表に出うるのは `max_reconciles` と `max_actor_runs` の側になる。**
+待たせたのは controller の側なので引くのは筋が通っているが（§4.4）、「止めていれば
+時間は減らない」ことは、`max_wall_clock` を停止条件として当てにする側が知っておく。
 
 **止めたことは機械可読で出す。** ティックを叩くのは人間だけではない。エージェントが
 回している構成では、controller が作らなかった PR をそのエージェントが代わりに立てる。
@@ -1670,8 +1702,10 @@ worktree が無く `local.*` は controller 自身のリポジトリを観測す
 変わらないので、初回しか書かないと2ティック目以降は PR が静かなまま
 `max_reconciles` に当たって `BLOCKED` になる。`rationale` には止めた理由だけでなく
 **どうすれば進むか**（worktree のパスと、commit するか元に戻すか）を書く。
-`ent get` の `decision.rationale` と PR の進捗コメントは同じ文字列を出すので、
-ここが人間に届く唯一の説明になる。
+**この関門は publish の前で判断を差し替える**ので、`ent get` の `decision.rationale` と
+PR の進捗コメントは同じ文字列を出す。ここが人間に届く唯一の説明になる。
+publish の後ろで差し替える `policies.publish` の関門（§7）だけがこの規約から外れ、
+PR に出す分を別に書いている。
 push まで止めるのは保護パスの関門と `policies.publish.push_branch`（§7）の2つで、
 こちら（未 commit の関門）は止めない。commit された分は remote に出てよい。
 

@@ -1047,8 +1047,19 @@ function uncommittedDecision(
  *   ここで止めなければ、宣言した Goal ほど静かに COMPLETED へ抜ける
  * - 判断したのは LLM ではないので decidedBy は "guard"（design.md §7）
  * - 止めた理由と、人間が何をすれば進むのかを rationale に書く。ここが
- *   `ent get`（`decision.rationale`）にも PR の進捗コメントにも出る唯一の説明になる
+ *   `ent get`（`decision.rationale`）と `ent list` に出る唯一の説明になる
  * - 元の rationale を残す。何をしようとしていたのかが読めなくなる
+ *
+ * **この rationale は PR には出ない。** 差し替えるのは publish の**後ろ**なので、
+ * `publish` が進捗コメントに載せた `decision` は差し替え前のものになる。同じファイルの
+ * `uncommittedDecision` は publish の前で差し替わるため PR と `ent get` に同じ文字列が
+ * 出るが、こちらはその規約から外れる。**差し替えを前へ動かす形は採れない。**
+ * `open_pull_request` を止めるかどうかは「push が通り、まだ PR が無い」を確かめたあと
+ * ——つまり publish の中——でしか決まらない。
+ *
+ * 代わりに、PR に要る分は `heldNotes`（`src/publish/index.ts`）が NOTE として書く。
+ * 文字列は別でも**同じ事実**を言う（手で押しても解けないこと、`auto` に戻すか
+ * `ent abandon` で終端にすること）。片方を直すときはもう片方も見る。
  *
  * **2つの段は、解け方が違う。** `open_pull_request` は人間が PR を立てれば次のティックの
  * `findPullRequest` が見つけるので、宣言を書き換えなくても進む。`push_branch` にはその
