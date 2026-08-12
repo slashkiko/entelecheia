@@ -383,10 +383,10 @@ roleは次の5箇所を通る。
 PR        number, state, mergeable, head_sha, review_decision, requested_reviewers,
           title, body, unresolved_threads
 Review    state (APPROVED / CHANGES_REQUESTED / COMMENTED), author, submitted_at
-CI        workflow_run の conclusion、失敗時は失敗ジョブ名とログ URL、
+CI        workflow_run の status と conclusion、失敗時は失敗ジョブ名とログ URL、
           落ちている job の数（failed_job_count）と数から外した workflow
           （excluded_workflows）
-Issue     state, labels, linked_pr
+Issue     number, state, labels, linked_pr
 local     current_branch, HEAD sha, worktree に未コミット変更があるか
 ```
 
@@ -494,7 +494,7 @@ PR コメントに出さないのは、人間が購読している場所に毎�
 （`src/cli/present.ts`）で、追記なのは cron から回したときに最後の1ティックしか
 残らないのを避けるための選択になる。しかも `ReviewPort.latest()` が返すのは直近の
 **完了した**レビュー役の Run なので、次のレビューが終わるまで毎ティック同じ本文が返る
-（`WAIT(review_pending)` が続く区間がこれにあたる）。**PR コメントを退けた理由は、
+（`WAIT(human_review_pending)` が続く区間がこれにあたる）。**PR コメントを退けた理由は、
 ファイルの宛先ではそのまま再現する。** 前ティックと同じ Run なら節を畳む形は取れるが、
 publish は前ティックに何を出したかを持っていないので `PublishTarget` を足すことになる。
 いまは足していない。
@@ -658,11 +658,19 @@ Goal のライフサイクル
 
 待機の種類（いずれも reconcile は即 return する）
 
-  WAITING_HUMAN(reason: human_review_pending)  人間の承認待ち（旧名 review_pending）
+  WAITING_HUMAN(reason: human_review_pending)  人間の承認待ち
   WAITING_EXTERNAL(reason: ci_running)      CI 完了待ち
   WAITING_EXTERNAL(reason: usage_limit)     選択したLLM/Actorの使用量上限。resume_after を持つ
   BLOCKED(reason: budget_exhausted)         予算・回数・時間の上限に到達
 ```
+
+`human_review_pending` の旧名は `review_pending` になる。**enum からは消さない。**
+decisions テーブルは読むたびに `actionSchema.parse` を通るので、消すと過去の Decision 行が
+読めなくなる。遷移先も `WAITING_HUMAN` のまま変えない。
+
+ここに並ぶのは `WAIT` の reason だけになる。`ESCALATE` から `WAITING_HUMAN` へ落ちる理由
+（`protected_path_touched` / `uncommitted_changes` / `push_branch_declared_manual` /
+`open_pull_request_declared_manual`）は §7・§10-6・§10-11 の側にある。
 
 **依存待ち（§10-12）はこの一覧に無い。** `goal.depends_on` が揃わないティックは lease を
 取らずに `tick` の入口で return するので、Goal は ACTIVE のまま状態を1つも動かさない。
@@ -1108,6 +1116,10 @@ rationale と別でも、**同じ事実を言う**——手で push しても co
 宣言を `auto` に戻すか `ent abandon` で終端にすること。ここを「push していない」の1行に
 留めると、人間が最も要る2つが PR の側から読めない。止めたことを知らせておいて
 次にすることを書かない通知は、鳴っていないのとほぼ同じになる。
+
+**ただし届くのは、既に PR がある Goal に限られる。** `push_branch: manual` は push の前に
+返るので、最初からこの宣言を書いた Goal では PR が作られず、`heldNotes` の書き先が無い。
+そちらは下の `open_pull_request` と同じで、`ent list` を読む以外に気づく経路が無い。
 
 **`open_pull_request` を止めたティックは、PR の側に何も出ない。** この段で止まるのは
 「差分があり、まだ PR が無い」ティックだけなので、書き込む先が1本も無い。読むのは
@@ -1681,7 +1693,8 @@ macOS も Windows も既定でパスの大小を区別しないので、`src/Con
 **関門が止めたティックは push も PR 作成も行わない。** 違反を含む worktree が
 remote に出た時点で、通常の変更として流れる余地が生まれる。
 そのうえで、**PR が既にあるなら、観測が前ティックと同じでもコメントを書く。**
-ダイジェストは Fact だけから作るので Decision を含まない。Actor が worktree の
+観測ダイジェスト（`Decision.observed_digest`。この節で後に出てくる状態 DB の論理
+ダイジェストとは別物になる）は Fact だけから作るので Decision を含まない。Actor が worktree の
 外だけを書いたティックは観測が1文字も変わらないので、黙って飛ばすと隔離が
 破れたことが PR に一度も出ないまま `WAITING_HUMAN` になる。
 PR がまだ無いうちに違反したティックでは、PR を作らないので通知も残らない。

@@ -94,9 +94,13 @@ remote に無いので代行できない。キーの内訳と代行の手順は 
 口（`BranchPort.push`）が remote を知る唯一の経路なので、人間が手で押しても controller は
 それを観測できない。宣言を `auto` に戻すまで毎ティック止まり続ける。**そのうち予算切れで
 `BLOCKED` に落ちて気づく、ということも起きない。** 止めた理由が `budget_exhausted` を
-上書きするので、状態は `WAITING_HUMAN` のままになる。止めた段は PR コメントにも出るので、
-そちらで気づける（PR がまだ無い `open_pull_request` の側は `ent get` と `ent list` で見る）。
-名前を `require_human_approval` と分けた理由は design.md §7 にある。
+上書きするので、状態は `WAITING_HUMAN` のままになる。
+
+**どちらの段も、止めたことが PR に出るとは限らない。** PR コメントに出るのは、既に PR がある
+Goal を途中から `manual` にした場合だけになる。最初から `manual` を書いた Goal では PR が
+作られないので、`ent get` と `ent list` を読む以外に気づく経路が無い。宣言で止める運用に
+するなら、そこを定期的に読む形を先に用意する。名前を `require_human_approval` と分けた
+理由は design.md §7 にある。
 
 ### Agent に渡さない資格情報
 
@@ -459,8 +463,8 @@ ent doctor          # その場所で回せるかを読み取り専用で調べ�
 job を数える。`{ type: fact, key: github.ci.failed_job_count, equals: 0 }` と書けば
 「この commit で落ちている job が1つも無い」を criteria にできる。
 
-**除外が効くのは `github.ci.failed_job_count` だけ。** いま `.goals/` にある Goal 28 本のうち、
-CI を見ている 27 本は**すべて** criterion を
+**除外が効くのは `github.ci.failed_job_count` だけ。** いま `.goals/` にある Goal 31 本のうち、
+CI を見ている 29 本は**すべて** criterion を
 `{ type: fact, key: github.ci.conclusion, equals: success }` で書いており、
 こちらは最新の run 1本の結論のままになる（下の「外れるのは数だけ」）。つまり宣言に
 `exclude_workflows` を書き足しても、**既存の Goal の判定は1つも動かない。** 除外を効かせるには、
