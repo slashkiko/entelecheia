@@ -11,4 +11,5 @@ Claude Code はそこを skill として拾う。Codex は `.agents/skills/ent` 
 （SKILL.md）とは別で、回す口を mise の task に通すことと、同じディレクトリから
 並列で回さないことが書いてある。ent を直す作業に入る前に読む。
 
-人間向けの導入は `README.md`、設計の背景は `docs/design.md` にある。
+人間向けの導入は `README.md`（英語。日本語は `README.ja.md` で、中身は同じ）、
+設計の背景は `docs/design.md` にある。
