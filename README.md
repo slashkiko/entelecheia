@@ -2,480 +2,509 @@
 
 > Declare the end state; the controller converges to it.
 
-**人間はプロジェクトの完了状態（Desired State）を宣言し、controller がそこへ収束させる。**
-controller は現在状態を観測し、ギャップが埋まるまでティックを回す。埋め方を決める段で
-Claude Code または Codex を起動する。CLI 名は `ent` になる。
+**A human declares the project's finished state (the Desired State), and the controller converges
+on it.** The controller observes the current state and keeps ticking until the gap is closed. At the
+step where it decides *how* to close the gap, it launches Claude Code or Codex. The CLI is named
+`ent`.
 
-エンテレケイア（ἐντελέχεια）はアリストテレスの用語で、「可能態が現実態に至った状態」を指す。
-このツールが Goal に対して実現しようとする状態そのものを指す言葉にあたる。
+*Entelecheia* (ἐντελέχεια) is Aristotle's term for the state in which potentiality has become
+actuality. It names exactly the state this tool tries to realize for a Goal.
 
-この README は、設計の要点・現在地・使い方を扱う。設計の全体像・判断の根拠・Phase 計画は
-[`docs/design.md`](docs/design.md) にある。このリポジトリで作業を始めるときは、まずそれを読む。
+*English | [日本語](README.ja.md)*
 
-## 設計の要点
+This README covers the design essentials, where the project stands, and how to use it. The full
+design, the reasoning behind each decision, and the phase plan live in
+[`docs/design.md`](docs/design.md) (written in Japanese). Read that first when you start working in
+this repository.
 
-**MVP は完了している。** design.md §9 の完了条件9項目はすべて確認した。ただし §9 が問うのは
-「controller が最後まで回るか」だけで、「Agent が制御ループを書き換えられないか」はそこに
-入っていない。そこで完了後にレビューを1周かけ、自己ホストの安全装置とテストの穴を埋めた。
+## Design essentials
 
-設計の中核は、**完了判定と暴走の停止条件を LLM に決めさせない**ことにある。LLM に委ねるのは
-Gap の埋め方だけになる。以下、1ティックの流れと用語、設計原則と実装状況、guard と LLM の境界、
-保護パスの関門、push と PR 作成を人間の手に残す口、Agent に渡さない資格情報、
-Goal の状態の置き場所を順に説明する。
+**The MVP is complete.** All nine completion conditions in design.md §9 have been confirmed. But §9
+only asks "does the controller run all the way through"; "can the Agent rewrite the control loop"
+is not part of it. So after completion we ran one review pass and closed the gaps in the
+self-hosting safeguards and in the tests.
 
-### 1ティックの流れと用語
+The core of the design is that **the LLM decides neither completion nor the stopping conditions for
+runaway behavior**. All that is delegated to the LLM is how to close the gap. What follows covers,
+in order: one tick and its vocabulary, the design principles and their implementation status, the
+boundary between guard and LLM, the protected-path gate, the switch that keeps push and PR creation
+in human hands, the credentials never handed to the Agent, and where Goal state is kept.
 
-controller は OBSERVE / ASSESS / DECIDE / ACT / VERIFY を回す。PR は controller が自分で立て、
-進捗をコメントに積む。そのうえで人間の承認を検知し、COMPLETED まで進む。
+### One tick and its vocabulary
 
-**Actor** と呼ぶのは、controller が起動する実行主体の抽象になる。Actor の実装は Claude Code と
-Codex CLI の2つがある。その走っている実体を指すときは **Agent** と書く。
+The controller cycles through OBSERVE / ASSESS / DECIDE / ACT / VERIFY. It opens the PR itself and
+accumulates progress in comments. It then detects human approval and proceeds to COMPLETED.
 
-### 設計原則と実装状況
+**Actor** is the abstraction for the execution subject the controller launches. There are two Actor
+implementations: Claude Code and Codex CLI. When referring to a running instance of one, we write
+**Agent**.
 
-下の表は設計原則と実装状況を並べる。「実装」列が示すのは、MVP 完了後のレビューを反映した
-現時点の状態になる。
+### Design principles and implementation status
 
-| 原則 | 内容 | 実装 |
+The table below pairs each design principle with its implementation status. The "Status" column
+reflects the current state, including the post-MVP review.
+
+| Principle | Content | Status |
 |---|---|---|
-| VERIFIED のみで完了判定 | Fact に信頼度を持たせ、LLM の推論（INFERRED）は Plan の材料にはするが完了判定には使わない | 済 |
-| 確かめられなかったことを黙って落とさない | 「対象が無い」と「対象を確かめられなかった」を区別し、後者は `unobserved` / `unverified` に理由付きで残す | 済 |
-| 検証に還元できない Goal は受け付けない | Acceptance Criteria を検証手段（コマンド / Fact 参照 / 人間の承認）に落とせない Goal は ACTIVE にしない | 済 |
-| 待機はプロセスではなく状態 | reconcile はどのティックも有限時間で return する。常駐して sleep しない | 済 |
-| 宣言と収束の分離 | 人間が書くのは Desired State と Acceptance Criteria。Actor 実装は起動時にphaseごとに選び、Goal内のActor roleと実装手順はcontrollerが決める | 一部（Goalをまたぐ分解は順序の宣言（`goal.depends_on`）まで。分割の判断は人間が持つ（design.md §10-12）） |
-| write-ahead | 副作用の前に意図を DB へ書く。任意の瞬間に kill されても次ティックで回収できる | 済 |
-| 隔離は場所だけでは足りない | worktree でファイルを分けるだけでなく、Agent の出力を controller のシェルに流さない・Agent が書いたものを controller の権限で実行しない | 一部（シェルに流さない側は design.md §7 で対応済み、controller の権限で実行しない側は §10-9 が未決） |
+| Completion is judged only on VERIFIED | Facts carry a confidence level; LLM inference (INFERRED) may feed the Plan but is never used to judge completion | Done |
+| Never silently drop what could not be confirmed | Distinguish "there is nothing there" from "we could not confirm it"; the latter stays in `unobserved` / `unverified` with a reason | Done |
+| Reject Goals that cannot be reduced to verification | A Goal whose Acceptance Criteria cannot be reduced to a means of verification (command / Fact reference / human approval) is never made ACTIVE | Done |
+| Waiting is a state, not a process | Every reconcile returns in finite time on every tick. Nothing stays resident and sleeps | Done |
+| Separate declaration from convergence | Humans write the Desired State and Acceptance Criteria. The Actor implementation is chosen per phase at launch; the Actor role within a Goal and the implementation steps are decided by the controller | Partial (decomposition across Goals goes only as far as declaring order via `goal.depends_on`; the decision to split is the human's — design.md §10-12) |
+| Write-ahead | Write the intent to the DB before the side effect. Killed at any instant, the next tick can recover | Done |
+| Isolation by location alone is not enough | Beyond separating files with a worktree: never pipe the Agent's output into the controller's shell, and never execute what the Agent wrote with the controller's privileges | Partial (the "not into the shell" half is handled in design.md §7; the "not with the controller's privileges" half is open in §10-9) |
 
-### guard と LLM の境界
+### The boundary between guard and LLM
 
-完了判定と暴走の停止条件は LLM に決めさせない。LLM が選べるのは `ACT` / `VERIFY` / `WAIT` /
-`REPLAN` の4つだけになる。`COMPLETE` と `ESCALATE` は純ロジック（guard）が決める。この境界は
-`src/decide/` にある。
+Completion and the stopping conditions for runaway behavior are not left to the LLM. The LLM may
+choose only among four actions: `ACT` / `VERIFY` / `WAIT` / `REPLAN`. `COMPLETE` and `ESCALATE` are
+decided by pure logic (the guard). That boundary lives in `src/decide/`.
 
-### 保護パスの関門
+### The protected-path gate
 
-自己ホストの安全装置として、`policies.protected_paths` に書いたパスを Agent が編集したら、
-controller が ACT の外側で検知して止める。Agent 側の拒否ルールとは別に、controller 自身の
-関門を持つ。検知の材料は Agent の自己申告ではなく、git が観測した変更になる。そのため Bash
-経由の書き込みも見える。worktree の中だけでなく、その外に出た書き込みも本体リポジトリ側の
-git で見る。ただし見えるのはリポジトリの中の変更だけで、範囲と残る穴は design.md §10-6 に
-書いてある。
+As a self-hosting safeguard, if the Agent edits a path listed in `policies.protected_paths`, the
+controller detects it outside of ACT and stops. Separately from the Agent's own deny rules, the
+controller holds its own gate. Detection is based not on the Agent's self-report but on changes git
+observed, so writes made through Bash are visible too. Writes that escape the worktree are seen via
+git on the main repository side, not just inside the worktree. Only changes inside the repository
+are visible, though; the scope and the remaining holes are written up in design.md §10-6.
 
-守るのは、制御ループ本体（`src/controller/**`）と Goal の宣言部（`.goals/**`）に加えて、
-**関門そのもの（Agent の拒否リストを決めるファイルを含む）と検証系**になる。選び方の基準は
-design.md §7 にある。
+What is protected is the control loop itself (`src/controller/**`) and the Goal declarations
+(`.goals/**`), plus **the gate itself (including the files that decide the Agent's deny list) and
+the verification machinery**. The criteria for choosing them are in design.md §7.
 
-### push と PR 作成を人間の手に残す
+### Keeping push and PR creation in human hands
 
-`policies.require_human_approval` が止めるのは Agent の操作で、controller 自身の push と
-PR 作成には効かない。そちらを止めるのは `policies.publish` になる。
+`policies.require_human_approval` stops the Agent's operations; it has no effect on the controller's
+own push and PR creation. Those are stopped by `policies.publish`.
 
 ```yaml
 policies:
   publish:
     push_branch: auto
-    # チームで使うリポジトリではこう書く。PR の作成はレビュアーへの
-    # 通知を伴い、取り消しても通知は戻らない。
+    # Write it this way in a repository shared by a team. Opening a PR notifies
+    # reviewers, and undoing it does not take the notification back.
     open_pull_request: manual
 ```
 
-書かなければ、これまでどおり push も PR 作成も自動で進む。`manual` にした段は controller が
-行わず、そのティックは `WAITING_HUMAN` で止まる。止めた段と、人間が何をすれば進むのかは
-`ent get <slug>` の `decision` に出る。
+Write nothing and push and PR creation proceed automatically, as before. A step set to `manual` is
+not performed by the controller, and that tick stops at `WAITING_HUMAN`. Which step was stopped, and
+what a human must do to move on, appears in `decision` from `ent get <slug>`.
 
-止めたことは `ent run` の出力にも構造で出る。宣言で止めたティックにだけ `publishHold` が
-載る。**PR の作成（`open_pull_request`）を止めたときにかぎり**、ティックを叩いている
-エージェントが `publishHold` を読んで代わりに PR を立てられる。push を止めた段はブランチが
-remote に無いので代行できない。キーの内訳と代行の手順は `.claude/skills/ent/SKILL.md` に
-ある。宣言を書いていない Goal ではこのキーは出ないので、いま回している `jq` は1つも変わらない。
+The stop also appears structurally in `ent run` output: `publishHold` is present only on ticks
+stopped by a declaration. **Only when PR creation (`open_pull_request`) is what was stopped** can the
+agent driving the tick read `publishHold` and open the PR on the controller's behalf. A stopped push
+cannot be taken over, because the branch is not on the remote. The breakdown of the keys and the
+takeover procedure are in `.claude/skills/ent/SKILL.md`. Goals with no such declaration never emit
+this key, so no `jq` you are running today changes at all.
 
-2つの段は解け方が違う。`open_pull_request` を止めた場合は、人間が PR を立てれば次のティックが
-それを見つけて先へ進む（宣言はそのままでよい）。`push_branch` はそうならない。押さないと決めた
-口（`BranchPort.push`）が remote を知る唯一の経路なので、人間が手で押しても controller は
-それを観測できない。宣言を `auto` に戻すまで毎ティック止まり続ける。**そのうち予算切れで
-`BLOCKED` に落ちて気づく、ということも起きない。** 止めた理由が `budget_exhausted` を
-上書きするので、状態は `WAITING_HUMAN` のままになる。
+The two steps are released differently. When `open_pull_request` is stopped, a human opening the PR
+is enough — the next tick finds it and moves on (the declaration can stay as it is). `push_branch`
+does not work that way. The very path you declined to use (`BranchPort.push`) is the only route that
+knows the remote, so even if a human pushes by hand the controller cannot observe it. It keeps
+stopping every tick until the declaration is set back to `auto`. **Nor will it eventually run out of
+budget, fall to `BLOCKED`, and thereby catch your eye.** The stop reason overwrites
+`budget_exhausted`, so the state stays `WAITING_HUMAN`.
 
-**どちらの段も、止めたことが PR に出るとは限らない。** PR コメントに出るのは、既に PR がある
-Goal を途中から `manual` にした場合だけになる。最初から `manual` を書いた Goal では PR が
-作られないので、`ent get` と `ent list` を読む以外に気づく経路が無い。宣言で止める運用に
-するなら、そこを定期的に読む形を先に用意する。名前を `require_human_approval` と分けた
-理由は design.md §7 にある。
+**Neither step necessarily surfaces the stop in the PR.** It appears as a PR comment only when a
+Goal that already had a PR was switched to `manual` partway through. A Goal declared `manual` from
+the start never gets a PR, so there is no way to notice other than reading `ent get` and `ent list`.
+If you plan to operate with declaration-based stops, set up a routine for reading those first. The
+reason this is named separately from `require_human_approval` is in design.md §7.
 
-### Agent に渡さない資格情報
+### Credentials never handed to the Agent
 
-controller が持つ資格情報（`GITHUB_TOKEN` / `GH_TOKEN` と、`gh auth token` から読んだ token）は
-Agent に渡さない。Claude CodeにはOpenAI/Codexの資格情報を、Codexには
-Anthropic/Claude Codeの資格情報を渡さず、選んだprovider自身の認証だけを残す。
+The credentials the controller holds (`GITHUB_TOKEN` / `GH_TOKEN`, and the token read from
+`gh auth token`) are never handed to the Agent. Claude Code is not given OpenAI/Codex credentials
+and Codex is not given Anthropic/Claude Code credentials; only the chosen provider's own
+authentication is left in place.
 
-遮断は環境変数を落とすだけでは足りない。**Agent と検証コマンドの中の `gh` も未認証にする**
-（`GH_CONFIG_DIR` を実在しないディレクトリへ向ける）。`HOME` は渡すしかないので、落とすだけでは
-ホストのログインが残るからになる。シェルを通す経路も絞る。git は argv 配列で叩き、シェルを
-通すのは Goal YAML の `setup` と `verification.run` だけにする。
+Dropping environment variables is not enough to cut it off. **`gh` inside the Agent and inside the
+verification commands is de-authenticated as well** (`GH_CONFIG_DIR` is pointed at a directory that
+does not exist). `HOME` has to be passed through, so merely dropping variables would leave the
+host's login intact. Shell paths are narrowed too: git is invoked with an argv array, and the only
+things routed through a shell are `setup` and `verification.run` from the Goal YAML.
 
-`type: human` の承認は、リポジトリに書き込み権限がある人のものだけを数える。レビュー承認は
-PR の作成者を除くが、**コメントの定型文は作成者も数える**。1人で回すリポジトリではそこが
-唯一の承認経路になるので、Agent がその経路に届かないことが承認の前提になる（design.md §10-4）。
+`type: human` approvals count only those from people with write access to the repository. Review
+approvals exclude the PR's author, but **the comment boilerplate counts the author too**. In a
+one-person repository that is the only approval route, so approval rests on the Agent being unable
+to reach it (design.md §10-4).
 
-### Goal の状態の置き場所
+### Where Goal state is kept
 
-Goal の状態（ACTIVE / COMPLETED など）は `.goals/.state/goals.db` が持つ。`.goals/*.yaml` は
-宣言部だけを持ち、実行時状態は書かない。なお、行動の `COMPLETE` と Goal の状態 `COMPLETED` は
-別のものになる。前者が選ばれた結果として、後者になる。
+Goal state (ACTIVE, COMPLETED, and so on) lives in `.goals/.state/goals.db`. `.goals/*.yaml` holds
+only the declaration and never runtime state. Note that the action `COMPLETE` and the Goal state
+`COMPLETED` are different things: the latter results from the former being chosen.
 
-## 現在地とロードマップ
+## Where this stands, and the roadmap
 
-**Phase 3 完了。MVP 完了。** Phase 0 から Phase 3 まで、Goal は合わせて11本になる。以下、
-「Phase 3 の内訳」「実際に回すまで、配管は繋がっていると見なせない」「commit は controller が
-打つ」「全件が緑でも壊れていることがある」「設計の中核ほど検証コマンドに落ちない」
-「Phase ごとの担当範囲」を順に示す。
+**Phase 3 complete. MVP complete.** From Phase 0 through Phase 3 there are eleven Goals in total.
+Below, in order: "Inside Phase 3", "Until you actually run it, the plumbing cannot be assumed
+connected", "The controller does the committing", "Everything green does not mean nothing is
+broken", "The more central the design, the less it reduces to a verification command", and
+"Scope per phase".
 
-Goal YAML のスキーマは `src/domain/goal.ts`、観測キーのレジストリは `src/domain/fact-keys.ts`
-にある。
+The Goal YAML schema is in `src/domain/goal.ts`; the registry of observation keys is in
+`src/domain/fact-keys.ts`.
 
-### Phase 3 の内訳
+### Inside Phase 3
 
-Phase 3 は自己ホストで、5本に割った。1本目で1ティックの記録が読めるようになり、
-2本目で PR の作成・通知・承認の検知が入り、3本目で待機と暴走の制御が入り、
-4本目で自己ホストの安全装置が入った。**5本目は controller に実装させた。**
+Phase 3 is self-hosting, split into five Goals. The first made one tick's record readable; the
+second added PR creation, notification, and approval detection; the third added waiting and runaway
+control; the fourth added the self-hosting safeguards. **The fifth was implemented by the
+controller.**
 
-人間がやったのは Goal YAML と Acceptance Criteria を書き、`ent start` してから
-`ent run` を繰り返しただけになる。controller は Actor を worktree で走らせ、PR を立て、
-進捗をコメントに積み、承認待ちで止まった（`COMPLETED` への遷移そのものは別の Goal で
-確認済み。design.md §9）。
+All the human did was write the Goal YAML and Acceptance Criteria, run `ent start`, and then repeat
+`ent run`. The controller ran the Actor in a worktree, opened a PR, accumulated progress in
+comments, and stopped waiting for approval (the transition to `COMPLETED` itself was confirmed in a
+separate Goal — design.md §9).
 
-### 実際に回すまで、配管は繋がっていると見なせない
+### Until you actually run it, the plumbing cannot be assumed connected
 
-Phase 3 とその直後に見つかった断線は、どれもテストでは通っていた。断線は4つある。
+Every piece of broken wiring found during and right after Phase 3 passed its tests. There were four.
 
-1. `git branch --format` の引用符不足で、worktree の作成が Phase 2 からずっと失敗していた
-2. VERIFY が worktree ではなく、controller 自身のリポジトリでコマンドを流していた
-3. PR がある間、push しなくなっていた（それを仕様として固定したテストが緑のままだった）
-4. **Actor が実装を書き切ったまま commit していなかった**
+1. A missing quote in `git branch --format` had been failing worktree creation ever since Phase 2
+2. VERIFY was running commands in the controller's own repository instead of the worktree
+3. While a PR existed, pushing had stopped (and a test froze that as the specification, staying green)
+4. **The Actor finished writing the implementation and never committed it**
 
-4つ目は壊れ方が違う。push も VERIFY も DECIDE も契約どおりに動いていて、誰も誤った動きを
-していない。push は commit 済みの差分しか送らないのに、VERIFY は worktree の作業ツリーを見る。
-そのため criteria は全部通るのに remote には何も出ず、controller は承認待ちで止まった。人間が
-待っているのは実装が載った PR なので、その待ちは永久に終わらない。**「Actor が commit する」
-という前提を、どこも要求していなかった。**
+The fourth breaks differently. Push, VERIFY, and DECIDE all behaved exactly as contracted; nobody
+misbehaved. Push only sends committed changes, but VERIFY looks at the worktree's working tree. So
+every criterion passed while nothing reached the remote, and the controller stopped waiting for
+approval. What the human is waiting for is a PR carrying the implementation, so that wait never
+ends. **Nothing anywhere required the premise that "the Actor commits".**
 
-### commit は controller が打つ
+### The controller does the committing
 
-**「Actor が commit する」という前提は、いまは置いていない。** 機械側の criteria
-（`command` 型）が**全部**通ったティックで、
-controller が Actor の書いたものを commit する。Actor に commit を求めても従ったことは
-確かめられず、実測でも同じ設定の Actor が commit するティックとしないティックの両方が出た
-（design.md §10-11）。保護パスの関門が止めたティックでは commit しない。違反した変更を
-履歴に載せないためになる。
+**The premise that "the Actor commits" is no longer assumed.** On a tick where **all** the
+machine-side criteria (the `command` type) pass, the controller commits what the Actor wrote. Asking
+the Actor to commit never produced confirmable compliance, and in practice the same Actor
+configuration produced both ticks that committed and ticks that did not (design.md §10-11). On a
+tick stopped by the protected-path gate, nothing is committed — so that violating changes never
+enter the history.
 
-**commit したティックでは未 commit の関門を見ない。** `local.dirty` は commit より前の観測なので、
-読むと自分が片付けた汚れで自分を止めることになる。受け皿として残るのは、何も commit されなかった
-ティックになる（gitignore されたファイルだけが汚れている、commit そのものが失敗した）。書き残しを
-解消しない `COMPLETE` / `WAIT` / `VERIFY` のティックに未 commit の変更が残っていれば、
-`ESCALATE(uncommitted_changes)` で人間を呼ぶ。読むのは**今ティックの観測が worktree を見て作った**
-`local.dirty` だけになる。観測に失敗したティックや worktree がまだ無いティックでは止まらない。
+**On a tick that committed, the uncommitted-changes gate is not consulted.** `local.dirty` is an
+observation from before the commit, so reading it would mean stopping yourself over the mess you
+just cleaned up. What remains in scope is the tick where nothing was committed (only gitignored
+files are dirty, or the commit itself failed). If uncommitted changes remain on a `COMPLETE` /
+`WAIT` / `VERIFY` tick that does not resolve the leftovers, `ESCALATE(uncommitted_changes)` calls a
+human. The only thing read is the `local.dirty` **that this tick's observation produced by looking
+at the worktree**. Ticks where observation failed, or where the worktree does not exist yet, do not
+stop.
 
-突き合わせる先は、役割が増えた（design.md §4.2）あとも**実装役のブランチ**に固定してある。
-検証コマンドと `local.*` を観測する先がそちらで、レビュー役も同じ作業ツリーを読む。止めた理由と
-次の一手は、`ent get` と PR のコメントの両方に出す。
+Even after roles multiplied (design.md §4.2), what it is compared against is pinned to **the
+implement role's branch**. That is where verification commands run and where `local.*` is observed,
+and the review role reads the same working tree. The reason for stopping and the next move are
+surfaced both in `ent get` and in the PR comments.
 
-### 全件が緑でも壊れていることがある
+### Everything green does not mean nothing is broken
 
-MVP 完了後のレビューでも、同じ形の穴が残っていた。Port を注入するテストは
-`src/adapters/local.ts`（実際の git とシェル）と `src/cli.ts` の `main()` を1行も通らず、
-その2つにはテストが1本も無かった。**壊しても全件が緑のまま通る変更が5件あった**（LLM に
-`COMPLETE` を許す、Agent の拒否リストを空にする、ダイジェストの正規化から `sort` を消す、
-承認 Port の失敗を「検証済み不合格」にする、lease の解放を `finally` から外す）。
+The post-MVP review found the same shape of hole still open. Tests that inject Ports never touched a
+single line of `src/adapters/local.ts` (real git and shell) or of `main()` in `src/cli.ts`, and
+those two had no tests at all. **Five mutations kept the whole suite green** (letting the LLM choose
+`COMPLETE`; emptying the Agent's deny list; removing `sort` from digest normalization; turning an
+approval-Port failure into "verified as failed"; moving lease release out of `finally`).
 
-いまは実際の git と実際の SQLite に対して回す統合テストがあり、上の5件はそれぞれ1本のテストで
-固定してある。統合テストは書いたその場で1件バグを見つけた（`git status --porcelain` の出力を
-trim してパスが1文字欠ける。統合テストと同じ変更で入れた誤りで、それ以前のコードには無い）。
+There are now integration tests that run against real git and real SQLite, and each of those five is
+pinned by one test. The integration tests found a bug the moment they were written (trimming the
+output of `git status --porcelain` dropped one character from the path — an error introduced by the
+same change that added the integration tests, absent from the code before it).
 
-**ただし ACT を通る経路は、いまの自動テストでは覆えていない。** `main()` の統合テストが通すのは
-guard が `COMPLETE` を選ぶ経路で、Actor も GitHub も呼ばない。上に挙げた断線はどれも実際に外部
-（git / GitHub / Actor）を叩く側にあったので、そこは変わらず「実際に `ent run` を回す」でしか
-確かめられない。
+**The path through ACT, however, is not covered by the current automated tests.** The `main()`
+integration test exercises the path where the guard chooses `COMPLETE`, calling neither the Actor nor
+GitHub. Every piece of broken wiring listed above was on the side that actually hits something
+external (git / GitHub / Actor), so that side is still only confirmable by actually running
+`ent run`.
 
-### 設計の中核ほど検証コマンドに落ちない
+### The more central the design, the less it reduces to a verification command
 
-Phase 1 と Phase 2 の1本目は、どちらも6本の Acceptance Criteria のうちコマンドで検証する4本を
-通しただけでは COMPLETED にならなかった。Phase 1 で残ったのは、CI の結果（`type: fact`）と、
-Port の抽象が1実装に癒着していないかの確認（`type: human`）になる。Phase 2 の1本目で残ったのは、
-CI の結果と、guard と LLM の境界が妥当かの確認（`type: human`）になる。
+Neither Phase 1 nor the first Goal of Phase 2 reached COMPLETED merely by passing the four of six
+Acceptance Criteria that are verified by command. What remained in Phase 1 was the CI result
+(`type: fact`) and a check that the Port abstraction had not fused to a single implementation
+(`type: human`). What remained in the first Goal of Phase 2 was the CI result and a check that the
+guard/LLM boundary was sound (`type: human`).
 
-### Phase ごとの担当範囲
+### Scope per phase
 
-下の表は、controller が回す範囲を累積で示す。各行はそのフェーズを**完了した時点**の
-累積範囲になる。数えているのは controller が回す段階であって、コードの有無ではない。
-起動の主体は「controller が回す範囲」の列には数えていない。
+The table below shows the controller's scope cumulatively. Each row is the cumulative scope **at the
+point that phase completed**. What is counted is the stages the controller runs, not the presence of
+code. Who initiates a run is not counted in the "controller's scope" column.
 
-1ティックの内側に人間の判断が入らなくなるのは、Phase 2 を完了した時点からになる。起動そのものは
-cron が担う。常駐プロセスは作らない（design.md §3.6）。
+Human judgment stops entering the inside of a tick from the completion of Phase 2 onward. Initiation
+itself is cron's job; no resident process is created (design.md §3.6).
 
-| Phase | controller が回す範囲（累積） | 人間が担う |
+| Phase | Controller's scope (cumulative) | Human's part |
 |---|---|---|
-| 0 | なし | OBSERVE / ASSESS / DECIDE / ACT / VERIFY のすべて |
-| 1 | OBSERVE / VERIFY | ASSESS / DECIDE / ACT と、全段階の起動 |
-| 2 | OBSERVE / ASSESS / DECIDE / ACT / VERIFY | Goal を書く、承認する |
-| 3 | Phase 2 と同じ範囲を、このリポジトリ自身に対して回す（自己ホスト） | Goal を書く、承認する |
+| 0 | none | all of OBSERVE / ASSESS / DECIDE / ACT / VERIFY |
+| 1 | OBSERVE / VERIFY | ASSESS / DECIDE / ACT, and initiating every stage |
+| 2 | OBSERVE / ASSESS / DECIDE / ACT / VERIFY | writing Goals, approving |
+| 3 | the same scope as Phase 2, run against this repository itself (self-hosting) | writing Goals, approving |
 
-Phase 3 を完了した時点で、ティックの起動にも人間の判断は要らなくなる。人間に残るのは Goal を
-書くことと、PR に `/ent approve <criterion-id>` と書くこと（あるいは GitHub のレビューで
-Approve を押すこと）の2つになる。
+Once Phase 3 completed, initiating a tick no longer requires human judgment either. What is left to
+the human is two things: writing Goals, and writing `/ent approve <criterion-id>` on the PR (or
+clicking Approve in a GitHub review).
 
-## 入れる
+## Installing
 
-**読み手が2種類いる。** ent を「使うだけ」の人と、ent 自身を直す人になる。
-必要なものが違うので、入口も分ける。
+**There are two kinds of reader**: people who only *use* ent, and people who work on ent itself.
+They need different things, so the entry points are separate.
 
-### 使う側のセットアップ
+### Setup for using ent
 
-**ent の実行に mise も pnpm も tsc も要らない。** `src/` に mise への参照は1つも無く、
-`ent doctor` が見るものにも入っていない。残るのは Node 24 以上と
-[gh](https://cli.github.com/) と Actor（Claude Code / Codex）のログインの3つになる。
+**Running ent requires neither mise nor pnpm nor tsc.** There is not a single reference to mise in
+`src/`, and none in what `ent doctor` inspects. What remains is three things: Node 24 or later,
+[gh](https://cli.github.com/), and a logged-in Actor (Claude Code / Codex).
 
-ビルド済みの `dist/cli.js` を持つ checkout が1つあれば、そこから PATH に `ent` を張れる。
+If you have one checkout with a built `dist/cli.js`, you can link `ent` onto your PATH from it.
 
 ```sh
 cd /path/to/entelecheia
-pnpm link --global    # package.json の bin（dist/cli.js）を global の bin に張る
+pnpm link --global    # links package.json's bin (dist/cli.js) into the global bin
 ```
 
-`dist/cli.js` には shebang があるので、張った symlink をそのまま叩ける。
-`"private": true` のままで効く（npm への公開とは別の話になる）。剥がすときは
-`pnpm uninstall --global entelecheia` を叩く。
+`dist/cli.js` has a shebang, so the symlink can be invoked directly. It works with `"private": true`
+left as is (that is a separate matter from publishing to npm). To remove it, run
+`pnpm uninstall --global entelecheia`.
 
-**張る先は checkout の中の `dist/cli.js` で、コピーではない。** ent 本体を作り直せば
-`ent` が指す実体も入れ替わる。逆に、`dist/` がまだ無い checkout に張ると symlink の先に
-何も無い状態になるので、その checkout では下の「作る側のセットアップ」を1度だけ通す。
+**What you link to is the `dist/cli.js` inside the checkout, not a copy.** Rebuild ent itself and
+what `ent` points at is replaced too. Conversely, linking from a checkout that has no `dist/` yet
+leaves the symlink pointing at nothing, so run "Setup for working on ent" below once in that
+checkout.
 
-起動する Node は shebang の `/usr/bin/env node` が選ぶ。mise や nvm を効かせた shell から
-叩くと対象リポジトリ側の Node が使われるので、24 未満だと `node:sqlite` の import で落ちる。
-どの Node で動いているかは `ent doctor` の `node` が出す。symlink を経由せず、Node の絶対
-パスを固定して `dist/cli.js` を直に呼ぶ形でもよい（「ent を動かす」の節にその例がある）。
+Which Node starts is chosen by the shebang's `/usr/bin/env node`. Invoked from a shell where mise or
+nvm is in effect, the target repository's Node gets used, and anything below 24 dies on the
+`node:sqlite` import. Which Node you are on is reported by `node` in `ent doctor`. You may also skip
+the symlink and call `dist/cli.js` directly with an absolute Node path pinned (there is an example
+under "Running ent").
 
-### 作る側のセットアップ
+### Setup for working on ent
 
-ent 自身を直すなら、[mise](https://mise.jdx.dev/) と [gh](https://cli.github.com/) が
-入っていること。Node と pnpm のバージョンは `mise.toml` で固定してあるので、個別に
-入れる必要はない。
+To work on ent itself, have [mise](https://mise.jdx.dev/) and [gh](https://cli.github.com/)
+installed. The Node and pnpm versions are pinned in `mise.toml`, so you do not need to install them
+separately.
 
 ```sh
-mise trust        # clone 直後の1回だけ。これが無いと次の行が trust エラーで止まる
+mise trust        # once, right after cloning. Without it the next line stops with a trust error
 mise install --locked
 pnpm install --frozen-lockfile
-mise run build    # dist/cli.js を作る。使う側に渡すのはこの成果物になる
+mise run build    # produces dist/cli.js — this artifact is what you hand to users
 ```
 
-**1行目の `mise trust` は環境の不備ではなく手順の一部になる。** mise は信頼していない
-`mise.toml` を読まないので、飛ばすと `mise install --locked` が
-`Config files ... are not trusted.` で止まる。
+**The first line, `mise trust`, is part of the procedure, not a defect in your environment.** mise
+will not read a `mise.toml` it does not trust, so skipping it makes `mise install --locked` stop with
+`Config files ... are not trusted.`
 
-## 検証
+## Verification
 
 ```sh
-mise run verify   # typecheck / lint / build / test をまとめて実行
-mise run check    # サプライチェーンと workflow のチェック（baseline 由来）
+mise run verify   # runs typecheck / lint / build / test together
+mise run check    # supply-chain and workflow checks (from the baseline)
 ```
 
-`verify` に `build` が入っているのは、型が通ることと `dist/cli.js` が出来ることが
-別だからになる。`tsconfig.json` は `noEmit` で `tests/**` を含む。`bin` の実体を作るのは
-`tsconfig.build.json` の側になる。
+`build` is part of `verify` because "the types pass" and "`dist/cli.js` gets produced" are two
+different things. `tsconfig.json` is `noEmit` and includes `tests/**`. What actually produces the
+`bin` artifact is `tsconfig.build.json`.
 
-**Goal に着手した直後は `typecheck` と `test` が落ちる。** Acceptance Criteria を先に書く
-進め方に由来する想定内の状態であって、環境の不備ではない。落ちる件数まで含めて、その Goal の
-`desired_state` が着手時点の実測として宣言する。main の CI（`.github/workflows/verify.yml`）も、
-そのあいだは赤いままになる。
+**Right after starting a Goal, `typecheck` and `test` fail.** That is an expected state arising from
+writing the Acceptance Criteria first, not a defect in your environment. Down to the number of
+failures, the Goal's `desired_state` declares it as the measured state at the moment work began.
+main's CI (`.github/workflows/verify.yml`) stays red for that period too.
 
-**いまは `say-why-each-goal-is-stopped` に着手している状態で、`typecheck` と `test` が
-落ちる。** `lint` と `build` と `check` は通る（`build` は `tests/**` を見ないので、
-落ちているのが仕様テストだけなら影響を受けない）。
+When only specification tests are failing, `lint`, `build`, and `check` still pass (`build` does not
+look at `tests/**`). Which Goal is in progress is read from `ent list`. **It is not written in this
+README**: writing it would add one more place to update every time a Goal is started, and forgetting
+to update it would leave the README claiming things fail.
 
-## ent を動かす
+## Running ent
 
-**`ent` は起動のたびに1ティックだけ回して終了する。** 前半はこのリポジトリで1本回すための
-手順を扱う。コマンドの一覧に続けて、「共通のオプション」「provider・model・effort を選ぶ」
-「Codex を使うとき」「関門の基準になる commit」「起動の仕方と、ent 自身を直すときの例外」の
-順になる。後半は運用にあたる。「この repo の外のリポジトリで使う」「恒久的に落ちる workflow を
-数から外す」「進捗を PR に投稿しない」「PR を draft で立てる」「粗いタスクを複数の Goal に
-割る」「複数の Goal を同時に回す」の6つが続く。
+**Every invocation of `ent` runs exactly one tick and exits.** The first half below covers running a
+single Goal in this repository. After the command list come "Common options", "Choosing provider,
+model, and effort", "Using Codex", "The commit the gate measures against", and "How to launch it, and
+the exception when working on ent itself". The second half covers operations, in six sections: "Using
+it on a repository outside this repo", "Excluding permanently failing workflows from the count", "Not
+posting progress to the PR", "Opening PRs as drafts", "Splitting a coarse task across several Goals",
+and "Running several Goals at once".
 
 ```sh
-mise run build                     # dist/cli.js を作る
-ENT_NODE="$(mise which node)"       # Node 24以上の絶対パスを先に固定する
+mise run build                     # produce dist/cli.js
+ENT_NODE="$(mise which node)"       # pin an absolute path to Node 24+ first
 alias ent="$ENT_NODE $(pwd)/dist/cli.js"
 
-ent init                           # いまのリポジトリを回せる状態にする（冪等）
-ent start <slug>                   # Goal を登録して ACTIVE にする
-ent run <slug>                     # 1ティック回して終了する
-ent run <slug> --pr <n>            # 観測対象の PR を指定する（controller が立てた分は自動）
-ent run <slug> --issue <n>         # 観測対象の Issue を指定する
-ent run <slug> --dry-run           # 書かずに、次のティックの中身だけを見る
-ent run <slug> --report stdout     # 進捗を PR に投稿せず、手元に出す
-ent get <slug>                     # 宣言部と実行時状態をまとめて表示する
-ent abandon <slug> --reason "…"    # もう追わないと宣言して終端にする（理由は必須）
-ent list                           # 登録済みの Goal を一覧する
-ent doctor                         # 回す前の前提が揃っているかを読み取り専用で調べる
-ent agent-context                  # CLI の構造を機械可読な JSON で出す
+ent init                           # make the current repository runnable (idempotent)
+ent start <slug>                   # register a Goal and make it ACTIVE
+ent run <slug>                     # run one tick and exit
+ent run <slug> --pr <n>            # name the PR to observe (ones the controller opened are automatic)
+ent run <slug> --issue <n>         # name the Issue to observe
+ent run <slug> --dry-run           # write nothing; just look at what the next tick would contain
+ent run <slug> --report stdout     # send progress to your hands instead of posting it to the PR
+ent get <slug>                     # show the declaration and the runtime state together
+ent abandon <slug> --reason "…"    # declare it no longer pursued and terminate it (reason required)
+ent list                           # list registered Goals
+ent doctor                         # read-only check that the prerequisites for running are in place
+ent agent-context                  # emit the CLI's structure as machine-readable JSON
 ```
 
-### 共通のオプション
+### Common options
 
-`--json` は出力を JSON にする（`run` / `get` / `list` は既定で JSON。`start` と `abandon` と
-`init` は `--json` を付けたときだけ JSON になる）。`doctor` と `agent-context` は常に JSON で、
-`--json` は受け取らない。`--limit <n>` は `get` / `list` の件数を絞る。既定でも上限で切り、
-切れたときだけ絞り込み方が stderr に出る。エージェント向けの手順は
-`.claude/skills/ent/SKILL.md` に置いてある。
+`--json` makes the output JSON (`run` / `get` / `list` are JSON by default; `start`, `abandon`, and
+`init` produce JSON only with `--json`). `doctor` and `agent-context` are always JSON and do not
+accept `--json`. `--limit <n>` narrows the number of entries for `get` / `list`. There is a cap by
+default too, and the way to narrow further is printed to stderr only when entries were cut. The
+procedure aimed at agents is in `.claude/skills/ent/SKILL.md`.
 
-### provider・model・effort を選ぶ
+### Choosing provider, model, and effort
 
-provider・model・effort は `DECIDE`、`IMPLEMENT`、`REVIEW`、`INVESTIGATE` ごとに選べる。
-`ENT_<PHASE>_ACTOR` / `ENT_<PHASE>_MODEL` / `ENT_<PHASE>_EFFORT` がphase固有の指定で、
-無ければ共通の `ENT_ACTOR` / `ENT_MODEL` / `ENT_EFFORT` へ落ちる。providerの未指定時は、
-既存の挙動を保つため `claude-code` になる。
+Provider, model, and effort can be chosen separately for `DECIDE`, `IMPLEMENT`, `REVIEW`, and
+`INVESTIGATE`. `ENT_<PHASE>_ACTOR` / `ENT_<PHASE>_MODEL` / `ENT_<PHASE>_EFFORT` are the
+phase-specific settings; without them it falls back to the shared `ENT_ACTOR` / `ENT_MODEL` /
+`ENT_EFFORT`. When no provider is specified it is `claude-code`, preserving existing behavior.
 
-effortの有効値はproviderごとに異なる。Claude Codeは`low / medium / high / xhigh / max`、
-Codexは`none / minimal / low / medium / high / xhigh`を受け付ける。
+Valid effort values differ per provider. Claude Code accepts `low / medium / high / xhigh / max`;
+Codex accepts `none / minimal / low / medium / high / xhigh`.
 
 ```sh
 ENT_ACTOR=codex ent doctor
 ENT_ACTOR=codex ent run <slug>
 
-# DECIDEだけCodex、実装はClaude Code、レビューは別モデル
+# Codex for DECIDE only, Claude Code for implementation, a different model for review
 ENT_DECIDE_ACTOR=codex \
 ENT_IMPLEMENT_ACTOR=claude-code \
 ENT_REVIEW_MODEL=<model> \
 ent run <slug>
 ```
 
-### Codex を使うとき
+### Using Codex
 
-Codexを含むphaseが1つでもあれば、先に `codex login status` でログインを確かめる。
-`ent doctor` は選択結果にClaude CodeとCodexが混ざる場合、両方のログイン前提を出す。
+If even one phase involves Codex, confirm the login first with `codex login status`. When the
+selection mixes Claude Code and Codex, `ent doctor` reports the login prerequisites for both.
 
-Codex Adapter は公式の非対話モード `codex exec --json` を使う。実装役は
-`workspace-write`、レビュー役と調査役は `read-only` に固定し、ユーザーの
-`config.toml` と execpolicy rules は読み込まない。Codexの非対話CLIにはClaude Agent
-SDKと同じcommand単位のallow/deny設定が無い。そのため禁止操作はsandbox、プロンプト、
-資格情報の除去、ティック末尾のgit関門を重ねて止める。完全に同じ権限制御ではないので、
-Codexは自動選択せず明示的なopt-inにしてある。
+The Codex Adapter uses the official non-interactive mode, `codex exec --json`. The implement role is
+pinned to `workspace-write` and the review and investigate roles to `read-only`, and the user's
+`config.toml` and execpolicy rules are not loaded. The non-interactive Codex CLI has no per-command
+allow/deny settings equivalent to the Claude Agent SDK's. Forbidden operations are therefore stopped
+by layering the sandbox, the prompt, credential removal, and the end-of-tick git gate. Because this
+is not identical permission control, Codex is never selected automatically — it is an explicit
+opt-in.
 
-失敗の扱いも分けてある。CodexのJSONLに最終メッセージがあっても、その後に`turn.failed`または
-`error`が来た実行は失敗として扱う。stdoutに加えてstderrもRunの生ログへ残す。Actorが使用量上限で
-止まった場合は、失敗分類とトークンをRunへ保存したうえで、guardが当該ACTを`WAIT(usage_limit)`へ
-差し替える。その結果、Goalは`WAITING_EXTERNAL(usage_limit)`へ遷移する。
+Failure handling is separated too. Even if Codex's JSONL contains a final message, a run followed by
+`turn.failed` or `error` is treated as a failure. stderr is kept in the Run's raw log alongside
+stdout. If the Actor stops at a usage limit, the failure classification and the token counts are
+saved to the Run and the guard replaces that ACT with `WAIT(usage_limit)`. As a result the Goal
+transitions to `WAITING_EXTERNAL(usage_limit)`.
 
-Codexには公式のTypeScript SDKもあるが、いまは使っていない。現行SDKはCodex CLIをJSONLで起動する
-ラッパーで、このAdapterが隔離契約に使う `--ephemeral`、`--ignore-user-config`、`--ignore-rules` を
-公開オプションから渡せないからになる。そのため、現時点では `codex exec` を直接起動する。
+Codex also has an official TypeScript SDK, but it is not used here. The current SDK is a wrapper that
+launches the Codex CLI with JSONL, and it cannot pass `--ephemeral`, `--ignore-user-config`, and
+`--ignore-rules` — which this Adapter relies on for its isolation contract — through its public
+options. For now, therefore, `codex exec` is launched directly.
 
-### 関門の基準になる commit
+### The commit the gate measures against
 
-`ent start` は、そのとき叩いたディレクトリの HEAD を**関門の基準**として記録する。
-Actor の worktree はその commit から切られ、関門が worktree の差分を取る
-相手も同じ commit になる（worktree の外に出た書き込みの検知は別の経路で、
-本体リポジトリ側の ACT 前後の差を見る）。**Goal の宣言と仕様は、`ent start` より前に
-commit しておく。** そうすれば人間が書いた分は基準の側に入り、worktree の差分には
-Actor が書いた分だけが並ぶ。
+`ent start` records the HEAD of the directory you invoked it in as **the gate's baseline**. The
+Actor's worktree is cut from that commit, and the gate diffs the worktree against that same commit
+(detecting writes that escaped the worktree is a separate route: the before/after difference around
+ACT on the main repository side). **Commit the Goal's declaration and specification before running
+`ent start`.** Then what the human wrote is on the baseline side, and only what the Actor wrote lines
+up in the worktree diff.
 
-記録するのは、Run が1件も無い Goal に `ent start` を打ったときだけになる。走行中の
-Goal に打ち直しても基準は動かない。worktree は最初の基準から切られたまま残るので、
-基準だけを動かすと「切った元」と「比べる相手」がずれるからになる。
+It is recorded only when `ent start` is run on a Goal with no Runs at all. Re-running it on a Goal in
+flight does not move the baseline: the worktree stays cut from the original baseline, so moving only
+the baseline would misalign "what it was cut from" and "what it is compared against".
 
-基準にした commit は、回している間 amend も rebase もしない。分岐点が消えると
-差分を取れなくなり、`ESCALATE(guard_unavailable)` で止まる。PR の宛先は
-`default_branch` のままになる。HEAD を読めなかった場合とこの記録より前に start した
-Goal は、従来どおり `default_branch` を基準にする（そのときは人間が書いた分も
-Actor の編集として並ぶ）。
+Do not amend or rebase the baseline commit while the Goal is running. If the branch point
+disappears, the diff cannot be taken and it stops with `ESCALATE(guard_unavailable)`. The PR's target
+stays `default_branch`. When HEAD could not be read, and for Goals started before this recording
+existed, `default_branch` remains the baseline as before (in which case what the human wrote lines up
+as the Actor's edits too).
 
-### 起動の仕方と、ent 自身を直すときの例外
+### How to launch it, and the exception when working on ent itself
 
-`package.json` の `bin` に `ent` を登録してあるが、npm へ公開していない。
-PATH に通すだけなら `pnpm link --global` で足りる（「入れる」の節）。
-ここから先はNode 24以上の絶対パスを使うaliasか、同じNodeで`dist/cli.js`を呼ぶ形で書く。
-起動するNodeを自分で決められるので、mise や nvm が効く shell でも取り違えが起きない
-（ent 自身を直す Goal だけは下の task を通す）。
+`ent` is registered as `bin` in `package.json`, but it is not published to npm. To get it on your
+PATH, `pnpm link --global` is enough (see "Installing"). From here on, examples use an alias with an
+absolute path to Node 24+ or call `dist/cli.js` with that same Node. Because you decide which Node
+starts, there is no mix-up even in a shell where mise or nvm is in effect (only those Goals that
+work on ent itself go through the task below).
 
-常駐しない。`run` はどのティックも有限時間で終了し、待ちは Goal の状態として残る。
-ただし `goal.depends_on` の依存待ちだけは lease を取らないので状態に残らず、
-`ent run` の `skipped` にしか出ない（design.md §10-12）。
-継続して回すなら cron から `run` を叩く。
+Nothing stays resident. Every `run` tick finishes in finite time, and waiting is left as Goal state.
+The one exception is waiting on `goal.depends_on`, which takes no lease and so leaves no state — it
+appears only in `skipped` in `ent run` output (design.md §10-12). To keep it going, invoke `run` from
+cron.
 
-**ent 自身を直す Goal を回すときは `mise run ent -- run <slug>` を使う。**
-`tsc` を通すまで HEAD の実装は `dist/cli.js` に入らないので、直に叩くと古い
-controller が回り続ける。理由と例外は `CLAUDE.md` にある。
+**When running a Goal that works on ent itself, use `mise run ent -- run <slug>`.** Until `tsc` runs,
+the implementation at HEAD is not in `dist/cli.js`, so invoking it directly keeps an old controller
+running. The reason and the exceptions are in `CLAUDE.md`.
 
-### この repo の外のリポジトリで使う
+### Using it on a repository outside this repo
 
-**ent 本体の置き場所と、回す対象のリポジトリは別でよい。** `ent` は「いま居る
-ディレクトリ」を対象リポジトリとして扱う（`repoRoot = process.cwd()`）。そのため
-ent はどこかに1つビルドしておき、対象リポジトリのルートで叩けばよい。
-対象リポジトリに ent を入れる必要も、依存を足す必要もない。
+**Where ent lives and which repository it drives can be different places.** `ent` treats "the
+directory you are currently in" as the target repository (`repoRoot = process.cwd()`). So build ent
+once somewhere and invoke it at the root of the target repository. The target repository needs
+neither ent installed nor any dependency added.
 
 ```sh
 cd /path/to/entelecheia && mise run build
-ENT_NODE="$(mise which node)"       # この時点でNode 24以上の絶対パスを固定する
+ENT_NODE="$(mise which node)"       # pin an absolute path to Node 24+ at this point
 alias ent="$ENT_NODE /path/to/entelecheia/dist/cli.js"
 
 cd /path/to/your-repo
-ent init            # .goals/ と .gitignore の行と Goal の雛形を置く
-ent doctor          # その場所で回せるかを読み取り専用で調べる
+ent init            # place .goals/, the .gitignore line, and a Goal template
+ent doctor          # read-only check of whether it can run in this location
 ```
 
-`ent init` は冪等で、既にある `.goals/*.yaml` を上書きせず、`.gitignore` に
-同じ行を二重に足さない。git リポジトリでなければ何も作らずに終了コード 1 で断る。
-雛形はスキーマとして妥当なところまでしか埋まっていない。`desired_state` と
-`acceptance_criteria` は人間が書く。CI の criterion の書き方は
-「[恒久的に落ちる workflow を数から外す](#恒久的に落ちる-workflow-を数から外す)」の
-`[!IMPORTANT]` を見る。
+`ent init` is idempotent: it does not overwrite existing `.goals/*.yaml` and does not add the same
+line twice to `.gitignore`. If this is not a git repository it creates nothing and refuses with exit
+code 1. The template is filled in only as far as schema validity requires; `desired_state` and
+`acceptance_criteria` are written by a human. For how to write CI criteria, see the `[!IMPORTANT]`
+under
+"[Excluding permanently failing workflows from the count](#excluding-permanently-failing-workflows-from-the-count)".
 
-**起動する Node を固定する。** `node:sqlite` を使うので Node 24 以上が要る。
-`/usr/bin/env node` に任せると、対象リポジトリ側の mise や nvm が効いて古い Node が
-選ばれることがある。`ent doctor` の `node_version` がその場で言う。
+**Pin which Node starts.** `node:sqlite` requires Node 24 or later. Left to `/usr/bin/env node`, the
+target repository's mise or nvm may take effect and select an older Node. `node_version` in
+`ent doctor` tells you on the spot.
 
-対象リポジトリ側では `.goals/.state/` が gitignore されていることを確かめる
-（`ent doctor` の `state_ignored`）。状態 DB と worktree と Agent の生ログが
-そこに入るので、載せると commit に混ざる。
+On the target repository side, confirm that `.goals/.state/` is gitignored (`state_ignored` in
+`ent doctor`). The state DB, the worktrees, and the Agent's raw logs go there, so committing them
+mixes them into your history.
 
-いま残っている制約が3つある。
+Three constraints remain.
 
-- lease は `.goals/.state/goals.db` にあり gitignore 済みなので、**端末をまたいだ
-  排他は効かない**（2台が同じ Goal を回すと両方が PR を立てる）
-- `PROTECTED_PATH_FLOOR` は entelecheia 固有のパスを含むので、対象リポジトリに
-  同じ名前のパス（`src/controller/**` など）があると、Agent がそこを触った時点で
-  **誤って**違反になる
-- **逆に、下限の保護パスは ent 自身のコードには届かない。** ent 本体は対象
-  リポジトリの外にあるので、`src/controller/**` のような行は ent のソースを
-  指さない。上の項目が「対象リポジトリ側に同名のパスがあると誤検知する」話なのに
-  対し、こちらは「ent 本体を守る用途には使えない」話になる。**関門が守るのは
-  対象リポジトリの中であって、ent 自身のコードではない**（自己ホストのときだけ
-  両方が重なる）。対象リポジトリで意味を持つのは `.goals/**` と `.git/**` と
-  `.goals/.state/**` の3つになる。後ろの2つは `git status` に出ないが、
-  `.git/hooks/**` と `core.hooksPath` は ACT の前後で指紋を比べる別経路
-  （`outOfSightState`）が、`.goals/.state/goals.db` はその Goal に属する行から作る
-  論理ダイジェスト（`Store.guardDigest`）が見ており、そこから関門に繋がる。
-  見えないまま残るのは、`goals.db` 以外の gitignore されたパスと repoRoot の外に
-  なる（design.md §10-6 の穴 (a)(b)）
+- The lease lives in `.goals/.state/goals.db`, which is gitignored, so **mutual exclusion does not
+  work across machines** (two machines running the same Goal will both open a PR)
+- `PROTECTED_PATH_FLOOR` contains paths specific to entelecheia, so if the target repository has
+  paths by the same names (`src/controller/**`, for instance), the Agent touching them becomes a
+  violation **by mistake**
+- **Conversely, the floor's protected paths do not reach ent's own code.** ent itself sits outside
+  the target repository, so a line like `src/controller/**` does not point at ent's sources. Where
+  the previous item is about false positives from same-named paths on the target side, this one is
+  about the floor being unusable for protecting ent itself. **What the gate protects is the inside of
+  the target repository, not ent's own code** (only under self-hosting do the two coincide). What
+  carries meaning in a target repository is three entries: `.goals/**`, `.git/**`, and
+  `.goals/.state/**`. The latter two do not show up in `git status`, but `.git/hooks/**` and
+  `core.hooksPath` are watched by a separate route that compares fingerprints before and after ACT
+  (`outOfSightState`), and `.goals/.state/goals.db` by a logical digest built from the rows belonging
+  to that Goal (`Store.guardDigest`) — and from there they connect to the gate. What stays invisible
+  is gitignored paths other than `goals.db`, and anything outside repoRoot (holes (a) and (b) in
+  design.md §10-6)
 
-### 恒久的に落ちる workflow を数から外す
+### Excluding permanently failing workflows from the count
 
-`github.ci.failed_job_count` は head sha に紐づく**全 workflow run**を横断して、落ちている
-job を数える。`{ type: fact, key: github.ci.failed_job_count, equals: 0 }` と書けば
-「この commit で落ちている job が1つも無い」を criteria にできる。
+`github.ci.failed_job_count` counts failing jobs across **all workflow runs** tied to the head sha.
+Writing `{ type: fact, key: github.ci.failed_job_count, equals: 0 }` makes "not one job is failing at
+this commit" a criterion.
 
-**除外が効くのは `github.ci.failed_job_count` だけ。** いま `.goals/` にある Goal 31 本のうち、
-CI を見ている 29 本は**すべて** criterion を
-`{ type: fact, key: github.ci.conclusion, equals: success }` で書いており、
-こちらは最新の run 1本の結論のままになる（下の「外れるのは数だけ」）。つまり宣言に
-`exclude_workflows` を書き足しても、**既存の Goal の判定は1つも動かない。** 除外を効かせるには、
-その Goal の criterion を `github.ci.conclusion` から `github.ci.failed_job_count` に移す必要がある。
-移すかどうかは Goal ごとの判断になる（`conclusion` は1本の結論しか見ないので、
-issue #58 の誤収束はそちらに残る）。
+**Exclusion only affects `github.ci.failed_job_count`.** Of the 31 Goals currently in `.goals/`, the
+29 that look at CI **all** write their criterion as
+`{ type: fact, key: github.ci.conclusion, equals: success }`, and that one stays the conclusion of a
+single latest run (see "Only the count is affected" below). So adding `exclude_workflows` to a
+declaration **moves not one existing Goal's verdict**. To make exclusion take effect you must move
+that Goal's criterion from `github.ci.conclusion` to `github.ci.failed_job_count`. Whether to move it
+is a per-Goal decision (`conclusion` looks at only one run's conclusion, so the false convergence of
+issue #58 remains on that side).
 
-横断するので、**リポジトリの運用として意図的に赤いまま／保留のままにしてある workflow も
-対象に入る。**「特定の人のレビューが通るまで mergeable にしない」種類の workflow がそれで、
-落ちれば数に加わり、承認待ちのまま `completed` にならなければ数そのものが確定しない。
-どちらにしても `equals: 0` は埋まらない。外すなら宣言部に書く。
+Because it spans runs, **workflows your repository deliberately leaves red or pending as a matter of
+policy are included too.** The "do not make it mergeable until a specific person's review passes"
+kind of workflow is one such: if it fails it joins the count, and if it never reaches `completed`
+while awaiting approval the count itself never settles. Either way `equals: 0` is never satisfied. To
+exclude them, write it in the declaration.
 
 ```yaml
 repository:
@@ -484,130 +513,141 @@ repository:
   name: your-repo
   default_branch: main
   ci:
-    # .github/workflows/*.yml の name: で書く（PR の checks 欄には job 名や
-    # third-party の check run も並ぶので、そこからは取らない）
+    # Write the name: from .github/workflows/*.yml (the PR checks list also shows
+    # job names and third-party check runs, so do not take it from there)
     exclude_workflows:
       - Require owner approval
 ```
 
-`exclude_workflows` を書かなければ、`failed_job_count` は全 workflow run を数える。
+Without `exclude_workflows`, `failed_job_count` counts every workflow run.
 
-**外れるのは workflow run ごと**で、job 名では書けない。数が確定するのは「未確定の run が
-1本も無い」ときなので、承認待ちで `completed` にならない gate は run ごと外さないと数が
-永久に決まらない。job 名で外しても run の status は動かない。
+**Exclusion is per workflow run** and cannot be written per job name. The count settles only when
+"not a single run is unsettled", so a gate that never reaches `completed` while awaiting approval
+must be excluded as a run or the count never settles. Excluding by job name does not move the run's
+status.
 
-**外れるのは数だけ。** `github.ci.conclusion` は最新の run 1本の結論のままで、除外を書いても
-選び方は変わらない。宣言を1行足しただけで既存の `conclusion == success` の意味が動く形に
-しないため。
+**Only the count is affected.** `github.ci.conclusion` stays the conclusion of a single latest run,
+and writing an exclusion does not change how that one is selected. This is so that adding one line to
+a declaration cannot shift the meaning of an existing `conclusion == success`.
 
 > [!IMPORTANT]
-> **新しい Goal の CI の criterion は `github.ci.failed_job_count` で書く。**
-> `github.ci.conclusion == success` は最新の run 1本しか見ないので、他の run が
-> 落ちていても通る（issue #58）。除外が効くのも `failed_job_count` の側だけになる。
+> **Write the CI criterion of new Goals with `github.ci.failed_job_count`.**
+> `github.ci.conclusion == success` looks at only one latest run, so it passes even when other runs
+> are failing (issue #58). Exclusion, too, works only on the `failed_job_count` side.
 >
 > ```yaml
 > - id: ac-5
->   description: 変更を載せた PR の CI で、落ちている job が1つも無い
+>   description: Not one job is failing in the CI of the PR carrying the change
 >   verification: { type: fact, key: github.ci.failed_job_count, equals: 0 }
 > ```
 >
-> 既にある Goal がまだ `conclusion` で書かれているのは、`failed_job_count` より先に
-> あったからで、意味が正しいからではない。回っている Goal の判定を後から変えないために
-> そのまま残してある。
+> Existing Goals are still written with `conclusion` because it came first, not because it is the
+> correct meaning. They are left as they are so that the verdicts of running Goals are not changed
+> after the fact.
 
-**ただし `github.ci.failed_jobs` からも外れる。** 失敗ジョブの名前とログ URL を集めるのは
-除外したあとの run なので、外した run の失敗ジョブは数だけでなくこの Fact からも消える。
-**次の ACT に渡る材料が除外分だけ欠ける**ことになる。残す側に倒すと「数から外した＝直さなくて
-よい」と宣言したはずの失敗を ACT に渡すことになり、除外の意味が消えるので、消す側に倒してある。
-外した run に何が起きていたかは、次に書く `github.ci.excluded_workflows` の状態から読む。
+**Note that excluded runs also drop out of `github.ci.failed_jobs`.** The names and log URLs of
+failing jobs are collected from the runs that survive exclusion, so an excluded run's failing jobs
+disappear from that Fact as well as from the count. **The material passed to the next ACT is short by
+exactly the excluded part.** Keeping them would mean passing to ACT the very failures you declared
+"excluded from the count, i.e. need not be fixed", which would erase the meaning of exclusion — so it
+falls on the removal side. What happened in an excluded run is read from the states in
+`github.ci.excluded_workflows`, described next.
 
-**外せるのは GitHub Actions の workflow run だけ。** この数はもともと Actions の run の job
-しか数えていないので、third-party の check run や branch protection の required review は
-最初から入っていない。そういう gate をここに書いても何も起きない。
+**Only GitHub Actions workflow runs can be excluded.** This count only ever counted jobs in Actions
+runs, so third-party check runs and branch-protection required reviews were never in it. Writing such
+gates here does nothing.
 
-除外した結果は隠れない。何をいくつ外したかが `github.ci.excluded_workflows` の Fact と
-`failed_job_count` の detail の両方に出て、criteria の判定結果（進捗コメントの detail 列）
-にも載る。「全部緑」と「除外した上で緑」が同じ見た目にならないようにしてある。
+The result of exclusion is not hidden. What was excluded and how many appear both in the
+`github.ci.excluded_workflows` Fact and in `failed_job_count`'s detail, and they also show up in the
+criteria verdicts (the detail column of the progress comment). "All green" and "green after
+exclusion" are kept from looking the same.
 
 ```sh
 ent get <slug> | jq '.snapshot.facts[] | select(.key == "github.ci.excluded_workflows")'
 ```
 
-外した run 1本ずつの見え方（`waiting` / `failure` / `success` …）も添える。detail 側では
-`除外: Require owner approval (1 run / waiting)` の形になる。**数だけだと「保留のままの gate を
-外した」と「本物の失敗を含む run を外した」を読み分けられない。** 失敗ジョブの側からも消える
-以上、消えたものが赤かったかはここでしか読めない。終わっている run は結論、終わっていない
-run は status を出す（その run について読める中でいちばん強い情報がそれになる）。
+How each excluded run looked (`waiting` / `failure` / `success` …) is attached as well. On the detail
+side it takes the form `除外: Require owner approval (1 run / waiting)`. **With the count alone you
+cannot tell "excluded a gate that was still pending" from "excluded a run containing a real
+failure".** Since they disappear from the failing-jobs side too, whether what disappeared was red can
+only be read here. Finished runs report their conclusion, unfinished ones their status (that is the
+strongest information readable about that run).
 
-一致しなかった名前は弾かず、`runs: 0` として観測に出す。名前が実在するかは、宣言を読む
-時点では決められない。解析はリポジトリを見ないし、`ent doctor` から見ても対象リポジトリは
-手元の checkout とは限らない。そもそも「一致しない」は typo と「今回は起動しなかった
-workflow」（path filter や branch filter で走らないことがある）の両方を指すので、観測の
-側から区別できない。数を出して人間に読ませる方に倒してある。
+Names that matched nothing are not rejected; they surface in the observation as `runs: 0`. Whether a
+name exists cannot be decided at the time the declaration is read. Parsing does not look at the
+repository, and even from `ent doctor` the target repository is not necessarily the checkout at hand.
+More fundamentally, "does not match" covers both a typo and "a workflow that did not run this time"
+(path filters or branch filters can keep it from running), and the observation side cannot tell them
+apart. It falls on the side of emitting the number and letting a human read it.
 
-**run が 100 本を超えると数は出ない。** `GET /actions/runs` は `per_page: 100` の1ページしか
-読まない。応答の `total_count` が返ってきた件数を上回るとき——つまり読み切れていないとき——は、
-`failed_job_count` を Fact にしない。読んでいない run に落ちているものがあっても数に入らず、
-`failed_job_count=0` が「全部緑」と区別の付かない形で出てしまうため。数え切れていないなら
-数を出さない、という「回っている run があるあいだは出さない」と同じ規則になる。
-`total_count` そのものが応答に無いときも同じ扱いにする（読み切れたと決める根拠が無いため）。
+**Past 100 runs, no count is emitted.** `GET /actions/runs` reads only one page at `per_page: 100`.
+When the response's `total_count` exceeds the number of entries returned — that is, when it was not
+read in full — `failed_job_count` is not made a Fact. Otherwise, something failing in an unread run
+would not join the count and `failed_job_count=0` would appear indistinguishable from "all green". If
+we cannot count them all, we emit no count: the same rule as "emit nothing while runs are still in
+flight". The same treatment applies when `total_count` is absent from the response altogether (there
+is no basis for deciding it was read in full).
 
-このとき criterion は**永久に埋まらない。** 誤って緑になるよりは埋まらない方がよいという
-判断だが、収束しない経路が1本増えたことになる。数が出ないまま止まっているときは、まず
-run の本数を疑う。**除外はページを取ったあとに走る**ので、除外予定の run も 100 本の枠を
-消費する。`on: pull_request_review` の gate はレビューのたびに run が増えるため、
-ちょうど除外を使いたいリポジトリで先に上限に当たりやすい。
+In that case the criterion **is never satisfied**. The judgment is that never satisfied beats falsely
+green, but it does add one non-converging path. When it is stuck with no count emitted, suspect the
+number of runs first. **Exclusion runs after the page is fetched**, so runs destined for exclusion
+consume the 100-entry budget too. An `on: pull_request_review` gate adds a run per review, so the
+repositories that most want exclusion are the ones that hit the limit first.
 
-ページングは実装していない。2ページ目以降を引くと、`mise run check` が回す pinact と同じ
-GitHub API のレート制限の枠を run の本数だけ食う。1ティックあたりの往復が読めなくなる方が、
-数が出ないより重いと見た。
+Pagination is not implemented. Fetching page two and beyond would eat the same GitHub API rate-limit
+budget that pinact (run by `mise run check`) uses, once per run. Losing the ability to reason about
+round trips per tick was judged worse than not emitting a count.
 
-### 進捗を PR に投稿しない
+### Not posting progress to the PR
 
-既定では、criteria の pass 状況を PR コメントに積む。`--report` を付けると、その pass 状況を
-PR ではなく手元に出す。
+By default, the pass status of the criteria is accumulated in PR comments. With `--report`, that pass
+status is delivered to your hands instead of the PR.
 
 ```sh
-ent run <slug> --report stdout                        # 出力 JSON の report.body に入る
-ent run <slug> --report stdout | jq -r .report.body   # 表として読む
-ent run <slug> --report ./progress.md                 # ファイルに追記する
+ent run <slug> --report stdout                        # lands in report.body of the output JSON
+ent run <slug> --report stdout | jq -r .report.body   # read it as a table
+ent run <slug> --report ./progress.md                 # append to a file
 ```
 
-移るのは進捗の宛先で、そこに**レビュー本文が1節ぶん増える**（後述）。観測も判断も
-変わらないし、Actor が書いたものの push と PR の作成も止めない。
-**PR そのものは今までどおり公開される。** 投稿しなくなるのは criteria の pass 状況で、
-試走のたびにレビュー中の PR を伸ばしたくないときに使う。
+What moves is the destination of the progress, and **one extra section — the review body — comes with
+it** (see below). Neither observation nor judgment changes, and it does not stop pushing what the
+Actor wrote or opening the PR. **The PR itself is published exactly as before.** What stops being
+posted is the criteria pass status; use it when you do not want trial runs to lengthen a PR that is
+under review.
 
-進捗は `GITHUB_TOKEN` が無くても、PR がまだ立っていなくても出る。進捗を書くのを PR の確保より
-前に置いてあるので、PR を確保できるかどうかとは切り離されている。
+Progress is emitted even without `GITHUB_TOKEN` and even before a PR exists. Writing the progress is
+placed ahead of securing the PR, so it is decoupled from whether the PR can be secured.
 
-`stdout` を指定しても素の Markdown は流れない。`run` の標準出力は JSON 専用で、
-本文は `report.body` に入る。受け取るのは `run` だけで、`--dry-run` とは併用できない。
-JSON に何が入るか、書けなかったときにどうなるかは `.claude/skills/ent/SKILL.md` にある。
+Specifying `stdout` does not stream raw Markdown. `run`'s standard output is JSON only, and the body
+goes in `report.body`. Only `run` accepts it, and it cannot be combined with `--dry-run`. What goes
+into the JSON, and what happens when it could not be written, are in `.claude/skills/ent/SKILL.md`.
 
-**この出力には、レビュー役が最後に返したレビュー本文も `## レビュー役の本文` の節として
-付く。** レビュー役の返答は Fact になる過程で `review.verdict` と `review.reviewed_sha` の
-2つに畳まれるので、`approved` の理由も留保も、そのままでは誰も読めないまま
-`.goals/.state/runs/<id>/log.jsonl` に残るだけになる。節は `report.body` の**末尾**に置く。
-criteria の表の位置は宛先を問わず同じで、長いレビュー本文を読み飛ばさなくても pass 状況に
-届く。レビュー本文は要約せず、改行も表もコードブロックもそのまま出す。
+**This output also carries the review body the review role returned last, as a
+`## レビュー役の本文` section.** On its way to becoming Facts, the review role's reply is folded into
+just two things — `review.verdict` and `review.reviewed_sha` — so the reasons and reservations behind
+an `approved` are left unreadable by anyone, sitting in
+`.goals/.state/runs/<id>/log.jsonl`. The section is placed at the **end** of `report.body`. The
+criteria table stays in the same position regardless of destination, so you reach the pass status
+without scrolling past a long review body. The review body is not summarized: line breaks, tables,
+and code blocks are emitted as they are.
 
-節が出るのは `--report` を付けたティックだけになる。PR コメントには載せないので、
-`report.body` と PR コメントは同じ内容でなくなる。レビュー役を1度も起動していない
-Goal では節そのものが出ない。生ログを読めなかったときは理由が、レビュー本文が残っていない
-Run（途中で切れた実行）では読んだ Run の id が節に出る。**どの経路でも黙って欠落させないし、
-ティックも失敗させない。**
+The section appears only on ticks with `--report`. It is not posted to PR comments, so `report.body`
+and the PR comment are no longer the same content. For a Goal whose review role has never been
+launched, the section itself does not appear. When the raw log could not be read, the reason appears
+in the section; for a Run with no review body left (an execution cut short), the id of the Run that
+was read appears. **On no path is anything silently dropped, and no path fails the tick.**
 
 > [!NOTE]
-> **積まれ方は2つの宛先で違う。** `--report stdout` は1回叩いて1回出すので積み上がらないが、
-> `--report <path>` はファイルへの**追記**になる。節が読むのは直近の完了したレビュー役の
-> Run なので、次のレビューが終わるまで中身は毎ティック同じで、レビュー待ちで回し続けると
-> 同じ本文が回した数だけ並ぶ。長く回すなら `stdout` を使うか、宛先のファイルを分ける。
+> **The two destinations accumulate differently.** `--report stdout` emits once per invocation and
+> does not pile up, but `--report <path>` **appends** to the file. What the section reads is the most
+> recent completed review-role Run, so the content stays the same every tick until the next review
+> finishes — keep running while waiting for review and the same body lines up once per run. For long
+> runs, use `stdout` or split the destination file.
 
-### PR を draft で立てる
+### Opening PRs as drafts
 
-対象リポジトリに「まず draft で出す」運用があるなら、`repository.pull_request.draft` に
-書く。
+If the target repository has a "publish as a draft first" practice, write it in
+`repository.pull_request.draft`.
 
 ```yaml
 repository:
@@ -619,29 +659,27 @@ repository:
     draft: true
 ```
 
-**書かなければ、これまでどおり ready で立つ。** 既定は変えていないので、既存の
-`.goals/*.yaml` は1本も挙動が変わらない。
+**Write nothing and it opens ready, as before.** The default is unchanged, so not one existing
+`.goals/*.yaml` behaves differently.
 
-効くのは PR を作るときだけになる。既に立っている PR を draft に戻すことはしない。
-publish は作成後の PR のタイトルも本文も書き換えない（毎ティック書き換えると
-レビューが差分を追えなくなる）ので、そこと揃えてある。
+It only takes effect when the PR is created. An already-open PR is never turned back into a draft.
+publish does not rewrite the title or body of a PR after creation (rewriting them every tick would
+keep reviewers from following the diff), and this is aligned with that.
 
-draft で立てておくと、タイトル規約や PR テンプレートに合わせる手直しを、レビュアーへの
-通知より前に済ませられる。**そのタイトルと本文そのものを宣言で決める口はまだ無い。**
-タイトルは `goal.name` のまま、本文は ent 固定のテンプレートで作られる。
+Opening as a draft lets you finish adjusting to title conventions and PR templates before reviewers
+are notified. **There is not yet a way to decide that title and body themselves by declaration.** The
+title stays `goal.name`, and the body is produced from ent's fixed template.
 
 > [!WARNING]
-> 対象リポジトリの workflow が draft の PR を除外している
-> （`if: github.event.pull_request.draft == false` など）と、**CI が一度も走らない。**
-> 走らなければ `github.ci.*` の Fact は1つも作られないので、それを読む `type: fact` の
-> criterion は解決しないまま残り、Goal は `max_unchanged_reconciles` に当たるまで
-> 同じところを回る。draft を宣言する前に、対象リポジトリの workflow が draft を
-> どう扱うかを見る。
+> If the target repository's workflows exclude draft PRs
+> (`if: github.event.pull_request.draft == false`, for instance), **CI never runs even once.**
+> Without a run, not one `github.ci.*` Fact is produced, so the `type: fact` criteria that read them
+> stay unresolved and the Goal circles in place until it hits `max_unchanged_reconciles`. Before
+> declaring draft, look at how the target repository's workflows treat drafts.
 
-### 粗いタスクを複数の Goal に割る
+### Splitting a coarse task across several Goals
 
-1つの粗いタスクを N 本の Goal に割ったら、順序は `goal.depends_on` に書く
-（design.md §10-12）。
+Once you split one coarse task into N Goals, write the order in `goal.depends_on` (design.md §10-12).
 
 ```yaml
 goal:
@@ -653,188 +691,202 @@ goal:
     - build-the-thing
 ```
 
-依存がすべて COMPLETED になるまで、`ent run` はそのティックを回さずに終了する。
-**lease も取らない。** 待っているだけの Goal が枠を持ち続けると、進める側の Goal まで
-cron の1周で回らなくなるからになる。判定は `ent start` ではなくティックの入口で行うので、
-依存先をまだ start していない順序で宣言を書いてよい。割った分をまとめて登録して、
-上から `ent run` を並べれば、進める本だけが進む（並べ方と、いま同時に並べられない
-理由は次節）。
+Until every dependency is COMPLETED, `ent run` exits without running that tick. **It does not take a
+lease either**, because a Goal that is merely waiting holding a slot would keep the Goals that can
+make progress from running within one cron cycle. The decision is made at the tick's entrance rather
+than at `ent start`, so you may declare an order whose dependencies have not been started yet.
+Register all the pieces and line up `ent run` from the top, and only the ones that can advance will
+(how to line them up, and why they cannot currently be lined up concurrently, is in the next
+section).
 
-進めなかった理由は `ent run` の `skipped` に出る。依存が `FAILED` か `ABANDONED` に
-落ちた場合は、待っても解けないことと次の一手（依存側をやり直すか `depends_on` を
-書き換えるか）まで書く。まだ登録されていない依存は「待てば進む」側に数える。
-`ent start` を打ち忘れただけかもしれないので、無いことを終端とは読まない。
-**この待ちは Goal の状態には残らないので、`skipped` にしか出ない**（design.md §10-12
-の残る穴）。自分自身への依存はスキーマが弾くが、**2本以上をまたぐ循環は YAML 1本からは
-見えない**ので、全員が待ちのまま止まる。
+The reason it did not advance appears in `skipped` in `ent run` output. If a dependency has fallen to
+`FAILED` or `ABANDONED`, it also states that waiting will not resolve it and what the next move is
+(redo the dependency, or rewrite `depends_on`). Dependencies not yet registered count as "waiting
+will advance it": it may simply be that `ent start` was forgotten, so absence is not read as
+terminal. **This wait is not left in Goal state, so it appears only in `skipped`** (a remaining hole
+in design.md §10-12). Depending on itself is rejected by the schema, but **a cycle spanning two or
+more is invisible from any single YAML file**, so everyone stops, waiting.
 
-依存の判定も端末ごとの状態 DB を読む。別の端末では依存の `COMPLETED` が見えないので、
-未登録＝待ち扱いになる（上の lease と同じ制約）。
+Dependency judgments also read the per-machine state DB. On another machine a dependency's
+`COMPLETED` is not visible, so it counts as unregistered, i.e. waiting (the same constraint as the
+lease above).
 
-**割る判断そのものは人間が持つ。** controller は書かれた順序に従うだけで、
-粗いタスクを自分で N 本に割ることはしない（design.md §10-12）。
+**The decision to split is the human's.** The controller merely follows the order as written; it
+never splits a coarse task into N by itself (design.md §10-12).
 
-### 複数の Goal を同時に回す
+### Running several Goals at once
 
-設計としては、`ent run` は複数のプロセスから同時に叩いてよい。まとめて回す口
-（`ent run --all` や常駐する watch）は用意しない。何本並べるかを決めるのは呼び出し側で、
-`ent` は「同時に叩かれても壊れない」ところまでを受け持つ。**ただしこれは設計上の意図で、
-同じディレクトリからの並列は実プロセス2本で確かめていない**（下の警告）。
+By design, `ent run` may be invoked from several processes at once. No facility for running them
+together (`ent run --all`, or a resident watch) is provided. How many to line up is the caller's
+decision; `ent` is responsible for "not breaking when invoked concurrently". **This is design intent,
+however — concurrency from the same directory has not been confirmed with two real processes** (see
+the warning below).
 
 > [!WARNING]
-> **同じディレクトリからの並列は、実際に2本立てて確かめてはいない。**
-> かつてここは「保護パスの関門が `ESCALATE(protected_path_touched)` で止まるので
-> 1本ずつ回すこと」と書いていた。状態 DB は WAL なので、別プロセスの書き込みや
-> 接続の切断で checkpoint が走って `goals.db` の中身が変わり、それを sha256 で
-> 比べていた関門が巻き添えで鳴っていた。**その原因は塞いだ。** 関門は状態 DB を
-> ファイルではなく「その Goal に属する行」の論理ダイジェストで見るようになったので、
-> 別の Goal の書き込みでは動かない（issue #62、design.md §10-6）。
-> 確かめたのは **Vitest の中で2本のティックを同じ `goals.db` へ同時に流したところまで**で、
-> `ent run` のプロセスを2本立てて回してはいない。初回の `git worktree add` が
-> `.git/index.lock` を取る競合と、SQLite の busy 競合は残っている。
-> `.goals/.state/` は `process.cwd()` の下にできるので、worktree を分ければ DB ごと
-> 分かれる。ただし lease も分かれるので、**別 worktree では同じ Goal を回さない**（下の
-> 「同じ slug を2つのプロセスに渡しても安全」が効かず、両方が PR を立てる）。
+> **Concurrency from the same directory has not actually been confirmed by starting two.**
+> This section used to say "the protected-path gate stops it with
+> `ESCALATE(protected_path_touched)`, so run them one at a time". The state DB is WAL, so another
+> process writing or closing its connection triggers a checkpoint that changes the contents of
+> `goals.db`, and the gate — which compared it by sha256 — fired as collateral damage. **That cause
+> has been closed.** The gate now views the state DB not as a file but as a logical digest of "the
+> rows belonging to that Goal", so writes for another Goal do not move it (issue #62, design.md
+> §10-6). What has been confirmed is **two ticks driven concurrently against the same `goals.db`
+> inside Vitest**; two `ent run` processes have not been started. The contention where the first
+> `git worktree add` takes `.git/index.lock`, and SQLite busy contention, both remain.
+> `.goals/.state/` is created under `process.cwd()`, so splitting worktrees splits the DB with them.
+> But the lease splits too, so **do not run the same Goal in separate worktrees** ("passing the same
+> slug to two processes is safe", below, stops applying, and both will open a PR).
 
 ```sh
-# ワーカーを並べる側の例。slug ごとに1プロセス立てて、全部の終了を待つ
-# （同じディレクトリなので、上の未確認が残るあいだはこのまま使わない）
+# Example of the side that lines up workers: one process per slug, wait for all to finish
+# (same directory, so do not use this as is while the unconfirmed item above remains)
 for slug in goal-a goal-b goal-c; do
   ent run "$slug" &
 done
 wait
 ```
 
-cron から回す場合も、対象repoへ移動してからNode 24以上とent本体の絶対パスを使う。
-前回のティックが次の起動時刻を越えることがあるため、**Goalが1本でもrepo単位の外部ロックを
-必ず取る**。次はmacOS / BSDの`lockf`で、ロック中なら次回を起動せずに終える例になる。
-`/absolute/path/to/node-24`は、対話シェルで`mise which node`を実行して得たNode 24以上の
-パスへ置き換える。Linuxではschedulerの重複起動禁止設定か同等のロックを使う。
+When running from cron, likewise move into the target repo and use absolute paths for Node 24+ and
+for ent itself. Because a previous tick can run past the next start time, **always take a
+repository-level external lock, even for a single Goal.** Below is an example using macOS/BSD `lockf`
+that exits without starting when the lock is held. Replace `/absolute/path/to/node-24` with the path
+to Node 24+ obtained by running `mise which node` in an interactive shell. On Linux, use the
+scheduler's no-overlap setting or an equivalent lock.
 
 ```cron
 */10 * * * * cd /path/to/your-repo && /usr/bin/lockf -n /tmp/ent-your-repo.lock /absolute/path/to/node-24 /path/to/entelecheia/dist/cli.js run goal-a
 ```
 
-同じディレクトリのGoalを複数回す場合も、開始時刻をずらすだけでは直列性を保証できない。
-上の未確認が残るあいだは、同じrepo単位ロックを使うか、重複起動を禁止できる外部scheduler
-から1本ずつ順番に起動する。ロック無しのcron行を直接並べない。
+When running several Goals from the same directory, staggering start times does not guarantee
+serialization either. While the unconfirmed item above remains, use the same repository-level lock,
+or start them one at a time from an external scheduler that can forbid overlapping runs. Do not line
+up lock-free cron lines directly.
 
-ent自身を直すGoalでは、対象repoと本体が同じなのでtask経由にする。cronのPATHに
-依存しないよう、`command -v mise`で得た絶対パスへ置き換え、同じく外部ロックを取る。
+For Goals that work on ent itself, the target repo and ent are the same, so go through the task.
+Replace with the absolute path obtained from `command -v mise` so as not to depend on cron's PATH,
+and take the same external lock.
 
 ```cron
 */10 * * * * cd /path/to/entelecheia && /usr/bin/lockf -n /tmp/ent-entelecheia.lock /absolute/path/to/mise run ent -- run goal-a
 ```
 
-次の2段落（lease と本数の目安）は、同じディレクトリで2本立てるときの前提になる。
-同一ディレクトリの並列はまだ実プロセスで確かめていないので、上の警告と合わせて読む。
-その先の token の話は、1本だけ回すときも同じに効く。
+The next two paragraphs (the lease, and how many to line up) are premises for starting two in the
+same directory. Concurrency in one directory has not been confirmed with real processes yet, so read
+them together with the warning above. The token discussion after that applies equally when running
+just one.
 
-同じ slug を2つのプロセスに渡しても安全に扱える。Goal の所有権は期限付きの
-lease で決まるので、先に取れた側だけが進み、取れなかった側は
-「他のワーカーが lease を持っている」でスキップして exit 0 で終わる。二重に
-Actor が走ることも、状態が混ざることもない。ティックの途中で lease を失った側も、
-snapshot / verifications / Decision / 状態遷移を1つも書かずに降りる（既に書いてある
-Run の行だけは残る。design.md §3.6）。
+Passing the same slug to two processes is handled safely. Ownership of a Goal is decided by a
+time-limited lease, so only the side that acquired it first advances; the other skips with "another
+worker holds the lease" and exits 0. The Actor never runs twice and state never mixes. A side that
+loses the lease mid-tick also steps down without writing a single snapshot, verification, Decision,
+or state transition (only the Run row it already wrote remains — design.md §3.6).
 
-並べる本数は機械の資源で決める。各ティックは Actor（Claude Code または Codex）と Goal の
-検証コマンド（このリポジトリなら `mise run verify`）を worktree の上で走らせるので、
-1本あたり CPU コア1〜2本を見込むとよい。目安としてコア数の半分までにしておくと、
-検証コマンドがタイムアウト側に倒れにくい。
+How many to line up is decided by machine resources. Each tick runs the Actor (Claude Code or Codex)
+and the Goal's verification commands (`mise run verify` in this repository) on top of a worktree, so
+budget one to two CPU cores per line. As a rule of thumb, staying under half the core count keeps
+verification commands from tipping into timeouts.
 
-GitHub の観測には token が要る。`GITHUB_TOKEN`（または `GH_TOKEN`）を渡せばそれを使い、
-どちらの環境変数も無ければ `gh auth token` に落とす。gh はセットアップの前提に入っているので、
-対話シェルから叩くぶんには何も渡さずに回してよい。cron から回すときは PATH と gh の設定が
-引き継がれるとは限らないので、`GITHUB_TOKEN` を明示するか、同じ環境で `ent doctor` を
-叩いて確かめる。**空文字を設定してあれば「渡さないと決めた」と読み、gh も呼ばない。**
-未設定と空文字はここだけ意味が違う。GitHub を観測させたくない場面で、対話ログインした
-gh のトークンが黙って使われないようにするためになる。**いずれの経路でも token を読めなければ**
-観測は `unobserved` に `port_failed` として残り、ASSESS も「PR は無い」とは読まない。
-読めた token は `process.env` に書き戻さないので、Agent と検証コマンドの環境から落とす扱いは
-変わらない。Actor と LLM は、選んだCLIの保存済みログインをそのまま使う。APIキーを使う場合も、
-検証コマンドには `ANTHROPIC_*` / `CLAUDE_CODE_*` / `OPENAI_API_KEY` / `CODEX_API_KEY`
-を渡さない。
+Observing GitHub requires a token. Pass `GITHUB_TOKEN` (or `GH_TOKEN`) and it is used; with neither
+environment variable it falls back to `gh auth token`. gh is a setup prerequisite, so invoking from an
+interactive shell needs nothing passed. When running from cron, PATH and gh's configuration are not
+necessarily inherited, so either set `GITHUB_TOKEN` explicitly or run `ent doctor` in the same
+environment to confirm. **An empty string is read as "we decided not to pass one", and gh is not
+called either.** This is the one place where unset and empty differ in meaning: it keeps an
+interactively logged-in gh's token from being used silently when you do not want GitHub observed.
+**If no route yields a token**, the observation remains in `unobserved` as `port_failed`, and ASSESS
+does not read it as "there is no PR". A token that was read is not written back into `process.env`,
+so how it is dropped from the Agent's and the verification commands' environments is unchanged. The
+Actor and the LLM use the saved login of the CLI you chose, as is. When using API keys, the
+verification commands are still not given `ANTHROPIC_*` / `CLAUDE_CODE_*` / `OPENAI_API_KEY` /
+`CODEX_API_KEY`.
 
-## ディレクトリ
+## Directories
 
 ```
-.goals/<slug>.yaml        人間が編集。Git 管理。宣言部のみ。slug は goal.id と一致させる
-.goals/.state/goals.db    controller が書く実行時状態。gitignore 済み
-.goals/.state/worktrees/  Actor が編集する worktree。controller 本体とは物理的に分ける
-                          名前は (goal.id, role) から決まる。実装役とレビュー役は
-                          同じ <slug> を共有し、実装役が書き、レビュー役が読む。
-                          調べる役（investigate）だけ
-                          <slug>-investigate に分かれる（design.md §4.2）
-.goals/.state/runs/<run-id>/  Agent の生ログ。DB にはパスだけ持つ
-src/domain/fact.ts        Fact の型（VERIFIED / INFERRED の分離）と Unresolved
-src/domain/fact-keys.ts   観測キーのレジストリ。Goal YAML の fact 検証はここを参照する
-src/domain/goal.ts        Goal YAML の Zod スキーマ
-src/domain/goal-parse.ts  Goal YAML の検証と、slug と goal.id の突き合わせ。ファイルは読まない
-src/domain/gap.ts         ASSESS が出す Gap と Assessment の型
-src/domain/action.ts      DECIDE が選ぶ Action と Decision の型
-src/domain/run.ts         Actor の実行記録の型と ActorRole（実装役とレビュー役は同じ
-                          worktree、investigate だけが分かれる。design.md §4.2）
-src/domain/goal-state.ts  Goal のライフサイクルと、Action から次の状態を決める遷移
-src/domain/port-error.ts  Port の失敗の種別（usage_limit / unavailable）
-src/domain/verification.ts criteria 単位の検証結果。§9 の完了判定が読む索引
-src/domain/digest.ts      観測値のダイジェスト。ループ検知の材料になる
-src/domain/protected-paths.ts 保護パスの検査。制御ループ自体への編集を止める
-src/domain/guard-rules.ts guard（純ロジック）が読む判断規則。関門の基準と停止条件
-src/domain/withheld-env.ts Agent と検証コマンドの環境から落とす資格情報の除去リスト
-src/domain/error-message.ts 例外から人間が読める1行を取り出す
-src/domain/llm-call.ts    LlmPort を1回呼んだ記録。Run を作らない分のトークン
-src/observe/              Observe と、依存する Port の定義
-src/verify/               Verify と、依存する Port の定義
-src/assess/               Assess。Acceptance Criteria と Fact を突き合わせて Gap を出す
-src/decide/               Decide と LlmPort の定義。guard と LLM の境界はここにある
-src/act/                  Act。Actor を worktree 上で走らせる。write-ahead はここ
-src/reconcile/            OBSERVE → VERIFY → ASSESS → DECIDE を1ティックにまとめる
-src/publish/              PR の確保と進捗コメント。CodeWriterPort と BranchPort の定義
-src/store/port.ts         実行時状態の Port。使う側が所有する口で、実装は持たない
-src/store/sqlite.ts       その SQLite 実装（node:sqlite）。挿すのは合成ルートだけ
-src/controller/           1ティックの外側。lease → 回収 → reconcile → ACT → 永続化 → 遷移
-src/adapters/local.ts     node:child_process で書ける Port（コマンド実行、git、worktree）
-src/adapters/goal-file.ts .goals/<slug>.yaml をファイルシステムから読む
-src/adapters/github.ts    CodeProviderPort。@octokit/rest + ETag
-src/adapters/claude.ts    ActorPort と LlmPort。Claude Agent SDK
-                          role ごとの許可・拒否ツールとプロンプトもここ。編集の
-                          ツールを持つのは実装役だけ（design.md §4.2）
-src/adapters/codex.ts     ActorPort と LlmPort。Codex CLI の非対話JSONLを変換する
-src/adapters/agent-prompt.ts Codex向けのrole別プロンプトと出力契約
-src/wiring/index.ts       合成ルート。どの Port にどの Adapter を挿すかを決める唯一の場所。
-                          関門への入力（Adapter の注入と verifyRoot）もここで決まる
-src/usecase/init.ts       ent init。.goals/ と gitignore の行と Goal の雛形を置く
-src/usecase/doctor.ts     ent doctor。回す前の前提を、書かずに調べる
-src/usecase/inspect.ts    ent get / ent list が出す payload。読むだけ
-src/cli/parse.ts          引数の解釈。実行はしない
-src/cli/present.ts        出力の整形。stdout は JSON 専用、診断は stderr
-src/cli/agent-context.ts  ent agent-context が出す CLI の構造
-src/cli.ts                ent コマンドの入口。サブコマンドごとの手順と終了コードの契約
-.claude/skills/ent/SKILL.md  エージェントが手順として読むもの。叩く順と、人の承認で止まる場所
-.agents/skills/ent          Codex の探索先。上の正本を指す symlink
-AGENTS.md                 上の SKILL.md を指すだけの入口。手順は二重に書かない
-tests/                    Acceptance Criteria の実体と、実 git / 実 SQLite を叩く統合テスト
+.goals/<slug>.yaml        Edited by humans. Under Git. Declaration only. slug must match goal.id
+.goals/.state/goals.db    Runtime state written by the controller. Gitignored
+.goals/.state/worktrees/  Worktrees the Actor edits. Physically separate from the controller itself.
+                          The name is derived from (goal.id, role). The implement and review roles
+                          share the same <slug>: the implement role writes, the review role reads.
+                          Only the investigate role is split out as
+                          <slug>-investigate (design.md §4.2)
+.goals/.state/runs/<run-id>/  The Agent's raw logs. The DB holds only the path
+src/domain/fact.ts        The Fact type (separating VERIFIED / INFERRED) and Unresolved
+src/domain/fact-keys.ts   Registry of observation keys. fact verification in Goal YAML refers here
+src/domain/goal.ts        The Zod schema for Goal YAML
+src/domain/goal-parse.ts  Goal YAML validation and the slug/goal.id match. Reads no files
+src/domain/gap.ts         The Gap and Assessment types ASSESS produces
+src/domain/action.ts      The Action and Decision types DECIDE chooses
+src/domain/run.ts         The Actor's execution-record type and ActorRole (implement and review
+                          share a worktree; only investigate is separate — design.md §4.2)
+src/domain/goal-state.ts  The Goal lifecycle, and the transition from Action to next state
+src/domain/port-error.ts  Kinds of Port failure (usage_limit / unavailable)
+src/domain/verification.ts Per-criterion verification results. The index that §9's completion check reads
+src/domain/digest.ts      Digest of observed values. Material for loop detection
+src/domain/protected-paths.ts Protected-path inspection. Stops edits to the control loop itself
+src/domain/guard-rules.ts The decision rules the guard (pure logic) reads. Gate baseline and
+                          stopping conditions
+src/domain/withheld-env.ts The removal list of credentials dropped from the Agent's and the
+                          verification commands' environments
+src/domain/error-message.ts Extracts one human-readable line from an exception
+src/domain/llm-call.ts    A record of one LlmPort call. Tokens that do not create a Run
+src/observe/              Observe, and the definitions of the Ports it depends on
+src/verify/               Verify, and the definitions of the Ports it depends on
+src/assess/               Assess. Matches Acceptance Criteria against Facts to produce Gaps
+src/decide/               Decide and the LlmPort definition. The guard/LLM boundary is here
+src/act/                  Act. Runs the Actor on a worktree. Write-ahead is here
+src/reconcile/            Bundles OBSERVE → VERIFY → ASSESS → DECIDE into one tick
+src/publish/              Securing the PR and the progress comment. CodeWriterPort and BranchPort
+src/store/port.ts         The Port for runtime state. Owned by the consumer; holds no implementation
+src/store/sqlite.ts       Its SQLite implementation (node:sqlite). Only the composition root plugs it in
+src/controller/           Outside one tick. lease → recovery → reconcile → ACT → persist → transition
+src/adapters/local.ts     Ports writable with node:child_process (command execution, git, worktree)
+src/adapters/goal-file.ts Reads .goals/<slug>.yaml from the filesystem
+src/adapters/github.ts    CodeProviderPort. @octokit/rest + ETag
+src/adapters/claude.ts    ActorPort and LlmPort. Claude Agent SDK.
+                          Per-role allowed/denied tools and prompts are here too. Only the
+                          implement role holds editing tools (design.md §4.2)
+src/adapters/codex.ts     ActorPort and LlmPort. Converts Codex CLI's non-interactive JSONL
+src/adapters/agent-prompt.ts Per-role prompts and output contract for Codex
+src/wiring/index.ts       The composition root. The single place deciding which Adapter goes into
+                          which Port. The gate's inputs (Adapter injection and verifyRoot) are
+                          decided here too
+src/usecase/init.ts       ent init. Places .goals/, the gitignore line, and a Goal template
+src/usecase/doctor.ts     ent doctor. Inspects the prerequisites for running, writing nothing
+src/usecase/inspect.ts    The payload ent get / ent list emit. Read-only
+src/cli/parse.ts          Argument interpretation. Executes nothing
+src/cli/present.ts        Output formatting. stdout is JSON only; diagnostics go to stderr
+src/cli/agent-context.ts  The CLI structure ent agent-context emits
+src/cli.ts                Entry point of the ent command. Per-subcommand steps and the exit-code contract
+.claude/skills/ent/SKILL.md  What agents read as procedure. Invocation order, and where it stops for
+                          human approval
+.agents/skills/ent          Codex's lookup path. A symlink pointing at the canonical file above
+AGENTS.md                 An entry point that merely points at the SKILL.md above. Procedures are
+                          never written twice
+tests/                    The substance of the Acceptance Criteria, and integration tests that hit
+                          real git / real SQLite
 ```
 
-`.goals/.state/` は `ent start` を最初に叩いたときに作られる。
+`.goals/.state/` is created the first time `ent start` is invoked.
 
-## セキュリティベースライン
+## Security baseline
 
-このリポジトリは [`slashkiko/repository-baseline`](https://github.com/slashkiko/repository-baseline)
-から作成した。以下は baseline 由来の統制で、外す場合は理由を残すこと。
+This repository was created from
+[`slashkiko/repository-baseline`](https://github.com/slashkiko/repository-baseline). The following
+controls come from the baseline; if you remove one, leave the reason behind.
 
-- mise がセキュリティツールのサプライチェーンを固定し、新しいリリースは 7 日待ってから使う
-- Pinact が GitHub Actions の完全な commit SHA ピン留めを要求する
-- actionlint と zizmor が workflow の構文とセキュリティ特性を検査する
-- Betterleaks が Git 履歴全体をスキャンする
-- `.github/workflows/weekly-audit.yml` が OSPS Baseline のバージョン変更を週次で検出する
+- mise pins the supply chain of the security tools, and new releases are used only after a 7-day wait
+- Pinact requires GitHub Actions to be pinned to full commit SHAs
+- actionlint and zizmor inspect workflow syntax and security properties
+- Betterleaks scans the entire Git history
+- `.github/workflows/weekly-audit.yml` detects OSPS Baseline version changes weekly
 
-リポジトリ設定の初期化は、必ず dry-run を確認してから適用する。
+Always confirm the dry run before applying repository-setting initialization.
 
 ```sh
-mise run repository-initialize                    # dry-run。適用予定の設定を表示するだけ
-mise run repository-initialize --configure-github # GitHub 側の設定を実際に書き換える
+mise run repository-initialize                    # dry run. Only shows the settings it would apply
+mise run repository-initialize --configure-github # actually rewrites the settings on GitHub
 ```
 
-詳細は [`docs/security-baseline.md`](docs/security-baseline.md) と
-[`SECURITY.md`](SECURITY.md)（いずれも英語）を参照。
+For details see [`docs/security-baseline.md`](docs/security-baseline.md) and
+[`SECURITY.md`](SECURITY.md).

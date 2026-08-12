@@ -14,6 +14,7 @@ import { agentContextPayload, main } from "../src/cli.js";
  */
 
 const README = new URL("../README.md", import.meta.url).pathname;
+const README_JA = new URL("../README.ja.md", import.meta.url).pathname;
 const SKILL = new URL("../.claude/skills/ent/SKILL.md", import.meta.url).pathname;
 
 /** 行頭が `ent <サブコマンド>` になっている箇所を拾う */
@@ -35,6 +36,12 @@ function implementedCommands(): string[] {
 describe("文書と CLI の突き合わせ", () => {
   it("README.md が全サブコマンドを漏れなく載せている", () => {
     expect(documentedCommands(README)).toEqual(implementedCommands());
+  });
+
+  it("README.ja.md が全サブコマンドを漏れなく載せている", () => {
+    // 既定の README を英語にしたので、日本語版は既定の経路から外れた。
+    // 片方だけに足したサブコマンドが、もう片方で黙って欠けるのを止める。
+    expect(documentedCommands(README_JA)).toEqual(implementedCommands());
   });
 
   it("SKILL.md が全サブコマンドを漏れなく載せている", () => {
