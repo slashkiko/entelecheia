@@ -1,196 +1,196 @@
-# Semantic Review 観点リファレンス
+# Semantic Review point reference
 
-ここに定義した意味的不整合だけを扱う。既存リポジトリの規約や設計書が本書より具体的な場合は、その一次情報を優先する。
+Handle only the semantic mismatches defined here. When the repository's own conventions or design docs are more specific than this document, prefer that primary source.
 
-## A. 意図整合
+## A. Intent alignment
 
-### A1. 未実装
+### A1. Missing implementation
 
-宣言された実装項目または受け入れ条件に対応する変更がない。
+No change corresponds to a declared implementation item or acceptance criterion.
 
-- 既存コードがすでに満たしていないか確認してから `Mismatch` とする
-- 後続対応が明示されている項目は除外する。追跡先がなく後続対応を特定できない場合は、必要な追跡情報を `Unverifiable` として確認する
+- Confirm that existing code does not already satisfy it before calling it `Mismatch`
+- Exclude items whose follow-up is stated explicitly. When there is no tracking reference and the follow-up cannot be identified, raise the missing tracking information as `Unverifiable`
 
-### A2. スコープ逸脱
+### A2. Scope creep
 
-意図にない変更のうち、公開契約、永続データ、実行経路、副作用、ユーザー可視挙動、セキュリティ境界のいずれかを変えるものを `Undeclared` とする。
+Among changes outside the intent, label `Undeclared` those that change any of the public contract, persisted data, an execution path, side effects, user-visible behaviour, or a security boundary.
 
-生成物、fixture、テスト補助、シグネチャ変更への機械的追従は、それ自体を列挙しない。
+Do not list generated files, fixtures, test helpers, or mechanical follow-through to a signature change on their own.
 
-### A3. 説明と差分の矛盾
+### A3. Description contradicts the diff
 
-「挙動を変えない」などの明示的な説明と、実際の意味的変更が食い違う場合は `Mismatch` とする。ファイル数や行数だけの軽微な不一致は扱わない。
+When an explicit statement such as "behaviour is unchanged" disagrees with the actual semantic change, label it `Mismatch`. Minor discrepancies in file or line counts alone are out of scope.
 
-### A4. 明示された受け入れ条件を検証できない
+### A4. Stated acceptance criteria cannot be verified
 
-チケットや仕様に受け入れ条件が明示されているのに、それを観測するテストがない、またはテストが対象分岐を通らない場合は `Mismatch` とする。
+When a ticket or spec states an acceptance criterion but no test observes it, or the test does not reach the target branch, label it `Mismatch`.
 
-「受け入れ条件 → fixture → 実行分岐 → 観測点 → assertion」を追う。一般的なテスト不足は扱わない。
+Follow acceptance criterion -> fixture -> execution branch -> observation point -> assertion. General lack of tests is out of scope.
 
-## B. 振る舞いの変化
+## B. Behaviour change
 
-観測可能な変更を before / after で記録する。意図どおりなら指摘にはせず、詳細表に残す。
+Record observable changes as before / after. When they match the intent, do not raise them as findings; leave them in the detail table.
 
-### B1. 公開契約
+### B1. Public contract
 
-- API のフィールド、番号、型、必須性、エンドポイント、メソッド、公開関数の変更
-- 既存利用者を壊し、移行手段がなければ `Mismatch`
-- CI が互換性を検査している場合も、生成物、利用側、CI の対象外を確認する
+- Changes to API fields, numbers, types, requiredness, endpoints, methods, or exported functions
+- `Mismatch` when it breaks existing consumers and no migration path exists
+- Even when CI checks compatibility, check generated files, consumers, and what CI does not cover
 
-### B2. データ契約
+### B2. Data contract
 
-- DB、検索インデックス、キャッシュ、イベント、ファイル形式の型・必須性・制約変更
-- 同種の既存定義との不一致や、保存済みデータを読めなくする変更を確認する
-- スキーマ情報が必要なら定義やメタデータだけを読み、業務データは読まない
+- Type, requiredness or constraint changes in the DB, search index, cache, events, or file formats
+- Check for disagreement with similar existing definitions, and for changes that make stored data unreadable
+- When schema information is needed, read only definitions and metadata; do not read business data
 
-### B3. 既存呼び出し元
+### B3. Existing callers
 
-戻り値、引数、エラー、nil/空値などの意味変更が、差分外の呼び出し元の前提を壊さないか確認する。変更シンボルの参照をリポジトリ内で列挙する。
+Check that semantic changes to return values, arguments, errors, and nil/empty values do not break the assumptions of callers outside the diff. List the references to the changed symbols across the repository.
 
-### B4. 実行経路
+### B4. Execution paths
 
-条件式、早期 return、境界値、エラー処理、処理順の変更を確認する。
+Check changes to conditionals, early returns, boundary values, error handling, and ordering.
 
-### B5. 副作用
+### B5. Side effects
 
-外部呼び出し、永続化、通知、共有状態、トランザクション境界、部分失敗の扱いが変わるか確認する。新規コードの再実行安全性は F で扱う。
+Check whether external calls, persistence, notifications, shared state, transaction boundaries, or partial-failure handling change. Re-execution safety of new code belongs to F.
 
-### B6. 暗黙の挙動
+### B6. Implicit behaviour
 
-既定値、null/空値、並び順、時刻・タイムゾーン、丸め、大小文字などの変更を確認する。
+Check changes to defaults, null/empty values, ordering, time and time zone, rounding, and case sensitivity.
 
-## C. 機能全体の意味整合
+## C. Whole-feature semantic coherence
 
-差分外の根拠を示せる場合だけ `Mismatch` とする。根拠形式は末尾の共通ルールに従う。追い切れない場合は、必要情報を具体化できるときだけ `Unverifiable` とする。
+Label `Mismatch` only when evidence from outside the diff can be shown. The evidence format follows the shared rules at the end. When it cannot be traced fully, use `Unverifiable` only when the needed information can be named concretely.
 
-### C1. 前段と後段の食い違い
+### C1. Producer and consumer disagree
 
-生産側と消費側、書き込みと読み出し、送信と受信、保存と派生データ更新など、一方向のフローの片側だけが変わっていないか確認する。
+Check whether only one side of a one-way flow changed: producer and consumer, write and read, send and receive, store and derived-data update.
 
-### C2. 既存仕様との衝突
+### C2. Conflict with the existing spec
 
-変更したドメイン概念について、既存コード、仕様、設計書の定義と矛盾しないか確認する。衝突相手を示せなければ断定しない。
+For each changed domain concept, check that it does not contradict the definitions in existing code, specs and design docs. Do not assert a conflict whose counterpart cannot be shown.
 
-### C3. 対称な操作対
+### C3. Symmetric operation pairs
 
-作成/更新、登録/削除、encode/decode、適用/ロールバック、書き込み/無効化など、対になる操作の片側だけが変わっていないか確認する。
+Check whether only one side of a paired operation changed: create/update, register/delete, encode/decode, apply/rollback, write/invalidate.
 
-### C4. 状態遷移
+### C4. State transitions
 
-enum、状態、種別を追加・変更したとき、それを扱う switch、表示、検索、集計、永続化、シリアライズが追従しているか確認する。
+When an enum, state or kind is added or changed, check that the switches, display, search, aggregation, persistence and serialization that handle it follow.
 
-### C5. 横展開
+### C5. Fan-out
 
-同じ interface、スキーマ、仕様、テンプレート、または明示的な操作対に属する箇所だけを横展開対象とする。名前や構造が似ているだけでは指摘しない。
+Treat as fan-out targets only the places belonging to the same interface, schema, spec, template, or an explicit operation pair. Similar names or structure alone are not a finding.
 
-## D. 意味的に壊れた実装
+## D. Semantically broken implementation
 
-構文や型は正しくても、書こうとした意味と異なる変更を扱う。
+Handle changes that are correct in syntax and types but mean something other than what was intended.
 
-### D1. 変数・フィールドの取り違え
+### D1. Wrong variable or field
 
-似た名前や同じ型の値、代入の左右、作成日時と更新日時などを突き合わせる。
+Compare similarly named values, values of the same type, the two sides of an assignment, and created-at against updated-at.
 
-### D2. 条件の取り違え
+### D2. Wrong condition
 
-`&&` / `||`、否定、比較の向き、境界の包含、早期 return の条件を自然言語に読み下して意図と比較する。
+Read `&&` / `||`, negation, comparison direction, boundary inclusiveness, and early-return conditions out in plain language, and compare them against the intent.
 
-### D3. 引数の順序・対象
+### D3. Argument order and target
 
-同じ型の引数が並ぶ呼び出しについて、定義側のパラメータ名と実引数の意味を比較する。
+For calls with several arguments of the same type, compare the parameter names at the definition against the meaning of the actual arguments.
 
-### D4. 単位・スケール・ID 種別
+### D4. Unit, scale and ID kind
 
-秒/ミリ秒、通貨単位、0/1 始まり、タイムゾーン、各種 ID などの意味を確認する。
+Check the meaning of seconds/milliseconds, currency units, 0- or 1-based indexing, time zones, and the various kinds of ID.
 
-### D5. ループ・分岐の対象
+### D5. Loop and branch target
 
-ループ変数、外側の変数、ネストした index、判定対象と操作対象が一致するか確認する。
+Check that the loop variable, the outer variable, nested indexes, and the thing tested against the thing operated on all agree.
 
-### D6. コピー元の残骸
+### D6. Leftovers from what was copied
 
-監査ログ、外部向けメッセージ、エラーコード、リトライ判定、監視条件、定数値に意味的な残骸がある場合だけ扱う。内部名の違和感だけでは指摘しない。
+Handle only semantic leftovers in audit logs, outward-facing messages, error codes, retry decisions, monitoring conditions and constant values. An odd internal name alone is not a finding.
 
-## E. 横断的不変条件
+## E. Cross-cutting invariants
 
-データアクセス、公開 API、認証・認可、テナント境界を触る場合に評価する。
+Evaluate when the diff touches data access, public APIs, authentication and authorization, or tenant boundaries.
 
-### E1. 主体・所有権・テナント境界
+### E1. Subject, ownership and tenant boundary
 
-- クライアント入力ではなく、認証済み文脈から主体やスコープを得ているか
-- リクエスト内の所有者 ID と認証済み主体の対応を検証しているか
-- DB クエリ、検索、キャッシュキー、イベント、外部副作用までスコープが伝播しているか
-- リポジトリ固有の正例と認証ミドルウェアを確認し、一般論だけで認証方式を決めつけない
+- Is the subject or scope taken from the authenticated context rather than from client input
+- Is the owner ID in the request checked against the authenticated subject
+- Does the scope propagate through DB queries, search, cache keys, events and external side effects
+- Check the repository's own positive examples and auth middleware. Do not settle on an auth scheme from general knowledge alone
 
-### E2. 認可登録・既定動作
+### E2. Authorization registration and defaults
 
-- 新しい公開操作がルーター、ポリシー、権限定義、除外リストに正しく登録されているか
-- 未登録時の既定が fail-open か fail-closed かを実装から確認する
-- 意図的な公開操作か判断できない場合は `Unverifiable` とする
+- Is a new public operation registered correctly in the router, policies, permission definitions and exclusion lists
+- Confirm from the implementation whether the default when unregistered is fail-open or fail-closed
+- When it cannot be decided whether the public operation is intentional, use `Unverifiable`
 
-## F. 実行時意味論
+## F. Runtime semantics
 
-トランザクション、キュー、イベント購読、定期実行、並行処理を触る場合に評価する。実行基盤の公式保証またはリポジトリ内の wrapper 実装を確認し、保証を推測しない。
+Evaluate when the diff touches transactions, queues, event subscriptions, scheduled jobs or concurrency. Check the runtime's official guarantees or the wrapper implementation in the repository. Do not guess at guarantees.
 
-### F1. 再試行される範囲の外部副作用
+### F1. External side effects inside a retried scope
 
-再実行されうるトランザクションや callback 内に、非冪等な外部 API、publish、乱数生成、外側変数への追記がないか確認する。
+Check that a transaction or callback that may be re-executed contains no non-idempotent external API call, publish, random generation, or append to an outer variable.
 
-### F2. 重複配信への防御
+### F2. Defence against duplicate delivery
 
-at-least-once のキューや subscriber では、重複キー、状態判定、冪等更新などが副作用より前にあるか確認する。
+For at-least-once queues and subscribers, check that the duplicate key, state check or idempotent update comes before the side effect.
 
-### F3. 副作用と記録の順序
+### F3. Order of side effect and record
 
-副作用の後に実行済み記録を残す設計では、途中失敗と再試行で二重実行が起きないか確認する。outbox、冪等キー、状態遷移など既存方式を照合する。
+Where the design records completion after the side effect, check that a mid-way failure and a retry cannot execute it twice. Compare against the existing approach: outbox, idempotency key, state transition.
 
-### F4. 多重起動・並行実行
+### F4. Multiple instances and concurrency
 
-定期実行や worker が同時に複数動く可能性を確認し、プラットフォーム設定、分散ロック、リース、状態ガードのいずれで防いでいるか確認する。
+Check whether a scheduled job or worker can run in more than one instance at a time, and which of platform configuration, distributed lock, lease or state guard prevents it.
 
-## G. 移行・共存期間
+## G. Migration and coexistence window
 
-DB/API/event/index のスキーマを触る場合に評価する。
+Evaluate when the diff touches a DB, API, event or index schema.
 
-### G1. 既存データ
+### G1. Existing data
 
-新フィールドや制約に対して、既存行の null、既定値、古い形式がどう読まれるか確認する。読み側の変換やフォールバックも追う。
+For new fields and constraints, check how nulls, defaults and old formats in existing rows are read. Follow the conversions and fallbacks on the reading side too.
 
-### G2. 段階移行
+### G2. Staged migration
 
-追加、バックフィル、読み書きの切り替え、制約強化、旧定義削除を安全な段階に分けているか確認する。後続作業には追跡先が必要。
+Check that adding, backfilling, switching reads and writes, tightening constraints and dropping the old definition are split into safe stages. Follow-up work needs a tracking reference.
 
-### G3. 適用順序
+### G3. Apply order
 
-スキーマ、アプリ、設定、ジョブのデプロイ単位と順序が明示され、実際のリリース手順と整合するか確認する。順序が読めなければ `Unverifiable` とする。
+Check that the deploy units and order for schema, application, configuration and jobs are stated, and agree with the actual release procedure. When the order cannot be read, use `Unverifiable`.
 
-### G4. 新旧混在
+### G4. Old and new in coexistence
 
-「旧コード × 新データ」と「新コード × 旧データ」、ローリング更新、イベント遅延、検索インデックス再構築中の組み合わせを列挙して確認する。
+List and check the combinations: old code x new data, new code x old data, rolling updates, delayed events, and the window while a search index is being rebuilt.
 
-## H. コードと環境定義
+## H. Code and environment definitions
 
-設定、環境変数、ヘッダ、ホスト、ポート、権限を触る場合に評価する。
+Evaluate when the diff touches configuration, environment variables, headers, hosts, ports or permissions.
 
-### H1. 設定と各環境
+### H1. Configuration and each environment
 
-- 設定構造体・schema と、各環境の設定ファイル・Secret・ConfigMap が対応しているか
-- decoder が strict か、欠落時の既定値が本当に適用されるか
-- 対象環境はリポジトリ内の構成と運用資料から特定する
+- Do the configuration struct or schema and each environment's config file, Secret and ConfigMap correspond
+- Is the decoder strict, and does the default on absence really apply
+- Identify the target environments from the repository's own layout and its operational documents
 
-### H2. 経路・許可リスト・権限
+### H2. Routes, allow lists and permissions
 
-新しいヘッダ、endpoint、origin、service account、権限などが、gateway、CORS、proxy、IAM、ネットワークポリシー、デプロイ定義へ追従しているか確認する。
+Check that new headers, endpoints, origins, service accounts and permissions are followed through into the gateway, CORS, proxy, IAM, network policies and deploy definitions.
 
-## 誤検知を避ける共通ルール
+## Shared rules for avoiding false positives
 
-- 差分が導入していない既存問題を、この PR の欠陥として指摘しない
-- 自動生成コードの中身は評価せず、生成元と生成物の整合だけを見る
-- incident、hotfix、emergency の PR では、明示的に省略された通常工程を A2/C5 として責めない
-- revert PR では A を原則除外し、戻し漏れと意味的破損を C/D で見る
-- 段階的 PR の後続対応は、追跡先があれば未実装扱いにしない
-- 同一事象に複数ラベルを付けず、主観点を 1 つ決める
-- 検証可能な意図がなく `INSUFFICIENT_CONTEXT` に該当する場合は、A 全体を評価しない
-- 低確度の事象を `Mismatch` にしない
-- C〜H は差分外の根拠を示す。リポジトリ内のコードや規約は `file:line`、外部一次情報は URL・文書名・バージョン・該当節を記載する
-- 「他に存在しない」と断定する場合は、検索語、対象ディレクトリ、除外範囲をレビュー範囲へ記録する
+- Do not report an existing problem the diff did not introduce as a defect of this PR
+- Do not evaluate the contents of generated code; look only at whether the generator and the generated output agree
+- On incident, hotfix and emergency PRs, do not fault the normal steps that were explicitly skipped as A2/C5
+- On revert PRs, exclude A in principle, and look for what was not reverted and for semantic breakage under C/D
+- Follow-up work in a staged PR is not treated as missing when a tracking reference exists
+- Do not put more than one label on the same event; pick one primary point
+- When there is no verifiable intent and `INSUFFICIENT_CONTEXT` applies, do not evaluate A at all
+- Do not label a low-confidence event `Mismatch`
+- C-H show evidence from outside the diff. Code and conventions inside the repository are given as `file:line`; an external primary source gives the URL, document name, version and section
+- When asserting that nothing else exists, record the search terms, target directories and exclusions in the review scope

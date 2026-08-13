@@ -605,6 +605,14 @@ function withoutLlmResumeAfter(action: Action): Action {
  *
  * `changesRequestedHead` が入っているティックは、同じ手で WAIT を外す
  * （`waitActionLines`）。
+ *
+ * **`intent` を英語で書かせるのは、ここに差し込む材料が何語でも変わらない。**
+ * criteria の description も Gap の detail も宣言部（`.goals/*.yaml`）から来るので、
+ * このリポジトリでは日本語になる。何も言わなければモデルはそれに引きずられて
+ * 日本語の `intent` を返すが、その文字列は PR 進捗コメントの `###` 見出し
+ * （`commentBody`、src/publish/index.ts）と `decidedBy: "llm"` の rationale
+ * （`describeAction`）にそのまま載る。**英語で読む人が最初に見る1行**になるので、
+ * 宣言部の言語とは切り離す。
  */
 function buildPrompt(
   target: DecideTarget,
@@ -639,6 +647,7 @@ function buildPrompt(
       "",
       "COMPLETE and ESCALATE cannot be chosen. Completion and the stop conditions are decided by the controller.",
       ...waitClosingLines(changesRequestedHead),
+      "Write the `intent` in English, whatever language the Goal, its criteria and the Gaps above are written in. It becomes the heading of the PR progress comment.",
       // 出力形式の強制はトランスポートの責務なので adapter 側に一本化する。
       // LlmPort の契約は「戻り値を Zod で検証する」までしか言っていない。
     ].join("\n"),

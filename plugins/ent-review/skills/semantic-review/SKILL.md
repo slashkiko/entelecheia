@@ -1,147 +1,147 @@
 ---
 name: semantic-review
-description: PR の宣言された意図・仕様・実装を突き合わせ、未実装、スコープ逸脱、既存仕様との衝突、意味的に壊れた実装、移行や実行時保証の不整合を検出してレビュー本文を返す。semantic review、セマンティックレビュー、意図整合レビュー、仕様レビュー、意味的バグの検出を明示的に依頼されたときに使う。レビュー結果は投稿せず、読み取り専用で調査する。
+description: Compare a PR's declared intent, spec and implementation, and return a review body reporting missing implementation, scope creep, conflicts with the existing spec, semantically broken implementation, and migration or runtime-guarantee mismatches. Use it when semantic review, intent-alignment review, spec review, or detection of semantic bugs is explicitly requested. Do not post the result; investigate read-only.
 ---
 
 # Semantic Review
 
-PR のコードの見た目ではなく、変更が意味する振る舞いをレビューする。
+Review what the change means for behaviour, not how the PR's code looks.
 
-このスキルはレビュー結果の本文を返すところまでを担う。コード変更、ブランチ作成、PR コメントの投稿は行わない。投稿先と投稿方法は呼び出し側が決める。
+This skill goes as far as returning the review body. It does not change code, create branches, or post PR comments. The caller decides where and how to post.
 
-## 前提
+## Assumptions
 
-- 対象は GitHub Pull Request とする。Open、Draft、評価目的のマージ済み PR を扱える
-- GitHub の PR メタデータ、差分、コメントを読み取れる手段を使う。利用可能なら `gh` CLI を優先する
-- チケット、設計書、議論スレッドなどのリンク先は、利用可能なコネクタや CLI で読み取る。取得できなくても中断せず、未取得の理由を記録する
-- リポジトリ固有の `CLAUDE.md`、`AGENTS.md`、`CONTRIBUTING.md`、設計書、CI、運用規約を一次情報として扱う
+- The target is a GitHub Pull Request. Open, Draft, and already-merged PRs read for evaluation are all in scope
+- Use whatever can read GitHub PR metadata, diffs and comments. Prefer the `gh` CLI when available
+- Read linked tickets, design docs and discussion threads with whatever connectors or CLIs are available. Do not stop when they cannot be fetched; record why
+- Treat the repository's own `CLAUDE.md`, `AGENTS.md`, `CONTRIBUTING.md`, design docs, CI and operational rules as primary sources
 
-## 責務
+## Responsibilities
 
-| 項目 | 内容 |
+| Item | Content |
 | --- | --- |
-| インプット | PR のタイトル・本文・diff、リンクされたチケットや仕様、変更箇所の周辺コード、既存テスト、リポジトリ内の規約と設計書 |
-| アウトプット | 判定と指摘を先頭に置き、調査範囲と対応関係を末尾に畳んだレビュー本文 |
-| 判定 | `MISALIGNED` / `INSUFFICIENT_CONTEXT` / `ALIGNED` |
+| Input | The PR title, body and diff; linked tickets and specs; the code around the changes; existing tests; the conventions and design docs in the repository |
+| Output | The review body, with the assessment and findings at the top and the scope and mappings folded away at the bottom |
+| Assessment | `MISALIGNED` / `INSUFFICIENT_CONTEXT` / `ALIGNED` |
 
-## 観点
+## Points
 
-| 記号 | 名前 | 突き合わせる対象 | 発火条件 |
+| Symbol | Name | Compared against | Fires when |
 | --- | --- | --- | --- |
-| A | 意図整合 | 宣言された意図 ↔ 差分 | 原則として常に。revert PR と `INSUFFICIENT_CONTEXT` に該当する場合は除外 |
-| B | 振る舞いの変化 | 変更前 ↔ 変更後 | 常に |
-| C | 機能全体の意味整合 | 差分 ↔ 機能全体・既存仕様 | 常に |
-| D | 意味的に壊れた実装 | 書かれたコード ↔ 書こうとしたコード | 常に |
-| E | 横断的不変条件 | 差分 ↔ セキュリティ・所有権・認可など全域の規約 | データアクセス、公開 API、認証・認可、テナント境界を触る差分 |
-| F | 実行時意味論 | コードの前提 ↔ 実行基盤の保証 | トランザクション、キュー、イベント購読、定期実行、並行処理を触る差分 |
-| G | 移行・共存期間 | 差分 ↔ 既存データとリリース時間軸 | DB スキーマ、API スキーマ、イベント形式、検索インデックスを触る差分 |
-| H | コードと環境定義 | コード ↔ 設定・権限・ルーティング・デプロイ定義 | 設定、環境変数、ヘッダ、ホスト、ポート、権限を触る差分 |
+| A | Intent alignment | declared intent <-> diff | Always, in principle. Excluded for revert PRs and when `INSUFFICIENT_CONTEXT` applies |
+| B | Behaviour change | before <-> after | Always |
+| C | Whole-feature semantic coherence | diff <-> the whole feature and the existing spec | Always |
+| D | Semantically broken implementation | the code as written <-> the code as intended | Always |
+| E | Cross-cutting invariants | diff <-> repository-wide rules for security, ownership and authorization | Diffs touching data access, public APIs, authentication and authorization, tenant boundaries |
+| F | Runtime semantics | what the code assumes <-> what the runtime guarantees | Diffs touching transactions, queues, event subscriptions, scheduled jobs, concurrency |
+| G | Migration and coexistence window | diff <-> existing data and the release timeline | Diffs touching DB schema, API schema, event formats, search indexes |
+| H | Code and environment definitions | code <-> configuration, permissions, routing, deploy definitions | Diffs touching configuration, environment variables, headers, hosts, ports, permissions |
 
-発火条件に当てはまらない E〜H は評価しない。B は「何が変わったか」を記述し、D は「変え方が間違っている」と指摘する。同じ事象を両方の指摘として数えない。
+Do not evaluate any of E-H whose firing condition does not hold. B describes what changed; D states that the way it changed is wrong. Do not count the same event as both.
 
-観点の詳細と誤検知抑制ルールは [references/criteria.md](references/criteria.md) を必ず読む。
+Always read [references/criteria.md](references/criteria.md) for the point definitions and the false-positive rules.
 
-## 対象外
+## Out of scope
 
-- formatter、linter、型検査、ビルド、通常の CI が直接検出する問題
-- 命名の好み、責務分割、一般的なリファクタリング提案
-- 実測や要件に根拠のない性能改善
-- 現在の仕様に含まれない仮定的な将来リスク
-- 差分が導入していない既存の問題
+- Problems that formatters, linters, type checkers, builds and ordinary CI detect directly
+- Naming preferences, responsibility splits, general refactoring suggestions
+- Performance improvements with no measurement or requirement behind them
+- Hypothetical future risks not covered by the current spec
+- Existing problems the diff did not introduce
 
-判断に迷うものを `Mismatch` にしない。判断に必要な情報を具体化できる場合だけ `Unverifiable` にし、それもできなければ出力しない。
+Do not label a borderline call `Mismatch`. Use `Unverifiable` only when the information needed to decide can be named concretely; when it cannot, output nothing.
 
-## 実行手順
+## Procedure
 
-### Step 1. 対象と意図の情報源を集める
+### Step 1. Collect the target and the sources of intent
 
-PR 番号または URL を受け取る。省略時は現在のブランチに対応する PR を探す。
+Take a PR number or URL. When it is omitted, find the PR for the current branch.
 
-次を調べ、取得結果と取得できなかった理由を記録する。
+Investigate the following, and record both what was fetched and the reason for anything that was not.
 
-1. PR タイトル、本文、base/head SHA、変更ファイル、既存コメント
-2. PR 本文からリンクされたチケット、仕様、設計書、議論スレッド
-3. PR で追加・変更されたリポジトリ内の設計書、スキーマ定義、API 定義
-4. リポジトリの `CLAUDE.md`、`AGENTS.md`、`CONTRIBUTING.md`、関連 runbook、CI 規則
-5. 既存の semantic review コメントと実装者の返信
+1. PR title, body, base/head SHA, changed files, existing comments
+2. Tickets, specs, design docs and discussion threads linked from the PR body
+3. Design docs, schema definitions and API definitions added or changed in the PR
+4. The repository's `CLAUDE.md`, `AGENTS.md`, `CONTRIBUTING.md`, related runbooks and CI rules
+5. Existing semantic review comments and the implementer's replies
 
-過去の semantic review コメントは意図の情報源として数えない。回答済みの指摘を再掲せず、回答後の状態を踏まえて判定を更新するために使う。外部情報源を読めない場合は推測で埋めない。
+Past semantic review comments do not count as a source of intent. Use them to avoid repeating findings already answered, and to update the assessment against the state after those answers. When an external source cannot be read, do not fill the gap with a guess.
 
-### Step 2. 意図を検証可能な項目に分解する
+### Step 2. Break the intent into verifiable items
 
-情報源から、この PR がやると宣言していることを 1 項目 1 検証単位で列挙する。受け入れ条件も独立した項目にする。「後続で対応」と明記された項目は未実装扱いにしないが、追跡先の有無は確認する。
+From the sources, list what this PR declares it does, one verification unit per item. Make each acceptance criterion its own item. Items explicitly marked as follow-up work are not treated as missing, but check whether a tracking reference exists.
 
-### Step 3. 差分と意図を双方向に対応付ける
+### Step 3. Map the diff and the intent in both directions
 
-`gh pr diff <PR>` などで差分を取得する。
+Get the diff with `gh pr diff <PR>` or similar.
 
-- 各意図項目について、対応する差分を探し `実装済` / `部分的` / `未実装` を判定する
-- 各差分について、対応する意図項目を探し、紐づかない意味的変更を未宣言の差分として記録する
-- 生成物、fixture、スナップショット、機械的な追従は、宣言された変更から必然なら未宣言扱いにしない
+- For each intent item, look for the matching diff and mark it `Implemented` / `Partial` / `Missing`
+- For each diff, look for the matching intent item, and record semantic changes that tie to none as undeclared diffs
+- Generated files, fixtures, snapshots and mechanical follow-through are not undeclared when they follow necessarily from the declared change
 
-### Step 4. 発火観点を決め、差分の外を読む
+### Step 4. Decide which points fire, and read outside the diff
 
-E〜H の発火条件を判定し、評価した観点と評価しなかった理由を記録する。次を探索する。
+Decide which of E-H fire, and record the points evaluated and the reason for each one not evaluated. Explore the following.
 
-- 変更した関数・型・定数の定義、呼び出し元、呼び出し先
-- 作成と更新、登録と削除、encode と decode など対になる処理
-- 同じ interface、スキーマ、規約、テンプレートに従う既存実装
-- 変更した値や状態を扱う全分岐とテスト
-- リポジトリ固有の認証・認可、トランザクション、配信保証、移行、設定展開の規約
+- Definitions, callers and callees of the changed functions, types and constants
+- Paired operations such as create and update, register and delete, encode and decode
+- Existing implementations that follow the same interface, schema, convention or template
+- Every branch and test that handles the changed values or state
+- The repository's own rules for authentication and authorization, transactions, delivery guarantees, migration and config rollout
 
-検索範囲を記録し、「存在しない」と結論づける前に十分な探索根拠を残す。
+Record the search scope, and leave enough evidence of the search before concluding that something does not exist.
 
-### Step 5. 意味の食い違いを判定する
+### Step 5. Assess the semantic mismatches
 
-[references/criteria.md](references/criteria.md) に従う。
+Follow [references/criteria.md](references/criteria.md).
 
-- B: 観測可能な before / after を列挙する
-- C: 機能を端から端まで追い、片側だけの変更、既存仕様との衝突、状態や横展開の漏れを探す
-- D: 変更行を読み、変数、条件、引数順、単位、ループ対象、コピー元の残骸を確認する
-- E: 認証済み主体、所有権、認可、データスコープがすべての経路で保たれるか確認する
-- F: 再試行、重複配信、多重起動、並行実行、部分失敗の保証とコードの前提を突き合わせる
-- G: 旧コード × 新データ、新コード × 旧データ、適用順序、バックフィル、ロールバックを確認する
-- H: コードと各環境の設定、ルーティング、権限、許可リスト、マニフェストを突き合わせる
+- B: list the observable before / after
+- C: follow the feature end to end and look for one-sided changes, conflicts with the existing spec, and state or fan-out that was missed
+- D: read the changed lines and check variables, conditions, argument order, units, loop targets, and leftovers from what was copied
+- E: check that the authenticated subject, ownership, authorization and data scope hold on every path
+- F: compare the code's assumptions against the guarantees for retries, duplicate delivery, multiple instances, concurrent execution and partial failure
+- G: check old code x new data, new code x old data, apply order, backfill and rollback
+- H: compare the code against each environment's configuration, routing, permissions, allow lists and manifests
 
-外部システムを参照する場合は、判断に必要なメタデータやスキーマに限定し、業務データや個人情報を読まない。
+When consulting an external system, limit it to the metadata and schemas needed to decide. Do not read business data or personal information.
 
-### Step 6. 本文を組み立てて返す
+### Step 6. Assemble the body and return it
 
-[references/output-format.md](references/output-format.md) に従い、1 本のレビュー本文を返す。投稿しない。
+Follow [references/output-format.md](references/output-format.md) and return one review body. Do not post it.
 
-- 判定、件数、評価観点を先頭に置く
-- 指摘は `SR-001` 形式の ID を振り、同じ原因を分割しない
-- C〜H の指摘には差分外の根拠を示す。リポジトリ内の根拠は `file:line`、外部一次情報は URL・文書名・バージョン・該当節を記載する
-- 既に回答済みの指摘は除外し、回答を踏まえて判定を更新する
+- Put the assessment, the counts and the evaluated points at the top
+- Give each finding an ID in `SR-001` form, and do not split one cause
+- Findings for C-H show evidence from outside the diff. Evidence inside the repository is `file:line`; an external primary source gives the URL, document name, version and section
+- Exclude findings already answered, and update the assessment against those answers
 
-## ラベル
+## Labels
 
-| ラベル | 意味 | 期待する対応 |
+| Label | Meaning | Expected response |
 | --- | --- | --- |
-| `Mismatch` | 意図・仕様・実装が食い違い、修正が必要 | 実装または宣言を直す |
-| `Undeclared` | 意味は壊れていないが、宣言にない意味的変更 | PR 説明へ追記するか変更を分ける |
-| `Unverifiable` | 情報不足で判断できない | 必要な前提や意図を補足する |
+| `Mismatch` | Intent, spec and implementation disagree, and a fix is needed | Fix the implementation or the declaration |
+| `Undeclared` | Nothing is semantically broken, but the semantic change is not declared | Add it to the PR description, or split the change out |
+| `Unverifiable` | Not decidable for lack of information | Supply the missing premise or intent |
 
-各指摘に影響（高 / 中 / 低）と確度（高 / 中 / 低）を付ける。確度が低い事象は `Mismatch` にしない。同一事象に複数のラベルを付けない。
+Give each finding an impact (high / medium / low) and a confidence (high / medium / low). Do not label a low-confidence event `Mismatch`. Do not put more than one label on the same event.
 
-## 判定
+## Assessment
 
-上から順に評価する。
+Evaluate top to bottom.
 
-1. `Mismatch` が 1 件以上なら `MISALIGNED`
-2. `Mismatch` がなく、意図の情報源が PR タイトルと本文だけで、検証可能な意図項目もなければ `INSUFFICIENT_CONTEXT`
-3. それ以外は `ALIGNED`
+1. One or more `Mismatch` gives `MISALIGNED`
+2. No `Mismatch`, the only sources of intent being the PR title and body, and no verifiable intent items, gives `INSUFFICIENT_CONTEXT`
+3. Anything else gives `ALIGNED`
 
-`Undeclared` と `Unverifiable` だけなら `ALIGNED` とする。`INSUFFICIENT_CONTEXT` では A の対応付けを行わず、B〜D と発火した E〜H を評価する。
+`Undeclared` and `Unverifiable` alone give `ALIGNED`. Under `INSUFFICIENT_CONTEXT`, do not map point A; evaluate B-D and whichever of E-H fire.
 
-## 制約
+## Constraints
 
-- 読み取り専用で実行する。コード、ブランチ、PR、チケット、スレッドを変更しない
-- 読み取れない情報を推測で補わない
-- 外部システムはレビューに必要なメタデータとスキーマだけを読み、業務データや個人情報を取得・転記しない
-- 回答済みの同じ指摘を繰り返さない
+- Run read-only. Do not change code, branches, PRs, tickets or threads
+- Do not fill what cannot be read with a guess
+- Read only the metadata and schemas the review needs from external systems. Do not fetch or copy business data or personal information
+- Do not repeat a finding that has already been answered
 
 ## References
 
-- [references/criteria.md](references/criteria.md): 観点 A〜H の詳細と誤検知抑制ルール
-- [references/output-format.md](references/output-format.md): レビュー本文のテンプレートと出力ルール
+- [references/criteria.md](references/criteria.md): the details of points A-H and the false-positive rules
+- [references/output-format.md](references/output-format.md): the review body template and the output rules

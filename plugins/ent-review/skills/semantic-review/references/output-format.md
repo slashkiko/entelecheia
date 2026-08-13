@@ -1,27 +1,27 @@
-# Semantic Review 出力フォーマット
+# Semantic Review output format
 
-1 本のサマリ本文に集約する。判定と要対応を先頭に置き、調査結果の詳細は末尾の `<details>` に畳む。投稿は行わない。
+Collect everything into one summary body. Put the assessment and the must-fix items at the top, and fold the investigation details into a `<details>` at the end. Do not post it.
 
-## 構成
+## Structure
 
-| 位置 | 内容 | 条件 |
+| Position | Content | Condition |
 | --- | --- | --- |
-| 1 | 判定、件数、評価観点 | 常に |
-| 2 | 要対応の一覧 | `Mismatch` が 2 件以上 |
-| 3 | 要対応の詳細 | `Mismatch` がある |
-| 4 | 要説明 | `Undeclared` がある |
-| 5 | 確認したいこと | `Unverifiable` がある |
-| 6 | 調査結果の詳細 | 常に |
+| 1 | Assessment, counts, evaluated points | Always |
+| 2 | Must-fix list | Two or more `Mismatch` |
+| 3 | Must-fix details | Any `Mismatch` |
+| 4 | Needs explanation | Any `Undeclared` |
+| 5 | Open questions | Any `Unverifiable` |
+| 6 | Investigation details | Always |
 
-判定に対応する GitHub alert を使う。
+Use the GitHub alert that matches the assessment.
 
-| 判定 | alert |
+| Assessment | alert |
 | --- | --- |
 | `MISALIGNED` | `[!CAUTION]` |
 | `INSUFFICIENT_CONTEXT` | `[!WARNING]` |
 | `ALIGNED` | `[!TIP]` |
 
-## テンプレート
+## Template
 
 ````markdown
 ## Semantic Review
@@ -29,132 +29,132 @@
 <!-- semantic-review:summary -->
 
 > [!CAUTION]
-> **判定: MISALIGNED** — 要対応 2 件 / 要説明 1 件 / 確認したいこと 1 件
-> 評価した観点: A・B・C・D・G（E・F・H は発火条件に当てはまらず未評価）
+> **Assessment: MISALIGNED** -- 2 must fix / 1 needs explanation / 1 open question
+> Points evaluated: A, B, C, D, G (E, F, H did not fire and were not evaluated)
 
-### 要対応
+### Must fix
 
-| ID | 観点 | 場所 | 内容 |
+| ID | Point | Place | Content |
 | --- | --- | --- | --- |
-| SR-001 | G2 | `{file}` | {一行で症状} |
-| SR-002 | G4 | `{file}` | {一行で症状} |
+| SR-001 | G2 | `{file}` | {symptom in one line} |
+| SR-002 | G4 | `{file}` | {symptom in one line} |
 
-#### SR-001 {タイトル}
+#### SR-001 {title}
 
-- 観点: G2（関連: {関連観点があれば}）
-- 影響: {高 / 中 / 低} ／ 確度: {高 / 中 / 低}
-- 場所: `{file}:{line}`
-- 再現条件: {問題が起きる入力・状態}
-- 期待: {本来の挙動}
-- 実際: {現在の挙動}
-- 根拠: {意図の原文、仕様、または既存コード。C〜H は、リポジトリ内なら file:line、外部一次情報なら URL・文書名・バージョン・該当節を示す}
-- 直し方: {最小の修正方針}
+- Point: G2 (related: {related points, if any})
+- Impact: {high / medium / low} / Confidence: {high / medium / low}
+- Place: `{file}:{line}`
+- Trigger: {the input or state where the problem occurs}
+- Expected: {the intended behaviour}
+- Actual: {the current behaviour}
+- Evidence: {the intent as written, the spec, or existing code. For C-H, give file:line when it is inside the repository, or the URL, document name, version and section for an external primary source}
+- Fix: {the smallest fix that works}
 
-### 要説明
+### Needs explanation
 
-#### SR-003 {タイトル}
+#### SR-003 {title}
 
-- 観点: A2
-- 影響: {高 / 中 / 低} ／ 確度: {高 / 中 / 低}
-- 場所: `{file}:{line}`
-- 内容: {宣言にない意味的変更}
-- 根拠: {A2 の限定条件のどれに該当するか}
+- Point: A2
+- Impact: {high / medium / low} / Confidence: {high / medium / low}
+- Place: `{file}:{line}`
+- Content: {the semantic change that was not declared}
+- Evidence: {which of A2's listed conditions it falls under}
 
-### 確認したいこと
+### Open questions
 
-実装の欠陥を断定するものではなく、判断に必要な情報を確認する。
+These do not assert a defect in the implementation; they ask for the information needed to decide.
 
-#### SR-004 {タイトル}
+#### SR-004 {title}
 
-- 観点: {C2 / G3 など}
-- 影響: {高 / 中 / 低} ／ 確度: {高 / 中 / 低}
-- 場所: `{file}:{line}`
-- 内容: {判断できない点}
-- 根拠: {現時点で確認できた差分外の情報。形式は要対応と同じ}
-- 必要な情報: {何が分かれば判断できるか}
+- Point: {C2, G3, ...}
+- Impact: {high / medium / low} / Confidence: {high / medium / low}
+- Place: `{file}:{line}`
+- Content: {what cannot be decided}
+- Evidence: {what could be confirmed outside the diff so far. Same format as must fix}
+- Needed: {what would settle it}
 
 <details>
 
-<summary>調査結果の詳細</summary>
+<summary>Investigation details</summary>
 
-#### レビュー範囲
+#### Review scope
 
-| 項目 | 内容 |
+| Item | Content |
 | --- | --- |
-| 比較対象 | `{base SHA}` … `{head SHA}` |
-| 評価した観点 | A・B・C・D・G |
-| 評価しなかった観点 | {観点と理由} |
-| 確認できた範囲 | {呼び出し元、対になる処理、照合した実装と規約} |
-| 未確認の範囲 | {取得できなかった情報、リポジトリ外の利用者など} |
-| 存在確認の探索 | {検索語、対象ディレクトリ、除外範囲} |
+| Compared | `{base SHA}` ... `{head SHA}` |
+| Points evaluated | A, B, C, D, G |
+| Points not evaluated | {points and reasons} |
+| Confirmed | {callers, paired operations, implementations and conventions compared against} |
+| Not confirmed | {information that could not be fetched, consumers outside the repository} |
+| Existence searches | {search terms, target directories, exclusions} |
 
-#### 参照した情報源
+#### Sources consulted
 
-| 情報源 | 結果 |
+| Source | Result |
 | --- | --- |
-| PR タイトル・本文 | 取得 |
-| チケット・仕様 | 取得（{タイトル}） / リンクなし / 取得失敗（{理由}） |
-| 議論スレッド | 取得 / リンクなし / 取得失敗（{理由}） |
-| リポジトリ内の設計書・規約 | {パス} / 該当なし |
-| API・データスキーマ | {パスまたはメタデータ} / 対象外 / 参照不可（{理由}） |
-| 既存の semantic review | 取得（{URL または ID}） / なし |
+| PR title and body | fetched |
+| Ticket or spec | fetched ({title}) / no link / fetch failed ({reason}) |
+| Discussion thread | fetched / no link / fetch failed ({reason}) |
+| Design docs and conventions in the repository | {path} / none |
+| API and data schemas | {path or metadata} / out of scope / unavailable ({reason}) |
+| Existing semantic review | fetched ({URL or ID}) / none |
 
-#### 意図 ↔ 差分の対応
+#### Intent <-> diff mapping
 
-| # | 宣言された意図 | 対応する差分 | 状態 | 関連 |
+| # | Declared intent | Matching diff | State | Related |
 | --- | --- | --- | --- | --- |
-| 1 | {意図の原文} | `{file}:{line}` | 実装済 | — |
-| 2 | {意図の原文} | `{file}:{line}` | 部分的 | SR-001 |
-| 3 | {意図の原文} | — | 未実装 | SR-002 |
+| 1 | {intent as written} | `{file}:{line}` | Implemented | -- |
+| 2 | {intent as written} | `{file}:{line}` | Partial | SR-001 |
+| 3 | {intent as written} | -- | Missing | SR-002 |
 
-#### 未宣言の差分
+#### Diffs not declared
 
-| 差分 | 内容 | 関連 |
+| Diff | Content | Related |
 | --- | --- | --- |
-| `{file}` | {意味的な変更} | SR-003 |
+| `{file}` | {the semantic change} | SR-003 |
 
-#### 振る舞いの変化
+#### Behaviour changes
 
-| 再現条件 | 対象 | 変更前 | 変更後 | 波及先 | 観点 | 関連 |
+| Trigger | Target | Before | After | Reaches | Point | Related |
 | --- | --- | --- | --- | --- | --- | --- |
-| {入力・状態} | `{file}:{line}` | {before} | {after} | {利用者・データ・副作用} | B4 | — |
+| {input or state} | `{file}:{line}` | {before} | {after} | {consumers, data, side effects} | B4 | -- |
 
 </details>
 
-<sub>Semantic Review は PR の意図・仕様・実装の意味的な食い違いを確認します。コードスタイル・命名・一般的な性能改善は対象外です。</sub>
+<sub>Semantic Review checks for semantic mismatches between a PR's intent, spec and implementation. Code style, naming and general performance improvements are out of scope.</sub>
 ````
 
-## `ALIGNED` の場合
+## When `ALIGNED`
 
-要対応、要説明、確認したいことがなければ、alert と詳細だけを出す。
+When there is nothing to fix, nothing to explain and nothing to ask, output only the alert and the details.
 
 ````markdown
 > [!TIP]
-> **判定: ALIGNED** — 要対応 0 件
-> 評価した観点: A・B・C・D（E・F・G・H は発火条件に当てはまらず未評価）
+> **Assessment: ALIGNED** -- 0 must fix
+> Points evaluated: A, B, C, D (E, F, G, H did not fire and were not evaluated)
 ````
 
-## `INSUFFICIENT_CONTEXT` の場合
+## When `INSUFFICIENT_CONTEXT`
 
-不足している情報を alert に明記する。A の対応表と未宣言の差分は省略し、B〜D と発火した E〜H の結果を出す。
+State the missing information in the alert. Omit the mapping table for A and the section for diffs that were not declared, and output the results for B-D and whichever of E-H fired.
 
 ````markdown
 > [!WARNING]
-> **判定: INSUFFICIENT_CONTEXT** — 要対応 0 件 / 要説明 0 件 / 確認したいこと {N} 件
-> 検証可能な意図を取得できず、観点 A を評価できなかった
-> 読めた意図の情報源: PR タイトルと本文のみ / 評価した観点: B・C・D
+> **Assessment: INSUFFICIENT_CONTEXT** -- 0 must fix / 0 needs explanation / {N} open questions
+> No verifiable intent could be fetched, so point A could not be evaluated
+> Intent sources read: PR title and body only / Points evaluated: B, C, D
 ````
 
-## 出力ルール
+## Output rules
 
-- 空のセクションを出さない
-- 要対応が 1 件なら一覧表を省略し、詳細から始める
-- 同じラベル内は影響の高い順に並べる
-- 同じ原因を分割せず、主観点を 1 つ選び関連観点を併記する
-- 根拠を示せない推測を指摘にしない
-- `Unverifiable` は実装者に答えてほしい具体的な問いだけに使う
-- `<details>` と `<summary>` の後に空行を入れる
-- 意図の項目は情報源の表現を保ち、意味を変える要約をしない
-- `<!-- semantic-review:summary -->` は出力の識別子として残す。更新処理に使うかどうかは呼び出し側が決める
-- `SR-001` の番号は 1 回のレビュー内だけで通し番号にする
-- 投稿先固有の再実行方法や返信方法はフッタへ固定せず、必要なら呼び出し側が追加する
+- Do not output empty sections
+- With one must-fix item, drop the list table and start from the detail
+- Within one label, order by impact, highest first
+- Do not split one cause; pick one primary point and note the related ones
+- Do not make a finding out of a guess with no evidence
+- Use `Unverifiable` only for concrete questions the implementer should answer
+- Put a blank line after `<details>` and after `<summary>`
+- Keep the wording of the source for intent items; do not summarize in a way that changes the meaning
+- Keep `<!-- semantic-review:summary -->` as the identifier of the output. Whether it is used for updates is the caller's decision
+- The `SR-001` numbering runs within one review only
+- Do not fix a destination-specific way to re-run or reply into the footer; the caller adds it when needed

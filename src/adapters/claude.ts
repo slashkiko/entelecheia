@@ -806,7 +806,7 @@ What can be confirmed about the PR is limited to what the section below carries.
 1. Run git rev-parse HEAD to confirm the commit you read
 2. Read \`.goals/${goalId}.yaml\`. This is the primary source of the intent.
    Read the in-repository files listed in context.references as well.
-   **If you cannot read it, do not evaluate point A, make the verdict
+   **If you cannot read it, do not evaluate point A, make the assessment
    INSUFFICIENT_CONTEXT, and write "the declaration could not be read" as the first
    must-fix item**
 3. Read "${PULL_REQUEST_SECTION}" below. If it was passed down, check there whether the
@@ -819,9 +819,9 @@ What can be confirmed about the PR is limited to what the section below carries.
 reviewed_sha: <the 40-hex sha confirmed in step 1>
 verdict: <either approved or changes_requested>
 
-The verdicts map as follows.
+The assessments map to verdicts as follows.
 
-| semantic-review verdict | verdict |
+| semantic-review assessment | verdict |
 | --- | --- |
 | ALIGNED | approved |
 | MISALIGNED | changes_requested |
