@@ -1,30 +1,30 @@
 ---
 name: ent
-description: ent CLI で Goal を収束させるときの手順。agent-context での構造の把握、init での初回セットアップ、doctor での前提の確認、start / run / get / list の1周、--dry-run での事前確認、abandon で追わなくなった Goal を終端にするところ、--report で進捗を PR に投稿せず stdout やファイルに出すところ、--limit での出力の絞り方、終了コードの読み方、WAITING_HUMAN や ESCALATE で人の承認や介入を待つところを扱う。
+description: Procedure for converging a Goal with the ent CLI. Covers reading the structure with agent-context, first-time setup with init, checking prerequisites with doctor, one round of start / run / get / list, looking ahead with --dry-run, ending a Goal that is no longer pursued with abandon, sending progress to stdout or a file instead of posting it to the PR with --report, narrowing output with --limit, reading exit codes, and where WAITING_HUMAN and ESCALATE wait for human approval or intervention.
 ---
 
-# ent を回す
+# Running ent
 
-`ent` は現在の状態を、宣言した end state に収束させる controller。エージェントが叩く前提の手順を書く。
-人間向けの導入は README.md にある。ここは重複させない。
+`ent` is a controller that converges the current state onto a declared end state. What follows is the
+procedure written for agents to invoke. The human-facing introduction is in README.md; it is not duplicated here.
 
-## 最初に叩くもの
+## The first thing to invoke
 
 ```
 ent agent-context
 ```
 
-サブコマンド・引数・フラグの型・環境変数・終了コードを JSON で出す。
-`--help` の散文を読む必要は無い。以下の手順が古くなっていたら、こちらが正。
+Emits subcommands, arguments, flag types, environment variables and exit codes as JSON.
+There is no need to read the prose of `--help`. Where the procedure below has gone stale, that output is authoritative.
 
-## Actor を選ぶ
+## Choosing an Actor
 
-既定はClaude Code。全phaseをCodexにするなら、同じコマンドに`ENT_ACTOR=codex`を付ける。
-provider・model・effortは`DECIDE`、`IMPLEMENT`、`REVIEW`、`INVESTIGATE`ごとにも選べる。
-`ENT_<PHASE>_ACTOR` / `ENT_<PHASE>_MODEL` / `ENT_<PHASE>_EFFORT`がphase固有の指定で、
-無ければ`ENT_ACTOR` / `ENT_MODEL` / `ENT_EFFORT`へ落ちる。
-effortの有効値はClaude Codeが`low / medium / high / xhigh / max`、Codexが
-`none / minimal / low / medium / high / xhigh`。providerに合わない値は引数エラーになる。
+The default is Claude Code. To put every phase on Codex, add `ENT_ACTOR=codex` to the same command.
+Provider, model and effort can also be chosen per `DECIDE`, `IMPLEMENT`, `REVIEW` and `INVESTIGATE`.
+`ENT_<PHASE>_ACTOR` / `ENT_<PHASE>_MODEL` / `ENT_<PHASE>_EFFORT` are the phase-specific settings; when
+absent they fall back to `ENT_ACTOR` / `ENT_MODEL` / `ENT_EFFORT`.
+Valid effort values are `low / medium / high / xhigh / max` for Claude Code and
+`none / minimal / low / medium / high / xhigh` for Codex. A value that does not match the provider is an argument error.
 
 ```sh
 ENT_ACTOR=codex ent doctor
@@ -36,279 +36,279 @@ ENT_REVIEW_MODEL=<model> \
 ent run <slug>
 ```
 
-選んだ値はティックをまたいでDBに固定されない。cronでも毎回同じ環境変数を渡す。
-Codexを含むphaseが1つでもあれば、先に`codex login status`でログインを確かめる。
-Actorが使用量上限で止まった場合は、失敗分類とトークンをRunへ保存し、guardが元のACTを
-`WAIT(usage_limit)`へ差し替える。Goalは`WAITING_EXTERNAL(usage_limit)`へ遷移し、
-`resume_after`までは再実行しない。
+The chosen values are not pinned into the DB across ticks. Pass the same environment variables every time, cron included.
+If even one phase involves Codex, confirm the login first with `codex login status`.
+When an Actor stops at a usage limit, the failure classification and tokens are saved to the Run, and the
+guard replaces the original ACT with `WAIT(usage_limit)`. The Goal transitions to
+`WAITING_EXTERNAL(usage_limit)` and is not run again until `resume_after`.
 
-## まだ `.goals/` が無いリポジトリ
+## Repositories that do not have `.goals/` yet
 
-`.goals/` が無い場所では、`ent doctor` の `goals` と `state_ignored` が同時に failed になる。
-壊れているのではなく、まだ始めていない。1周を始める前に1度だけ叩くものがある。
-
-```
-ent init                    # .goals/ と .gitignore の行と Goal の雛形を置く
-```
-
-`ent init` は冪等で、2度目は既にある `.goals/*.yaml` を上書きせず、`.gitignore` に同じ行を
-二重に足さない。git リポジトリでなければ何も作らずに終了コード 1 で断る。
-
-**これはリポジトリの外にも書く。** `~/.claude/skills/ent` に、ent 本体の `.claude/skills/ent` を
-指すシンボリックリンクを張る。この手順書を、対象リポジトリで作業するエージェントが skill として
-読めるようにするため。実体は写さないので、正本は ent 本体の1箇所のままになる。対象リポジトリ側に
-`.claude/` は増えない。**`$HOME` を書き換えるので、人間に断らずに叩いてよいものではない。**
-
-既にここを指していれば触らずに残す（冪等が成り立つのはここ）。この ent へのリンク以外のものが
-既にある場合——別の場所を指すリンク、壊れたリンク、実体のディレクトリ——は、`.goals/` も含めて
-何も作らずに終了コード 1 で断る。どちらが正かを決めるのは ent ではないので、退避するかどうかは
-人間に聞く。ent 本体の `.claude/skills/ent` が見当たらないときだけは、断らずに stderr へ出して
-リンク無しで終わる。
-
-`--json` を付けると、この1件も `entries` に載る。初回が `created`、2度目からが `kept` で、
-`path` はリポジトリの中のものが相対なのに対し、これだけ絶対パスになる。
-
-雛形はスキーマとして妥当なところまでしか埋まっていない。残りの `desired_state` と
-`acceptance_criteria` が、何を達成するかの宣言にあたる。**この2つは人間が書くもので、
-エージェントが埋めて `ent start` まで進めてよいものではない。**
-
-## 1周の手順
+Where `.goals/` is absent, `ent doctor` fails `goals` and `state_ignored` at the same time.
+Nothing is broken; it has simply not been started. There is one command to invoke once before the first round.
 
 ```
-ent doctor                  # 回す前の前提が揃っているかを読み取り専用で調べる
-ent start <slug>            # .goals/<slug>.yaml を登録して ACTIVE にする
-ent run <slug>              # 1ティックだけ回して終了する
-ent get <slug>              # 宣言部と実行時状態をまとめて読む
-ent list                    # 登録済みの Goal を一覧する
+ent init                    # place .goals/, the .gitignore line and the Goal template
 ```
 
-`ent start` は、叩いたディレクトリの HEAD を関門の基準として記録する。Actor の
-worktree はその commit から切られ、関門が worktree の差分を取る相手も同じ commit になる。
-**Goal の宣言と仕様は `ent start` より前に commit しておく。** そうすれば人間が書いた分は
-基準の側に入り、worktree の差分には Actor が書いた分だけが並ぶ。
+`ent init` is idempotent: a second run does not overwrite existing `.goals/*.yaml` and does not add the same
+line to `.gitignore` twice. Outside a git repository it creates nothing and refuses with exit code 1.
 
-回している間、この基準にした commit を amend も rebase もしない。分岐点が消えると
-差分を取れなくなり、`ESCALATE(guard_unavailable)` で止まる。ティックの最中に
-`.goals/*.yaml` を書き換えるのも避ける。本体リポジトリ側の ACT 前後の差として拾われ、
-`.goals/**` はどの Goal からも外せない保護パスなので `protected_path_touched` になる。
+**It writes outside the repository as well.** It places at `~/.claude/skills/ent` a symlink pointing at ent's own
+`.claude/skills/ent`, so that an agent working in the target repository can read this procedure as a
+skill. Nothing is copied, so the canonical copy stays in the single place inside ent itself. No
+`.claude/` appears on the target repository's side. **It rewrites `$HOME`, so it is not something to invoke without asking the human.**
 
-HEAD を読めなかった場合と、この記録より前に start した Goal は `default_branch` を
-基準にする。そのときは人間が書いた分も Actor の編集として並ぶ。止まったあとの扱いは
-下の「人の承認で止まるところ」を読む。
+If it already points here, it is left untouched (that is where idempotence holds). If anything other than
+a link to this ent is already there — a link pointing elsewhere, a broken link, a real directory — it
+creates nothing at all, `.goals/` included, and refuses with exit code 1. It is not ent's place to decide
+which one is authoritative, so ask the human whether to move the existing one aside. Only when ent's own
+`.claude/skills/ent` cannot be found does it write to stderr instead of refusing and finish without the link.
 
-追わなくなった Goal から降りるときだけ、もう1つサブコマンドがある。
+With `--json`, this one entry appears in `entries` too. The first run is `created` and every run after that
+is `kept`, and while `path` is relative for things inside the repository, this one alone is an absolute path.
 
-```
-ent abandon <slug> --reason "なぜ追わないのか"
-```
+The template is filled in only as far as being schema-valid. The remaining `desired_state` and
+`acceptance_criteria` are what declares what is to be achieved. **These two are the human's to write; an
+agent must not fill them in and proceed to `ent start`.**
 
-`--reason` は必須で、空白だけも通らない。status を `ABANDONED` にして理由を残すので、
-次のティックはその Goal を拾わなくなる。理由は `ent get` の `state.abandonReason` に出る。
-
-**対になる `ent complete` は無い。** 完了判定は VERIFIED な Fact だけで行う
-（design.md §3.1）ので、
-criteria が赤いまま「完了した」と書ける口は用意していない。ループの外で desired state が
-満たされた場合（人間が手で PR をマージした、など）に使うのが `abandon` だ。
-「終わった」ではなく「もう追わない」を記録する。
-
-落とせない状態なら、終了コード 1 で何も書かずに止まる。
-
-- 既に終端（`COMPLETED` / `FAILED` / `ABANDONED`）。終端は塗り替えない
-- `state.leaseOwner` が埋まっている。別のプロセスが回している最中に横から落とさない
-- `ent start` を挟んでいない。降りる先の状態が無い
-
-`--reason` を付け忘れた場合だけは 2 になる。argv を直せば通るので、1 とは倒す向きが違う。
-
-`ent doctor` は書き込みを一切しない。state ディレクトリも作らない。
-
-前提が欠けていても `ent run` は入口で落ちない。GitHub のトークンが無くても
-ローカルの観測・検証コマンド・Actor の実行は進むので、入口で殺すと進められるものまで
-止まるため。その代わり、トークンを1つも読めないまま回すと `github.ci.failed_job_count`
-のような `type: fact` の criteria が永久に unobserved のまま埋まらない。回り続けるので
-気づけない。doctor は何が欠けているかをその場で出す。
-
-GitHub のトークンは `doctor` も `run` も同じ順で読む（`GITHUB_TOKEN` → `GH_TOKEN` →
-`gh auth token`）。対話シェルから叩くぶんには、gh にログインしていれば環境変数を
-渡さなくてよい。**cron から回すときは別で**、PATH と gh の設定が引き継がれるとは
-限らないので `GITHUB_TOKEN` を明示するか、同じ環境で `ent doctor` を叩いて確かめる。
-doctor の `github_token` が落ちるのは、3つとも読めなかったときになる。
-環境変数に**空文字**を設定してあれば「渡さないと決めた」と読み、gh も呼ばない。
-未設定と空文字はここだけ意味が違う。
-
-終了コードだけは他のサブコマンドと意味が違う。0 は「failed が1件も無い」で、
-1 は「failed が1件以上」を指す。実行時エラーではない。unknown は数えない。
-選んだproviderのログイン状態は、`claude_login`または`codex_login`としてunknownで出る。
-phase間でproviderが混ざる場合は両方が出る。
-詳細は stderr ではなく stdout の JSON の `checks[].detail` にある。
-
-`ent run` は**1ティックで必ず終了する**。常駐しないし、完了まで待つフラグも無い。
-収束させるには `ent run` を繰り返し叩く（cron から回す形を想定している）。
-待ちは `ent run` の中で寝るのではなく、`WAIT` という判断として返る。
-ただし`goal.depends_on`の依存待ちは例外で、`WAIT`も状態遷移も作らず`skipped`に出る。
-ポーリングを自作しない。次の周まで待つのは呼び出し側の仕事になる。
-
-回す前に中身だけ見たいなら:
+## One round
 
 ```
-ent run <slug> --dry-run    # OBSERVE / VERIFY / ASSESS / DECIDE だけ回す
+ent doctor                  # check read-only whether the prerequisites for running are in place
+ent start <slug>            # register .goals/<slug>.yaml and make it ACTIVE
+ent run <slug>              # run exactly one tick and exit
+ent get <slug>              # read the declaration and the runtime state together
+ent list                    # list the registered Goals
 ```
 
-Actor の起動と PR への書き込みは起きない。snapshot / verifications / decision /
-status も書かない。次のティックが何を観測し、どの criteria が落ちていて、
-次に何をするつもりかが読める。
+`ent start` records the HEAD of the directory it was invoked in as the gate's baseline. The Actor's
+worktree is cut from that commit, and the commit the gate diffs the worktree against is the same one.
+**Commit the Goal's declaration and spec before `ent start`.** Then what the human wrote lands on the
+baseline side, and the worktree diff lists only what the Actor wrote.
 
-タダではない。VERIFY は criteria のコマンドを本当に流し、DECIDE は LLM を呼ぶ。
-消費したトークンは `llm_calls` に記録が残る。安全に何度でも叩けるものではない。
+While it is running, never amend or rebase that baseline commit. If the fork point disappears the diff
+cannot be taken and it stops at `ESCALATE(guard_unavailable)`. Avoid rewriting `.goals/*.yaml`
+mid-tick as well. It is picked up as a before/after difference on the main repository side, and since
+`.goals/**` is a protected path that cannot be removed from any Goal, it becomes `protected_path_touched`.
 
-出力は `ran: false` / `dryRun: true` になる。書いていたらどの状態に移っていたかは
-`wouldTransitionTo` に入る。`skipped` は原則 `null` だが、`ent start` を挟んでいない
-Goal では `the Goal is not registered` が入る（`ent init` の直後がこれにあたる）。
-dry-run かどうかは `skipped` ではなく `dryRun` で見分ける。
+When HEAD could not be read, and for Goals started before this record existed, `default_branch` is the
+baseline. In that case what the human wrote is listed as the Actor's edits too. For what to do once it
+has stopped, read "Where it stops for human approval" below.
 
-## 進捗を PR に投稿しないで回す
-
-既定では criteria の pass 状況を PR コメントに積む。投稿せずに回すなら:
+There is one more subcommand, used only when stepping away from a Goal that is no longer pursued.
 
 ```
-ent run <slug> --report stdout          # 出力 JSON の report.body に入る
-ent run <slug> --report ./progress.md   # ファイルに追記する
+ent abandon <slug> --reason "why it is no longer pursued"
 ```
 
-移るのは進捗の宛先で、そこに1節ぶん増える（次の段落）。観測も判断も変わらず、
-push と PR の作成も止まらない。PR そのものは今までどおり公開される。投稿しなくなるのは
-criteria の pass 状況になる。
+`--reason` is required, and whitespace alone does not pass. It sets status to `ABANDONED` and records the
+reason, so the next tick stops picking that Goal up. The reason appears in `state.abandonReason` of `ent get`.
 
-`GITHUB_TOKEN` が無くても、PR がまだ無くても出る。進捗を書くのは PR を確保するより前で、
-確保できるかどうかとは切り離してある。
+**There is no matching `ent complete`.** Completion is judged from VERIFIED Facts alone
+(design.md §3.1), so
+there is no way to write "completed" while criteria are still red. `abandon` is what to use when the desired
+state was met outside the loop (a human merged the PR by hand, for example).
+It records "no longer pursued", not "finished".
 
-`stdout` を指定しても素の Markdown は流れない。stdout は JSON 専用のままで、本文は
-`report.body` に入る。人間に見せるなら `jq -r .report.body` で取り出す。
+If the state cannot be dropped, it stops with exit code 1 and writes nothing.
 
-**`--report` の本文には、末尾に `## Review role message` の節が付く。** レビュー役が最後に
-返した本文をそのまま出す節で、PR コメントには載せない。**したがって `--report` の本文と
-PR コメントの本文は同じではない。** 節が出るのは `--report` を付けたティックだけで、
-`ReviewPort.latest()` が null を返す Goal（レビュー役を1度も起動していない、あるいは
-完了した Run が1つも無い）では節そのものが出ない。生ログを読めなかったときは理由が、
-本文が残っていない Run では読んだ Run の id が節に入る。ティックは落ちない。
+- Already terminal (`COMPLETED` / `FAILED` / `ABANDONED`). Terminal states are never painted over
+- `state.leaseOwner` is set. Never drop it from the side while another process is running it
+- `ent start` was never run. There is no state to step down to
 
-**節の積まれ方は宛先で違う。** `stdout` は1回叩いて1回出すので積み上がらないが、
-ファイルは追記なので、回した数だけ本文が並ぶ。しかも節が読むのは直近の完了した
-レビュー役の Run なので、次のレビューが終わるまで中身は毎ティック同じになる
-（`WAIT(review_pending)` が続く区間）。長く回すなら `stdout` を使うか、宛先の
-ファイルを分ける。
+Only a forgotten `--reason` gives 2. Retyping argv makes it pass, so it falls the other way from 1.
 
-出力の `report` に入るもの:
+`ent doctor` writes nothing at all. It does not even create the state directory.
 
-| 宛先 | 入るもの |
+A missing prerequisite does not make `ent run` fail at the entrance. Local observation, verification
+commands and Actor execution all proceed without a GitHub token, and killing it at the entrance would
+stop work that could still move. In exchange, running without being able to read a single token leaves
+`type: fact` criteria such as `github.ci.failed_job_count` unobserved and unfilled forever. It keeps
+running, so it goes unnoticed. doctor reports what is missing on the spot.
+
+`doctor` and `run` read the GitHub token in the same order (`GITHUB_TOKEN` → `GH_TOKEN` →
+`gh auth token`). From an interactive shell, being logged in to gh is enough; no environment variable
+needs to be passed. **From cron it is different**: PATH and gh's configuration are not necessarily
+inherited, so set `GITHUB_TOKEN` explicitly, or invoke `ent doctor` in the same environment and check.
+doctor's `github_token` fails only when none of the three could be read.
+An **empty string** in the environment variable reads as "decided not to pass one", and gh is not called
+either. Unset and empty differ in meaning only here.
+
+Exit codes alone mean something different from the other subcommands. 0 is "no failed check at all" and
+1 is "one or more failed". It is not a runtime error. unknown is not counted.
+The login state of the chosen provider appears as `claude_login` or `codex_login`, with unknown.
+When providers are mixed across phases, both appear.
+The detail is in `checks[].detail` of the JSON on stdout, not on stderr.
+
+`ent run` **always finishes in one tick**. It is not resident, and there is no flag to wait for completion.
+Converging means invoking `ent run` repeatedly (running it from cron is the intended shape).
+Waiting is not sleeping inside `ent run`; it comes back as a `WAIT` decision.
+The exception is dependency waiting from `goal.depends_on`, which creates neither a `WAIT` nor a state
+transition and appears in `skipped`.
+Do not write your own polling. Waiting for the next round is the caller's job.
+
+To look at the contents before running:
+
+```
+ent run <slug> --dry-run    # run only OBSERVE / VERIFY / ASSESS / DECIDE
+```
+
+The Actor is not launched and nothing is written to the PR. snapshot / verifications / decision /
+status are not written either. What the next tick would observe, which criteria are failing and
+what it intends to do next are all readable.
+
+It is not free. VERIFY really runs the criteria's commands, and DECIDE calls the LLM.
+The tokens consumed leave a record in `llm_calls`. It is not something safe to invoke any number of times.
+
+Output is `ran: false` / `dryRun: true`. Where it would have moved had it written goes into
+`wouldTransitionTo`. `skipped` is `null` as a rule, but for a Goal that never went through `ent start`
+it holds `the Goal is not registered` (which is the situation right after `ent init`).
+Tell dry-run apart by `dryRun`, not by `skipped`.
+
+## Running without posting progress to the PR
+
+By default the criteria pass status is stacked as PR comments. To run without posting:
+
+```
+ent run <slug> --report stdout          # lands in report.body of the output JSON
+ent run <slug> --report ./progress.md   # appends to the file
+```
+
+What moves is the destination of the progress, and it gains one section there (next paragraph).
+Neither observation nor decision changes, and push and PR creation are not stopped either. The PR itself
+is published as before. What stops being posted is the criteria pass status.
+
+It is emitted without `GITHUB_TOKEN`, and even when there is no PR yet. Writing progress happens before
+securing a PR, and is decoupled from whether one can be secured.
+
+Specifying `stdout` does not send raw Markdown down the pipe. stdout stays JSON-only and the body goes
+into `report.body`. To show it to a human, pull it out with `jq -r .report.body`.
+
+**The `--report` body carries a `## Review role message` section at the end.** It reproduces verbatim the
+body the review role returned last, and it is never included in PR comments. **The `--report` body and the
+PR comment body are therefore not the same.** The section appears only on ticks where `--report` was
+passed, and for a Goal where `ReviewPort.latest()` returns null (the review role was never launched, or
+no Run has completed) the section is absent entirely. When the raw log could not be read, the reason goes
+into the section; for a Run whose body was not retained, the id of the Run that was read goes in. The tick does not fail.
+
+**How the section stacks differs by destination.** `stdout` emits once per invocation so nothing piles up,
+but a file is appended to, so the bodies line up once per run. And since the section reads the most recent
+completed review-role Run, the content stays the same every tick until the next review finishes
+(the stretch where `WAIT(review_pending)` continues). For long runs, use `stdout` or split the
+destination files.
+
+What goes into `report` in the output:
+
+| Destination | What it holds |
 | --- | --- |
 | `stdout` | `destination` / `written` / `error` / `body` |
-| ファイル | `destination` / `path` / `written` / `error`（本文はファイルの側にある） |
+| file | `destination` / `path` / `written` / `error` (the body is on the file's side) |
 
-`written: false` になるのは2通りある。書けなかったとき（`error` に理由が入り、stderr にも
-1行出る）と、そもそもティックが回らなかったとき（`error` は null で、理由は同じ出力の
-`skipped` にある）。どちらも終了コードは変わらない。通知の失敗でティックの成否を
-塗り替えない。
+`written: false` happens two ways. It could not be written (`error` holds the reason and one line also
+goes to stderr), or the tick did not run at all (`error` is null and the reason is in `skipped` of the
+same output). Neither changes the exit code. A failed notification does not repaint the tick's
+success or failure.
 
-`--report` を受け取るのは `run` だけで、他のサブコマンドに付けると終了コード 2 になる。
-`--dry-run` との併用も 2 で断る。あちらは publish を通らないので書く先が無く、
-criteria の結果は `observed.verifications` の側に入っている。
+Only `run` accepts `--report`; passing it to another subcommand gives exit code 2.
+Combining it with `--dry-run` is refused with 2 as well. That path does not go through publish so there is
+nowhere to write, and the criteria results are on the `observed.verifications` side.
 
-## 出力の絞り方
+## Narrowing the output
 
-`run` / `get` / `list` は既定で JSON を出す。`init` と `start` と `abandon` は `--json` を
-付けたときだけ JSON になる。
-`doctor` と `agent-context` は常に JSON で、`--json` も `--limit` も受け取らない。
-付けると終了コード 2 になる。
+`run` / `get` / `list` emit JSON by default. `init`, `start` and `abandon` emit JSON only when `--json`
+is passed.
+`doctor` and `agent-context` are always JSON and accept neither `--json` nor `--limit`.
+Passing them gives exit code 2.
 
 ```
 ent list --limit 10
-ent get <slug> --limit 5    # runs の件数。落ちるのは古い方から
+ent get <slug> --limit 5    # the number of runs. The oldest are dropped first
 ```
 
-`--limit` の既定は 50。切り捨てたときだけ、絞り込み方が **stderr** に出る。
-`run` / `get` / `list`（と `init` / `start` / `abandon` の `--json`）の stdout は JSON だけなので、
-そのまま `jq` に渡してよい。
+`--limit` defaults to 50. Only when something was truncated does the way to narrow it appear on **stderr**.
+stdout of `run` / `get` / `list` (and of `init` / `start` / `abandon` with `--json`) is JSON only, so it
+can be piped straight into `jq`.
 
-## 人の承認で止まるところ
+## Where it stops for human approval
 
-`WAITING_HUMAN` は失敗ではない。人間が動くまでは、何度回しても状態は変わらない。
-ただし承認を検知するのは次のティックなので、回し続けること自体は正しい。
+`WAITING_HUMAN` is not a failure. Until a human acts, no number of runs changes the state.
+Detection of the approval happens on the next tick, though, so continuing to run is itself correct.
 
-- PR のレビュー承認
-- PR コメントの `/ent approve <criterion-id>`（`verification.type: human` の criteria）
+- PR review approval
+- `/ent approve <criterion-id>` in a PR comment (criteria with `verification.type: human`)
 
-この2つはどちらもエージェントが代行してはいけない。人間が承認したことの signal
-なので、代わりに出すと承認の意味が消える。`ent get <slug>` の `verifications` で、
-どの criterion が待ちなのかを読む。
+An agent must never perform either of these on a human's behalf. They are the signal that a human
+approved, so emitting them in their place erases the meaning of the approval. Read which criterion is
+waiting from `verifications` of `ent get <slug>`.
 
-**どちらの経路も、リポジトリに書き込み権限がある人のものだけを数える。**
-レビュー承認は PR の作成者を除く（GitHub 自体が自分の PR への Approve を許さない）が、
-コメントの定型文は作成者も数える。1人で回しているリポジトリでは、そこが唯一の
-承認経路になる（design.md §10-4）。
+**Both routes count only people with write access to the repository.**
+Review approval excludes the PR's author (GitHub itself does not allow approving your own PR), while the
+comment phrase counts the author too. In a repository run by one person, that is the only
+approval route (design.md §10-4).
 
-`ESCALATE` は行動であって Goal の状態ではない。`protected_path_touched` による
-`ESCALATE` は、触ってはいけないパスに変更が出たまま止まっている状態で、
-Goal の状態としては `WAITING_HUMAN` になる。承認待ちではなく、人間が片付けるのを
-待っている。次のティックでも解けない。`guard_unavailable` も同じ形で、こちらは
-「触っていない」ではなく**関門そのものを動かせなかった**状態を指す。基準にした
-commit が消えたときがこれにあたる。`budget_exhausted` の `ESCALATE` だけは
-`BLOCKED` になる。
+`ESCALATE` is an action, not a Goal state. An `ESCALATE` from `protected_path_touched` is the state of
+being stopped with a change left on a path that must not be touched, and the Goal state for it is
+`WAITING_HUMAN`. It is not waiting for approval but waiting for a human to clear it. The next tick will
+not resolve it either. `guard_unavailable` has the same shape, but means **the gate itself could not be
+run** rather than "nothing was touched". A vanished baseline commit is what that covers. Only the
+`budget_exhausted` `ESCALATE` gives `BLOCKED`.
 
-`status` に入るのは Goal の状態（`ACTIVE` / `WAITING_HUMAN` / `WAITING_EXTERNAL` /
-`BLOCKED` / `COMPLETED` など）で、`ESCALATE` や `WAIT` は `action` の側に出る。
+What goes into `status` is the Goal state (`ACTIVE` / `WAITING_HUMAN` / `WAITING_EXTERNAL` /
+`BLOCKED` / `COMPLETED` and so on); `ESCALATE` and `WAIT` appear on the `action` side.
 
-## controller が push や PR 作成をしなかったとき
+## When the controller did not push or open the PR
 
-Goal の宣言に `policies.publish` があると、controller は `manual` と書かれた段を行わない。
-そのティックの出力に `publishHold` が入る（宣言を書いていない Goal には出ない）。
+When the Goal's declaration has `policies.publish`, the controller does not perform a step written as
+`manual`. `publishHold` appears in that tick's output (it is absent for Goals with no such declaration).
 
-| キー | 入るもの |
+| Key | What it holds |
 | --- | --- |
-| `step` | 止めた段。`push_branch` か `open_pull_request` |
-| `reason` | `declared_manual`。宣言で止めたということ |
-| `pushed` | `branch` が remote にあるか |
-| `branch` | PR の head になるブランチ |
-| `base` | PR の base |
+| `step` | The step that was stopped. Either `push_branch` or `open_pull_request` |
+| `reason` | `declared_manual`. That the declaration stopped it |
+| `pushed` | Whether `branch` is on the remote |
+| `branch` | The branch that becomes the PR's head |
+| `base` | The PR's base |
 
-判定はこのキーで行う。`skipped` と `decision.rationale` は人間が読む1行なので、
-文面で分岐すると文言を直した時点で黙って壊れる。
+Branch on these keys. `skipped` and `decision.rationale` are one line of prose for humans, so branching on
+their wording breaks silently the moment the wording is edited.
 
-同じティックの `action` は `ESCALATE(push_branch_declared_manual)` か
-`ESCALATE(open_pull_request_declared_manual)`、`status` は `WAITING_HUMAN` になる。
+In the same tick, `action` is `ESCALATE(push_branch_declared_manual)` or
+`ESCALATE(open_pull_request_declared_manual)`, and `status` is `WAITING_HUMAN`.
 
-`--dry-run` にはこの停止が映らない。publish を通らないので `publishHold` は出ず、
-`wouldTransitionTo` も止める前の判断のまま返る。宣言で止まる Goal では、dry-run の予告と
-実ティックの結果が食い違う。
+`--dry-run` does not reflect this stop. It does not go through publish, so `publishHold` is absent and
+`wouldTransitionTo` comes back as the decision from before the stop. For a Goal stopped by a declaration,
+the dry-run forecast and the real tick's result disagree.
 
-**`step: open_pull_request`（`pushed: true`）なら、代わりに PR を立てる。**
-ブランチは既に remote にあり、止まっているのは controller が作らないと宣言されている
-からだけになる。この宣言は controller に作らせない口であって、叩いた側に作らせない
-口ではない。
+**If `step: open_pull_request` (`pushed: true`), open the PR on its behalf.**
+The branch is already on the remote, and the only thing stopping it is that the controller was declared
+not to create it. That declaration is a way to keep the controller from creating it, not a way to keep
+the invoker from creating it.
 
 ```
 gh pr create --head <publishHold.branch> --base <publishHold.base> \
-  --title <Goal の name> --body <本文>
+  --title <the Goal's name> --body <the body>
 ```
 
-**代行に要る宣言は `.goals/<slug>.yaml` から読む。`ent get` には出ない。**
-`ent get` が宣言部から出すのは `goal`（`id` / `name` / `desired_state` / `depends_on`）だけで、
-`repository` も `acceptance_criteria` も1キーも出ない。`verifications` が持つのも criterion の
-id と結果までなので、description も `verification.type` もそちらには無い。`publishHold` に
-入るのは、宣言からは決まらないもの（`branch` と `pushed`）になる。
+**Read the declarations the takeover needs from `.goals/<slug>.yaml`. They are not in `ent get`.**
+All `ent get` emits from the declaration is `goal` (`id` / `name` / `desired_state` / `depends_on`);
+neither `repository` nor `acceptance_criteria` yields a single key. What `verifications` holds is only the
+criterion ids and results, so neither the description nor `verification.type` is on that side. What
+`publishHold` holds is what the declaration cannot determine (`branch` and `pushed`).
 
-| 代行に要るもの | どこから読む |
+| What the takeover needs | Where to read it |
 | --- | --- |
-| head と base | `publishHold.branch` / `publishHold.base` |
-| `--draft` を付けるか | `.goals/<slug>.yaml` の `repository.pull_request.draft` |
-| PR のタイトル | `.goals/<slug>.yaml` の `goal.name`（`ent get` の `goal` でもよい） |
-| 本文の Desired State | 同じく `goal.desired_state` |
-| 本文の criteria 一覧 | `.goals/<slug>.yaml` の `acceptance_criteria`（id / `verification.type` / description） |
+| head and base | `publishHold.branch` / `publishHold.base` |
+| Whether to pass `--draft` | `repository.pull_request.draft` in `.goals/<slug>.yaml` |
+| The PR title | `goal.name` in `.goals/<slug>.yaml` (the `goal` of `ent get` works too) |
+| Desired State in the body | the same `goal.desired_state` |
+| The criteria list in the body | `acceptance_criteria` in `.goals/<slug>.yaml` (id / `verification.type` / description) |
 
-`repository.pull_request.draft: true` なら `--draft` を付ける。controller が立てるときは
-渡している値なので、付け忘れると**代行した PR だけがレビュアーに通知を飛ばす**。
-`open_pull_request: manual` が止めようとしているのは、まさにその通知になる。
+With `repository.pull_request.draft: true`, pass `--draft`. It is the value the controller passes when it
+opens the PR, so forgetting it means **only the PR opened on its behalf notifies the reviewers**.
+That notification is exactly what `open_pull_request: manual` is trying to stop.
 
-本文は controller が立てるものと同じ形にする（`pullRequestBody`、`src/publish/index.ts`）。
+Make the body the same shape the controller opens with (`pullRequestBody`, `src/publish/index.ts`).
 
 ````markdown
 Changes for the entelecheia Goal `<goal.id>`.
@@ -328,41 +328,42 @@ The controller stacks progress as comments. Approve with the following phrase.
 ```
 ````
 
-`verification.type: human` の criteria は、この定型文が本文に無いとレビュアーが承認の口を
-見つけられない。**本文の `<criterion-id>` は実際の id に置き換えない。** 承認として数えるのは
-PR コメントの側で、行全体が `/ent approve <実際の id>` と一致したときだけになる。本文は
-書き方を見せる雛形にしておく。
+For criteria with `verification.type: human`, reviewers cannot find the way to approve unless that fixed
+phrase is in the body. **Do not replace `<criterion-id>` in the body with the real id.** What counts as
+approval is on the PR comment side, and only when the whole line matches `/ent approve <the real id>`.
+Keep the body as a template that shows how to write it.
 
-次のティックがその PR を見つけて先へ進む。宣言はそのままでよい。
-**人間が先に中身を見てから立てたいと言われている場合だけ**、立てずに `publishHold` を
-そのまま渡す。
+The next tick finds that PR and moves on. The declaration can stay as it is.
+**Only when the human has said they want to see the contents before it is opened**, leave it unopened and
+hand `publishHold` over as it is.
 
-**`step: push_branch`（`pushed: false`）は代行しない。** ブランチが remote に無いので
-PR は立てられない。手で push しても controller はそれを観測できないため、宣言を `auto` に
-戻すまで毎ティック同じところで止まる。人間に渡す。
+**Do not take over `step: push_branch` (`pushed: false`).** The branch is not on the remote, so the PR
+cannot be opened. Even a hand push cannot be observed by the controller, so it stops in the same place
+every tick until the declaration is set back to `auto`. Hand it to the human.
 
-**`BLOCKED` にはならない。** 予算を使い切っても `ESCALATE(push_branch_declared_manual)` が
-`ESCALATE(budget_exhausted)` を上書きするので、状態は `WAITING_HUMAN` のままになる。
-止まっているあいだ `max_reconciles` と `max_actor_runs` は進むが、`max_wall_clock` だけは
-止まる（予算切れ以外の `ESCALATE` は待ちとして経過時間から引かれる）。
-「そのうち `BLOCKED` になって気づく」は起きないので、人間に渡すまで止まったままになる。
+**It will not become `BLOCKED`.** Even once the budget runs out,
+`ESCALATE(push_branch_declared_manual)` overwrites `ESCALATE(budget_exhausted)`, so the state stays
+`WAITING_HUMAN`. While it is stopped, `max_reconciles` and `max_actor_runs` advance, but `max_wall_clock`
+alone stops (every `ESCALATE` other than budget exhaustion is subtracted from elapsed time as waiting).
+"It will go `BLOCKED` eventually and catch your eye" does not happen, so it stays stopped until it is
+handed to a human.
 
-`ESCALATE(protected_path_touched)` などの関門で止まったティックには `publishHold` は
-出ない。そちらは push も PR も代行してはいけない停止になる。
+A tick stopped by a gate such as `ESCALATE(protected_path_touched)` carries no `publishHold`.
+Those are stops where neither the push nor the PR may be taken over.
 
-## 終了コード
+## Exit codes
 
-| code | 意味 |
+| code | Meaning |
 | --- | --- |
-| 0 | 成功。ティックが最後まで回った（`ran: false` でも 0）。`doctor` では failed が1件も無い |
-| 1 | 実行時エラー、または実行できない状態。詳細は stderr。`doctor` では failed が1件以上で、詳細は stdout の JSON |
-| 2 | 引数が不正。stderr に有効値が並ぶ |
+| 0 | Success. The tick ran to the end (`ran: false` is 0 too). For `doctor`, no failed check at all |
+| 1 | Runtime error, or a state that cannot be run. Detail on stderr. For `doctor`, one or more failed, with detail in the JSON on stdout |
+| 2 | Invalid arguments. The valid values are listed on stderr |
 
-1 と 2 を取り違えないこと。2 は「打ち直せば通る」の意味で、stderr に有効値が並ぶ。
-終端の Goal に `ent start` を掛けたときのように、argv は妥当だが実行できない状態は
-1 になる。ここを 2 にすると、argv を変えて再試行し続けることになる。
+Do not mistake 1 for 2. 2 means "retyping it will work", and the valid values are listed on stderr.
+A state where argv is valid but cannot be run — running `ent start` against a terminal Goal, for
+example — is 1. Making that 2 leaves the caller retrying with different argv forever.
 
-`ran: false` は失敗ではない。`skipped` に理由（寝ている / 他のワーカーが処理中 / 終端）が入る。
-`--dry-run` は `ran: false` でも失敗ではなく、`skipped` も原則 `null` になる。
-ただし未登録の Goal に掛けたときだけは理由が入るので、dry-run かどうかは
-`skipped` ではなく `dryRun: true` で見分ける。
+`ran: false` is not a failure. `skipped` holds the reason (asleep / another worker is handling it / terminal).
+`--dry-run` is not a failure at `ran: false` either, and `skipped` is `null` as a rule.
+Only when applied to an unregistered Goal does it hold a reason, so tell dry-run apart by
+`dryRun: true`, not by `skipped`.

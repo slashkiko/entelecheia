@@ -1,25 +1,29 @@
 # ent-review plugin
 
-レビュー役の Actor にだけ読ませる skill を入れる場所。`src/adapters/claude.ts` が
-`plugins: [{ type: "local", path: ... }]` でここを指す。
+Where the skill that only the review-role Actor reads is placed. `src/adapters/claude.ts` points
+here with `plugins: [{ type: "local", path: ... }]`.
 
-`settingSources: []` を置いたまま skill を渡すための包み紙になる。ホストの
-`~/.claude` とリポジトリの `.claude` は読ませないまま、ここに置いたものだけが
-Agent から見える。
+It is the wrapper that lets a skill be handed over while `settingSources: []` stays in place. The
+host's `~/.claude` and the repository's `.claude` are left unread, and only what is placed here is
+visible to the Agent.
 
-## 中の skill は ent に依存しない
+## The skill inside does not depend on ent
 
-`skills/semantic-review/` は、ent の外でも同じものが使われる汎用の skill で、
-`~/.claude/skills/semantic-review/` にある実体のコピーになる。**Goal・criteria・
-verdict といった ent の語彙をここに書かない。** ent 側の読み替え——PR ではなく
-worktree の HEAD を見ること、意図の一次情報が Goal YAML であること、末尾に
-`reviewed_sha:` と `verdict:` の2行を足すこと——は、すべて
-`src/adapters/claude.ts` の `REVIEW_PROMPT` が持つ。
+`skills/semantic-review/` is a general-purpose skill used the same way outside ent as well, and is a
+copy of the original at `~/.claude/skills/semantic-review/`. **Do not write ent's vocabulary — Goal,
+criteria, verdict — in here.** The ent-side rewrites — reading the worktree's HEAD rather than a PR,
+the Goal YAML being the primary source of intent, appending the two lines `reviewed_sha:` and
+`verdict:` at the end — are all held by `REVIEW_PROMPT` in `src/adapters/claude.ts`.
 
-そうしておくと、skill を別リポジトリへ切り出すときに `cp` だけで済む。
+Keeping it that way means splitting the skill out into another repository takes only a `cp`.
 
-## 更新するとき
+## Updating it
 
-`~/.claude/skills/semantic-review/` を直したら、こちらへコピーし直す。
-手元で二重管理を避けたければ、`skills/semantic-review` を実体への symlink に
-しても plugin として認識される（配布物には実体を入れる）。
+After editing `~/.claude/skills/semantic-review/`, copy it back over here.
+
+**The copy here has been translated into English; the original it is copied from is still in Japanese.**
+Copying straight from upstream — or replacing this with a symlink to the original — reverts the
+translation. Translate again after copying, or take across only the parts that changed.
+
+To avoid managing two copies locally, `skills/semantic-review` can be made a symlink to the original and
+is still recognised as a plugin (the distributed artifact contains the real files).
