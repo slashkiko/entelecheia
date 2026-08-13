@@ -146,6 +146,26 @@ describe("claudeActor", () => {
       "Bash(git config core.hooksPath *)",
       "Bash(git config --local core.hooksPath *)",
       "Bash(git config --global core.hooksPath *)",
+      // index の隠しビット。status も diff もこれを尊重するので、1回立てるだけで
+      // 関門の一次入力が空になる。`git * <動詞>*` の綴りを併記するのは、SDK の
+      // 規則が先頭からのグロブで、`git -C .. update-index ...` には一致しないため。
+      "Bash(git update-index *)",
+      "Bash(git * update-index*)",
+      "Bash(git rm --cached *)",
+      "Bash(git * rm --cached*)",
+      // 汚れの集合を空にする側。編集のツールを持つ役割にも掛ける。
+      "Bash(git stash *)",
+      "Bash(git stash)",
+      "Bash(git * stash*)",
+      // push は controller だけが行う。承認ゲートの push_to_default_branch は
+      // `git push origin main` の綴りで並ぶだけなので、`HEAD:main` で外れていた。
+      "Bash(git push *)",
+      "Bash(git push)",
+      "Bash(git * push*)",
+      // keychain のトークンを stdout に出す口。
+      "Bash(git credential *)",
+      "Bash(git credential-osxkeychain *)",
+      "Bash(git * credential*)",
       "Bash(git merge)",
       "Bash(git merge *)",
       "Bash(gh pr merge *)",

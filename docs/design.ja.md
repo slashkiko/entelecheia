@@ -1229,6 +1229,27 @@ Actor 側にトークンが要る場面はそもそも無い。
 向けて、Actor と検証コマンドの中の `gh` を未認証にする。**消す側だけでなく、
 上書きして無効化する側も要る**（`src/domain/withheld-env.ts`。塞ぎたい経路は §10-4）。
 
+**`gh` を塞いでも git 自身は塞がっていなかった。** Actor に渡すのと同じ環境
+（トークンの環境変数は落とし、`GH_CONFIG_DIR` は無効化済み）のまま、private
+リポジトリに対する `git ls-remote https://github.com/...` が非対話で通り、
+`git credential fill` に `protocol=https` / `host=github.com` を流すと
+トークンそのものが stdout に出た。出どころは system の gitconfig の
+`credential.helper = osxkeychain` で、**system の設定なのでリポジトリ設定でも
+ユーザー設定でも消せない。** 塞げるのは環境変数だけになる。取れれば PR コメントを
+投稿でき、`/ent approve` の定型文を Actor が自分で書ける（§10-4）——`gh` を
+未認証にした理由が、そのまま git にも当てはまっていた。
+
+`NEUTRALIZED_ENV` が4つを重ねる。`GIT_CONFIG_COUNT` / `GIT_CONFIG_KEY_0` /
+`GIT_CONFIG_VALUE_0` の組は system / global / local のどれよりも**後**に読まれ、
+`credential.helper` の空値は helper のリストを reset する。helper が消えると git は
+端末と askpass に聞きに行くので、`GIT_TERMINAL_PROMPT=0` と
+`GIT_ASKPASS=/usr/bin/false` で「聞けないので失敗する」に倒す。ssh 側は
+`SSH_AUTH_SOCK` を落とすだけでは足りず（実測で `~/.ssh` の鍵のまま通った）、
+`GIT_SSH_COMMAND=/usr/bin/false` で ssh を起動する側を潰す。
+
+**閉じたのは、周囲の環境から黙って届く経路になる。** 名指しで書き戻す形
+（`git -c credential.helper=osxkeychain`）は残る。§10-6 の (i) に置いた。
+
 **git を argv 配列で叩く。** 外部コマンドをテンプレート文字列で組み立てると、
 引数のどれか1つでも controller の制御下に無ければシェルインジェクションになる。
 `gitBranch.push` はブランチ名を worktree から読むが、worktree の中身は Actor が
@@ -1667,6 +1688,33 @@ PR に流れた。ローカルの base が無ければ `origin/<base>` に落と
 検査の入力そのものを Actor に選ばせない。`git worktree` は読み取りの `list` ごと
 拒否する。サブコマンドを列挙する形だと、書ける形を1つ書き落とした時点で穴になる。
 
+**index の隠しビットは、拒否リストではなく観測する側で塞ぐ。** `git status
+--porcelain -uall` は `assume-unchanged` と `skip-worktree` を尊重するので、
+作業ツリーの中から `git -C ../../../.. update-index --assume-unchanged
+src/controller/index.ts` を1回叩いてから本体側のファイルを書き換えると、
+`git status` も `git diff` も空になり、**違反ゼロで通過する。** そのあと `tsc` は
+index ではなくファイルシステムから読むので、改変された controller がそのまま走る。
+下に挙げる (c) と (e) は「1度は人間に届く」を保証として残しているが、
+この経路は一度も鳴らない。
+
+そこで `changedPaths` と `repoDirtyState` が `git ls-files -v` を読み、
+**隠しビットが立っているパスを、中身を見ないまま観測に足す**（`indexHiddenPaths`、
+src/adapters/local.ts）。「編集された」ではなく「観測から外された」を違反として扱う。
+本体側の値は**中身の指紋ではなく印**にしてある。指紋にすると、`assume-unchanged` を
+立てて置いているファイル（この動詞の本来の用途）を人間が編集するたびに ACT の
+前後で値が動き、(d) の誤検知が常態になる。印なら、差に出るのは ACT の窓の中で
+ビットが立った/消えたときだけになる。代わりに、**以前から隠されていたファイルへの
+書き込みは見えない。**
+
+拒否リスト側にも同じ動詞（`git update-index` / `git rm --cached` / `git stash` /
+`git push` / `git credential`）を足したが、**あれは数え上げなので閉じない。**
+Claude Code 2.1.197 のバイナリから規則の解釈と照合を取り出して流したところ、
+`Bash(git push *)` は `^git push( .*)?$` にあたる正規表現になり、
+`git -C .. push origin HEAD:main` には一致しなかった。`git * <動詞>*` の綴りを
+併記すると `-C` と `--git-dir=` の前置は拾えるが、`GIT_DIR=... git push` のように
+環境変数を前置すると `git` で始まらなくなり、どちらの綴りからも外れる。
+**拒否リストは二重化の片側でしかない**（§8 の自己ホストの節）。
+
 違反の種別（`escaped_worktree` / `protected_path`）と ESCALATE の理由は別の層で、
 種別がどちらでも理由は `protected_path_touched` になる。
 検査できなかったら `ESCALATE(guard_unavailable)`。「触っていない」と
@@ -1795,7 +1843,7 @@ inode を組で見る。
 **バイト列を捨てて諦めたものは (h) に書いた。代わりに (g) が閉じた。**
 論理ダイジェストは SQLite 経由で読むので、まだ WAL にしか無い行も見える。
 
-**残る穴を7つ書いておく**（記号は動かさない。(g) は閉じたが、他の穴の呼び名が
+**残る穴を8つ書いておく**（記号は動かさない。(g) は閉じたが、他の穴の呼び名が
 ずれると過去のレビューが指す先が変わるので、消さずに取り消し線で残す）。
 
 (a) repoRoot の外（`~/.zshrc` や `~/.claude/**`）は git で観測できないので見えない。
@@ -1829,8 +1877,9 @@ controller のソースはディスクに残る。
 
 (e) 本体側は未 commit の汚れしか見ない。worktree 側は commit 済みの差分まで
 追うが、本体側のブランチは controller が動かさないので `status` だけにしてある。
-`git -C ../../../.. commit` や `git -C ../../../.. stash` は拒否リストに無いので、
-本体側で書いてから commit されると、汚れの集合から消えて検査の外に出る。
+`git -C ../../../.. commit` は拒否リストに無いので、本体側で書いてから commit
+されると、汚れの集合から消えて検査の外に出る。`git stash` は拒否リストに載せたが、
+あれは数え上げなので綴りを変えれば外れる（上の `-C` の話と同じ）。
 
 (f) 状態 DB の改竄で見えるのは、そのティックが回している Goal の行と、
 `depends_on` に挙げた Goal の `status` だけになる。それ以外の Goal の行を
@@ -1883,6 +1932,16 @@ ACT の窓の中で書き換えられた分は鳴る**。窓の外で書き換�
 ファイルの側は、**存在と inode を見るので、消去（`rmSync`）と差し替え（unlink して
 同じパスに別のファイルを置く形）は鳴る**。残るのは、開いたままのコネクションから
 見える中身を変えない破損になる。
+
+(i) 無効化した git の設定を、Actor がコマンドラインで名指しで書き戻せる。
+`GIT_CONFIG_COUNT` の組は `-c` より先に読まれるので、
+`git -c credential.helper=osxkeychain ls-remote <private repo>` は実測で通る
+（§7 の資格情報の節）。`GIT_SSH_COMMAND` も `-c core.sshCommand=ssh` で戻せるし、
+`GIT_CONFIG_COUNT=0 git ...` とインラインで置き直す形もある。**綴りを数え上げる
+拒否リストでは塞げない**——`git` で始まらない形にできるうえ、helper の名前は
+system の gitconfig を読めば分かる。塞げたのは周囲の環境から黙って届く経路で、
+Actor が意図して書き戻す形は残る。ここから先は、keychain の資格情報を
+そもそも読めない別ユーザ・別サンドボックスで Actor を動かす話になる。
 
 (c) と (d) は逆向きのトレードオフで、どちらも検知を永続化するか
 Actor プロセスと編集を紐付けないと同時には解けない。MVP では両方残す。

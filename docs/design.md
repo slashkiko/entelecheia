@@ -1334,6 +1334,28 @@ Actor and the verification commands unauthenticated. **You need not only the sid
 also the side that overwrites to neutralize** (`src/domain/withheld-env.ts`; the routes to be closed
 are in §10-4).
 
+**Closing off `gh` left git itself wide open.** With exactly the environment the Actor is handed
+(token environment variables dropped, `GH_CONFIG_DIR` already neutralized),
+`git ls-remote https://github.com/...` against a private repository went through
+non-interactively, and feeding `protocol=https` / `host=github.com` to `git credential fill` put the
+token itself on stdout. It comes from `credential.helper = osxkeychain` in the system gitconfig, and
+**being a system setting it can be removed by neither repository nor user configuration.** Only
+environment variables can close it. With the token in hand you can post a PR comment, so the Actor
+can write the `/ent approve` boilerplate itself (§10-4) — the very reason `gh` was made
+unauthenticated applied to git all along.
+
+`NEUTRALIZED_ENV` layers four things on. The `GIT_CONFIG_COUNT` / `GIT_CONFIG_KEY_0` /
+`GIT_CONFIG_VALUE_0` trio is read **after** system, global, and local alike, and an empty value for
+`credential.helper` resets the helper list. Once the helper is gone git goes asking the terminal and
+askpass, so `GIT_TERMINAL_PROMPT=0` and `GIT_ASKPASS=/usr/bin/false` tip that into "it cannot ask,
+so it fails". On the ssh side, dropping `SSH_AUTH_SOCK` is not enough (measured: it still went
+through on the keys in `~/.ssh`), so `GIT_SSH_COMMAND=/usr/bin/false` kills the side that launches
+ssh.
+
+**What is closed is the route that arrives silently from the surrounding environment.** Writing the
+setting back by name (`git -c credential.helper=osxkeychain`) is still open. It is filed as (i) in
+§10-6.
+
 **Invoke git with an argv array.** If external commands are assembled with template strings, then
 any single argument not under the controller's control becomes a shell injection. `gitBranch.push`
 reads the branch name from the worktree, but the contents of the worktree can be rewritten by the
@@ -1793,6 +1815,32 @@ The Actor does not get to choose the input to the inspection itself. `git worktr
 together with the read-only `list`. Enumerating subcommands becomes a hole the moment one writable
 form is left out.
 
+**The index's hiding bits are closed on the observing side, not with the deny list.**
+`git status --porcelain -uall` honors `assume-unchanged` and `skip-worktree`, so running
+`git -C ../../../.. update-index --assume-unchanged src/controller/index.ts` once from inside the
+worktree and then rewriting the file on the main side leaves both `git status` and `git diff` empty,
+and **it passes with zero violations**. `tsc` then reads from the filesystem rather than the index,
+so the modified controller runs as is. (c) and (e) below keep "it reaches a human once" as their
+guarantee; this route never rings at all.
+
+So `changedPaths` and `repoDirtyState` read `git ls-files -v` and **add the paths whose hiding bits
+are set into the observation without looking at their contents** (`indexHiddenPaths`,
+src/adapters/local.ts). What is treated as a violation is not "it was edited" but "it was taken out
+of the observation". On the main side the value is **a marker rather than the contents'
+fingerprint**. With a fingerprint, every time a human edits a file they keep `assume-unchanged` on
+(the verb's actual purpose) the value moves across ACT, and (d)'s false positive becomes the steady
+state. With a marker, the only thing that shows up as a difference is a bit being set or cleared
+inside the ACT window. In exchange, **writes to a file that was already hidden are invisible.**
+
+The same verbs (`git update-index` / `git rm --cached` / `git stash` / `git push` /
+`git credential`) were added to the deny list too, but **that side is an enumeration and does not
+close.** Pulling the rule parsing and matching out of the Claude Code 2.1.197 binary and running
+them showed that `Bash(git push *)` becomes a regex equivalent to `^git push( .*)?$`, which does not
+match `git -C .. push origin HEAD:main`. Writing the `git * <verb>*` spelling alongside it picks up
+the `-C` and `--git-dir=` prefixes, but prefixing an environment variable
+(`GIT_DIR=... git push`) makes it not start with `git` and drops out of both spellings.
+**The deny list is only one side of the doubling** (the self-hosting section of §8).
+
 The violation kind (`escaped_worktree` / `protected_path`) and the ESCALATE reason are different
 layers; whichever the kind is, the reason is `protected_path_touched`. If the inspection could not
 run, `ESCALATE(guard_unavailable)`. Do not mix "did not touch" with "could not confirm" (§3.1).
@@ -1924,7 +1972,7 @@ together with it.
 **What was given up by discarding the byte string is written in (h). In exchange, (g) closed.** The
 logical digest reads through SQLite, so rows that are still only in the WAL are visible too.
 
-**Seven remaining holes are recorded here** (the letters do not move. (g) is closed, but if the
+**Eight remaining holes are recorded here** (the letters do not move. (g) is closed, but if the
 names of the other holes shifted, past reviews would point somewhere else, so it is left with a
 strikethrough rather than deleted).
 
@@ -1959,9 +2007,10 @@ human cleaning it up, the modified controller source stays on disk.
 
 (e) The main side sees only uncommitted dirt. The worktree side follows the committed diff as well,
 but the controller does not move the main-side branch, so it is kept to `status` alone.
-`git -C ../../../.. commit` and `git -C ../../../.. stash` are not on the deny list, so if something
-is written on the main side and then committed, it disappears from the set of dirty files and goes
-outside the inspection.
+`git -C ../../../.. commit` is not on the deny list, so if something is written on the main side and
+then committed, it disappears from the set of dirty files and goes outside the inspection.
+`git stash` was put on the deny list, but that side is an enumeration and a different spelling drops
+out of it (the same `-C` story as above).
 
 (f) What is visible for tampering with the state DB is only the rows of the Goal that tick is
 running and the `status` of the Goals listed in `depends_on`. If rows of any other Goal are
@@ -2017,6 +2066,17 @@ rewrite" in `tests/controller-state-db-writes.test.ts` pins these two laps.)
 On the file side, **existence and the inode are watched, so deletion (`rmSync`) and replacement
 (unlink and put a different file at the same path) do set the gate off**. What remains is corruption
 that does not change what is visible through a connection left open.
+
+(i) The Actor can write a neutralized git setting back by naming it on the command line. The
+`GIT_CONFIG_COUNT` trio is read before `-c`, so
+`git -c credential.helper=osxkeychain ls-remote <private repo>` goes through, as measured (the
+credentials section of §7). `GIT_SSH_COMMAND` can likewise be put back with `-c core.sshCommand=ssh`,
+and there is the inline form `GIT_CONFIG_COUNT=0 git ...` too. **A deny list that enumerates
+spellings cannot close this** — the command can be made not to start with `git`, and the helper's
+name is readable straight out of the system gitconfig. What was closed is the route that arrives
+silently from the surrounding environment; the form where the Actor deliberately writes it back
+remains. Going further than that means running the Actor as a different user or in a sandbox that
+cannot read the keychain credentials at all.
 
 (c) and (d) are trade-offs facing opposite ways, and solving both at once requires either persisting
 the detection or tying edits to the Actor process. In the MVP both are left in.

@@ -291,6 +291,16 @@ export function gitWorktree(repoRoot: string, root: string): WorktreePort {
         }
       }
 
+      // index の隠しビットが立っているパス。**中身を見ていないのに足す。**
+      //
+      // `status --porcelain` は `assume-unchanged` / `skip-worktree` を尊重するので、
+      // ビットを1本立てるだけで、そのファイルへの書き込みが上のループから消える。
+      // 「編集された」ではなく「**観測から外された**」を違反として扱う。ビットを
+      // 立てること自体に正当な理由が無く、立てた後の書き込みは原理的に見えない。
+      for (const entry of await indexHiddenPaths(path)) {
+        paths.add(entry);
+      }
+
       // base から分岐して以降の commit 済みの変更。
       //
       // ここで例外を握り潰してはいけない。以前は catch{} で「変更なし」に
@@ -353,6 +363,29 @@ export function gitWorktree(repoRoot: string, root: string): WorktreePort {
           }
           state.set(absolute, fingerprint(absolute));
         }
+      }
+
+      // index の隠しビットが立っているパス。**値は中身の指紋ではなく印にする。**
+      //
+      // `status` はこのビットを尊重するので、`git -C <repoRoot> update-index
+      // --assume-unchanged src/controller/index.ts` を1回叩いてから本体側の
+      // ファイルを書き換えると、上のループが空のままになる。commit もしないので
+      // `changedPaths` の差分にも出ない。それでいて次のティックの `tsc` は
+      // index ではなくファイルシステムから読むので、書き換えられた controller が
+      // そのまま走る。既知の穴 (c) (e) が持っていた「1度は人間に届く」すら無い。
+      //
+      // 指紋ではなく印にするのは、**ビットが立った瞬間だけを差にするため**。
+      // 中身を値にすると、人間が assume-unchanged を立てて置いているファイル
+      // （ローカル専用の設定など、この動詞の本来の用途）を編集するたびに
+      // ACT の前後で値が動き、毎ティック誤検知になる（穴 (d) の拡大）。
+      // 印にしておけば、ACT の窓の中でビットが立ったか消えたかだけが差に出る。
+      // **その代わり、以前から隠されていたファイルへの書き込みは見えない。**
+      for (const entry of await indexHiddenPaths(repoRoot)) {
+        const absolute = resolve(repoRoot, entry);
+        if (isInside(root, absolute) || state.has(absolute)) {
+          continue;
+        }
+        state.set(absolute, INDEX_HIDDEN);
       }
 
       return state;
@@ -457,6 +490,55 @@ async function hooksPathSetting(repoRoot: string): Promise<string | null> {
     // 未設定なら git は終了コード 1 を返す。設定されていないことは正常。
     return null;
   }
+}
+
+/**
+ * index の隠しビットが立っているパスに付ける値。中身の指紋とは別物だと読めるようにする。
+ *
+ * 64桁の16進（`fingerprint` が返す形）と衝突しない文字列にしてある。
+ */
+const INDEX_HIDDEN = "index-hidden";
+
+/**
+ * `assume-unchanged` か `skip-worktree` が立っていて、`git status` から消えるパス。
+ *
+ * 関門の一次入力は `git status --porcelain -uall` で、**どちらのビットも尊重される。**
+ * `git update-index --assume-unchanged <path>` を1回叩けば、そのファイルへの
+ * 書き込みは status からも `git diff` からも消える。拒否リスト
+ * （`ALWAYS_DENIED`、src/adapters/claude.ts）にも同じ動詞を足したが、あれは
+ * 先頭からのグロブなので `git -C . update-index ...` や環境変数の前置で外れうる。
+ * **観測を潰す形は、観測する側でも見る。**
+ *
+ * 判定はタグの文字で行う。`git ls-files -v` は1行につき `<タグ> <パス>` を出し、
+ * `assume-unchanged` が立っているものは**タグが小文字**になる。`skip-worktree` は
+ * `S`。知らないタグは「隠されていない」に倒さず throw する。この関数の呼び出し元は
+ * どちらも「確かめられなかった」を `guard_unavailable` に落とす経路にいるので、
+ * 読めない出力を静かに空として返すと、関門が鳴らないまま素通りする（design.md §3.1）。
+ */
+async function indexHiddenPaths(cwd: string): Promise<string[]> {
+  const listed = await gitRaw(cwd, ["ls-files", "-v"]);
+  const hidden: string[] = [];
+  for (const line of listed.split("\n")) {
+    if (line === "") {
+      continue;
+    }
+    const tag = line[0] ?? "";
+    const path = unquote(line.slice(2).trim());
+    if (line[1] !== " " || path === "") {
+      throw new Error(`cannot read the output of git ls-files -v: ${line}`);
+    }
+    // 小文字は assume-unchanged、`S` は skip-worktree。
+    if (/^[a-z]$/.test(tag) || tag === "S") {
+      hidden.push(path);
+      continue;
+    }
+    // `H` cached / `M` unmerged / `R` removed / `C` modified / `K` to-be-killed /
+    // `?` other。ここに無いタグが出たら、隠しビットかどうかを判定できていない。
+    if (!"HMRCK?".includes(tag)) {
+      throw new Error(`cannot read the output of git ls-files -v: ${line}`);
+    }
+  }
+  return hidden;
 }
 
 /**

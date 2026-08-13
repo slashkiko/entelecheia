@@ -482,13 +482,18 @@ function disallowedToolsIn(role: ActorRole, gates: readonly ApprovalGate[]): str
  *
  * 判定は role の名前ではなく**編集のツールを持っているか**で行う。役割が増えたとき、
  * 読むだけの役割はここに書き足さなくても既定で塞がる。
+ *
+ * **`git stash` はここから `ALWAYS_DENIED` へ移した。** ここに並ぶ他のものは
+ * 「作業ツリーの中身を消す」——つまり実装役自身の成果を壊すもので、消した結果は
+ * 関門の観測（指紋の差）に出る。stash だけは性質が違い、**汚れの集合から
+ * ファイルを消して観測そのものを空にする**（design.md §10-6 の (e)）。
+ * 実装役に許してよい理由が無いので、役割の条件を外した。
  */
 const DESTRUCTIVE_GIT = [
   "Bash(git checkout *)",
   "Bash(git restore *)",
   "Bash(git clean *)",
   "Bash(git reset *)",
-  "Bash(git stash *)",
 ] as const;
 
 /** どの役割にも要る、読むためのツール。これが無ければコードを読めない */
@@ -630,6 +635,25 @@ const DENIED_TOOLS: Record<ApprovalGate, readonly string[]> = {
  * `git worktree` は読み取りの `list` ごと拒否する。サブコマンドだけを列挙すると、
  * 書ける形（`add` / `remove` / `move` / `prune`）を1つ書き落とした時点で穴になる。
  * Actor が作業ツリーの構成を知る必要は無いので、動詞ごと閉じる方を採る。
+ *
+ * ## `git <サブコマンド> *` だけでは `-C` の前置で外れる
+ *
+ * SDK が使う規則は**先頭からのグロブ**になる。Claude Code 2.1.197 のバイナリから
+ * 規則の解釈（`RUn`）と照合（`wV`）を取り出して流したところ、`Bash(git push *)` は
+ * `^git push( .*)?$` にあたる正規表現になり、`git -C .. push origin HEAD:main` には
+ * **一致しない**。`--git-dir=` の前置も同じで外れる。
+ *
+ * そこで、同じ動詞について `git * <サブコマンド>*` の形も併記する。`*` は空白も
+ * 跨ぐので（`wV` は `.*` に `s` フラグを付けて組む）、`-C` や `--git-dir=` を
+ * 挟んだ形はこちらで拾える。両方書くのは、前者が `git push ...` を、後者が
+ * `git <何か> push ...` を見るためで、片方では片方の形が落ちる。
+ *
+ * **それでも数え上げは閉じない。** `GIT_DIR=... git push` のように環境変数を
+ * 前置すると `git` で始まらなくなり、どちらの綴りにも一致しない
+ * （Claude Code が剥がす環境変数の一覧に `GIT_DIR` は入っていない）。
+ * `sh -c` 経由も同じ。**拒否リストは二重化の片側でしかなく**、観測を潰す形は
+ * controller 側でも見る（`gitWorktree.changedPaths` / `repoDirtyState` が
+ * index の隠しビットを直接読む）。
  */
 const ALWAYS_DENIED = [
   "Bash(git update-ref *)",
@@ -656,6 +680,34 @@ const ALWAYS_DENIED = [
   "Bash(git config core.hooksPath *)",
   "Bash(git config --local core.hooksPath *)",
   "Bash(git config --global core.hooksPath *)",
+  // index の隠しビット。`git status --porcelain -uall` はこれを尊重するので、
+  // `git -C ../../../.. update-index --assume-unchanged src/controller/index.ts` を
+  // 1回叩いてから本体側のファイルを書き換えると、**関門の一次入力が空になる**。
+  // 既知の穴 (c) と (e) は「1度は人間に届く」を保証として残していたが、
+  // この経路は一度も鳴らない。`--skip-worktree` も同じ動詞にある。
+  "Bash(git update-index *)",
+  "Bash(git * update-index*)",
+  // 追跡から外す側。`git rm --cached` は status に削除として出るので観測は
+  // 潰れないが、隠しビットと同じ動機で叩かれる。
+  "Bash(git rm --cached *)",
+  "Bash(git * rm --cached*)",
+  // 汚れの集合を空にする側（design.md §10-6 の (e)）。編集のツールを持つ役割にも
+  // 掛ける（`DESTRUCTIVE_GIT` から移した）。
+  "Bash(git stash *)",
+  "Bash(git stash)",
+  "Bash(git * stash*)",
+  // push は controller だけが行う（`COMMON_TAIL` も Agent にそう書いている）。
+  // 承認ゲートの `push_to_default_branch` は `Bash(git push origin main)` の
+  // 綴りで並んでいるだけなので、`git push origin HEAD:main` は素通りしていた。
+  // 資格情報を無効化しても、綴りの数え上げに頼る形は残さない。
+  "Bash(git push *)",
+  "Bash(git push)",
+  "Bash(git * push*)",
+  // keychain のトークンを stdout に出す口。`git credential fill` に
+  // `protocol=https` / `host=github.com` を流すだけで取れていた。
+  "Bash(git credential *)",
+  "Bash(git credential-osxkeychain *)",
+  "Bash(git * credential*)",
 ] as const;
 
 /**

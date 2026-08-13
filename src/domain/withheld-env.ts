@@ -27,6 +27,11 @@ export const WITHHELD_ENV = [
   "GH_TOKEN",
   "GH_ENTERPRISE_TOKEN",
   "GITHUB_ENTERPRISE_TOKEN",
+  // ssh-agent の口。これが渡っていると `git ls-remote git@github.com:...` が
+  // 鍵の所在を知らないまま通る。**落としただけでは塞がらない**（実測で、
+  // `SSH_AUTH_SOCK` を消しても `~/.ssh` の鍵で認証が通った）ので、
+  // `NEUTRALIZED_ENV` の `GIT_SSH_COMMAND` と組で使う。
+  "SSH_AUTH_SOCK",
 ] as const;
 
 /** Claude Actor には不要な OpenAI / Codex 側の資格情報も渡さない。 */
@@ -87,7 +92,50 @@ export const NEUTRALIZED_ENV: Readonly<Record<string, string>> = {
   // ディレクトリではないので、gh は設定を1つも読めない。実在するパスにしてあるのは、
   // 「消し忘れた空文字」ではなく意図した無効化だと読めるようにするため。
   GH_CONFIG_DIR: "/dev/null",
+
+  // ここから下は git 自身の資格情報の経路になる。
+  //
+  // **`gh` を塞いでも git は塞がっていなかった。** 実測では、Actor に渡すのと
+  // 同じ環境（トークンの環境変数は落とし、`GH_CONFIG_DIR=/dev/null`）のまま
+  // `git ls-remote https://github.com/<owner>/<private-repo>` が非対話で通り、
+  // `git credential fill` に `protocol=https` / `host=github.com` を流すと
+  // トークンそのものが stdout に出た。出どころは system の gitconfig の
+  // `credential.helper = osxkeychain` で、**system の設定なので repo 設定でも
+  // ユーザー設定でも消せない。** 環境変数だけが後から効く。
+  //
+  // 取れれば PR コメントを投稿でき、`/ent approve` の定型文を Actor が自分で
+  // 書けることになる（design.md §10-4）。`gh` を塞いだ理由がそのまま当てはまる。
+  //
+  // `GIT_CONFIG_COUNT` の組は system / global / local より**後**に読まれ、
+  // `credential.helper` の空値は helper のリストを reset する。実測でも
+  // `git config --get-all credential.helper` が `osxkeychain` に続けて空行を返し、
+  // 上の `ls-remote` と `credential fill` はどちらも認証に落ちるようになった。
+  GIT_CONFIG_COUNT: "1",
+  GIT_CONFIG_KEY_0: "credential.helper",
+  GIT_CONFIG_VALUE_0: "",
+  // helper が無くなると git は端末や askpass に聞きに行く。どちらも塞いで、
+  // 「聞けないので失敗する」に倒す。開けたままだと ent を対話で回している間だけ
+  // 人間のプロンプトが Actor の代わりに答えてしまう。
+  GIT_TERMINAL_PROMPT: "0",
+  GIT_ASKPASS: "/usr/bin/false",
+  // ssh 側の経路。`SSH_AUTH_SOCK` を落としても `~/.ssh` の鍵で通ってしまう
+  // （実測）。`HOME` は渡すしかないので、ssh を起動する側を潰す。
+  GIT_SSH_COMMAND: "/usr/bin/false",
 };
+
+/**
+ * **無効化はコマンドラインからの明示的な再有効化までは塞げない。**
+ *
+ * git の `-c` は `GIT_CONFIG_COUNT` より後に読まれるので、
+ * `git -c credential.helper=osxkeychain ls-remote ...` は実測で通る。
+ * `GIT_CONFIG_COUNT=0 git ...` のようにインラインで環境変数を置き直す形も同じ。
+ * どちらも `git` で始まらない綴りにできるので、拒否リストでは数え上げられない
+ * （`src/adapters/claude.ts` の `ALWAYS_DENIED` を参照）。
+ *
+ * 閉じたのは**周囲の環境から黙って届く経路**で、そこが本来の問題だった。
+ * Actor が何も知らずに叩いた git、および Actor が書いて VERIFY が流すテストは、
+ * この無効化の内側に入る。名指しで helper を書き戻す形は残る（design.md §10-6 の (i)）。
+ */
 
 /**
  * 除去リストに載っているものを落とした環境変数を作る。

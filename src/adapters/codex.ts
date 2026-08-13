@@ -57,6 +57,12 @@ export interface CodexOptions {
  * 実装役だけ workspace-write にし、review / investigate は read-only に固定する。
  * command 単位の拒否はプロンプトと controller の事後関門が受け持つ。Claude
  * Adapter と完全に同じ強さではないので、Codex は明示的な opt-in にしてある。
+ *
+ * **資格情報の無効化と、index の隠しビットの検知は、こちらにも同じだけ効く。**
+ * 前者は `withheldEnv` が `NEUTRALIZED_ENV` を重ねる形なので Adapter を選ばず
+ * （design.md §7）、後者は controller 側の観測に入れてあるので Adapter の外にある
+ * （`indexHiddenPaths`、§10-6）。Claude 側にだけ足した拒否リストは、あくまで
+ * 二重化の片側でしかない。
  */
 export function codexActor(options: CodexOptions): ActorPort {
   return {
