@@ -355,7 +355,7 @@ const LLM_ACTIONS = Object.entries(LLM_MAY_CHOOSE)
   .map(([type]) => type);
 
 const llmActionSchema = actionSchema.refine((action) => LLM_MAY_CHOOSE[action.type], {
-  message: `LLM が選べるのは ${LLM_ACTIONS.join(" / ")} だけ。COMPLETE と ESCALATE は guard が決める`,
+  message: `The LLM may only choose ${LLM_ACTIONS.join(" / ")}. COMPLETE and ESCALATE are decided by the guard`,
 });
 
 /**
@@ -409,7 +409,7 @@ async function askLlm(
       }
       // それ以外は、Port が落ちているのか出力が壊れているのかを区別できない。
       // どちらも「採用できなかった試行」として同じ回数制限に載せる。
-      failures.push(`LlmPort が失敗した: ${errorMessage(error)}`);
+      failures.push(`LlmPort failed: ${errorMessage(error)}`);
       continue;
     }
 
@@ -433,7 +433,7 @@ async function askLlm(
         //    （`criteriaAskForReview` の注記に同じことが書いてある）。
         if (!asksForReview) {
           failures.push(
-            "レビュー役の ACT は選べない。この Goal の criteria は review.verdict も review.reviewed_sha も求めておらず、レビュー役を起動しても埋まる Gap が無い",
+            "An ACT with the review role cannot be chosen. This Goal's criteria ask for neither review.verdict nor review.reviewed_sha, so launching the review role fills no Gap",
           );
           continue;
         }
@@ -442,7 +442,7 @@ async function askLlm(
         if (reviewedHead !== null) {
           reviewRejections += 1;
           failures.push(
-            `レビュー役の ACT は選べない。直近のレビューが現在の HEAD（${reviewedHead}）を既に読んでおり、実装は1行も進んでいない。同じ commit を2度レビューさせない`,
+            `An ACT with the review role cannot be chosen. The latest review already read the current HEAD (${reviewedHead}), and the implementation has not moved a single line. Do not review the same commit twice`,
           );
           continue;
         }
@@ -456,7 +456,7 @@ async function askLlm(
       // 変わらず、次のティックも同じ観測から始まる。
       if (parsed.data.type === "WAIT" && changesRequestedHead !== null) {
         failures.push(
-          `WAIT は選べない。レビュー役が現在の HEAD（${changesRequestedHead}）に changes_requested を返しており、待っても変わるものが無い。指摘を直す ACT を選ぶ`,
+          `WAIT cannot be chosen. The review role returned changes_requested for the current HEAD (${changesRequestedHead}), so waiting changes nothing. Choose an ACT that fixes the findings`,
         );
         continue;
       }
@@ -620,24 +620,24 @@ function buildPrompt(
     .join("\n");
   const unresolved =
     target.unresolved.length === 0
-      ? "- なし"
+      ? "- none"
       : `- ${describeUnresolvedForPrompt(target.unresolved, target.assessment.gaps)}`;
 
   const sections = [
-    "Goal の Acceptance Criteria に対して埋まっていない差分がある。次に取る行動を1つ選べ。",
+    "There are Gaps left against the Goal's acceptance criteria. Choose one action to take next.",
     `## Acceptance Criteria\n${criteria}`,
     `## Gap\n${gaps}`,
-    `## 結論が出ていない対象\n${unresolved}`,
-    `## 予算の残り\n- actor 実行: ${target.usage.actorRuns}/${target.budget.max_actor_runs}\n- reconcile: ${target.usage.reconciles}/${target.budget.max_reconciles}\n- 連続失敗: ${target.usage.consecutiveFailures}/${target.budget.max_consecutive_failures}\n- 経過時間: ${target.usage.elapsedSeconds}s/${target.budget.max_wall_clock}`,
+    `## Targets with no conclusion yet\n${unresolved}`,
+    `## Budget remaining\n- actor runs: ${target.usage.actorRuns}/${target.budget.max_actor_runs}\n- reconciles: ${target.usage.reconciles}/${target.budget.max_reconciles}\n- consecutive failures: ${target.usage.consecutiveFailures}/${target.budget.max_consecutive_failures}\n- elapsed time: ${target.usage.elapsedSeconds}s/${target.budget.max_wall_clock}`,
     [
-      "## 選べる行動",
-      '- {"type":"ACT","intent":"Actor に何をさせるか"} — 実装や修正で Gap を埋める。role を書かなければ実装役になる',
+      "## Actions you may choose",
+      '- {"type":"ACT","intent":"what to make the Actor do"} - fill a Gap by implementing or fixing. Without a role it runs as the implement role',
       ...reviewActionLines(target.criteria, reviewedHead),
-      '- {"type":"VERIFY"} — 検証していない criteria を確かめる。kind が unknown の Gap に使う',
+      '- {"type":"VERIFY"} - confirm criteria that have not been verified. Use it for Gaps whose kind is unknown',
       ...waitActionLines(changesRequestedHead),
-      '- {"type":"REPLAN"} — いまの進め方では Gap が埋まらない',
+      '- {"type":"REPLAN"} - the current approach will not fill the Gap',
       "",
-      "COMPLETE と ESCALATE は選べない。完了判定と停止条件は controller が決める。",
+      "COMPLETE and ESCALATE cannot be chosen. Completion and the stop conditions are decided by the controller.",
       ...waitClosingLines(changesRequestedHead),
       // 出力形式の強制はトランスポートの責務なので adapter 側に一本化する。
       // LlmPort の契約は「戻り値を Zod で検証する」までしか言っていない。
@@ -646,7 +646,7 @@ function buildPrompt(
 
   if (failures.length > 0) {
     sections.push(
-      `## 直前の出力が採用されなかった理由\n${failures.map((f) => `- ${f}`).join("\n")}`,
+      `## Why the previous output was not adopted\n${failures.map((f) => `- ${f}`).join("\n")}`,
     );
   }
 
@@ -671,7 +671,7 @@ function waitActionLines(changesRequestedHead: string | null): string[] {
     ];
   }
   return [
-    `- WAIT は、このティックでは選べない。レビュー役が現在の HEAD（${changesRequestedHead}）に changes_requested を返しており、待っても変わるものが無い。指摘を直せるのは実装役だけになる`,
+    `- WAIT cannot be chosen this tick. The review role returned changes_requested for the current HEAD (${changesRequestedHead}), so waiting changes nothing. Only the implement role can fix the findings`,
   ];
 }
 
@@ -686,8 +686,8 @@ function waitClosingLines(changesRequestedHead: string | null): string[] {
     return [];
   }
   return [
-    "WAIT にいつまで寝るかは書けない。起きる時刻も controller が決める。",
-    "人間を待つべきだと判断したら WAIT(human_review_pending) を選ぶ。",
+    "WAIT cannot say how long to sleep. The wake time is decided by the controller too.",
+    "If you judge that a human must be waited for, choose WAIT(human_review_pending).",
   ];
 }
 
@@ -712,11 +712,11 @@ function reviewActionLines(
   }
   if (reviewedHead === null) {
     return [
-      '- {"type":"ACT","role":"review","intent":"何を読んでどう判断させるか"} — 実装役とは別の Actor をレビュー役として起動する。読むだけで書けないので、これ自体は実装を進めない',
+      '- {"type":"ACT","role":"review","intent":"what to read and how to judge it"} - launch a separate Actor as the review role. It only reads and cannot write, so this alone does not advance the implementation',
     ];
   }
   return [
-    `- レビュー役の ACT は、このティックでは選べない。直近のレビューが現在の HEAD（${reviewedHead}）を既に読んでおり、実装は1行も進んでいない。同じ commit を2度レビューさせない`,
+    `- An ACT with the review role cannot be chosen this tick. The latest review already read the current HEAD (${reviewedHead}), and the implementation has not moved a single line. Do not review the same commit twice`,
   ];
 }
 

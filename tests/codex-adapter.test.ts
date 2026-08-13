@@ -105,7 +105,7 @@ describe("codexActor", () => {
       await codexActor(h.options).run(invocation(role));
 
       expect(h.commands[0]?.args).toContain("read-only");
-      expect(h.commands[0]?.prompt).toContain("ファイルは書き換えない");
+      expect(h.commands[0]?.prompt).toContain("Do not modify files");
     }
   });
 
@@ -114,7 +114,9 @@ describe("codexActor", () => {
     await codexActor(h.options).run(invocation("review"));
 
     expect(h.commands[0]?.prompt).toContain(".goals/g.yaml");
-    expect(h.commands[0]?.prompt).toContain("reviewed_sha: <git rev-parse HEAD で得た40桁の sha>");
+    expect(h.commands[0]?.prompt).toContain(
+      "reviewed_sha: <the 40-hex sha from git rev-parse HEAD>",
+    );
     expect(h.commands[0]?.prompt).toContain("verdict: approved");
   });
 

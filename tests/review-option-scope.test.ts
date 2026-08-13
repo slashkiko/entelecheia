@@ -151,7 +151,7 @@ describe("レビュー役を出すかどうかは criteria が決める", () => 
     expect(prompt).not.toContain('"role":"review"');
     // 外した理由すら書かない。あちらにはレビュー役という選択肢が最初から無く、
     // 「今回は選べない」と書けば「いつかは選べる」と読める。
-    expect(prompt).not.toContain("レビュー役");
+    expect(prompt).not.toContain("review role");
   });
 
   it("レビューを求めていない Goal でも、他の選べる行動はこれまでどおり出る", async () => {
@@ -186,7 +186,7 @@ describe("選択肢に出さないだけでなく、返ってきても採用し�
     const decision = await decide(target([TESTS_PASS, CI_GREEN]), deps(llm));
 
     expect(llm.prompts).toHaveLength(2);
-    expect(llm.prompts[1]).toContain("採用されなかった理由");
+    expect(llm.prompts[1]).toContain("was not adopted");
     expect(decision.action).toMatchObject({ type: "ACT", intent: "テストを直す" });
     expect(decision.action).not.toHaveProperty("role", "review");
   });

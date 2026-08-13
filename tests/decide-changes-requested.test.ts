@@ -167,7 +167,7 @@ async function promptFor(facts: readonly Fact[]): Promise<string> {
 }
 
 /** WAIT を選ばせる一文。外したティックにはこれも出さない */
-const WAIT_INVITATION = "人間を待つべきだと判断したら";
+const WAIT_INVITATION = "If you judge that a human must be waited for";
 
 const WAIT_ACTION = { type: "WAIT", reason: "human_review_pending" };
 const REVIEW_ACT = { type: "ACT", role: "review", intent: "実装を読んでレビューする" };
@@ -227,7 +227,7 @@ describe("外した WAIT は受け取り側でも採用しない", () => {
     const decision = await decide(target(CHANGES_REQUESTED), deps(llm));
 
     expect(llm.prompts).toHaveLength(2);
-    expect(llm.prompts[1]).toContain("採用されなかった理由");
+    expect(llm.prompts[1]).toContain("was not adopted");
     expect(decision.action).toMatchObject({ type: "ACT", intent: IMPLEMENT_ACT.intent });
     expect(decision.decidedBy).toBe("llm");
   });
@@ -314,7 +314,7 @@ describe("人間を待つ WAIT を名指しする", () => {
     const prompt = await promptFor(NEVER_REVIEWED);
 
     expect(prompt).toContain("human_review_pending");
-    expect(prompt).toContain(`${WAIT_INVITATION} WAIT(human_review_pending) を選ぶ。`);
+    expect(prompt).toContain(`${WAIT_INVITATION}, choose WAIT(human_review_pending).`);
   });
 
   it("LLM が human_review_pending を返したら採用する", async () => {

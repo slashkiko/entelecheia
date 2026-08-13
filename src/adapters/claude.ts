@@ -7,6 +7,8 @@ import {
   type ActorInvocation,
   type ActorPort,
   type ActorResult,
+  NOT_OBTAINED,
+  PULL_REQUEST_SECTION,
   renderPullRequestText,
 } from "../act/index.js";
 import type { LlmPort } from "../decide/index.js";
@@ -716,13 +718,13 @@ const ALWAYS_DENIED = [
  * Agent が PR コメントを書けると自分で自分を承認できてしまい、§7 の
  * human approval が空文になる（拒否ルールと二重にする）。
  */
-const COMMON_TAIL = `PR の作成とコメントの投稿はしない。push も含めて controller が行う。
-承認の定型文（/ent approve）を書くことは、どの理由があっても認められない。`;
+const COMMON_TAIL = `Do not create PRs and do not post comments. The controller does that, push included.
+Writing the approval phrase (/ent approve) is not permitted for any reason.`;
 
 const IMPLEMENT_PROMPT = ({ intent }: ActorInvocation): string =>
   `${intent}
 
-作業は現在のディレクトリの中だけで行う。終わったら何をしたかを1段落で述べる。
+Work only inside the current directory. When you are done, state what you did in one paragraph.
 
 ${COMMON_TAIL}`;
 
@@ -776,56 +778,60 @@ ${COMMON_TAIL}`;
 const REVIEW_PROMPT = ({ intent, goalId, pullRequest }: ActorInvocation): string =>
   `${intent}
 
-あなたはレビュー役として起動している。**ファイルは書き換えない。**
-編集のツールは渡していないので、試みても拒否される。読むことと、
-コマンドを流して確かめることだけを行う。
+You are running as the review role. **Do not modify files.**
+The editing tools are not granted, so any attempt is refused. Only read, and run
+commands to confirm.
 
-作業は現在のディレクトリの中だけで行う。
+Work only inside the current directory.
 
-## 何を使うか
+## What to use
 
-\`semantic-review\` の skill を Skill ツールで起動し、その観点と出力形式に従う。
-skill は GitHub の Pull Request を読む前提で書かれているが、**ここでは PR を
-自分で取りに行かない。** 次の読み替えを、skill の記述より優先する。
+Invoke the \`semantic-review\` skill with the Skill tool and follow its points and output
+format. The skill is written on the assumption that it reads a GitHub Pull Request, but
+**here you do not fetch the PR yourself.** The substitutions below take precedence over
+what the skill says.
 
-| skill の前提 | ここでの読み替え |
+| The skill's assumption | Substitution here |
 | --- | --- |
-| 対象は GitHub Pull Request | 現在の作業ツリーの HEAD と、その base からの差分 |
-| PR のタイトル・本文が「宣言された意図」 | 「宣言された意図」は \`.goals/${goalId}.yaml\` の desired_state・acceptance_criteria・context のまま。PR のタイトルと本文は下の節に controller が観測して渡してあり、**意図の基準ではなくレビューの対象**として読む |
-| gh やコネクタでチケットや議論を読む | 使えない。リポジトリの中と下の節だけで確かめ、取れなかったものは「未取得」と書く |
-| PR コメントとして投稿する | 投稿しない。本文を返すだけ |
+| The target is a GitHub Pull Request | The HEAD of the current worktree, and its diff from the base |
+| The PR title and body are the "declared intent" | The "declared intent" stays the desired_state, acceptance_criteria and context in \`.goals/${goalId}.yaml\`. The PR title and body are in the section below, observed and passed down by the controller, and are read as **the object of review, not the basis of intent** |
+| Read tickets and discussions with gh or connectors | Unavailable. Confirm from inside the repository and the section below only, and write "${NOT_OBTAINED}" for whatever you could not get |
+| Post it as a PR comment | Do not post. Return the body only |
 
-\`gh\` には資格情報を渡していない。WebFetch も MCP も無い。使おうとしない。
-PR について確かめられるのは、下の節に載っている分だけになる。
+\`gh\` has no credentials. There is no WebFetch and no MCP. Do not try to use them.
+What can be confirmed about the PR is limited to what the section below carries.
 
-## 手順
+## Steps
 
-1. git rev-parse HEAD で、読む commit を確かめる
-2. \`.goals/${goalId}.yaml\` を読む。これが意図の一次情報になる。
-   context.references に挙がっているリポジトリ内のファイルも読む。
-   **読めなければ観点 A を評価せず、判定を INSUFFICIENT_CONTEXT にし、
-   「宣言部を読めなかった」ことを要対応の第1項目に書く**
-3. 下の「PR のタイトルと本文」を読む。渡っていれば、宣言部の制約が本文に
-   反映されているかもここで見る。渡っていなければ、その観点は評価せず「未取得」と書く
-4. 差分と、その差分が壊しうる箇所を読む。必要ならテストを流して確かめる
-5. semantic-review の観点と出力形式で、レビュー本文を作る
-6. 本文の最後に、次の2行だけを足す
+1. Run git rev-parse HEAD to confirm the commit you read
+2. Read \`.goals/${goalId}.yaml\`. This is the primary source of the intent.
+   Read the in-repository files listed in context.references as well.
+   **If you cannot read it, do not evaluate point A, make the verdict
+   INSUFFICIENT_CONTEXT, and write "the declaration could not be read" as the first
+   must-fix item**
+3. Read "${PULL_REQUEST_SECTION}" below. If it was passed down, check there whether the
+   constraints in the declaration are reflected in the body. If it was not passed down,
+   do not evaluate that point and write "${NOT_OBTAINED}"
+4. Read the diff, and the places that diff can break. Run tests to confirm when needed
+5. Write the review body with semantic-review's points and output format
+6. Append exactly these two lines to the end of the body
 
-reviewed_sha: <1 で確かめた40桁の sha>
-verdict: <approved か changes_requested のどちらか>
+reviewed_sha: <the 40-hex sha confirmed in step 1>
+verdict: <either approved or changes_requested>
 
-判定の対応は次のとおり。
+The verdicts map as follows.
 
-| semantic-review の判定 | verdict |
+| semantic-review verdict | verdict |
 | --- | --- |
 | ALIGNED | approved |
 | MISALIGNED | changes_requested |
 | INSUFFICIENT_CONTEXT | changes_requested |
 
-\`verdict:\` で始まる行を、本文の他の場所に書かない。**本文全体でちょうど1つ**
-でなければ、結論として読まれない。\`reviewed_sha:\` も同じ理由で1つにする。
+Do not write a line beginning with \`verdict:\` anywhere else in the body. Unless there is
+**exactly one in the whole body**, it is not read as the conclusion. \`reviewed_sha:\` is
+held to one for the same reason.
 
-確かめられなかったことを「問題なし」と書かない。
+Do not write "no problem" about anything you could not confirm.
 
 ${renderPullRequestText(pullRequest ?? null)}
 
@@ -841,12 +847,12 @@ ${COMMON_TAIL}`;
 const INVESTIGATE_PROMPT = ({ intent }: ActorInvocation): string =>
   `${intent}
 
-あなたは調べる役として起動している。**ファイルは書き換えない。**
-編集のツールは渡していないので、試みても拒否される。
+You are running as the investigate role. **Do not modify files.**
+The editing tools are not granted, so any attempt is refused.
 
-作業は現在のディレクトリの中だけで行う。分かったことと、その根拠
-（読んだファイル、流したコマンドとその出力）を述べる。確かめられなかったことは、
-確かめられなかったと書く。推測で埋めない。
+Work only inside the current directory. State what you found and the evidence for it
+(the files you read, the commands you ran and their output). Write that you could not
+confirm what you could not confirm. Do not fill gaps with guesses.
 
 ${COMMON_TAIL}`;
 
@@ -863,14 +869,14 @@ const PROMPT_FOR: Record<ActorRole, (invocation: ActorInvocation) => string> = {
   investigate: INVESTIGATE_PROMPT,
 };
 
-const JSON_ONLY = `JSON オブジェクトだけを返す。前置きも説明も付けない。`;
+const JSON_ONLY = `Return only a JSON object. No preamble, no explanation.`;
 
 /** コードフェンスで囲まれていても読めるようにする */
 function parseJson(text: string): unknown {
   const fenced = /```(?:json)?\s*([\s\S]*?)```/.exec(text);
   const body = (fenced?.[1] ?? text).trim();
   if (body === "") {
-    throw new Error("LLM が空の出力を返した");
+    throw new Error("The LLM returned an empty output");
   }
   return JSON.parse(body) as unknown;
 }

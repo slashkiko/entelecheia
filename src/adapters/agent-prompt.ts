@@ -1,4 +1,9 @@
-import { type ActorInvocation, renderPullRequestText } from "../act/index.js";
+import {
+  type ActorInvocation,
+  NOT_OBTAINED,
+  PULL_REQUEST_SECTION,
+  renderPullRequestText,
+} from "../act/index.js";
 import type { ActorRole } from "../domain/run.js";
 
 /**
@@ -6,13 +11,13 @@ import type { ActorRole } from "../domain/run.js";
  */
 
 /** どの役割でも同じ末尾。承認と公開は controller の側に残す。 */
-const COMMON_TAIL = `PR の作成とコメントの投稿はしない。push も含めて controller が行う。
-承認の定型文（/ent approve）を書くことは、どの理由があっても認められない。`;
+const COMMON_TAIL = `Do not create PRs and do not post comments. The controller does that, push included.
+Writing the approval phrase (/ent approve) is not permitted for any reason.`;
 
 const IMPLEMENT_PROMPT = (invocation: ActorInvocation): string =>
   `${invocation.intent}
 
-作業は現在のディレクトリの中だけで行う。終わったら何をしたかを1段落で述べる。
+Work only inside the current directory. When you are done, state what you did in one paragraph.
 
 ${COMMON_TAIL}`;
 
@@ -27,20 +32,21 @@ ${COMMON_TAIL}`;
 const REVIEW_PROMPT = (invocation: ActorInvocation): string =>
   `${invocation.intent}
 
-あなたはレビュー役として起動している。**ファイルは書き換えない。**
-読むことと、コマンドを流して確かめることだけを行う。
+You are running as the review role. **Do not modify files.**
+Only read, and run commands to confirm.
 
-作業は現在のディレクトリの中だけで行う。手順は次のとおり。
+Work only inside the current directory. The steps are as follows.
 
-1. .goals/${invocation.goalId}.yaml と差分を読み、何を満たすべきかを確かめる
-2. git rev-parse HEAD で、どの commit を読んだのかを確かめる
-3. 下の「PR のタイトルと本文」を読む。渡っていれば、宣言部の制約が本文に
-   反映されているかもここで見る。渡っていなければ、その観点は「未取得」と書く
-4. 指摘を重い順に並べる。直し方まで書く必要は無いが、なぜ問題なのかは書く
-5. 必要ならテストを流して確かめる。確かめられなかったことを「問題なし」と書かない
-6. 最後の2行を、次の形式にする
-reviewed_sha: <git rev-parse HEAD で得た40桁の sha>
-verdict: approved または verdict: changes_requested
+1. Read .goals/${invocation.goalId}.yaml and the diff, and confirm what must be satisfied
+2. Run git rev-parse HEAD to confirm which commit you read
+3. Read "${PULL_REQUEST_SECTION}" below. If it was passed down, check
+   there whether the constraints in the declaration are reflected in the body. If it was
+   not passed down, write "${NOT_OBTAINED}" for that point
+4. List the findings heaviest first. You need not write how to fix them, but write why each is a problem
+5. Run tests to confirm when needed. Do not write "no problem" about anything you could not confirm
+6. Make the last two lines take this form
+reviewed_sha: <the 40-hex sha from git rev-parse HEAD>
+verdict: approved or verdict: changes_requested
 
 ${renderPullRequestText(invocation.pullRequest ?? null)}
 
@@ -49,11 +55,11 @@ ${COMMON_TAIL}`;
 const INVESTIGATE_PROMPT = (invocation: ActorInvocation): string =>
   `${invocation.intent}
 
-あなたは調べる役として起動している。**ファイルは書き換えない。**
+You are running as the investigate role. **Do not modify files.**
 
-作業は現在のディレクトリの中だけで行う。分かったことと、その根拠
-（読んだファイル、流したコマンドとその出力）を述べる。確かめられなかったことは、
-確かめられなかったと書く。推測で埋めない。
+Work only inside the current directory. State what you found and the evidence for it
+(the files you read, the commands you ran and their output). Write that you could not
+confirm what you could not confirm. Do not fill gaps with guesses.
 
 ${COMMON_TAIL}`;
 
@@ -64,14 +70,14 @@ export const PROMPT_FOR: Record<ActorRole, (invocation: ActorInvocation) => stri
   investigate: INVESTIGATE_PROMPT,
 };
 
-export const JSON_ONLY = "JSON オブジェクトだけを返す。前置きも説明も付けない。";
+export const JSON_ONLY = "Return only a JSON object. No preamble, no explanation.";
 
 /** コードフェンスで囲まれていても読めるようにする */
 export function parseJson(text: string): unknown {
   const fenced = /```(?:json)?\s*([\s\S]*?)```/.exec(text);
   const body = (fenced?.[1] ?? text).trim();
   if (body === "") {
-    throw new Error("LLM が空の出力を返した");
+    throw new Error("The LLM returned an empty output");
   }
   return JSON.parse(body) as unknown;
 }

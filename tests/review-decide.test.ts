@@ -183,7 +183,7 @@ describe("同じ commit を2度レビューしない", () => {
     const decision = await decide(target(UNCHANGED), deps(llm));
 
     expect(llm.prompts).toHaveLength(2);
-    expect(llm.prompts[1]).toContain("採用されなかった理由");
+    expect(llm.prompts[1]).toContain("was not adopted");
     expect(decision.action).toMatchObject({ type: "ACT" });
     expect(decision.action).not.toHaveProperty("role", "review");
   });

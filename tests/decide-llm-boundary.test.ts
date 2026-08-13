@@ -180,7 +180,7 @@ describe("LLM が選べる行動", () => {
 
     // 選択肢として並べない。選べないことは明示する。
     expect(prompt).not.toContain('"type":"ESCALATE"');
-    expect(prompt).toContain("ESCALATE は選べない");
+    expect(prompt).toContain("ESCALATE cannot be chosen");
     // 人間を待ちたいときの逃げ道は残す。
     expect(prompt).toContain("review_pending");
   });

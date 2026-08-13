@@ -247,8 +247,8 @@ function actorPrompt(invocation: ActorInvocation): string {
   const denied = invocation.deniedOperations.map((operation) => `- ${operation}`).join("\n");
   return `${PROMPT_FOR[invocation.role](invocation)}
 
-以下の操作は人間の承認が必要なので実行しない。
-${denied === "" ? "- なし" : denied}`;
+The operations below require human approval. Do not perform them.
+${denied === "" ? "- none" : denied}`;
 }
 
 interface CodexOutcome {

@@ -163,8 +163,8 @@ describe("ent 側の読み替えはプロンプトが持つ", () => {
     const prompt = await promptFor();
 
     expect(prompt).toContain("semantic-review");
-    expect(prompt).toContain("現在の作業ツリーの HEAD");
-    expect(prompt).toContain("gh やコネクタでチケットや議論を読む");
+    expect(prompt).toContain("The HEAD of the current worktree");
+    expect(prompt).toContain("Read tickets and discussions with gh or connectors");
   });
 
   it("結論の2行を、判定の対応付きで求める", async () => {

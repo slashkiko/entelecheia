@@ -175,7 +175,7 @@ describe("DECIDE のプロンプト", () => {
 
   it("重複を消しても、どの criterion が pending かは読める", async () => {
     const prompt = await promptOf();
-    const unresolvedSection = prompt.slice(prompt.indexOf("## 結論が出ていない対象"));
+    const unresolvedSection = prompt.slice(prompt.indexOf("## Targets with no conclusion yet"));
 
     expect(unresolvedSection).toContain(criterionFactKey("ac-6"));
     expect(unresolvedSection).toContain("pending");
@@ -196,14 +196,14 @@ describe("DECIDE のプロンプト", () => {
   it("出力形式の指示は adapter 側に一本化する", async () => {
     const prompt = await promptOf();
 
-    expect(prompt).not.toContain("JSON オブジェクトだけを返す");
+    expect(prompt).not.toContain("Return only a JSON object");
   });
 
   it("行動の列挙と guard の境界は残す", async () => {
     const prompt = await promptOf();
 
-    expect(prompt).toContain("## 選べる行動");
-    expect(prompt).toContain("COMPLETE と ESCALATE は選べない");
-    expect(prompt).toContain("## 予算の残り");
+    expect(prompt).toContain("## Actions you may choose");
+    expect(prompt).toContain("COMPLETE and ESCALATE cannot be chosen");
+    expect(prompt).toContain("## Budget remaining");
   });
 });
