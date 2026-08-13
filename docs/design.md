@@ -438,7 +438,7 @@ straight to Claude Code and have it fix them.
 **The PR's `title` and `body` are fetched not for judging completion but to hand to the review
 role.** The review-role Actor is handed no credentials (§7's `NEUTRALIZED_ENV`, §10-4), so `gh` is
 unauthenticated, and review points like "are the declaration's constraints reflected in the PR body"
-had no way of being confirmed on that side, ending in "not fetched" every time. What was missing is
+had no way of being confirmed on that side, ending in `not obtained` every time. What was missing is
 not credentials but an interface for handing over information the controller already reads. `act`
 pulls the title and body (`github.pr.title` / `github.pr.body`) out of this tick's observation
 (`pullRequestTextFrom`) and puts them into the review role's prompt (`renderPullRequestText`). The
@@ -448,12 +448,12 @@ that observation result** — is unchanged.
 What is handed over is **only the Facts this tick's observation produced**. Handing over a set mixed
 with carry-overs would deliver the previous title and body even on a tick where GitHub could not be
 read, and the observation failure would be filled in with the stale value and become invisible.
-"Nothing was handed over" and "the body is empty" are also distinguished in the wording of the
-prompt. The former is written as "not fetched," the latter as "the body is empty." Being empty is an
-observed result, not something that could not be confirmed (§3.1). If the body contains a `verdict:`
-or `reviewed_sha:` line, quoting it in the review role would produce two conclusion lines and drop
-the observation to pending (see the `ReviewPort` paragraph below in this section), so the handing
-side marks them and neutralizes them.
+Nothing being handed over and the body being empty are also distinguished in the wording of the
+prompt. The former is written as `not obtained`, the latter as `(the body is empty)`. Being empty is
+an observed result, not something that could not be confirmed (§3.1). If the body contains a
+`verdict:` or `reviewed_sha:` line, quoting it in the review role would produce two conclusion lines
+and drop the observation to pending (see the `ReviewPort` paragraph below in this section), so the
+handing side marks them and neutralizes them.
 
 The concrete observation keys are enumerated in `src/domain/fact-keys.ts`. The table above uses the
 names on the logical-resource side, while Fact keys are dot-separated snake_case such as

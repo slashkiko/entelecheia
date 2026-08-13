@@ -162,7 +162,7 @@ status も書かない。次のティックが何を観測し、どの criteria 
 
 出力は `ran: false` / `dryRun: true` になる。書いていたらどの状態に移っていたかは
 `wouldTransitionTo` に入る。`skipped` は原則 `null` だが、`ent start` を挟んでいない
-Goal では「Goal が登録されていない」が入る（`ent init` の直後がこれにあたる）。
+Goal では `the Goal is not registered` が入る（`ent init` の直後がこれにあたる）。
 dry-run かどうかは `skipped` ではなく `dryRun` で見分ける。
 
 ## 進捗を PR に投稿しないで回す
@@ -311,7 +311,7 @@ id と結果までなので、description も `verification.type` もそちら�
 本文は controller が立てるものと同じ形にする（`pullRequestBody`、`src/publish/index.ts`）。
 
 ````markdown
-entelecheia の Goal `<goal.id>` に対する変更。
+Changes for the entelecheia Goal `<goal.id>`.
 
 ## Desired State
 
@@ -321,7 +321,7 @@ entelecheia の Goal `<goal.id>` に対する変更。
 
 - `<id>` (<verification.type>) <description>
 
-進捗は controller がコメントで積む。承認は次の定型文で行う。
+The controller stacks progress as comments. Approve with the following phrase.
 
 ```
 /ent approve <criterion-id>

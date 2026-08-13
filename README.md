@@ -596,8 +596,8 @@ ent get <slug> | jq '.snapshot.facts[] | select(.key == "github.ci.excluded_work
 ```
 
 How each excluded run looked (`waiting` / `failure` / `success` …) is attached as well. On the detail
-side it takes the form `除外: Require owner approval (1 run / waiting)`. **With the count alone you
-cannot tell "excluded a gate that was still pending" from "excluded a run containing a real
+side it takes the form `excluded: Require owner approval (1 run / waiting)`. **With the count alone
+you cannot tell "excluded a gate that was still pending" from "excluded a run containing a real
 failure".** Since they disappear from the failing-jobs side too, whether what disappeared was red can
 only be read here. Finished runs report their conclusion, unfinished ones their status (that is the
 strongest information readable about that run).
@@ -805,10 +805,10 @@ them together with the warning above. The token discussion after that applies eq
 just one.
 
 Passing the same slug to two processes is handled safely. Ownership of a Goal is decided by a
-time-limited lease, so only the side that acquired it first advances; the other skips with "another
-worker holds the lease" and exits 0. The Actor never runs twice and state never mixes. A side that
-loses the lease mid-tick also steps down without writing a single snapshot, verification, Decision,
-or state transition (only the Run row it already wrote remains — design.md §3.6).
+time-limited lease, so only the side that acquired it first advances; the other skips with
+`another worker holds the lease` and exits 0. The Actor never runs twice and state never mixes. A
+side that loses the lease mid-tick also steps down without writing a single snapshot, verification,
+Decision, or state transition (only the Run row it already wrote remains — design.md §3.6).
 
 How many to line up is decided by machine resources. Each tick runs the Actor (Claude Code or Codex)
 and the Goal's verification commands (`mise run verify` in this repository) on top of a worktree, so

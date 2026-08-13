@@ -568,7 +568,7 @@ ent get <slug> | jq '.snapshot.facts[] | select(.key == "github.ci.excluded_work
 ```
 
 外した run 1本ずつの見え方（`waiting` / `failure` / `success` …）も添える。detail 側では
-`除外: Require owner approval (1 run / waiting)` の形になる。**数だけだと「保留のままの gate を
+`excluded: Require owner approval (1 run / waiting)` の形になる。**数だけだと「保留のままの gate を
 外した」と「本物の失敗を含む run を外した」を読み分けられない。** 失敗ジョブの側からも消える
 以上、消えたものが赤かったかはここでしか読めない。終わっている run は結論、終わっていない
 run は status を出す（その run について読める中でいちばん強い情報がそれになる）。
@@ -766,7 +766,7 @@ ent自身を直すGoalでは、対象repoと本体が同じなのでtask経由�
 
 同じ slug を2つのプロセスに渡しても安全に扱える。Goal の所有権は期限付きの
 lease で決まるので、先に取れた側だけが進み、取れなかった側は
-「他のワーカーが lease を持っている」でスキップして exit 0 で終わる。二重に
+`another worker holds the lease` でスキップして exit 0 で終わる。二重に
 Actor が走ることも、状態が混ざることもない。ティックの途中で lease を失った側も、
 snapshot / verifications / Decision / 状態遷移を1つも書かずに降りる（既に書いてある
 Run の行だけは残る。design.md §3.6）。
