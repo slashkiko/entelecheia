@@ -692,3 +692,59 @@ export function ghAuthToken(): string | null {
     return null;
   }
 }
+
+/**
+ * `origin` が指す GitHub リポジトリ。読めなければ null。
+ *
+ * `ent plan` が書き出す宣言の `repository` を埋めるのに使う。**LLM には書かせない。**
+ * 存在しない owner 名を埋められると、最初のティックで GitHub の 404 として初めて
+ * 表面化する（`goalTemplate` が同じ注意を書いている）。
+ *
+ * SSH（`git@github.com:owner/repo.git`）と HTTPS（`https://github.com/owner/repo`）の
+ * 両方を読む。**GitHub 以外のホストは null にする。** `repository.provider` は
+ * `github` 固定（design.md §5）なので、別ホストの owner/name を埋めると、
+ * 宣言としては通るのに観測先だけが実在しない状態になる。
+ */
+export function gitRemoteRepository(repoRoot: string): { owner: string; name: string } | null {
+  const url = gitOutput(repoRoot, ["remote", "get-url", "origin"]);
+  if (url === null) {
+    return null;
+  }
+  const matched = /(?:github\.com[:/])([^/]+)\/(.+?)(?:\.git)?\/?$/.exec(url);
+  const owner = matched?.[1];
+  const name = matched?.[2];
+  return owner === undefined || name === undefined ? null : { owner, name };
+}
+
+/**
+ * `origin` の既定ブランチ。読めなければ null。
+ *
+ * **読めないことが普通にある。** `refs/remotes/origin/HEAD` を張るのは `git clone` で、
+ * `git init` から始めた repo や、remote を後から足した repo には無い
+ * （`git remote set-head origin -a` を叩けば張られる）。読めなかったときに
+ * 既定値へ倒さず null を返すのは、呼び出し側が「フラグで渡してほしい」と
+ * 言えるようにするため。ここで `main` を勝手に埋めると、既定が `master` の
+ * リポジトリで宣言だけが静かに間違う。
+ */
+export function gitDefaultBranch(repoRoot: string): string | null {
+  const head = gitOutput(repoRoot, ["symbolic-ref", "--short", "refs/remotes/origin/HEAD"]);
+  if (head === null) {
+    return null;
+  }
+  const branch = head.startsWith("origin/") ? head.slice("origin/".length) : head;
+  return branch === "" ? null : branch;
+}
+
+/** git を1回叩いて標準出力を読む。落ちたら null。argv 配列で叩く（シェルを経由しない） */
+function gitOutput(repoRoot: string, args: readonly string[]): string | null {
+  try {
+    const out = execFileSync("git", ["-C", repoRoot, ...args], {
+      encoding: "utf8",
+      timeout: GIT_TIMEOUT_MS,
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+    return out === "" ? null : out;
+  } catch {
+    return null;
+  }
+}

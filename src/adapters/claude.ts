@@ -71,6 +71,14 @@ export interface ClaudeOptions {
    * トークンの記録先が無い。呼んだ直後に通知して、その場で永続化させる。
    */
   onCall?: ((call: LlmCall) => void) | undefined;
+  /**
+   * この LlmPort が何のための呼び出しか（`LlmCall.purpose`）。省略すると DECIDE。
+   *
+   * `onCall` に渡すラベルと、生ログの置き場所の名前の両方に使う。`ent plan` の
+   * 呼び出しが `decide-<時刻>` に落ちると、ティックの判断とディレクトリ名で
+   * 区別が付かなくなる。
+   */
+  purpose?: LlmCall["purpose"] | undefined;
 }
 
 export function claudeActor(options: ClaudeOptions): ActorPort {
@@ -150,6 +158,7 @@ export function claudeActor(options: ClaudeOptions): ActorPort {
 
 export function claudeLlm(options: ClaudeOptions): LlmPort {
   const now = options.now ?? ((): Date => new Date());
+  const purpose = options.purpose ?? "decide";
   // 同じティックの中で何度も呼ばれる。時刻だけだと同じ秒に重なるので連番を足す。
   let sequence = 0;
 
@@ -158,7 +167,7 @@ export function claudeLlm(options: ClaudeOptions): LlmPort {
       sequence += 1;
       const calledAt = now().toISOString();
       // Actor の生ログと同じ場所に、同じ粒度で置く（design.md §4.6）。
-      const logRef = join(options.runsDir, callIdOf(calledAt, sequence), "log.jsonl");
+      const logRef = join(options.runsDir, callIdOf(purpose, calledAt, sequence), "log.jsonl");
 
       let outcome: Outcome;
       try {
@@ -172,7 +181,7 @@ export function claudeLlm(options: ClaudeOptions): LlmPort {
       } catch (error) {
         // 失敗した呼び出しもトークンは消費している。記録しないと §7 の
         // 「従量課金だったらいくらだったか」が実際より小さく出る。
-        options.onCall?.({ purpose: "decide", tokens: 0, logRef, ok: false, calledAt });
+        options.onCall?.({ purpose, tokens: 0, logRef, ok: false, calledAt });
         throw error;
       }
 
@@ -186,7 +195,7 @@ export function claudeLlm(options: ClaudeOptions): LlmPort {
         // consume は成功しているのでトークン数は分かっている。0 で記録すると
         // design.md §7 の会計が実際より小さく出る。
         options.onCall?.({
-          purpose: "decide",
+          purpose,
           tokens: result?.tokens ?? 0,
           logRef,
           ok: false,
@@ -201,10 +210,10 @@ export function claudeLlm(options: ClaudeOptions): LlmPort {
         // 壊れた出力を握って空オブジェクトを返すと、decide が
         // 「検証に落ちた」と「呼べなかった」を区別できなくなる。
         const parsed = parseJson(text);
-        options.onCall?.({ purpose: "decide", tokens, logRef, ok: true, calledAt });
+        options.onCall?.({ purpose, tokens, logRef, ok: true, calledAt });
         return parsed;
       } catch (error) {
-        options.onCall?.({ purpose: "decide", tokens, logRef, ok: false, calledAt });
+        options.onCall?.({ purpose, tokens, logRef, ok: false, calledAt });
         throw error;
       }
     },
@@ -228,8 +237,8 @@ function unavailableMessage(result: Outcome["result"]): string {
 }
 
 /** 生ログの置き場所を決める id。`decide-2026-08-09T04-40-56-280Z-1` の形になる */
-function callIdOf(calledAt: string, sequence: number): string {
-  return `decide-${calledAt.replace(/[:.]/g, "-")}-${sequence}`;
+function callIdOf(purpose: LlmCall["purpose"], calledAt: string, sequence: number): string {
+  return `${purpose}-${calledAt.replace(/[:.]/g, "-")}-${sequence}`;
 }
 
 /**

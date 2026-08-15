@@ -1,4 +1,5 @@
 import { DEFAULT_LIMIT } from "../usecase/inspect.js";
+import { DEFAULT_MAX_GOALS } from "../usecase/plan.js";
 
 /**
  * `ent agent-context` が出す、CLI の構造そのもの（gist 3.2 Layer 2）。
@@ -64,6 +65,51 @@ export function agentContextPayload(): AgentContext {
           "make the current repository runnable. Places .goals/, the gitignore line, and a Goal template. Idempotent",
         args: [],
         flags: [JSON_FLAG],
+      },
+      {
+        name: "plan",
+        summary:
+          "split one prose objective into sub-Goal declarations under .goals/. Writes the declaration only; nothing runs until ent start. Existing declarations are never overwritten, and a set that fails validation is not written at all",
+        args: [],
+        flags: [
+          JSON_FLAG,
+          { name: "--desire", type: "string", summary: "what to split, as text" },
+          { name: "--from", type: "string", summary: "read what to split from this file" },
+          {
+            name: "--repo",
+            type: "string",
+            summary: "<owner>/<name> to declare. Read from git remote origin when omitted",
+          },
+          {
+            name: "--default-branch",
+            type: "string",
+            summary:
+              "branch to declare. Read from refs/remotes/origin/HEAD when omitted, which git clone alone sets",
+          },
+          {
+            name: "--max",
+            type: "integer",
+            summary: `how many Goals may be written (default ${String(DEFAULT_MAX_GOALS)})`,
+          },
+          {
+            name: "--dry-run",
+            type: "boolean",
+            summary: "validate and print, but write nothing",
+          },
+        ],
+        output: [
+          {
+            key: "goals[].depends_on",
+            when: "always",
+            summary:
+              "ids that must reach COMPLETED first. Start the ones with an empty list; the rest wait at the entrance of tick without taking a lease",
+          },
+          {
+            key: "dryRun",
+            when: "always",
+            summary: "true when --dry-run was set, meaning the files were not written",
+          },
+        ],
       },
       {
         name: "start",
@@ -155,7 +201,7 @@ export function agentContextPayload(): AgentContext {
       },
       { name: "ENT_MODEL", required: false, summary: "default model for every phase" },
       { name: "ENT_EFFORT", required: false, summary: "default effort for every phase" },
-      ...["DECIDE", "IMPLEMENT", "REVIEW", "INVESTIGATE"].flatMap((phase) => [
+      ...["DECIDE", "PLAN", "IMPLEMENT", "REVIEW", "INVESTIGATE"].flatMap((phase) => [
         {
           name: `ENT_${phase}_ACTOR`,
           required: false,
