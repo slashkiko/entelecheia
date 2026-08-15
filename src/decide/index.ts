@@ -9,6 +9,7 @@ import {
 } from "../domain/fact-keys.js";
 import type { Assessment, Gap } from "../domain/gap.js";
 import { type AcceptanceCriterion, type Budget, durationSeconds } from "../domain/goal.js";
+import { MAX_LLM_RETRIES } from "../domain/llm-call.js";
 import { isUnavailable, isUsageLimit, resumeAfterOf } from "../domain/port-error.js";
 
 /**
@@ -83,8 +84,13 @@ export interface DecideTarget {
   usage: BudgetUsage;
 }
 
-/** LLM の出力が Zod を通らなかったときの再試行回数（design.md §3.5） */
-export const MAX_LLM_RETRIES = 2;
+/**
+ * LLM の出力が Zod を通らなかったときの再試行回数（design.md §3.5）。
+ *
+ * 実体はドメイン（`src/domain/llm-call.ts`）にある。planner（`ent plan`）が同じ
+ * 回数を読むためで、ここは既存の読み手（テストを含む）のために名前だけ残す。
+ */
+export { MAX_LLM_RETRIES };
 
 /**
  * 次に取る行動を1つ選ぶ。

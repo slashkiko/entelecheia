@@ -12,9 +12,25 @@ import { z } from "zod";
  * 起動した記録」で、判断のための1問1答とはライフサイクルが違う。同じ行に混ぜると
  * `max_actor_runs` の数え方が壊れる。
  */
+/**
+ * LLM の出力が Zod を通らなかったときの再試行回数（design.md §3.5）。
+ *
+ * DECIDE と planner（`ent plan`）が同じ回数を読む。もとは `src/decide/index.ts` に
+ * あったが、`ent plan` も「検証を通らない出力は受け取らず、通るまで投げ直す」を
+ * 同じ形で持つので、片方だけ動く数にしない。1回の呼び出しは Claude Code の
+ * フルセッションなので、増やすと素直に効く。
+ */
+export const MAX_LLM_RETRIES = 2;
+
 export const llmCallSchema = z.object({
-  /** 何のために呼んだか。いまは DECIDE だけだが、ASSESS を寄せたときに増える */
-  purpose: z.literal("decide"),
+  /**
+   * 何のために呼んだか。
+   *
+   * `decide` はティックの中の判断、`plan` は `ent plan` の分解になる。
+   * `ent get` が読む列は TEXT なので、値を増やしても migration は要らない
+   * （`src/store/sqlite.ts` の `llmCallRowSchema` の注記）。
+   */
+  purpose: z.enum(["decide", "plan"]),
   /** 入力と出力の合計。単価をかければ「従量課金だったらいくらだったか」が出る */
   tokens: z.number().int().nonnegative(),
   /** 生ログのパス。DB には入れない（design.md §4.6） */

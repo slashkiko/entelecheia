@@ -72,6 +72,36 @@ The template is filled in only as far as being schema-valid. The remaining `desi
 `acceptance_criteria` are what declares what is to be achieved. **These two are the human's to write; an
 agent must not fill them in and proceed to `ent start`.**
 
+## Splitting one coarse objective into several Goals
+
+When the work does not fit in one Goal, `ent plan` writes the declarations for it. It takes the
+objective as prose, not as a slug — there is nothing to point at yet.
+
+```
+ent plan --desire "<what you want>" --dry-run   # validate the set and print it; write nothing
+ent plan --desire "<what you want>"             # write .goals/<id>.yaml for each
+ent plan --from ./objective.md --max 3          # read the prose from a file; cap the count
+```
+
+Each emitted Goal declares its order in `depends_on`, so start the ones with an empty list first.
+The rest wait at the entrance of the tick without taking a lease, so they may be started at any time.
+
+**It writes the declaration only.** No runtime state is touched and no Goal is registered, so nothing
+runs until a human types `ent start`. That command remains the approval point, which means **an agent
+must not run `ent plan` and then `ent start` on its own** — the same rule as the template above.
+Reading what was written and deciding what to keep is the human's step.
+
+`repository` is read from `git remote get-url origin` and `refs/remotes/origin/HEAD`. The second one
+is set only by `git clone`, so it is often missing; pass `--repo <owner>/<name>` and
+`--default-branch <name>` when it refuses for that reason. `policies` and `budget` are copied from the
+same values `ent init`'s template carries and are never written by the model.
+
+**The whole set is validated before a single file is written**: the schema, id collisions with what is
+already in `.goals/`, dependencies pointing nowhere, and cycles. A set that fails is thrown back with
+the reason attached, and once the retries are used up nothing is written at all. Existing declarations
+are never overwritten and there is no `--force`, so a rejected run leaves `.goals/` exactly as it was.
+Tokens spent here land in `.goals/.state/runs/plan-*/` and count against no Goal's budget.
+
 ## One round
 
 ```

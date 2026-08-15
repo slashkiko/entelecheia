@@ -317,6 +317,8 @@ ENT_NODE="$(mise which node)"       # Node 24以上の絶対パスを先に固�
 alias ent="$ENT_NODE $(pwd)/dist/cli.js"
 
 ent init                           # いまのリポジトリを回せる状態にする（冪等）
+ent plan --desire "…"              # 散文のゴールをサブ Goal の宣言に分解する
+ent plan --desire "…" --dry-run    # 検証まで済ませて、書かずに出す
 ent start <slug>                   # Goal を登録して ACTIVE にする
 ent run <slug>                     # 1ティック回して終了する
 ent run <slug> --pr <n>            # 観測対象の PR を指定する（controller が立てた分は自動）
@@ -340,7 +342,8 @@ ent agent-context                  # CLI の構造を機械可読な JSON で出
 
 ### provider・model・effort を選ぶ
 
-provider・model・effort は `DECIDE`、`IMPLEMENT`、`REVIEW`、`INVESTIGATE` ごとに選べる。
+provider・model・effort は `DECIDE`、`PLAN`、`IMPLEMENT`、`REVIEW`、`INVESTIGATE` ごとに
+選べる（`PLAN` だけはティックの外で動くが、選び方は同じ）。
 `ENT_<PHASE>_ACTOR` / `ENT_<PHASE>_MODEL` / `ENT_<PHASE>_EFFORT` がphase固有の指定で、
 無ければ共通の `ENT_ACTOR` / `ENT_MODEL` / `ENT_EFFORT` へ落ちる。providerの未指定時は、
 既存の挙動を保つため `claude-code` になる。
@@ -705,8 +708,32 @@ cron の1周で回らなくなるからになる。判定は `ent start` では�
 依存の判定も端末ごとの状態 DB を読む。別の端末では依存の `COMPLETED` が見えないので、
 未登録＝待ち扱いになる（上の lease と同じ制約）。
 
-**割る判断そのものは人間が持つ。** controller は書かれた順序に従うだけで、
-粗いタスクを自分で N 本に割ることはしない（design.md §10-12）。
+その N 本を書き出すのが `ent plan` になる。分解したいことを散文で渡すと、順序を
+`depends_on` に入れた状態で宣言が並ぶ。
+
+```sh
+ent plan --desire "CLI に plan サブコマンドを足す" --dry-run   # 検証だけ。何も書かない
+ent plan --desire "CLI に plan サブコマンドを足す"             # .goals/<id>.yaml を書く
+```
+
+**書くのは宣言部だけになる。** 実行時状態には触らず、Goal の登録もしない。`ent start` を
+打つまで何も動かず、そこが承認点であることも変わらない（design.md §3.2）。書かれたものを
+読んで、要らなければ消す。
+
+**機械に書かせないものが4つある。** `repository` は `git remote get-url origin` と
+`refs/remotes/origin/HEAD` から読む（`--repo <owner>/<name>` と `--default-branch <name>` で
+上書きできる。後者は `git clone` でしか張られないので、必要になることが多い）。`policies` と
+`budget` は `ent init` の雛形と同じ値を写すので、機械が書いた Goal だけが緩いところから
+始まることはない。そして**1本も書く前に、集合まるごとを検証する**——スキーマ、既存の
+`.goals/` との id 衝突、指す先の無い依存、循環の4つになる。落ちたら理由を添えて投げ直し、
+再試行を使い切ったら1本も書かずに断る。既存の宣言は上書きしないし、`--force` も無い。
+
+`--max <n>` で書き出す本数の上限を決める（既定 5）。ここで使ったトークンは
+`.goals/.state/runs/plan-*/` の生ログに残り、**どの Goal の budget にも数えられない**。
+数える先の Goal がまだ無いため。
+
+**割った結果を残す判断は人間が持つ。** ティックの中では、controller が粗いタスクを
+自分で N 本に割ることはしない（design.md §10-12）。
 
 ### 複数の Goal を同時に回す
 

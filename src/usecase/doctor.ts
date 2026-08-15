@@ -1,3 +1,4 @@
+import { describeCycles, findCycles } from "../domain/dependency-graph.js";
 import { errorMessage } from "../domain/error-message.js";
 import type { ActorKind } from "../domain/run.js";
 
@@ -340,8 +341,7 @@ function dependenciesCheck(read: GoalsRead): DoctorCheck {
   const cycles = findCycles(edges);
   if (cycles.length > 0) {
     problems.push(
-      "depends_on forms a cycle: " +
-        cycles.map((cycle) => [...cycle, cycle[0] ?? ""].join(" → ")).join(" / ") +
+      `depends_on forms a cycle: ${describeCycles(cycles)}` +
         ". Every Goal inside a closed cycle waits for its dependency to finish, so none of them progresses " +
         "(drop depends_on from one Goal in the cycle)",
     );
@@ -360,55 +360,6 @@ function dependenciesCheck(read: GoalsRead): DoctorCheck {
         ? "No depends_on is declared"
         : `Followed ${String(declaredEdges)} depends_on edge(s) (every dependency exists and there is no cycle)`,
   };
-}
-
-/**
- * 閉じた輪だけを取り出す。輪に入っていない Goal は返さない。
- *
- * 「複数の Goal が同じ依存先を指している」は循環ではない。菱形（alpha → base、
- * bravo → base）は閉じていないので、訪問済みを数えるだけの実装だとここを誤検知する。
- * 分解した本数が増えるほど当たるので、いま辿っている経路（`onPath`）に戻って
- * きたときだけを循環として数える。
- */
-function findCycles(edges: ReadonlyMap<string, readonly string[]>): string[][] {
-  const cycles: string[][] = [];
-  const seen = new Set<string>();
-  /** 辿り終えた頂点。ここから先に未発見の輪は無い */
-  const done = new Set<string>();
-  /** いま辿っている経路。ここに戻る辺だけが輪を閉じる */
-  const path: string[] = [];
-  const onPath = new Set<string>();
-
-  const walk = (id: string): void => {
-    if (onPath.has(id)) {
-      // 経路が自分に戻ってきた。閉じているのは戻り先から先端までで、
-      // そこへ入ってきただけの手前の頂点は輪の中にいない。
-      const cycle = path.slice(path.indexOf(id));
-      const key = [...cycle].sort().join(">");
-      if (!seen.has(key)) {
-        seen.add(key);
-        cycles.push(cycle);
-      }
-      return;
-    }
-    if (done.has(id)) {
-      return;
-    }
-
-    path.push(id);
-    onPath.add(id);
-    for (const next of edges.get(id) ?? []) {
-      walk(next);
-    }
-    onPath.delete(id);
-    path.pop();
-    done.add(id);
-  };
-
-  for (const id of edges.keys()) {
-    walk(id);
-  }
-  return cycles;
 }
 
 async function stateDirCheck(probes: DoctorProbes): Promise<DoctorCheck> {
