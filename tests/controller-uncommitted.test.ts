@@ -361,17 +361,15 @@ describe("未 commit の変更を残したまま終わらない", () => {
     expect(result.status).toBe("ACTIVE");
   });
 
-  it("止めたティックは、観測が前のティックと同じでも PR にコメントを書く", async () => {
-    // 関門が鳴っても、それが人間に届かなければ鳴っていないのと同じになる。
+  it("止めたティックは初回だけ書き、同じ停止が観測も変わらず続けば畳む", async () => {
+    // 関門が鳴っても、それが人間に届かなければ鳴っていないのと同じになる。だから
+    // 停止に入った初回のティックは、観測が前ティックと同じでも必ず書く。
     //
-    // 進捗コメントは既定では「観測が前のティックと同じなら書かない」。ダイジェストは
-    // Fact だけから作るので Decision を含まず、止まっているあいだ観測は1文字も
-    // 変わらない。黙って飛ばすと、2ティック目以降は PR が静かなまま
-    // max_reconciles に当たって BLOCKED になる。
-    //
-    // 保護パスの関門はこの規則を既に持っている（design.md §10-6 の
-    // 「PR が既にあるなら、観測が前ティックと同じでもコメントを書く」）。
-    // 同じ性質を持つ関門なので、同じ扱いにする。
+    // ただし同じ uncommitted_changes が観測も変わらないまま続くティックは畳む。
+    // GitHub は初回コメントで通知を出すので、同じ文面を毎ティック積んでも情報は
+    // 増えず、通知の件数だけ増える。危険は繰り返し通知ではなく「停止」が抑えている
+    // （src/publish/index.ts の `DEDUP_WHEN_REPEATED`）。人間が手を動かせば観測が
+    // 変わるので、そのときは畳まれずに出る。
     const goal = goalWith([COMMAND_CRITERION]);
     activate(goal);
     seedCompletedRun(store);
@@ -383,8 +381,9 @@ describe("未 commit の変更を残したまま終わらない", () => {
     const first = sink.comments;
     await tick(goal, deps(store, { dirty: true, sink }));
 
+    // 初回は書く。同じ停止・同じ観測の2ティック目は畳む。
     expect(first).toBe(1);
-    expect(sink.comments).toBe(2);
+    expect(sink.comments).toBe(1);
   });
 
   it("観測できなかったティックを、前のティックの local.dirty で止めない", async () => {

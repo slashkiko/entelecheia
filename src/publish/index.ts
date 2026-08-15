@@ -309,19 +309,19 @@ export async function publish(target: PublishTarget, deps: PublishDeps): Promise
   // WAITING_HUMAN になる。人間に届かない関門は鳴っていないのと同じ。だから
   // 「停止に入ったティック」（前ティックが同じガード停止でない）は必ず書く。
   //
-  // **一方、畳んでよいガード停止（`DEDUP_WHEN_REPEATED`、いまは loop_detected だけ）が
-  // 観測も変わらないまま続くティックは飛ばす**（`repeatsGuardStop`）。恒久的に読めない
-  // 観測で止まった Goal は WAITING_HUMAN のまま `ent run` のたびに再ティックされ、
-  // 同じ停止理由の同じコメントを max_reconciles まで積み続けていた。初回で伝わる
-  // ものを積み増しても、人間はかえって読まなくなる。停止の初回は必ず出し、変化の
-  // 無い繰り返しだけを畳む（`PublishTarget.previousDecision`）。
+  // **一方、同じガード停止が観測も変わらないまま続くティックは飛ばす**
+  // （`repeatsGuardStop`）。以前はここを毎ティック書いていたが、同じ reason の同じ
+  // コメントを積み増しても情報は増えず、GitHub は初回コメントで通知を出す。読まれなく
+  // なる通知は無いのと同じで、これは publish が既に持っている「同じ状態を毎ティック
+  // 通知しない」原則そのもの——ガード停止だけがその例外になっていた。停止の初回は必ず
+  // 出し、変化の無い繰り返しだけを畳む（`PublishTarget.previousDecision`）。人間が実際に
+  // 手を動かしたティックは観測が変わるので、そのときは畳まれず出る。
   //
-  // **それ以外のガード停止（protected_path_touched / guard_unavailable /
-  // uncommitted_changes）は、これまでどおり毎ティック書く。** 安全側の信号と督促は
-  // 止まっているあいだ出し続けるのが既存の意図になる（`DEDUP_WHEN_REPEATED` の注記）。
-  // push が落ちたティックと宣言で止めたティックも畳まない。どちらも `pushFailure` /
-  // `held` が今ティックの状態から毎回作られ、前ティックの Decision には現れないので、
-  // 繰り返しかどうかをここでは判定できない。黙って飛ばすと PR は静かなまま人間が待つ。
+  // push が落ちたティックと宣言で止めたティックは、この畳み込みに載せない。どちらも
+  // `pushFailure` / `held` が今ティックの状態から毎回作られ、前ティックの Decision には
+  // 現れないので、繰り返しかどうかをここでは判定できない。とくに `pushFailure` は
+  // エラー文がティックごとに変わりうるので、reason だけを見る `repeatsGuardStop` では
+  // 「同じ」と言い切れない。黙って飛ばすと PR は静かなまま人間が待つので、従来どおり書く。
   if (
     target.previousDigest === target.digest &&
     (!stoppedByGuard(target.decision) ||
@@ -636,15 +636,25 @@ function stoppedByGuard(decision: Decision): boolean {
 /**
  * 観測が変わらないまま続いたとき、2ティック目以降の通知を畳んでよいガード停止。
  *
- * **`GUARD_REASONS` の全部は入れない。** protected_path_touched / guard_unavailable は
- * 隔離・関門の破れを知らせる安全側の信号で、uncommitted_changes は「機械が済んだと
- * 言ったのに commit されていない」の督促になる。これらは止まっているあいだ毎ティック
- * 出し続けるのが既存の意図（design.md §10-6、`tests/controller-uncommitted.test.ts`）で、
- * 畳むと安全側の信号や督促が1回で黙る。畳むのは `loop_detected` だけにする。あれは
- * 恒久的に読めない観測で WAITING_HUMAN のまま再ティックされ続け、同じ理由の同じ
- * コメントを max_reconciles まで積むのが実害だった。
+ * ここに入る reason は、`GUARD_REASONS` と同じく「停止に入った初回は必ず出す」が、
+ * 同じ reason の停止が観測も変わらないまま続くティックでは再通知を飛ばす。同じ
+ * コメントを積み増しても情報は増えないので、publish の「同じ状態を毎ティック通知
+ * しない」原則に揃える。人間が手を動かせば観測が変わり、そのときは畳まれずに出る。
+ *
+ * いまは `GUARD_REASONS` の ESCALATE 全部を入れている。以前は安全側の信号
+ * （protected_path_touched / guard_unavailable）と督促（uncommitted_changes）を
+ * 毎ティック鳴らし続けていた（design.md §10-6）が、Goal は停止していて危険は
+ * 「停止」が抑えており、2回目以降の同じ通知が守るものは無い——と判断して畳む側に
+ * 倒した。**`held`（宣言 manual）と `pushFailure` はここに無い。** どちらも ESCALATE の
+ * reason ではなく別フィールドで毎ティック組み立てられ、とくに `pushFailure` は
+ * エラー文が変わりうるので reason だけでは「同じ」と言えない。
  */
-const DEDUP_WHEN_REPEATED = new Set<string>(["loop_detected"]);
+const DEDUP_WHEN_REPEATED = new Set<string>([
+  "loop_detected",
+  "protected_path_touched",
+  "guard_unavailable",
+  "uncommitted_changes",
+]);
 
 /**
  * 前ティックと同じ、畳んでよいガード停止の繰り返しか。観測が変わらないまま同じ
