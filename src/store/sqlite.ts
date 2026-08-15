@@ -363,6 +363,25 @@ export function openStore(path: string): Store {
       return row?.observed_digest ?? null;
     },
 
+    latestDecision(goalId) {
+      const row = parseRow(
+        decisionRowSchema,
+        db
+          .prepare("SELECT * FROM decisions WHERE goal_id = ? ORDER BY id DESC LIMIT 1")
+          .get(goalId),
+        "latestDecision",
+      );
+      if (row === undefined) {
+        return null;
+      }
+      return {
+        decidedAt: row.decided_at,
+        action: actionSchema.parse(JSON.parse(row.action)),
+        rationale: row.rationale,
+        decidedBy: decisionSchema.shape.decidedBy.parse(row.decided_by),
+      };
+    },
+
     countTrailingDigest(goalId, digest) {
       // 末尾から数える。間に別の観測が挟まれば連続は切れる。
       // 全件を数えると、過去に同じ状態を通ったぶんまで足してしまう。

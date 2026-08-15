@@ -191,9 +191,15 @@ export async function decide(target: DecideTarget, deps: DecideDeps): Promise<De
   //    停止条件なので LLM には決めさせない。判断するのは guard だけ。
   const unchanged = unchangedReconciles(target);
   if (unchanged >= target.budget.max_unchanged_reconciles) {
+    // 何が詰まって空回りしていたかを rationale に書く。ここへ来るのは Gap が
+    // 残っているティックだけ（3番目が Gap ゼロを先に返す）なので、gaps は必ず
+    // 1件以上ある。理由が `loop_detected`（＝観測が動かない）としか出ないと、
+    // その裏で「criterion が参照する観測を読めていない」まで来ている恒久失敗が、
+    // 一時的な空回りと同じ見た目で止まる。停止理由だけを見て原因に辿り着けるよう、
+    // 残った Gap の criterion と detail をここに添える（design.md §4.3）。
     return guard(
       { type: "ESCALATE", reason: "loop_detected" },
-      `stopping: the observation stayed unchanged for ${unchanged}/${target.budget.max_unchanged_reconciles} reconciles`,
+      `stopping: the observation stayed unchanged for ${unchanged}/${target.budget.max_unchanged_reconciles} reconciles, yet these Gaps remain: ${describeGaps(target.assessment.gaps)}`,
     );
   }
 
@@ -281,6 +287,18 @@ function waitReason(target: DecideTarget): WaitReason {
 
 function describeUnresolved(unresolved: readonly Unresolved[]): string {
   return unresolved.map((u) => `${u.key}(${u.reason}): ${u.detail}`).join(" / ");
+}
+
+/**
+ * 空回りの停止理由に添える、残った Gap の一覧。
+ *
+ * `buildPrompt` が LLM に見せる Gap の並び（`- <id> [<kind>] <detail>`）と同じ形を、
+ * rationale の1行に畳んだもの。detail には assess の `unknownDetail` が入るので、
+ * criterion が参照する観測を読めていないティックでは「<key> has no conclusion
+ * (<reason>: <detail>)」まで届く（`src/assess/index.ts`）。
+ */
+function describeGaps(gaps: readonly Gap[]): string {
+  return gaps.map((g) => `${g.criterionId} [${g.kind}] ${g.detail}`).join(" / ");
 }
 
 /**

@@ -348,8 +348,11 @@ export async function tick(goal: Goal, deps: ControllerDeps): Promise<TickResult
       deps.now().toISOString(),
     );
 
-    // 前のティックのダイジェストは、今回の分を書く前に読む。
+    // 前のティックのダイジェストと Decision は、今回の分を書く前に読む。
+    // previousDecision は publish が「同じガード停止を前ティックでもう出したか」を
+    // 見るのに使う（詰まっているあいだ同じ通知を積まないため）。
     const previousDigest = deps.store.latestDigest(goalId);
+    const previousDecision = deps.store.latestDecision(goalId);
     const carriedFacts = deps.store.latestSnapshot(goalId)?.facts ?? [];
     const result = await reconcile(
       {
@@ -519,6 +522,7 @@ export async function tick(goal: Goal, deps: ControllerDeps): Promise<TickResult
         prNumber: state.prNumber,
         digest,
         previousDigest,
+        previousDecision,
       },
       deps,
     );
