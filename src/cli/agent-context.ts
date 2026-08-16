@@ -151,7 +151,8 @@ export function agentContextPayload(): AgentContext {
       {
         name: "ENT_ACTOR",
         required: false,
-        summary: "default provider for every phase. claude-code / codex. Defaults to claude-code",
+        summary:
+          "default provider for every phase. claude-code / codex. Defaults to claude-code. These variables set the default and also the set DECIDE may name: an ACT that carries an agent block runs that one Actor on what DECIDE named, and only a provider selected here can be named",
       },
       { name: "ENT_MODEL", required: false, summary: "default model for every phase" },
       { name: "ENT_EFFORT", required: false, summary: "default effort for every phase" },

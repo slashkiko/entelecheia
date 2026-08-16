@@ -1,4 +1,4 @@
-import type { Decision } from "../domain/action.js";
+import type { ActionAgent, Decision } from "../domain/action.js";
 import { errorMessage } from "../domain/error-message.js";
 import type { Fact } from "../domain/fact.js";
 import { GITHUB_PR_BODY_KEY, GITHUB_PR_TITLE_KEY } from "../domain/fact-keys.js";
@@ -170,6 +170,15 @@ export interface ActorInvocation {
    */
   role: ActorRole;
   /**
+   * DECIDE が名指しした provider・model・effort（`actionAgentSchema`）。
+   * 書かれていなければ、Port の実装が既定（環境変数）の選択で走る。
+   *
+   * **`role` と別に渡す。** role は「何をさせるか」で使ってよいツールを決め、
+   * こちらは「誰にやらせるか」になる。同じキーに畳むと、レビュー役だけ provider を
+   * 変える指定と、権限の指定が1つの値に混ざる。
+   */
+  agent?: ActionAgent | undefined;
+  /**
    * controller が今ティックで観測した PR のタイトルと本文。取れていなければ null。
    *
    * **null と「本文が空」を混ぜない。** null は「controller から渡っていない」で、
@@ -318,7 +327,10 @@ export async function act(target: ActTarget, deps: ActDeps): Promise<ActResult> 
   const startedAt = deps.now().toISOString();
   const intent: RunIntent = {
     intent: action.intent,
-    actor: deps.actor.kindFor?.(role) ?? deps.actor.kind,
+    // DECIDE が provider を名指ししたなら、Run に残すのもその provider にする。
+    // 副作用の前に書く値なので（design.md §3.6）、ここが既定のままだと
+    // 「記録では claude-code、実際に走ったのは codex」という Run ができる。
+    actor: action.agent?.actor ?? deps.actor.kindFor?.(role) ?? deps.actor.kind,
     role,
     worktree: worktreeName,
     attempt: target.attempt,
@@ -343,6 +355,7 @@ export async function act(target: ActTarget, deps: ActDeps): Promise<ActResult> 
     runId,
     action.intent,
     role,
+    action.agent,
     worktreeName,
     // 切る元は関門の基準と同じものにする。記録が無ければ従来どおり default_branch。
     target.base ?? target.goal.repository.default_branch,
@@ -382,6 +395,7 @@ async function runActor(
   runId: string,
   intent: string,
   role: ActorRole,
+  agent: ActionAgent | undefined,
   worktreeName: string,
   base: string,
   pullRequest: PullRequestText | null,
@@ -423,6 +437,8 @@ async function runActor(
       intent: withConstraints(intent, goal),
       // 使ってよいツールは Actor 側が role から決める（design.md §4.2）。
       role,
+      // DECIDE が名指しした provider・model・effort。書かれていなければ既定で走る。
+      agent,
       // controller が観測した PR の本文。資格情報は渡さないまま、読んだ結果だけを渡す。
       pullRequest,
       worktree,

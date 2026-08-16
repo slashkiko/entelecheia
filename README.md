@@ -379,6 +379,26 @@ ENT_REVIEW_MODEL=<model> \
 ent run <slug>
 ```
 
+What the environment variables set is the **default**. The per-tick override belongs to DECIDE: an
+`ACT` may carry an `agent`, and that one run uses the provider, model, and effort named there.
+
+```json
+{"type":"ACT","intent":"fix the failing test","agent":{"actor":"codex","effort":"high"}}
+```
+
+`actor` is required; `model` and `effort` are optional. What is left out runs on the named
+provider's own default and is not inherited from that phase's environment variables. **Only a
+provider already selected by the environment variables can be named**, and an output naming
+anything outside that set — or an effort the provider does not have — is rejected before launch, so
+it costs no ACT budget.
+
+An ACT without it runs on the environment's selection as before. The provider that was named is
+recorded on the Run, so `ent get` shows it. Model and effort have no column on the Run; they appear
+in the Decision's rationale (`ACT(implement on codex/high: ...)`).
+
+**DECIDE cannot choose its own provider this way.** By the time it returns `agent` it is already
+running and cannot relaunch itself. The decide phase stays on the environment variables.
+
 ### Using Codex
 
 If even one phase involves Codex, confirm the login first with `codex login status`. When the

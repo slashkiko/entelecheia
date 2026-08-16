@@ -21,11 +21,12 @@ import {
 import { reviewRunLog } from "../adapters/review-run.js";
 import type { ControllerDeps } from "../controller/index.js";
 import type { LlmPort } from "../decide/index.js";
+import type { ActionAgent } from "../domain/action.js";
 import { errorMessage } from "../domain/error-message.js";
 import type { Goal } from "../domain/goal.js";
 import type { LlmCall } from "../domain/llm-call.js";
 import { PortError } from "../domain/port-error.js";
-import type { ActorKind, ActorRole } from "../domain/run.js";
+import { type ActorKind, type ActorRole, EFFORT_VOCABULARY } from "../domain/run.js";
 import type { CodeProviderPort } from "../observe/index.js";
 import type { CodeWriterPort } from "../publish/index.js";
 import type { Store } from "../store/port.js";
@@ -115,6 +116,10 @@ export function tickPorts(
     worktreeRoot: worktrees,
     actor,
     llm,
+    // DECIDE が ACT に名指してよい provider。人間が環境変数で opt-in したものだけを
+    // 渡す（`DecideDeps.availableActors`）。`ent doctor` がログイン前提を確かめる
+    // 集合と同じものにしてある。片方だけ広いと、doctor が見ていない provider が走る。
+    availableActors: selectedActorKinds(env),
     now: () => new Date(),
   };
 }
@@ -477,8 +482,36 @@ function routedActor(
   return {
     kind: byRole.implement.kind,
     kindFor: (role) => byRole[role].kind,
-    run: async (invocation) => byRole[invocation.role].run(invocation),
+    run: async (invocation) => {
+      // DECIDE が provider を名指ししていれば、その組で1回だけ Adapter を作る。
+      // Adapter は起動オプションを閉じ込めただけのクロージャなので、毎回作っても
+      // プロセスは増えない。名指しが無いティックは従来どおり role 別の既定で走る。
+      const chosen = invocation.agent;
+      if (chosen === undefined) {
+        return byRole[invocation.role].run(invocation);
+      }
+      return selectedActor(stateDir, decidedSelection(chosen), factories).run(invocation);
+    },
   };
+}
+
+/**
+ * DECIDE が返した組を、Adapter を選ぶ形に直す。
+ *
+ * effort の語彙は provider ごとに違うので、ここでも provider を見てから検証する。
+ * 採用の時点（`askLlm`、`src/decide/index.ts`）で同じ検証を通しているが、
+ * **通した値しか来ないことを前提にしない。** Decision は DB から読み直されて
+ * ここへ来ることがあり、そちらは採用時の検証を通っていない。
+ *
+ * エラーの source には `ACT.agent.effort` を書く。環境変数の綴りを出すと、
+ * 環境変数を1つも設定していない人間が `ENT_EFFORT` を探しに行くことになる。
+ */
+function decidedSelection(agent: ActionAgent): PhaseAgentSelection {
+  const key = "ACT.agent.effort";
+  if (agent.actor === "codex") {
+    return { actor: agent.actor, model: agent.model, effort: codexEffortFrom(agent.effort, key) };
+  }
+  return { actor: agent.actor, model: agent.model, effort: effortFrom(agent.effort, key) };
 }
 
 function selectedActor(
@@ -543,28 +576,20 @@ function codexEffortFrom(value: string | undefined, key = "ENT_EFFORT"): CodexEf
 /**
  * SDK の `EffortLevel` の全値。
  *
+ * **値そのものはドメインが持つ**（`EFFORT_VOCABULARY`、`src/domain/run.ts`）。
+ * 同じ語彙を DECIDE の受け取り側も見るようになったので、2箇所に書くと
+ * 片方だけ直したときに「プロンプトは受け付けると言うのに採用されない」状態を
+ * 作れる。ここに残すのは、その語彙が **SDK の型と一致しているかの検査**になる。
+ *
  * `readonly EffortLevel[]` と書くと片方向しか守れない。SDK からメンバーが
  * **消えた**ときは型エラーになるが、**増えた**ときは足りない配列もそのまま
  * 代入でき、妥当な値を「不正」として弾く。この関数の JSDoc は「知らない値を
  * 黙って捨てると気づけないので throw する」と書いているので、弾く側の
  * 取りこぼしも同じだけ困る。下の検査で増えた側も落ちるようにする。
  */
-const EFFORT_LEVELS = [
-  "low",
-  "medium",
-  "high",
-  "xhigh",
-  "max",
-] as const satisfies readonly EffortLevel[];
+const EFFORT_LEVELS = EFFORT_VOCABULARY["claude-code"] satisfies readonly EffortLevel[];
 
-const CODEX_EFFORT_LEVELS = [
-  "none",
-  "minimal",
-  "low",
-  "medium",
-  "high",
-  "xhigh",
-] as const satisfies readonly CodexEffort[];
+const CODEX_EFFORT_LEVELS = EFFORT_VOCABULARY.codex satisfies readonly CodexEffort[];
 
 /**
  * EFFORT_LEVELS に足りない値があればビルドが落ちる。
