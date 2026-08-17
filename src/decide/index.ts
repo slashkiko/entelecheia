@@ -9,6 +9,7 @@ import {
 } from "../domain/fact-keys.js";
 import type { Assessment, Gap } from "../domain/gap.js";
 import { type AcceptanceCriterion, type Budget, durationSeconds } from "../domain/goal.js";
+import { usageLimitResumeAfter } from "../domain/guard-rules.js";
 import { MAX_LLM_RETRIES } from "../domain/llm-call.js";
 import { isUnavailable, isUsageLimit, resumeAfterOf } from "../domain/port-error.js";
 
@@ -398,7 +399,13 @@ async function askLlm(
       if (isUsageLimit(error)) {
         return {
           decidedAt,
-          action: { type: "WAIT", reason: "usage_limit", resumeAfter: resumeAfterOf(error) },
+          action: {
+            type: "WAIT",
+            reason: "usage_limit",
+            // Port が再開時刻を読めていなければ、既定の待ちを置く。null のまま
+            // 通すと次のティックがそのまま走って同じ上限に当たる。
+            resumeAfter: usageLimitResumeAfter(resumeAfterOf(error), decidedAt),
+          },
           rationale: `LlmPort hit its usage limit: ${errorMessage(error)}`,
           decidedBy: "guard",
         };

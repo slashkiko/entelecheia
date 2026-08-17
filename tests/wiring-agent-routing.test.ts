@@ -85,16 +85,16 @@ describe("phase ごとの Agent 選択", () => {
     expect(() => agentSelectionFrom({ ENT_EFFORT: "infinite" }, "decide")).toThrow(/ENT_EFFORT/);
   });
 
-  it("Codex の none / minimal を受け付け、未定義の max を拒否する", () => {
-    expect(agentSelectionFrom({ ENT_ACTOR: "codex", ENT_EFFORT: "none" }, "decide").effort).toBe(
-      "none",
+  it("Codex の max を受け付け、いまのモデルが持たない none / minimal を拒否する", () => {
+    expect(agentSelectionFrom({ ENT_ACTOR: "codex", ENT_EFFORT: "max" }, "decide").effort).toBe(
+      "max",
     );
-    expect(
-      agentSelectionFrom({ ENT_ACTOR: "codex", ENT_EFFORT: "minimal" }, "implement").effort,
-    ).toBe("minimal");
-    expect(() => agentSelectionFrom({ ENT_ACTOR: "codex", ENT_EFFORT: "max" }, "decide")).toThrow(
+    expect(() => agentSelectionFrom({ ENT_ACTOR: "codex", ENT_EFFORT: "none" }, "decide")).toThrow(
       /ENT_EFFORT/,
     );
+    expect(() =>
+      agentSelectionFrom({ ENT_ACTOR: "codex", ENT_EFFORT: "minimal" }, "implement"),
+    ).toThrow(/ENT_EFFORT/);
     expect(
       agentSelectionFrom({ ENT_ACTOR: "claude-code", ENT_EFFORT: "max" }, "decide").effort,
     ).toBe("max");

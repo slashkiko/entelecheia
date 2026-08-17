@@ -227,8 +227,9 @@ By design, only the `EventSource` interface is cut, and it is swapped for a webh
 
 ### 3.5 Provider and model are chosen per phase
 
-The controller's decision LLM is called only on the DECIDE path where a Gap remains; the implement,
-review, and investigate calls are separated out as Actor roles. Both go through a Port and an
+The controller's decision LLM is called in two places: the DECIDE path where a Gap remains, and the
+planner that runs outside the tick (§10-12). The implement, review, and investigate calls are
+separated out as Actor roles. Both go through a Port and an
 Adapter, so choosing a provider per phase never leaks a provider-specific branch into the controller
 proper. DECIDE's output is always validated with Zod and is not accepted if it does not pass (up to
 2 retries).
@@ -242,12 +243,15 @@ What is entrusted to the LLM is only how to close the Gap.
 
 The default is the Claude Agent SDK, using Claude Code's saved credentials. The Codex CLI Adapter
 was added on 2026-08-11. In addition to the common `ENT_ACTOR` / `ENT_MODEL` / `ENT_EFFORT`, it
-accepts same-named overrides per `DECIDE`, `IMPLEMENT`, `REVIEW`, and `INVESTIGATE`. For example
-`ENT_DECIDE_ACTOR=codex` and `ENT_REVIEW_MODEL=<model>` can be specified at the same time. The
-provider, model, and effort for the same phase are chosen as one set, and the ACT Run keeps the
-provider actually used. The effort vocabulary is validated per provider. Claude Code takes
-`low / medium / high / xhigh / max` and Codex takes `none / minimal / low / medium / high / xhigh`;
-a value belonging to only one is never passed silently to the other.
+accepts same-named overrides per `DECIDE`, `PLAN`, `IMPLEMENT`, `REVIEW`, and `INVESTIGATE`.
+**`PLAN` here means the planner behind `ent plan` (§10-12)**, not the `PLAN / REPLAN` stage §5 lists
+inside the tick. For example `ENT_DECIDE_ACTOR=codex` and `ENT_REVIEW_MODEL=<model>` can be
+specified at the same time.
+The provider, model, and effort for the same phase are chosen as one set, and the ACT Run keeps the
+provider actually used. The effort vocabulary is validated per provider. Both currently take
+`low / medium / high / xhigh / max`, the Codex side following codex-cli 0.147.0's model catalog
+(not one of its models offers `none` or `minimal`). The validation stays per provider even while
+the values agree, so that a value belonging to only one is never passed silently to the other.
 
 Codex also has an official TypeScript SDK (`@openai/codex-sdk`), which in substance is a wrapper
 that launches the Codex CLI and exchanges JSONL events. But the current SDK's public options cannot
@@ -365,14 +369,19 @@ write-ahead Run. role passes through the following five places.
   not make merge or force push permissible). The prompts are split per role as well. If only the
   permissions are split and the wording stays the same, the review role keeps attempting edits,
   keeps getting denied, and burns its turns there
-- **role determines which skills the Claude Code Agent is shown** (`SKILLS_FOR` in
-  `src/adapters/claude.ts`). `semantic-review` is handed only to the Claude Code review role. Handing
+- **role determines which points (skills) the Agent is handed** (`SKILLS_FOR` in
+  `src/adapters/claude.ts`, and `SkillDelivery` in `src/adapters/agent-prompt.ts`). `semantic-review` is handed only to the review role. Handing
   it to the implement role would open room to "write so as to satisfy the review points," and the
   structure §3.1 avoids with criteria would recur on the review side. **`settingSources: []` is not
   relaxed.** The decision not to let it read the host's `~/.claude` or the repository's `.claude`
   stands, and only the plugin the controller named (`plugins/ent-review/`) is visible to the Agent.
-  That one entry is what appears in the skill list. Its content is a general-purpose skill used
-  outside ent as well, and **it knows nothing about Goal, criteria, or verdict.** Looking at the
+  That one entry is what appears in the skill list. **Codex gets the same points inlined into its
+  prompt** (`SkillDelivery` in `src/adapters/agent-prompt.ts`). `codex exec` has no way to hand a
+  skill inside the repository to a single invocation; the discovery paths left are
+  `$CODEX_HOME/skills` and a marketplace plugin, both of which put state on the host. Only the
+  delivery is split, so that **the review contract is one, whichever the provider**. The skill's
+  content is general-purpose, used outside ent as well, and **it knows nothing about Goal, criteria,
+  or verdict.** Looking at the
   working tree's HEAD rather than the PR diff, the primary source of intent being
   `.goals/<goal.id>.yaml`, and appending the two lines `reviewed_sha:` and `verdict:` after the body
   — all of that is written on the `REVIEW_PROMPT` side. The skill holds the review points; the
@@ -380,8 +389,9 @@ write-ahead Run. role passes through the following five places.
   not as the primary source of intent** (§4.3). That is why `ActorInvocation` carries `goalId` — the
   declaration is already committed into the working tree, so **handing over only which file to read
   is enough for the intent to arrive** (`intent` carries only constraints; `desired_state` is not
-  carried) The Codex review role is not handed this Claude plugin; a Codex-specific per-role prompt
-  and the `reviewed_sha:` / `verdict:` output contract connect it to the same observation boundary
+  carried) The Codex review role is not handed this Claude plugin; **the same per-role prompt with
+  the skill's body inlined**, plus the `reviewed_sha:` / `verdict:` output contract, connect it to
+  the same observation boundary
 - **the worktree name is determined by (goal.id, role)** (`worktreeNameFor`). **`review` looks at the
   same working tree as `implement`, and only `investigate` is split off.** All three were split at
   first, but splitting them means **the subject of review never catches up with the implementation.**
@@ -569,8 +579,8 @@ added in front of it later. The reading side was added first because the prompt 
 "state the sha of the commit you read," and **a shape able to pick up the output the counting-only
 rule drops — writing the diff's comparison base out in full alongside it, quoting one line of
 `git log` output; every one of them is a way of writing that follows the instruction — could only be
-placed on the reading side** (`src/adapters/claude.ts` is inside `PROTECTED_PATH_FLOOR`, and the
-Actor cannot touch it).
+placed on the reading side** (`src/adapters/agent-prompt.ts` is inside `PROTECTED_PATH_FLOOR`, and
+the Actor cannot touch it).
 
 The prompt side now demands the explicit mention as well. That is because when the `semantic-review`
 skill was handed to the review role (§4.2), that output format lines up two shas, base and head, in
@@ -757,7 +767,7 @@ in §9 would itself lose its meaning. To redo it, revert the DB state explicitly
 LLM/Actor providers have usage limits according to time window or contract.
 A controller that runs for hours can hit the limit, so rather than crashing or retrying immediately
 it drops into `WAITING_EXTERNAL(usage_limit)`, sleeps until the reset time, and resumes automatically.
-If the reset time cannot be obtained, exponential backoff.
+If the reset time cannot be obtained, the guard supplies a default wait (§10-5).
 When the limit is reached during Actor execution and not only during DECIDE, the failure
 classification, tokens, and raw log are left on the Run, and the guard replaces that ACT with
 `WAIT(usage_limit)`. This keeps the next tick's DECIDE on a different provider from creating a path
@@ -1067,8 +1077,9 @@ Other controls.
 
 - **The LLM does not decide "how long to sleep," either.** Even if we close off only the kinds of
   actions, a `resume_after` on `WAIT` returning a distant future can stop a Goal indefinitely. The
-  `resume_after` the LLM returns is not adopted. The only case where it may be filled in is when
-  the usage-limit reset time is received from a Port (§10-3 / §10-5)
+  `resume_after` the LLM returns is not adopted. It may be filled in only when the usage-limit reset
+  time is received from a Port, or when guard supplies its default wait for a limit whose reset time
+  could not be read (§10-3 / §10-5)
 - **What `max_wall_clock` counts is the real time during which the machine side could act.** Time
   spent waiting on `WAIT`, and on `ESCALATE` other than budget exhaustion, is subtracted
   (`waitedSeconds`). It was the controller that ordered the wait, and no matter what the next tick
@@ -1119,8 +1130,9 @@ the actual gate. The approval gate has a floor of the same shape, and `APPROVAL_
 - The gate itself (`src/domain/protected-paths.ts`), and the file that decides the Agent's allowed
   and denied tools (`src/adapters/claude.ts`). If this is open, making the comparison always return
   false, or simply emptying the deny list, removes everything else. The same file also holds the
-  skills shown per role (`SKILLS_FOR`) and the contract for the review conclusion (the two lines
-  `verdict:` and `reviewed_sha:` that `REVIEW_PROMPT` requires; §4.3). That would let **the Actor
+  skills shown per role (`SKILLS_FOR`), while the contract for the review conclusion (the two lines
+  `verdict:` and `reviewed_sha:` that `REVIEW_PROMPT` requires; §4.3) sits in
+  `src/adapters/agent-prompt.ts`; both are inside the floor. Otherwise that would let **the Actor
   rewrite both the perspective handed to it and how its own conclusion gets read**, so it cannot be
   taken out of the floor
 - **The judgment rules that guard reads (`src/domain/guard-rules.ts`).** The counterpart the gate
@@ -1738,6 +1750,17 @@ Settled in the third pass of Phase 3. `tick` decides at the entrance and returns
 the time has passed. It does not take the lease either. Taking it would let a Goal that is merely
 sleeping block other workers. A value that cannot be interpreted is read as "may wake". A Goal
 stopping forever because of a broken value is worse than waking one tick early.
+
+**Where a `usage_limit` carries no reset time, guard supplies a default wait**
+(`usageLimitResumeAfter`, one hour). Passing null through here falls into the "a value that cannot be
+interpreted may wake" rule above: the next tick runs as usual and hits the same limit. That Run piles
+up as failed, so once `max_consecutive_failures` is reached, something that only needed waiting turns
+into an `ESCALATE(budget_exhausted)`. **Ports that cannot read the reset time do exist.** The Codex CLI writes the time
+inside the prose of the limit message and emits no machine-readable field (`resetTimeIn` reads it,
+and both the captured text and the result stay in the raw log). Claude has a path with no
+`rate_limit_event` as well. The default sits in guard rather than in the Adapter so that a Run keeps
+**only what was observed** (§3.1); a Run whose reset time could not be read keeps
+`actor_resume_after` null.
 
 ### 10-6. ~~Who stops `require_human_approval`~~
 

@@ -286,16 +286,19 @@ const NEUTRALIZED = "(disabled)";
 
 describe("レビュー役のプロンプト", () => {
   function reviewPrompt(pullRequest: ActorInvocation["pullRequest"]): string {
-    return PROMPT_FOR.review({
-      runId: "1",
-      goalId: "sample-goal",
-      intent: "差分を読む",
-      role: "review",
-      worktree: { path: "/tmp/wt/sample-goal", branch: "entelecheia/sample-goal" },
-      deniedOperations: ["merge"],
-      signal: new AbortController().signal,
-      ...(pullRequest === undefined ? {} : { pullRequest }),
-    });
+    return PROMPT_FOR.review(
+      {
+        runId: "1",
+        goalId: "sample-goal",
+        intent: "差分を読む",
+        role: "review",
+        worktree: { path: "/tmp/wt/sample-goal", branch: "entelecheia/sample-goal" },
+        deniedOperations: ["merge"],
+        signal: new AbortController().signal,
+        ...(pullRequest === undefined ? {} : { pullRequest }),
+      },
+      "tool",
+    );
   }
 
   it("渡されたタイトルと本文がそのまま載る", () => {

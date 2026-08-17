@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { decide, type LlmPort } from "../src/decide/index.js";
 import type { Gap } from "../src/domain/gap.js";
 import type { AcceptanceCriterion, Budget } from "../src/domain/goal.js";
+import { DEFAULT_USAGE_LIMIT_WAIT_SECONDS } from "../src/domain/guard-rules.js";
 import { PortError } from "../src/domain/port-error.js";
 
 /**
@@ -70,14 +71,22 @@ describe("decide と使用量上限", () => {
     expect(decision.decidedBy).toBe("guard");
   });
 
-  it("リセット時刻が分からなければ resumeAfter は null", async () => {
-    // 指数バックオフに任せる。分からない時刻を捏造しない。
+  it("リセット時刻が分からなければ、既定の待ちを置く", async () => {
+    // **null のままにしない。** `sleepingUntil` は null を「起きてよい」と読むので、
+    // 次のティックがそのまま走って同じ上限に当たる。その Run は failed として
+    // 積まれ、max_consecutive_failures に達したところで「待てば直る」ものが
+    // ESCALATE になる。実際に再開時刻を読めない Port がある（Codex CLI は
+    // 文面の中にしか書かない）。
     const decision = await decide(target(), {
       llm: throwing(new PortError("usage_limit", "上限に達した")),
       now: () => NOW,
     });
 
-    expect(decision.action).toEqual({ type: "WAIT", reason: "usage_limit", resumeAfter: null });
+    expect(decision.action).toEqual({
+      type: "WAIT",
+      reason: "usage_limit",
+      resumeAfter: new Date(NOW.getTime() + DEFAULT_USAGE_LIMIT_WAIT_SECONDS * 1000).toISOString(),
+    });
   });
 
   it("上限以外の失敗はこれまでどおり ESCALATE", async () => {

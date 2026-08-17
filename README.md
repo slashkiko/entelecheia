@@ -368,8 +368,9 @@ phase-specific settings; without them it falls back to the shared `ENT_ACTOR` / 
 `ENT_EFFORT`. When no provider is specified it is `claude-code`, preserving existing behavior. `PLAN`
 is selectable the same way (`ENT_PLAN_ACTOR` and friends), even though it runs outside the tick.
 
-Valid effort values differ per provider. Claude Code accepts `low / medium / high / xhigh / max`;
-Codex accepts `none / minimal / low / medium / high / xhigh`.
+Valid effort values are `low / medium / high / xhigh / max` for both providers. The Codex side
+follows codex-cli 0.147.0's model catalog and does not accept `none` or `minimal`, because none of
+its five models offer them.
 
 ```sh
 ENT_ACTOR=codex ent doctor
@@ -381,6 +382,69 @@ ENT_IMPLEMENT_ACTOR=claude-code \
 ENT_REVIEW_MODEL=<model> \
 ent run <slug>
 ```
+
+#### A starting point when nothing has been decided
+
+**ent carries no default model or effort.** Without a setting it runs on whatever the chosen provider
+defaults to (Claude Code unless `ENT_ACTOR=codex`). The combination below is not a value ent imposes; it is where to start when there is
+nothing to go on. The two grounds are how often a phase is called and how expensive it is to get it
+wrong, and it is meant to be changed once a few ticks have been run.
+
+| phase | model | effort | why |
+| --- | --- | --- | --- |
+| `DECIDE` | `sonnet` | `low` | Called every tick. The output is one Zod-validated choice, and a bad one is re-chosen on the next tick |
+| `PLAN` | `opus` | `high` | Writes the declaration a human reads. Placing the criteria badly means rewriting the whole Goal |
+| `IMPLEMENT` | `opus` | `high` | The most expensive to redo. The guard at the end of the tick stops commit and push, but does not look at what was written |
+| `REVIEW` | `opus` | `xhigh` | Whatever it misses passes through as broken implementation. It is also the role that matches the declaration against the implementation with `semantic-review`'s points |
+| `INVESTIGATE` | `sonnet` | `medium` | Mostly reads, and holds no edit tools |
+
+**`ENT_PLAN_*` on `ent run` does nothing.** PLAN runs outside the tick, so only `ent plan` reads it
+(`ent doctor`'s login check counts `ENT_PLAN_ACTOR` too). Pass them separately.
+
+```sh
+# inside the tick (DECIDE, IMPLEMENT, REVIEW, INVESTIGATE)
+ENT_DECIDE_MODEL=sonnet ENT_DECIDE_EFFORT=low \
+ENT_IMPLEMENT_MODEL=opus ENT_IMPLEMENT_EFFORT=high \
+ENT_REVIEW_MODEL=opus ENT_REVIEW_EFFORT=xhigh \
+ENT_INVESTIGATE_MODEL=sonnet ENT_INVESTIGATE_EFFORT=medium \
+ent run <slug>
+
+# writing the declarations (PLAN)
+ENT_PLAN_MODEL=opus ENT_PLAN_EFFORT=high \
+ent plan --desire "…"
+```
+
+If passing eight variables every time is tiresome, a single `ENT_MODEL=opus` with only
+`ENT_<PHASE>_EFFORT` varied follows the same reasoning. Fewer variables to pass, more usage spent,
+since DECIDE and INVESTIGATE run on opus too.
+
+**Splitting the provider for REVIEW alone is another option.** With `ENT_REVIEW_ACTOR=codex`, the
+model that wrote the implementation is not the one reviewing its own work. Codex's permission
+controls are not identical to Claude Code's, however, which is why it is never selected
+automatically (see "Using Codex" below). This is written as an option, not a recommendation.
+`semantic-review`'s points reach both providers all the same: Claude Code is made to read the skill
+with the Skill tool, and Codex has the body of its SKILL.md and `references/` placed into its
+prompt. Only the delivery differs; what the review looks at does not.
+
+#### The same starting point on Codex
+
+The table above is written in Claude Code's model names. On Codex it comes out as follows. The
+values are taken from codex-cli 0.147.0's model catalog, where `gpt-5.6-sol` is the "Latest
+frontier agentic coding model", `gpt-5.6-terra` the "Balanced agentic coding model for everyday
+work", and `gpt-5.6-luna` the "Fast and affordable agentic coding model". The reasoning behind the
+spread is the same as above.
+
+| phase | model | effort |
+| --- | --- | --- |
+| `DECIDE` | `gpt-5.6-luna` | `low` |
+| `PLAN` | `gpt-5.6-sol` | `high` |
+| `IMPLEMENT` | `gpt-5.6-sol` | `high` |
+| `REVIEW` | `gpt-5.6-sol` | `xhigh` |
+| `INVESTIGATE` | `gpt-5.6-terra` | `medium` |
+
+**`~/.codex/config.toml` has no effect here.** ent starts Codex with `--ignore-user-config`, so the
+`model` and `model_reasoning_effort` written there are not read. Without an explicit
+`ENT_<PHASE>_MODEL`, it runs on whatever the Codex CLI defaults to.
 
 ### Using Codex
 
@@ -902,10 +966,12 @@ src/adapters/local.ts     Ports writable with node:child_process (command execut
 src/adapters/goal-file.ts Reads .goals/<slug>.yaml from the filesystem
 src/adapters/github.ts    CodeProviderPort. @octokit/rest + ETag
 src/adapters/claude.ts    ActorPort and LlmPort. Claude Agent SDK.
-                          Per-role allowed/denied tools and prompts are here too. Only the
+                          Per-role allowed/denied tools are here. Only the
                           implement role holds editing tools (design.md §4.2)
 src/adapters/codex.ts     ActorPort and LlmPort. Converts Codex CLI's non-interactive JSONL
-src/adapters/agent-prompt.ts Per-role prompts and output contract for Codex
+src/adapters/agent-prompt.ts Per-role prompts and output contract. One set for every provider;
+                          only how semantic-review is delivered (Skill tool / inlined body) differs
+plugins/ent-review/       The canonical copy of the semantic-review skill the review role reads
 src/wiring/index.ts       The composition root. The single place deciding which Adapter goes into
                           which Port. The gate's inputs (Adapter injection and verifyRoot) are
                           decided here too

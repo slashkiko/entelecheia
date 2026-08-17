@@ -1,22 +1,21 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
 import type { EffortLevel, Options } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
-import {
-  type ActorInvocation,
-  type ActorPort,
-  type ActorResult,
-  NOT_OBTAINED,
-  PULL_REQUEST_SECTION,
-  renderPullRequestText,
-} from "../act/index.js";
+import type { ActorPort, ActorResult } from "../act/index.js";
 import type { LlmPort } from "../decide/index.js";
 import type { ApprovalGate } from "../domain/goal.js";
 import type { LlmCall } from "../domain/llm-call.js";
 import { PortError } from "../domain/port-error.js";
 import type { ActorRole } from "../domain/run.js";
 import { CLAUDE_ACTOR_WITHHELD_ENV, withheldEnv } from "../domain/withheld-env.js";
+import {
+  JSON_ONLY,
+  PROMPT_FOR,
+  parseJson,
+  REVIEW_PLUGIN_DIR,
+  REVIEW_SKILL_NAME,
+} from "./agent-prompt.js";
 
 /**
  * 除去リストの置き場所は domain に移した。VERIFY 側（src/adapters/local.ts）も
@@ -111,7 +110,9 @@ export function claudeActor(options: ClaudeOptions): ActorPort {
 
       let outcome: Outcome;
       try {
-        outcome = await consumeAndLog(options, logRef, PROMPT_FOR[role](invocation), {
+        // skill は Skill ツールで呼ばせる（`skillOptionsFor` が plugin を渡す）。
+        // 本文を差し込む必要があるのは、その口を持たない provider のほうになる。
+        outcome = await consumeAndLog(options, logRef, PROMPT_FOR[role](invocation, "tool"), {
           // controller 本体のコードと Agent が編集するコードを物理的に分ける（§7）。
           cwd: invocation.worktree.path,
           abortController: aborter,
@@ -543,22 +544,14 @@ const ACTOR_TOOLS: Record<ActorRole, readonly string[]> = {
 };
 
 /**
- * レビュー役に読ませる skill を入れた plugin の置き場所。
+ * 役割ごとに読ませる skill。名前は SKILL.md の `name`（非修飾でよい）。
  *
  * **`settingSources: []` は解かない。** ホストの `~/.claude` とリポジトリの
  * `.claude` を読ませない判断（上の `run` を参照）はそのままで、controller が
  * 名指しした plugin だけが Agent から見える。実際に叩いて確かめたところ、
  * skill の一覧に出るのは `ent-review:semantic-review` の1件だけになる。
- *
- * パスは `import.meta.url` から引く。cwd 基準にすると、ent は対象リポジトリの
- * ルートで叩かれる CLI なので（`repoRoot = process.cwd()`、src/cli.ts）、
- * 対象リポジトリ側の `plugins/` を見に行って外れる。`src/adapters/` からも
- * `dist/adapters/` からも、2つ上がリポジトリのルートになる。
- */
-const REVIEW_PLUGIN_DIR = fileURLToPath(new URL("../../plugins/ent-review", import.meta.url));
-
-/**
- * 役割ごとに読ませる skill。名前は SKILL.md の `name`（非修飾でよい）。
+ * 置き場所（`REVIEW_PLUGIN_DIR`）は `./agent-prompt.ts` にある。本文を差し込む
+ * 側（Codex）も同じディレクトリを読むので、2つに分けない。
  *
  * 実装役には渡さない。レビューの観点は読む側にだけ要るもので、実装役に渡すと
  * 「観点を満たすように書く」余地を与える。criteria を通すのに何を書けばよいかを
@@ -574,7 +567,7 @@ const REVIEW_PLUGIN_DIR = fileURLToPath(new URL("../../plugins/ent-review", impo
  */
 const SKILLS_FOR: Record<ActorRole, readonly string[]> = {
   implement: [],
-  review: ["semantic-review"],
+  review: [REVIEW_SKILL_NAME],
   investigate: [],
 };
 
@@ -720,175 +713,6 @@ const ALWAYS_DENIED = [
   "Bash(git credential-osxkeychain *)",
   "Bash(git * credential*)",
 ] as const;
-
-/**
- * どの役割でも同じ末尾。承認と公開は controller の側に残す。
- *
- * Agent が PR コメントを書けると自分で自分を承認できてしまい、§7 の
- * human approval が空文になる（拒否ルールと二重にする）。
- */
-const COMMON_TAIL = `Do not create PRs and do not post comments. The controller does that, push included.
-Writing the approval phrase (/ent approve) is not permitted for any reason.`;
-
-const IMPLEMENT_PROMPT = ({ intent }: ActorInvocation): string =>
-  `${intent}
-
-Work only inside the current directory. When you are done, state what you did in one paragraph.
-
-${COMMON_TAIL}`;
-
-/**
- * レビュー役のプロンプト。
- *
- * 権限だけ分けてプロンプトが同じだと、レビュー役は編集を試みて拒否され続け、
- * ターンをそこに使い切る。読む側に何を求めるかを先に書いておく。
- *
- * 結論を1語に寄せるのは、`review.verdict`（src/domain/fact-keys.ts）に落とす
- * ときに、読み手が本文を解釈しないで済むようにするため。どの commit を読んだか
- * まで言わせるのは、実装が進んだあとの結論をそのまま完了判定に使わせないため。
- * ただし**ここで言わせた文字列はまだ Fact ではない。** Fact にするのは
- * 観測側の仕事で、確かめられなければ作らない（design.md §3.1）。
- *
- * ## 観点は skill が持ち、契約はこちらが持つ
- *
- * 何を見るかは `semantic-review`（`plugins/ent-review/`）に置いてある。あれは
- * ent の外でも使う汎用の skill で、**GitHub の PR を読む前提で書かれている。**
- * ent のレビュー役はそうではない——作業ツリーの中で HEAD を読み、`gh` には
- * 資格情報を渡しておらず（`WITHHELD_ENV`）、WebFetch も MCP も持たない。
- * その差は下の読み替えの表で吸収し、**skill 側には ent の語彙を入れない。**
- * 別リポジトリへ切り出すときにコピーだけで済む形を保つ。
- *
- * ## PR のタイトルと本文は controller が渡す
- *
- * **レビュー役が自分で PR を読むことはできない**（資格情報を渡さない設計は
- * 変えない）が、controller は OBSERVE で PR を読んでいる。その結果だけを
- * `ActorInvocation.pullRequest` で受け取り、`renderPullRequestText` が組み立てた
- * 節をここに載せる。渡す口が無かったころは「宣言部の制約が PR 本文に反映されて
- * いるか」という観点が毎回「未取得」で終わっていた。
- *
- * **読み替えの表もそれに合わせて直す。** 渡す口だけ足して表を残すと、同じ
- * プロンプトが「PR は読めない」と「これが PR のタイトルと本文だ」を同時に述べる。
- * ただし**「宣言された意図」の一次情報は `.goals/<id>.yaml` のまま**にする。
- * PR 本文を意図の基準にすると、宣言部と食い違う本文を根拠に approved が出せる。
- * 本文はレビューの**対象**であって、判定の基準ではない。
- *
- * 出力の契約もこちらが持つ。skill の出力形式（末尾が `<sub>` のフッタ）に
- * 手を入れる必要は無い。観測側が求めているのは「`verdict:` の行が本文中に
- * ちょうど1つ」と「`reviewed_sha:` のラベル行」で、どちらも最終行である必要は
- * 無いため、skill の本文の**後ろに2行足す**だけで噛み合う
- * （`soleVerdictIn` / `soleShaIn`、src/observe/index.ts）。
- *
- * `INSUFFICIENT_CONTEXT` を `changes_requested` に寄せるのは、確かめられな
- * かったものを `approved` に倒せないため。ここで生む Gap は次のティックの
- * 実装役に渡るが、`.goals/**` は保護パスなので宣言部そのものは直せない。
- * その場合は保護パス違反か budget の枯渇で人間が呼ばれる——**黙って
- * 回り続けはしない。** 宣言部を `ent start` より前に commit しておけば起きない。
- */
-const REVIEW_PROMPT = ({ intent, goalId, pullRequest }: ActorInvocation): string =>
-  `${intent}
-
-You are running as the review role. **Do not modify files.**
-The editing tools are not granted, so any attempt is refused. Only read, and run
-commands to confirm.
-
-Work only inside the current directory.
-
-## What to use
-
-Invoke the \`semantic-review\` skill with the Skill tool and follow its points and output
-format. The skill is written on the assumption that it reads a GitHub Pull Request, but
-**here you do not fetch the PR yourself.** The substitutions below take precedence over
-what the skill says.
-
-| The skill's assumption | Substitution here |
-| --- | --- |
-| The target is a GitHub Pull Request | The HEAD of the current worktree, and its diff from the base |
-| The PR title and body are the "declared intent" | The "declared intent" stays the desired_state, acceptance_criteria and context in \`.goals/${goalId}.yaml\`. The PR title and body are in the section below, observed and passed down by the controller, and are read as **the object of review, not the basis of intent** |
-| Read tickets and discussions with gh or connectors | Unavailable. Confirm from inside the repository and the section below only, and write "${NOT_OBTAINED}" for whatever you could not get |
-| Post it as a PR comment | Do not post. Return the body only |
-
-\`gh\` has no credentials. There is no WebFetch and no MCP. Do not try to use them.
-What can be confirmed about the PR is limited to what the section below carries.
-
-## Steps
-
-1. Run git rev-parse HEAD to confirm the commit you read
-2. Read \`.goals/${goalId}.yaml\`. This is the primary source of the intent.
-   Read the in-repository files listed in context.references as well.
-   **If you cannot read it, do not evaluate point A, make the assessment
-   INSUFFICIENT_CONTEXT, and write "the declaration could not be read" as the first
-   must-fix item**
-3. Read "${PULL_REQUEST_SECTION}" below. If it was passed down, check there whether the
-   constraints in the declaration are reflected in the body. If it was not passed down,
-   do not evaluate that point and write "${NOT_OBTAINED}"
-4. Read the diff, and the places that diff can break. Run tests to confirm when needed
-5. Write the review body with semantic-review's points and output format
-6. Append exactly these two lines to the end of the body
-
-reviewed_sha: <the 40-hex sha confirmed in step 1>
-verdict: <either approved or changes_requested>
-
-The assessments map to verdicts as follows.
-
-| semantic-review assessment | verdict |
-| --- | --- |
-| ALIGNED | approved |
-| MISALIGNED | changes_requested |
-| INSUFFICIENT_CONTEXT | changes_requested |
-
-Do not write a line beginning with \`verdict:\` anywhere else in the body. Unless there is
-**exactly one in the whole body**, it is not read as the conclusion. \`reviewed_sha:\` is
-held to one for the same reason.
-
-Do not write "no problem" about anything you could not confirm.
-
-${renderPullRequestText(pullRequest ?? null)}
-
-${COMMON_TAIL}`;
-
-/**
- * 調べる役のプロンプト。ツールはレビュー役と同じだが、結論の形が違う。
- *
- * レビュー役の文面を流用すると、調べただけの実行が `verdict:` の行を出す。
- * それを観測側が拾えば、レビューを回していないティックの approved になる。
- * 起動する側はまだ居ない（design.md §4.2）が、口を残す以上は分けておく。
- */
-const INVESTIGATE_PROMPT = ({ intent }: ActorInvocation): string =>
-  `${intent}
-
-You are running as the investigate role. **Do not modify files.**
-The editing tools are not granted, so any attempt is refused.
-
-Work only inside the current directory. State what you found and the evidence for it
-(the files you read, the commands you ran and their output). Write that you could not
-confirm what you could not confirm. Do not fill gaps with guesses.
-
-${COMMON_TAIL}`;
-
-/**
- * 役割ごとのプロンプト。
- *
- * 受け取るのは intent だけではなく invocation そのものにしてある。レビュー役が
- * 宣言部（`.goals/<goalId>.yaml`）を名指しするのに goalId が要り、役割ごとに
- * 何が要るかは今後も変わる。ここで分岐を持たせず、使う側が自分で取り出す。
- */
-const PROMPT_FOR: Record<ActorRole, (invocation: ActorInvocation) => string> = {
-  implement: IMPLEMENT_PROMPT,
-  review: REVIEW_PROMPT,
-  investigate: INVESTIGATE_PROMPT,
-};
-
-const JSON_ONLY = `Return only a JSON object. No preamble, no explanation.`;
-
-/** コードフェンスで囲まれていても読めるようにする */
-function parseJson(text: string): unknown {
-  const fenced = /```(?:json)?\s*([\s\S]*?)```/.exec(text);
-  const body = (fenced?.[1] ?? text).trim();
-  if (body === "") {
-    throw new Error("The LLM returned an empty output");
-  }
-  return JSON.parse(body) as unknown;
-}
 
 async function writeLogToFile(path: string, contents: string): Promise<void> {
   await mkdir(dirname(path), { recursive: true });

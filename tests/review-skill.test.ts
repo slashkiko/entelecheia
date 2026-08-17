@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import type { ActorInvocation } from "../src/act/index.js";
+import { PROMPT_FOR } from "../src/adapters/agent-prompt.js";
 import { type AgentQuery, claudeActor } from "../src/adapters/claude.js";
 import { findViolations } from "../src/domain/protected-paths.js";
 import {
@@ -180,6 +181,49 @@ describe("ent 側の読み替えはプロンプトが持つ", () => {
   it("実装役と調べる役のプロンプトは skill を求めない", async () => {
     for (const role of ["implement", "investigate"] as const) {
       expect(await promptFor({ role })).not.toContain("semantic-review");
+    }
+  });
+});
+
+describe("skill を渡す口が無い provider には、本文を差し込む", () => {
+  /**
+   * **契約は provider によらず同じにする。** 渡し方だけが違う。
+   *
+   * Codex CLI には repo の中の skill を1回の起動へ渡す口が無いので、
+   * `inline` は SKILL.md と `references/` の本文をプロンプトへ差し込む。
+   * ここが落ちると、Codex のレビューだけが観点を持たないまま
+   * `verdict:` の2行だけを返す形になり、外からは同じレビューに見える。
+   */
+  const invocationFor = (): ActorInvocation => invocation();
+
+  it("SKILL.md と references の本文が入る", () => {
+    const prompt = PROMPT_FOR.review(invocationFor(), "inline");
+
+    for (const file of ["SKILL.md", "references/criteria.md", "references/output-format.md"]) {
+      const body = readFileSync(`${PLUGIN_DIR}/skills/semantic-review/${file}`, "utf8");
+      // 本文そのものを含むことまで見る。パスの列挙だけでは、読ませたつもりで
+      // 中身が渡っていない形を捕まえられない。
+      expect(prompt).toContain(body.trim());
+    }
+  });
+
+  it("Skill ツールで呼べとは書かない", () => {
+    const prompt = PROMPT_FOR.review(invocationFor(), "inline");
+
+    expect(prompt).not.toContain("with the Skill tool");
+  });
+
+  it("読み替えと結論の契約は tool のときと同じ", () => {
+    const prompt = PROMPT_FOR.review(invocationFor(), "inline");
+
+    expect(prompt).toContain("The HEAD of the current worktree");
+    expect(prompt).toContain("| INSUFFICIENT_CONTEXT | changes_requested |");
+    expect(prompt).toContain("reviewed_sha:");
+  });
+
+  it("実装役と調べる役には差し込まない", () => {
+    for (const role of ["implement", "investigate"] as const) {
+      expect(PROMPT_FOR[role](invocation({ role }), "inline")).not.toContain("semantic-review");
     }
   });
 });

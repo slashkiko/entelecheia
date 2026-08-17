@@ -145,7 +145,8 @@ export const actionSchema = z.discriminatedUnion("type", [
     type: z.literal("WAIT"),
     reason: waitReasonSchema,
     /**
-     * 再開してよい時刻。分からなければ null にして指数バックオフに任せる。
+     * 再開してよい時刻。分からなければ null にする。`usage_limit` の null には
+     * guard が既定の待ちを置く（`usageLimitResumeAfter`）。
      *
      * 省略も null と同じに扱う。LLM は `{"type":"WAIT","reason":"human_review_pending"}` を
      * 返してきたが、必須にしていたせいで弾かれ、再試行に3万トークン以上かかった。

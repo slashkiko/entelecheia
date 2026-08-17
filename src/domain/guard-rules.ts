@@ -107,12 +107,53 @@ export function actorUsageLimitDecision(decision: Decision, run: Run | null): De
   if (decision.action.type !== "ACT" || run?.errorKind !== "usage_limit") {
     return decision;
   }
+  const decidedAt = run.finishedAt ?? decision.decidedAt;
   return {
-    decidedAt: run.finishedAt ?? decision.decidedAt,
-    action: { type: "WAIT", reason: "usage_limit", resumeAfter: run.resumeAfter ?? null },
+    decidedAt,
+    action: {
+      type: "WAIT",
+      reason: "usage_limit",
+      resumeAfter: usageLimitResumeAfter(run.resumeAfter ?? null, decidedAt),
+    },
     rationale: `Actor stopped at its usage limit; waiting until it is available again (original decision: ${decision.rationale})`,
     decidedBy: "guard",
   };
+}
+
+/**
+ * 再開時刻が分からない `usage_limit` の既定の待ち。
+ *
+ * 1時間にしてある。Adapter が再開時刻を読めない経路が実際にある——Codex CLI は
+ * 上限の文面の中に時刻を書くだけで、機械可読なフィールドを出さない
+ * （`resetTimeIn`、src/adapters/codex.ts）。Claude 側にも、`rate_limit_event` を
+ * 伴わない「assistant error」の経路がある（src/adapters/claude.ts）。
+ *
+ * **null をそのまま通すと空転する。** `sleepingUntil` は null を「起きてよい」と
+ * 読むので、次のティックがそのまま走ってまた上限に当たる。その Run は failed
+ * として積まれるので、`max_consecutive_failures`（宣言の既定は3）に達したところで
+ * budget 枯渇として人間が呼ばれる。「待てば直る」ものが ESCALATE になる。
+ *
+ * 長すぎる既定にしないのは、短い上限で止まったときに復帰まで寝かせないため。
+ * 1時間なら、待つだけで済む状況で無駄になるのは1周あたり1 Run で止まり、
+ * 本当に何日も開かないときは3周で人間に上がる——どちらの向きにも振り切らない。
+ */
+export const DEFAULT_USAGE_LIMIT_WAIT_SECONDS = 60 * 60;
+
+/**
+ * `usage_limit` の再開時刻を決める。Port が読めた値があればそれを使う。
+ *
+ * 基準の時刻が解釈できなければ null を返す。壊れた時刻から作った再開時刻で
+ * 寝かせるより、1ティック早く起きるほうがましになる（`sleepingUntil` と同じ判断）。
+ */
+export function usageLimitResumeAfter(resumeAfter: string | null, since: string): string | null {
+  if (resumeAfter !== null) {
+    return resumeAfter;
+  }
+  const base = Date.parse(since);
+  if (Number.isNaN(base)) {
+    return null;
+  }
+  return new Date(base + DEFAULT_USAGE_LIMIT_WAIT_SECONDS * 1000).toISOString();
 }
 
 /**
