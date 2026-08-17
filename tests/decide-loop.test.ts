@@ -182,4 +182,25 @@ describe("ループ検知", () => {
 
     expect(decision.rationale).toContain("3/3");
   });
+
+  it("rationale に詰まっている Gap の criterion と detail を残す", async () => {
+    // 停止理由が `loop_detected` としか出ないと、criterion が参照する観測を
+    // 読めていない恒久失敗が、一時的な空回りと同じ見た目で止まる。停止理由だけを
+    // 見て原因に辿り着けるよう、残った Gap を rationale に添える（design.md §4.3）。
+    const stuck: Gap = {
+      criterionId: "ac-1",
+      kind: "unknown",
+      detail:
+        "criteria.ac-1.passed has no conclusion (pending: github.pr.unresolved_threads is not observed as a VERIFIED Fact)",
+    };
+    const decision = await decide(
+      target({ assessment: { assessedAt: NOW.toISOString(), gaps: [stuck], satisfied: false } }),
+      { llm: spyLlm(), now: () => NOW },
+    );
+
+    expect(decision.action).toEqual({ type: "ESCALATE", reason: "loop_detected" });
+    expect(decision.rationale).toContain("ac-1");
+    expect(decision.rationale).toContain("[unknown]");
+    expect(decision.rationale).toContain("github.pr.unresolved_threads is not observed");
+  });
 });

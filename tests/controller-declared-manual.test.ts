@@ -271,6 +271,49 @@ describe("宣言で publish を止めたティック", () => {
   });
 });
 
+describe("空回りで止まったティックの通知", () => {
+  /** 数ティックで loop_detected に落ち、以降も予算までは回り続ける budget */
+  function looping(goal: Goal): Goal {
+    return { ...goal, budget: { ...goal.budget, max_unchanged_reconciles: 2, max_reconciles: 20 } };
+  }
+
+  it("同じ loop_detected が観測も変わらず続いても、PR コメントは1回だけ", async () => {
+    // 恒久的に埋まらない criteria で止まった Goal は、WAITING_HUMAN のまま
+    // `ent run` のたびに再ティックされ、毎ティック loop_detected を選び直す。
+    // 停止の初回は PR に出し、変化の無い繰り返しは畳む（issue: 診断ギャップ）。
+    const goal = looping(goalWith());
+    activate(goal);
+
+    const comments: string[] = [];
+    const base = failingCriteria(store);
+    const d: ControllerDeps = {
+      ...base,
+      writer: {
+        ...base.writer,
+        addComment: async (_pr, body) => {
+          comments.push(body);
+        },
+      },
+    };
+
+    for (let i = 0; i < 4; i += 1) {
+      await tick(goal, d);
+    }
+
+    // 少なくとも2ティックは loop_detected で止まっている。
+    const loopTicks = store
+      .listDecisions(GOAL_ID)
+      .filter((dec) => dec.action.type === "ESCALATE" && dec.action.reason === "loop_detected");
+    expect(loopTicks.length).toBeGreaterThanOrEqual(2);
+
+    // なのに loop_detected の PR コメントは1回きり。
+    const loopComments = comments.filter((b) => b.includes("loop_detected"));
+    expect(loopComments).toHaveLength(1);
+    // その1回には、詰まっている criterion が rationale 経由で載る。
+    expect(loopComments[0]).toContain("ac-1");
+  });
+});
+
 describe("宣言が無ければ、これまでどおり進む", () => {
   it("push も PR 作成も走り、WAITING_HUMAN にはならない", async () => {
     const goal = goalWith();

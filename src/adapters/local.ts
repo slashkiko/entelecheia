@@ -791,59 +791,83 @@ export function ghAuthToken(): string | null {
 }
 
 /**
- * `origin` の URL と現在のブランチから、対象リポジトリの識別子を組み立てる。
+ * `origin` が指す GitHub リポジトリ。読めなければ null。
  *
- * `ent init` が `.goals/config.yaml` の `repository` を埋めるのに使う。読めなければ
- * null を返し、init は雛形の `your-org/your-repo` を書く。**推測で埋めない。**
- * 別のリポジトリの名前を書いた config は、最初のティックで 404 になるだけでなく、
+ * `ent plan` が書き出す宣言と、`ent init` が書く `.goals/config.yaml` の
+ * `repository` を埋めるのに使う。**LLM にも人間の記憶にも書かせない。**
+ * 存在しない owner 名を埋められると、最初のティックで GitHub の 404 として初めて
+ * 表面化する（`goalTemplate` が同じ注意を書いている）。
+ *
+ * SSH（`git@github.com:owner/repo.git`）と HTTPS（`https://github.com/owner/repo`）の
+ * 両方を読む。**GitHub 以外のホストは null にする。** `repository.provider` は
+ * `github` 固定（design.md §5）なので、別ホストの owner/name を埋めると、
+ * 宣言としては通るのに観測先だけが実在しない状態になる。
+ */
+export function gitRemoteRepository(repoRoot: string): { owner: string; name: string } | null {
+  const url = gitOutput(repoRoot, ["remote", "get-url", "origin"]);
+  if (url === null) {
+    return null;
+  }
+  const matched = /(?:github\.com[:/])([^/]+)\/(.+?)(?:\.git)?\/?$/.exec(url);
+  const owner = matched?.[1];
+  const name = matched?.[2];
+  return owner === undefined || name === undefined ? null : { owner, name };
+}
+
+/**
+ * `origin` の既定ブランチ。読めなければ null。
+ *
+ * **読めないことが普通にある。** `refs/remotes/origin/HEAD` を張るのは `git clone` で、
+ * `git init` から始めた repo や、remote を後から足した repo には無い
+ * （`git remote set-head origin -a` を叩けば張られる）。読めなかったときに
+ * 既定値へ倒さず null を返すのは、呼び出し側が「フラグで渡してほしい」と
+ * 言えるようにするため。ここで `main` を勝手に埋めると、既定が `master` の
+ * リポジトリで宣言だけが静かに間違う。
+ */
+export function gitDefaultBranch(repoRoot: string): string | null {
+  const head = gitOutput(repoRoot, ["symbolic-ref", "--short", "refs/remotes/origin/HEAD"]);
+  if (head === null) {
+    return null;
+  }
+  const branch = head.startsWith("origin/") ? head.slice("origin/".length) : head;
+  return branch === "" ? null : branch;
+}
+
+/**
+ * 対象リポジトリの識別子。`ent init` が `.goals/config.yaml` の `repository` を埋める。
+ *
+ * owner と name は `gitRemoteRepository` が、既定ブランチは `gitDefaultBranch` が読む。
+ * **後者が読めないときは、いま HEAD が指しているブランチに落とす。** `git init` から
+ * 始めた repo には `refs/remotes/origin/HEAD` が無く、`ent init` を叩くいちばん
+ * ありそうな順番（`git init` の直後）がまさにそれになる。`symbolic-ref --short HEAD` は
+ * commit が1つも無くても読めるので、`rev-parse --abbrev-ref HEAD` は使わない。
+ *
+ * どちらも読めなければ null を返し、init は雛形の `your-org/your-repo` を書く。
+ * **推測で埋めない。** 別のリポジトリの名前が入った config は、404 になるだけでなく、
  * 「埋めた覚えのない値が入っている」ので人間が疑う場所を1つ増やす。
- *
- * 同期にしてあるのは `initRepository` が同期だから。init は1回きりの短い処理で、
- * ここを非同期にすると呼び出し側の形だけが変わる。
  */
 export function gitRepositoryIdentity(
   repoRoot: string,
 ): { owner: string; name: string; defaultBranch: string } | null {
-  const remote = gitOutput(repoRoot, ["remote", "get-url", "origin"]);
-  // `rev-parse --abbrev-ref HEAD` は使わない。commit が1つも無いリポジトリでは
-  // `HEAD` を解決できずに落ちるので、`git init` の直後に `ent init` を叩くという
-  // いちばんありそうな順番で、ブランチ名だけが読めなくなる。`symbolic-ref` は
-  // HEAD が指す先の名前を見るので、commit の有無に関わらず読める。detached では
-  // 落ちるが、そのときは既定ブランチの手掛かりが実際に無い。
-  const branch = gitOutput(repoRoot, ["symbolic-ref", "--short", "HEAD"]);
-  if (remote === null || branch === null) {
+  const repository = gitRemoteRepository(repoRoot);
+  if (repository === null) {
     return null;
   }
-
-  const parsed = githubOwnerAndName(remote);
-  return parsed === null ? null : { ...parsed, defaultBranch: branch };
+  const defaultBranch =
+    gitDefaultBranch(repoRoot) ?? gitOutput(repoRoot, ["symbolic-ref", "--short", "HEAD"]);
+  return defaultBranch === null ? null : { ...repository, defaultBranch };
 }
 
-/** git を同期で叩き、出力を trim して返す。失敗（未インストール・非 0）は null */
-function gitOutput(cwd: string, args: readonly string[]): string | null {
+/** git を1回叩いて標準出力を読む。落ちたら null。argv 配列で叩く（シェルを経由しない） */
+function gitOutput(repoRoot: string, args: readonly string[]): string | null {
   try {
-    return execFileSync("git", [...args], {
-      cwd,
+    const out = execFileSync("git", ["-C", repoRoot, ...args], {
       encoding: "utf8",
       timeout: GIT_TIMEOUT_MS,
       stdio: ["ignore", "pipe", "ignore"],
     }).trim();
+    return out === "" ? null : out;
   } catch {
     return null;
   }
-}
-
-/**
- * GitHub の remote URL から owner と repo を取り出す。GitHub でなければ null。
- *
- * `git@github.com:owner/repo.git` と `https://github.com/owner/repo` の両方を読む。
- * ホストを見るのは、`repository.provider` が `github` 固定だから（design.md §5）。
- * GitLab の remote から owner を取って provider に github と書くと、書いた覚えの
- * ない嘘が config に載る。
- */
-function githubOwnerAndName(remote: string): { owner: string; name: string } | null {
-  const matched = /github\.com[:/]+([^/]+)\/(.+?)(?:\.git)?\/?$/.exec(remote);
-  const owner = matched?.[1];
-  const name = matched?.[2];
-  return owner === undefined || name === undefined ? null : { owner, name };
 }

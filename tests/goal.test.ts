@@ -2,7 +2,14 @@ import { readdirSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { loadGoalFile } from "../src/adapters/goal-file.js";
-import { goalSchema } from "../src/domain/goal.js";
+import {
+  DEFAULT_BUDGET,
+  DEFAULT_DECLARED_POLICIES,
+  goalSchema,
+  goalTemplate,
+  TEMPLATE_SLUG,
+} from "../src/domain/goal.js";
+import { configTemplate, parseGoalConfig } from "../src/domain/goal-config.js";
 import { parseGoal } from "../src/domain/goal-parse.js";
 
 const GOALS_DIR = join(import.meta.dirname, "..", ".goals");
@@ -111,4 +118,53 @@ describe("goal schema", () => {
     expect(goal.setup).toEqual([]);
     expect(goal.context.references).toEqual([]);
   });
+
+  it("雛形の policies / budget が、機械が使う既定と一致する", () => {
+    // `ent plan` は人間が1行も書かないまま Goal を立てるので、`policies` と
+    // `budget` を定数（`DEFAULT_DECLARED_POLICIES` / `DEFAULT_BUDGET`）から埋める。
+    // 雛形は注釈込みの文字列なので生成できず、**片方だけ動かせてしまう**。
+    // 動かした側が緩ければ、plan から始めた Goal だけが緩いところから始まる。
+    // `ent init` が置く2本を、init と同じ順に重ねて読む。`policies` の中身は
+    // repo スコープの宣言（`.goals/config.yaml`）へ移ったので、雛形だけを読むと
+    // `repository` が無いと言われる。**押さえたい不変条件は動いていない**——
+    // init から始めた Goal と plan から始めた Goal で、下限が食い違わないこと。
+    const config = parseGoalConfig(
+      configTemplate({ owner: "your-org", name: "your-repo", defaultBranch: "main" }),
+    );
+    const template = parseGoal(goalTemplate(TEMPLATE_SLUG), TEMPLATE_SLUG, config);
+    const fromDefaults = parseGoal(
+      goalTemplate(TEMPLATE_SLUG)
+        .replace(/policies:[\s\S]*?\nbudget:/, `${declaredBlock()}\nbudget:`)
+        .replace(/budget:[\s\S]*$/, budgetBlock()),
+      TEMPLATE_SLUG,
+      config,
+    );
+
+    expect(template.policies).toEqual(fromDefaults.policies);
+    expect(template.budget).toEqual(fromDefaults.budget);
+  });
 });
+
+/** 定数から組み立てた `policies` の YAML。雛形の同じ節と突き合わせる */
+function declaredBlock(): string {
+  const gates = DEFAULT_DECLARED_POLICIES.require_human_approval
+    .map((gate) => `    - ${gate}`)
+    .join("\n");
+  return [
+    "policies:",
+    "  require_human_approval:",
+    gates,
+    `  protected_paths: ${JSON.stringify(DEFAULT_DECLARED_POLICIES.protected_paths)}`,
+    "  publish:",
+    `    push_branch: ${DEFAULT_DECLARED_POLICIES.publish.push_branch}`,
+    `    open_pull_request: ${DEFAULT_DECLARED_POLICIES.publish.open_pull_request}`,
+  ].join("\n");
+}
+
+/** 定数から組み立てた `budget` の YAML */
+function budgetBlock(): string {
+  return [
+    "budget:",
+    ...Object.entries(DEFAULT_BUDGET).map(([key, value]) => `  ${key}: ${String(value)}`),
+  ].join("\n");
+}

@@ -62,4 +62,48 @@ describe("parseCommand", () => {
       expect(result.message.length).toBeGreaterThan(0);
     }
   });
+
+  it("plan は slug を取らず、分解したい内容を受け取る", () => {
+    expect(parseCommand(["plan", "--desire", "add plan to the CLI"])).toEqual({
+      kind: "plan",
+      desire: { kind: "text", value: "add plan to the CLI" },
+    });
+  });
+
+  it("plan は --from でファイルから読める。読むのは cli 側なのでパスだけ運ぶ", () => {
+    expect(parseCommand(["plan", "--from", "./desire.md", "--dry-run"])).toEqual({
+      kind: "plan",
+      desire: { kind: "file", path: "./desire.md" },
+      dryRun: true,
+    });
+  });
+
+  it("plan は --desire と --from の同時指定を断る", () => {
+    // 片方に倒して黙って無視すると、渡したはずの文章が分解に入らないまま Goal が書かれる。
+    const result = parseCommand(["plan", "--desire", "x", "--from", "./y.md"]);
+    expect(result.kind).toBe("error");
+  });
+
+  it("plan は分解したい内容が無ければ error", () => {
+    const result = parseCommand(["plan"]);
+    expect(result.kind).toBe("error");
+    if (result.kind === "error") {
+      expect(result.message).toContain("--desire");
+    }
+  });
+
+  it("plan は slug を受け取らない", () => {
+    // 指す先がまだ無い。打ち間違いを黙って無視しない。
+    const result = parseCommand(["plan", "some-goal", "--desire", "x"]);
+    expect(result.kind).toBe("error");
+  });
+
+  it("plan は --max に正の整数だけを受け取る", () => {
+    expect(parseCommand(["plan", "--desire", "x", "--max", "3"])).toEqual({
+      kind: "plan",
+      desire: { kind: "text", value: "x" },
+      max: 3,
+    });
+    expect(parseCommand(["plan", "--desire", "x", "--max", "0"]).kind).toBe("error");
+  });
 });

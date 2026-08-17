@@ -1,4 +1,4 @@
-import { accessSync, constants, existsSync, readdirSync } from "node:fs";
+import { accessSync, constants, existsSync, readdirSync, writeFileSync } from "node:fs";
 import { hostname } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { type EffortLevel, query } from "@anthropic-ai/claude-agent-sdk";
@@ -13,7 +13,9 @@ import {
   GOALS_IGNORE_LINE,
   ghAuthToken,
   gitBranch,
+  gitDefaultBranch,
   gitInfoExcludePath,
+  gitRemoteRepository,
   gitRepositoryIdentity,
   gitWorktree,
   localRepo,
@@ -24,18 +26,20 @@ import {
 import { reviewRunLog } from "../adapters/review-run.js";
 import type { ControllerDeps } from "../controller/index.js";
 import type { LlmPort } from "../decide/index.js";
+import type { ActionAgent } from "../domain/action.js";
 import { errorMessage } from "../domain/error-message.js";
 import type { Goal } from "../domain/goal.js";
 import { CONFIG_FILENAME } from "../domain/goal-config.js";
 import type { LlmCall } from "../domain/llm-call.js";
 import { PortError } from "../domain/port-error.js";
-import type { ActorKind, ActorRole } from "../domain/run.js";
+import { type ActorKind, type ActorRole, EFFORT_VOCABULARY } from "../domain/run.js";
 import type { CodeProviderPort } from "../observe/index.js";
 import type { CodeWriterPort } from "../publish/index.js";
 import type { Store } from "../store/port.js";
 import { openStore } from "../store/sqlite.js";
 import type { DoctorGoal, DoctorProbes } from "../usecase/doctor.js";
 import type { InitProbes } from "../usecase/init.js";
+import type { PlanProbes, RepositoryResolution } from "../usecase/plan.js";
 import type { ApprovalPort } from "../verify/index.js";
 
 /**
@@ -119,6 +123,10 @@ export function tickPorts(
     worktreeRoot: worktrees,
     actor,
     llm,
+    // DECIDE が ACT に名指してよい provider。人間が環境変数で opt-in したものだけを
+    // 渡す（`DecideDeps.availableActors`）。`ent doctor` がログイン前提を確かめる
+    // 集合と同じものにしてある。片方だけ広いと、doctor が見ていない provider が走る。
+    availableActors: selectedActorKinds(env),
     now: () => new Date(),
   };
 }
@@ -180,6 +188,101 @@ export function initProbes(): InitProbes {
     goalsIgnoreLine: GOALS_IGNORE_LINE,
     infoExcludePath: gitInfoExcludePath,
   };
+}
+
+/**
+ * `ent plan` が外の世界に触る口。
+ *
+ * planner の LLM は `agentSelectionFrom(env, "plan")` に通すので、`ENT_PLAN_ACTOR` /
+ * `ENT_PLAN_MODEL` / `ENT_PLAN_EFFORT` が効き、無ければ共通の `ENT_ACTOR` などへ落ちる。
+ *
+ * **トークンの記録は状態 DB に入れない。** `llm_calls.goal_id` は
+ * `NOT NULL REFERENCES goals(id)` で、plan の時点では Goal の行がまだ1つも無い。
+ * 入れるために架空の Goal を作ると、どの YAML も宣言していない Goal が `ent list` に
+ * 出る。代わりに生ログ（`runs/plan-<時刻>/log.jsonl`）に残す。
+ */
+export function planProbes(
+  repoRoot: string,
+  stateDir: string,
+  overrides: RepositoryOverrides = {},
+): PlanProbes {
+  const goalsDir = join(repoRoot, ".goals");
+  const llm = selectedLlm(stateDir, process.env, () => {}, DEFAULT_AGENT_FACTORIES, "plan");
+  return {
+    planner: { propose: async (prompt) => llm.chooseAction(prompt) },
+    repository: () => resolveRepository(repoRoot, overrides),
+    existingGoals: () =>
+      existsSync(goalsDir)
+        ? loadGoalSummaries(goalsDir).map((goal) => ({
+            slug: goal.slug,
+            dependsOn: goal.dependsOn,
+          }))
+        : null,
+    writeGoalFile: (slug, body) => {
+      const path = join(goalsDir, `${slug}.yaml`);
+      // `wx` にする。存在すれば書かずに落ちる。呼ぶ前に衝突は弾いてあるが、
+      // その判定と書き込みの間に人間が同じ id を置く経路まで塞ぐのは、
+      // ファイルシステム側でしかできない。
+      writeFileSync(path, body, { encoding: "utf8", flag: "wx" });
+      return `.goals/${slug}.yaml`;
+    },
+    now: () => new Date(),
+  };
+}
+
+/** `--repo` / `--default-branch` で宣言部の値を上書きする口。省略時は git に聞く */
+export interface RepositoryOverrides {
+  /** `owner/name` の形。`ent plan --repo` がそのまま渡す */
+  repo?: string | undefined;
+  defaultBranch?: string | undefined;
+}
+
+/**
+ * 宣言に書く対象リポジトリを決める。**ネットワークには聞かない。**
+ *
+ * 順は「明示のフラグ → git」。どちらでも決まらなければ、何を足せば決まるかを
+ * 名指しして断る。既定値へ倒さないのは、既定が `master` のリポジトリで
+ * `main` と書いた宣言が静かに通り、最初のティックで初めて外れるため。
+ */
+function resolveRepository(repoRoot: string, overrides: RepositoryOverrides): RepositoryResolution {
+  const fromFlag = overrides.repo === undefined ? null : splitRepo(overrides.repo);
+  if (typeof fromFlag === "string") {
+    return { kind: "unresolved", reason: fromFlag };
+  }
+  const remote = fromFlag ?? gitRemoteRepository(repoRoot);
+  if (remote === null) {
+    return {
+      kind: "unresolved",
+      reason:
+        "Could not read the target repository from git remote origin (only github.com remotes are read). " +
+        "Pass it explicitly: ent plan --repo <owner>/<name>",
+    };
+  }
+
+  const defaultBranch = nonEmpty(overrides.defaultBranch) ?? gitDefaultBranch(repoRoot);
+  if (defaultBranch === null) {
+    return {
+      kind: "unresolved",
+      reason:
+        "Could not read the default branch. refs/remotes/origin/HEAD is only set by git clone, " +
+        "so it is often absent (git remote set-head origin -a writes it). " +
+        "Pass it explicitly: ent plan --default-branch <name>",
+    };
+  }
+
+  return { kind: "resolved", owner: remote.owner, name: remote.name, defaultBranch };
+}
+
+/** `owner/name` を割る。割れなければ、打ち直せる形をエラー文字列で返す */
+function splitRepo(value: string): { owner: string; name: string } | string {
+  const [owner, name, ...rest] = value.trim().split("/");
+  if (owner === undefined || name === undefined || owner === "" || name === "") {
+    return `--repo takes <owner>/<name>: ${value}`;
+  }
+  if (rest.length > 0) {
+    return `--repo takes <owner>/<name>, not a URL or a path: ${value}`;
+  }
+  return { owner, name };
 }
 
 /** 実際のファイルと環境変数を読む口。テストからは差し替える */
@@ -433,7 +536,14 @@ function codexOptions(
   };
 }
 
-export type AgentPhase = "decide" | ActorRole;
+/**
+ * agent を選べる単位。
+ *
+ * `decide` はティックの中の判断、`plan` は `ent plan` の分解、残りは Actor の役割に
+ * なる。**`plan` を `ActorRole` に足さない。** あちらは「worktree の中で何かを書くか
+ * 読むか」の分担で、宣言を書く planner はそこに属さない（design.md §10-12）。
+ */
+export type AgentPhase = "decide" | "plan" | ActorRole;
 
 export type PhaseAgentSelection =
   | { actor: "claude-code"; model?: string | undefined; effort?: EffortLevel | undefined }
@@ -475,11 +585,15 @@ function selectedLlm(
   env: Record<string, string | undefined>,
   onCall: (call: LlmCall) => void,
   factories: AgentFactories = DEFAULT_AGENT_FACTORIES,
+  purpose: LlmCall["purpose"] = "decide",
 ): LlmPort {
-  const selection = agentSelectionFrom(env, "decide");
+  // phase 名と purpose を別々に受け取らない。生ログの置き場所（`<purpose>-<時刻>`）と
+  // 環境変数の接頭辞（`ENT_<PHASE>_`）が食い違うと、どのログがどの設定で走ったのかを
+  // 外から辿れなくなる。
+  const selection = agentSelectionFrom(env, purpose);
   return selection.actor === "codex"
-    ? factories.codexLlm({ ...codexOptions(stateDir, selection), onCall })
-    : factories.claudeLlm({ ...claudeOptions(stateDir, selection), onCall });
+    ? factories.codexLlm({ ...codexOptions(stateDir, selection), onCall, purpose })
+    : factories.claudeLlm({ ...claudeOptions(stateDir, selection), onCall, purpose });
 }
 
 /** role ごとの Adapter を1本の ActorPort に束ねる。 */
@@ -497,8 +611,36 @@ function routedActor(
   return {
     kind: byRole.implement.kind,
     kindFor: (role) => byRole[role].kind,
-    run: async (invocation) => byRole[invocation.role].run(invocation),
+    run: async (invocation) => {
+      // DECIDE が provider を名指ししていれば、その組で1回だけ Adapter を作る。
+      // Adapter は起動オプションを閉じ込めただけのクロージャなので、毎回作っても
+      // プロセスは増えない。名指しが無いティックは従来どおり role 別の既定で走る。
+      const chosen = invocation.agent;
+      if (chosen === undefined) {
+        return byRole[invocation.role].run(invocation);
+      }
+      return selectedActor(stateDir, decidedSelection(chosen), factories).run(invocation);
+    },
   };
+}
+
+/**
+ * DECIDE が返した組を、Adapter を選ぶ形に直す。
+ *
+ * effort の語彙は provider ごとに違うので、ここでも provider を見てから検証する。
+ * 採用の時点（`askLlm`、`src/decide/index.ts`）で同じ検証を通しているが、
+ * **通した値しか来ないことを前提にしない。** Decision は DB から読み直されて
+ * ここへ来ることがあり、そちらは採用時の検証を通っていない。
+ *
+ * エラーの source には `ACT.agent.effort` を書く。環境変数の綴りを出すと、
+ * 環境変数を1つも設定していない人間が `ENT_EFFORT` を探しに行くことになる。
+ */
+function decidedSelection(agent: ActionAgent): PhaseAgentSelection {
+  const key = "ACT.agent.effort";
+  if (agent.actor === "codex") {
+    return { actor: agent.actor, model: agent.model, effort: codexEffortFrom(agent.effort, key) };
+  }
+  return { actor: agent.actor, model: agent.model, effort: effortFrom(agent.effort, key) };
 }
 
 function selectedActor(
@@ -514,7 +656,9 @@ function selectedActor(
 function selectedActorKinds(
   env: Record<string, string | undefined>,
 ): Exclude<ActorKind, "human">[] {
-  const phases: readonly AgentPhase[] = ["decide", "implement", "review", "investigate"];
+  // `plan` も入れる。doctor のログイン検査が見るのは「この実行で使いうる実行主体」で、
+  // `ENT_PLAN_ACTOR=codex` だけを立てた環境では Codex のログインだけが要る。
+  const phases: readonly AgentPhase[] = ["decide", "plan", "implement", "review", "investigate"];
   return [...new Set(phases.map((phase) => agentSelectionFrom(env, phase).actor))];
 }
 
@@ -563,28 +707,20 @@ function codexEffortFrom(value: string | undefined, key = "ENT_EFFORT"): CodexEf
 /**
  * SDK の `EffortLevel` の全値。
  *
+ * **値そのものはドメインが持つ**（`EFFORT_VOCABULARY`、`src/domain/run.ts`）。
+ * 同じ語彙を DECIDE の受け取り側も見るようになったので、2箇所に書くと
+ * 片方だけ直したときに「プロンプトは受け付けると言うのに採用されない」状態を
+ * 作れる。ここに残すのは、その語彙が **SDK の型と一致しているかの検査**になる。
+ *
  * `readonly EffortLevel[]` と書くと片方向しか守れない。SDK からメンバーが
  * **消えた**ときは型エラーになるが、**増えた**ときは足りない配列もそのまま
  * 代入でき、妥当な値を「不正」として弾く。この関数の JSDoc は「知らない値を
  * 黙って捨てると気づけないので throw する」と書いているので、弾く側の
  * 取りこぼしも同じだけ困る。下の検査で増えた側も落ちるようにする。
  */
-const EFFORT_LEVELS = [
-  "low",
-  "medium",
-  "high",
-  "xhigh",
-  "max",
-] as const satisfies readonly EffortLevel[];
+const EFFORT_LEVELS = EFFORT_VOCABULARY["claude-code"] satisfies readonly EffortLevel[];
 
-const CODEX_EFFORT_LEVELS = [
-  "none",
-  "minimal",
-  "low",
-  "medium",
-  "high",
-  "xhigh",
-] as const satisfies readonly CodexEffort[];
+const CODEX_EFFORT_LEVELS = EFFORT_VOCABULARY.codex satisfies readonly CodexEffort[];
 
 /**
  * EFFORT_LEVELS に足りない値があればビルドが落ちる。

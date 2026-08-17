@@ -3,6 +3,7 @@ import { errorMessage } from "../domain/error-message.js";
 import { SLUG } from "../domain/goal.js";
 import { CONFIG_FILENAME, CONFIG_SLUG } from "../domain/goal-config.js";
 import { DEFAULT_LIMIT } from "../usecase/inspect.js";
+import { DEFAULT_MAX_GOALS } from "../usecase/plan.js";
 
 /**
  * 引数の解釈だけを持つ。**実行はしない。**
@@ -16,6 +17,11 @@ export const USAGE = `ent — Declare the end state; the controller converges to
 
   ent init             Make the current repository runnable with ent (idempotent)
                        --private-goals keeps .goals/ out of git via info/exclude
+  ent plan             Split one prose objective into sub-Goal declarations
+                       --desire "<text>" or --from <path> says what to split
+                       --repo <owner>/<name> / --default-branch <name> name the target
+                       --max <n> caps how many Goals are written (default ${String(DEFAULT_MAX_GOALS)})
+                       --dry-run validates and prints without writing
   ent start <slug>     Register a Goal and make it ACTIVE
   ent run <slug>       Run one tick and exit (--once is the default)
                        --pr <n> / --issue <n> names what to observe
@@ -34,6 +40,7 @@ export const USAGE = `ent — Declare the end state; the controller converges to
 /** エージェントが叩けるサブコマンド。エラーはこの集合をそのまま並べる（gist 2.3） */
 const SUBCOMMANDS = [
   "init",
+  "plan",
   "start",
   "run",
   "get",
@@ -53,6 +60,27 @@ export type Command =
    * 上書きの口も持たない。2度目は既にあるものを一切書き換えずに 0 で返る。
    */
   | { kind: "init"; privateGoals?: true; json?: true }
+  /**
+   * 散文のゴールをサブ Goal の宣言に分解する。slug は取らない。
+   *
+   * どの Goal の話でもない——**これから作る側**なので、指す先がまだ無い。
+   * 分解したい内容は `--desire`（その場の文字列）か `--from`（ファイル）で渡す。
+   * 2つを排他にしてあるのは、両方来たときにどちらが勝つかを読む側に推測させないため。
+   *
+   * ファイルは読まない。読むのは副作用のある側（`src/cli.ts`）の仕事になる。
+   */
+  | {
+      kind: "plan";
+      desire: { kind: "text"; value: string } | { kind: "file"; path: string };
+      /** 書き出す本数の上限。未指定なら `DEFAULT_MAX_GOALS` */
+      max?: number;
+      /** `owner/name`。未指定なら git remote から読む */
+      repo?: string;
+      /** 未指定なら `refs/remotes/origin/HEAD` から読む */
+      defaultBranch?: string;
+      dryRun?: true;
+      json?: true;
+    }
   /** Goal を登録して ACTIVE にする */
   | { kind: "start"; slug: string; json?: true }
   /**
@@ -156,7 +184,13 @@ export function parseCommand(argv: readonly string[]): Command {
     const json = values.json === true ? ({ json: true } as const) : {};
 
     // slug を取らないサブコマンド。余分な引数は打ち間違いとして error にする。
-    if (sub === "init" || sub === "list" || sub === "doctor" || sub === "agent-context") {
+    if (
+      sub === "init" ||
+      sub === "plan" ||
+      sub === "list" ||
+      sub === "doctor" ||
+      sub === "agent-context"
+    ) {
       if (positionals.length > 0) {
         return { kind: "error", message: `too many arguments: ${positionals.join(" ")}` };
       }
@@ -172,6 +206,9 @@ export function parseCommand(argv: readonly string[]): Command {
         const privateGoals =
           values["private-goals"] === true ? ({ privateGoals: true } as const) : {};
         return { kind: "init", ...privateGoals, ...json };
+      }
+      if (sub === "plan") {
+        return planCommand(values, json);
       }
       const limit = positiveInteger(values.limit, "--limit");
       if (typeof limit === "string") {
@@ -271,6 +308,47 @@ export function parseCommand(argv: readonly string[]): Command {
   }
 }
 
+/**
+ * `ent plan` の引数を読む。
+ *
+ * `--desire` と `--from` はどちらか必須で、排他にする。片方に倒して黙って無視すると、
+ * 渡したはずの文章が分解に入らないまま Goal が書かれる。
+ */
+function planCommand(values: Record<string, unknown>, json: { json?: true }): Command {
+  const desire = typeof values.desire === "string" ? values.desire.trim() : "";
+  const from = typeof values.from === "string" ? values.from.trim() : "";
+  if (desire !== "" && from !== "") {
+    return {
+      kind: "error",
+      message: "--desire and --from cannot be combined. Pass the text one way or the other",
+    };
+  }
+  if (desire === "" && from === "") {
+    return {
+      kind: "error",
+      message: 'plan needs what to split: ent plan --desire "<what you want>" (or --from <path>)',
+    };
+  }
+
+  const max = positiveInteger(values.max, "--max");
+  if (typeof max === "string") {
+    return { kind: "error", message: max };
+  }
+  const repo = typeof values.repo === "string" ? values.repo.trim() : "";
+  const defaultBranch =
+    typeof values["default-branch"] === "string" ? values["default-branch"].trim() : "";
+
+  return {
+    kind: "plan",
+    desire: desire === "" ? { kind: "file", path: from } : { kind: "text", value: desire },
+    ...(max === undefined ? {} : { max }),
+    ...(repo === "" ? {} : { repo }),
+    ...(defaultBranch === "" ? {} : { defaultBranch }),
+    ...(values["dry-run"] === true ? ({ dryRun: true } as const) : {}),
+    ...json,
+  };
+}
+
 function isSubcommand(value: string): value is Subcommand {
   return (SUBCOMMANDS as readonly string[]).includes(value);
 }
@@ -296,6 +374,17 @@ function optionsFor(sub: Subcommand): ParseArgsOptions {
       // `--private-goals` は別の軸になる。上書きの口ではなく、**書き先を選ぶ**口で、
       // tracked な `.gitignore` を触るか `info/exclude` だけで済ませるかが変わる。
       return { json: { type: "boolean" }, "private-goals": { type: "boolean" } };
+    case "plan":
+      return {
+        json: { type: "boolean" },
+        desire: { type: "string" },
+        from: { type: "string" },
+        repo: { type: "string" },
+        "default-branch": { type: "string" },
+        max: { type: "string" },
+        // `ent run --dry-run` と同じ語彙にする。検証まで済ませて書かない。
+        "dry-run": { type: "boolean" },
+      };
     case "start":
       return { json: { type: "boolean" } };
     case "run":

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { existsSync, mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { agentContextPayload } from "./cli/agent-context.js";
@@ -19,11 +19,13 @@ import type { Store } from "./store/port.js";
 import { doctorPayload } from "./usecase/doctor.js";
 import { initRepository } from "./usecase/init.js";
 import { listPayload, showPayload } from "./usecase/inspect.js";
+import { DEFAULT_MAX_GOALS, planGoals } from "./usecase/plan.js";
 import {
   doctorProbes,
   initProbes,
   loadGoalFile,
   openStore,
+  planProbes,
   repoHeadSha,
   tickPorts,
 } from "./wiring/index.js";
@@ -105,6 +107,29 @@ async function runCommand(argv: readonly string[]): Promise<number> {
     return initRepository(repoRoot, command.json === true, initProbes(), {
       privateGoals: command.privateGoals === true,
     });
+  }
+
+  if (command.kind === "plan") {
+    // **状態 DB を開かない。** 書くのは宣言部だけで、実行時状態には1行も触らない
+    // （design.md §4.6）。書き出した Goal は DRAFT ですらなく、`.goals/` に
+    // ファイルがあるだけの状態から始まる。走り出すのは `ent start` からになる。
+    const desire = desireText(command.desire);
+    if (typeof desire !== "string") {
+      process.stderr.write(`${desire.error}\n`);
+      return 1;
+    }
+    return planGoals(
+      {
+        desire,
+        max: command.max ?? DEFAULT_MAX_GOALS,
+        dryRun: command.dryRun === true,
+        json: command.json === true,
+      },
+      planProbes(repoRoot, stateDir, {
+        repo: command.repo,
+        defaultBranch: command.defaultBranch,
+      }),
+    );
   }
 
   if (command.kind === "doctor") {
@@ -315,6 +340,34 @@ function declaredReportTarget(goal: Goal): ReportTarget | undefined {
  * `upsertGoal` を通さずに呼ぶ。降りるのは実行時状態の話なので宣言部を書き直す
  * 理由が無く、通すと未登録の Goal に DRAFT の行ができてしまう。
  */
+
+/**
+ * `ent plan` に渡された散文を読む。読めなければ理由を返す。
+ *
+ * ファイルを読むのはここ（副作用のある側）で、引数の解釈（`src/cli/parse.ts`）は
+ * パスを運ぶだけにしてある。
+ *
+ * **空のファイルを「指定しなかった」と同じに畳まない。** 畳むと、中身を書き忘れた
+ * ファイルを渡したときに、何を分解したのか分からないまま LLM が Goal を書く。
+ */
+function desireText(
+  desire: { kind: "text"; value: string } | { kind: "file"; path: string },
+): string | { error: string } {
+  if (desire.kind === "text") {
+    return desire.value;
+  }
+  let body: string;
+  try {
+    body = readFileSync(desire.path, "utf8");
+  } catch (error) {
+    return { error: `Could not read ${desire.path}: ${errorMessage(error)}` };
+  }
+  const trimmed = body.trim();
+  return trimmed === ""
+    ? { error: `${desire.path} is empty, so there is nothing to split` }
+    : trimmed;
+}
+
 function abandonGoal(
   command: { slug: string; reason: string; json?: true },
   goal: Goal,

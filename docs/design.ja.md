@@ -57,8 +57,9 @@ Kubernetes の controller が `replicas: 3` に収束させるのと同じ構造
 Goal内のタスク分解、Actor roleの選択、実装手順はcontrollerが決める。
 分解が成り立っているのは1つの Goal の内側だけで、Goal をまたぐ分解——1つの粗いタスクを
 N 本の Goal に割ること——はいまも人間が行う（順序の宣言 `goal.depends_on` までは入っている。
-§10-12）。phaseごとに使うActor実装・model・effortは起動時の環境変数で人間が選び、
-未指定時は既定のClaude Codeへ落ちる（§3.5 / §4.2）。
+§10-12）。phaseごとに使うActor実装・model・effortは、起動時の環境変数で人間が既定を選び、
+未指定時は既定のClaude Codeへ落ちる。ティックごとの上書きはDECIDEが返すが、
+名指しできるのは人間が既に選んだproviderの中だけになる（§3.5 / §4.2）。
 
 ```
         Desired State（人間が宣言）
@@ -226,6 +227,25 @@ Adapterを追加した。共通の`ENT_ACTOR` / `ENT_MODEL` / `ENT_EFFORT`に加
 effortの語彙はproviderごとに検証する。Claude Codeは`low / medium / high / xhigh / max`、
 Codexは`none / minimal / low / medium / high / xhigh`で、片方だけの値を他方へ黙って渡さない。
 
+環境変数が決めるのは既定で、**ティックごとの上書きはDECIDEが持つ**。`ACT`に
+`agent`（`actor`は必須、`model`と`effort`は任意）を添えて返せば、そのRunだけが
+名指しされた組で走る。誰にやらせるかはGapの埋め方の一部なので、停止条件と違って
+LLMに委ねてよい側になる。ただし語彙の検証は起動前に行い、providerに無いeffortを
+名指した出力は採用しない——起動してからAdapterで落とすと、ACTが1回失敗したのと
+同じだけ予算が減る。**DECIDE自身のproviderはこの経路では選べない。** `agent`を
+返す時点でDECIDEは走り終えており、自分を起動し直す道が無い。
+
+**名指しできるのは、環境変数で既に選ばれているproviderだけ**になる。Codexを明示
+opt-inにしてあるのは権限制御が同じではないからで（後述）、LLMの出力1つでそこを
+迂回できるなら宣言した意味が消える。`ent doctor`がログイン前提を確かめる集合と
+同じものを渡してあるので、doctorが見ていないproviderが走ることも起きない。
+1つも渡されていない呼び出しでは`agent`を選択肢に出さず、返ってきても採用しない
+——**省略を「制限なし」と読まない。**
+
+`model`と`effort`を省いた`agent`は、名指しされたproviderの既定で走る。そのphaseの
+環境変数からは引き継がない。引き継ぐと、Claude向けに書いた`ENT_IMPLEMENT_EFFORT`が
+Codexの実行へ渡ることになり、「片方だけの値を他方へ黙って渡さない」に反する。
+
 Codexには公式のTypeScript SDK（`@openai/codex-sdk`）もあり、その実体はCodex CLIを起動して
 JSONL eventを交換するラッパーになる。ただし現行SDKの公開オプションからは、隔離契約に使う
 `--ephemeral`、`--ignore-user-config`、`--ignore-rules`を渡せない。この3つを外してSDKへ
@@ -280,6 +300,10 @@ lease を解放して終了する。Ctrl+C が効かない状態は作らない�
 
 本書では **Provider** をインターフェース、**Adapter** をその1実装の意味で使う。
 `CodeProvider` に対する GitHub Adapter、という関係になる。
+
+**§3.5 の「provider」だけは別の軸を指す。** あちらは Actor と LLM のベンダ
+（`claude-code` / `codex`）で、この節の分類でいえば Adapter の側にあたる。
+語が重なっているので、読むときは節で見分ける。
 
 **Port** はこれらとは別の粒度で、reconcile の各段階が依存する関数の口を指す。
 `observe()` が受け取る `CodeProviderPort` のように、Provider の全体ではなく
@@ -2170,12 +2194,15 @@ Goal 間に依存を宣言する。Goal の下に Task 層は切らない。**
 `dependencyGate`（`src/domain/guard-rules.ts`）の純ロジックで、`resume_after` と
 同じく **lease を取らずに** 入口で return する（理由は下の「依存の判定の置き場」）。
 
-**まだ入っていないのは、分解そのものを機械が行う側になる。** いまサブ Goal を
-書くのは人間で、controller は書かれた順序に従うだけになる。
-§1 が「タスク分解も controller が決める」に但し書きを付けているのはここが理由になる。
-成り立っているのは1つの Goal の内側（`intent` と `REPLAN`）だけで、**Goal をまたぐ
-分解——1つの粗いタスクが、それぞれ自分の worktree と PR を持つ N 本に割れること——は
-無い。** Phase 2 を4本、Phase 3 を5本に割ったのは人間の判断になる（§8）。
+**分解そのものを機械が行う側も入った。ただしティックの外だけになる。**
+`ent plan`（`src/usecase/plan.ts`）は分解したいことを散文で受け取り、planner を1回呼んで、
+repoRoot の `.goals/` に N 本のサブ Goal の宣言を書く。順序は `depends_on` に入る。叩くのは
+人間で、書くのは宣言部だけになる——実行時状態も Goal の行も、`DRAFT` すら作らない。
+承認点は `ent start` のまま変わらない（§3.2）。
+
+**ティックの中は何も変わっていない。** controller は書かれた順序に従うだけで、粗いタスクを
+自分で割ることはしない。§1 が「タスク分解も controller が決める」に但し書きを付けているのは
+ここが理由になる。Phase 2 を4本、Phase 3 を5本に割ったのは人間の判断になる（§8）。
 
 **二択だった。** (a) サブ Goal + 依存の宣言、(b) Goal の下に Task 層（§4.5 の `Plan / Task`）。
 **コストの差ではなく成果物の形の差で決めた。** どちらも `PROTECTED_PATH_FLOOR` の
@@ -2212,11 +2239,25 @@ Goal 間に依存を宣言する。Goal の下に Task 層は切らない。**
 **その経路を採ると `.goals/*.yaml` は §4.6 の「人間が編集」から外れ、§3.2 の
 「YAML のレビューが承認ゲート」も人間が書いた分にしか掛からなくなる。**
 
-**ここは planner に書かせる側で決めた。決めたのは方針で、コードは1行も無い**
-（上の「まだ入っていない」はそのまま）。ループを回している最中に計画を直す必要が
-出る以上、planner が YAML を書き換えられないと `REPLAN` が「もう一度考える」だけで
-終わる。repoRoot 側の関門は ACT の前後の差だけを数える（§10-6）ので、DECIDE で
-書く分が違反にならない読みになるが、**そこは経路を作るときに確かめる。**
+**ここは planner に書かせる側で決め、その半分は入った。**
+`ent plan` で機械に書かせないのは `repository` / `policies` / `budget` の3つになる。
+リポジトリの識別子は `git remote` から読む（捏造された owner は、最初のティックで
+GitHub の 404 としてしか表面化しない）。関門を持つ2つは `ent init` の雛形と同じ値を写すので、
+機械が書いた Goal だけが緩いところから始まることはない。そして集合まるごと——スキーマ、
+既存の宣言との id 衝突、指す先の無い依存、集合と既存をまたぐ循環——を**1本も書く前に**
+検証するので、落ちた集合は `.goals/` を半分書き換えた状態ではなく、そのままの状態を残す。
+
+**まだ入っていないのは、ループを回している最中に planner が YAML を書き換える側になる。**
+計画を直す必要が出るのは回している最中なので、それが無いと `REPLAN` は「もう一度考える」だけで
+終わる。repoRoot 側の関門は ACT の前後の差だけを数える（§10-6）ので、DECIDE で書く分が
+違反にならない読みになるが、**そこは経路を作るときに確かめる。** `ent plan` はその読みを
+確かめていない。ティックの外で完結するので、見ている関門がそもそも無い。
+
+**`ent plan` が使ったトークンは DB に持たない。** `llm_calls.goal_id` は
+`NOT NULL REFERENCES goals(id)` で、plan の時点では Goal の行がまだ1つも無い。入れるために
+架空の Goal を作ると、どの YAML も宣言していない Goal が `ent list` に出る。代わりに生ログ
+（`runs/plan-<時刻>/log.jsonl`、§4.6）とコマンド自身の出力に残す。つまり**どの Goal の
+budget にも数えられない**。§7 の会計に開けた穴で、抑えているのは「毎回人間が叩く」ことだけになる。
 
 書ける範囲を宣言の一部に絞る——人間が書く分と planner が書く分を別のパスに
 置く——案は**採らない**。関門はパスでしか効かない（`findViolations` が突き合わせるのは

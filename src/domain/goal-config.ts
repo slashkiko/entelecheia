@@ -276,10 +276,13 @@ policies:
   protected_paths: []
 
   # Which publish steps the controller performs. manual means a human does
-  # it instead; the controller stops and says so.
-  # publish:
-  #   push_branch: auto
-  #   open_pull_request: auto
+  # it instead; the controller stops and says so. Written out rather than
+  # left implicit so that ent init and ent plan hand you the same shape.
+  publish:
+    push_branch: auto
+    # Set this to manual for a repository shared with a team. Opening a pull
+    # request notifies reviewers, and undoing it does not recall the notice.
+    open_pull_request: auto
 
   # Where progress goes: pr, stdout, or a file path. ent run --report wins
   # over this for the tick it is passed on.

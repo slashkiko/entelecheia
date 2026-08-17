@@ -10,6 +10,7 @@ import type { Unresolved } from "../src/domain/fact.js";
 import { criterionFactKey } from "../src/domain/fact-keys.js";
 import type { Assessment, Gap } from "../src/domain/gap.js";
 import type { AcceptanceCriterion, Budget } from "../src/domain/goal.js";
+import { EFFORT_VOCABULARY } from "../src/domain/run.js";
 
 /**
  * DECIDE のプロンプトに同じ本文を2回入れない。
@@ -136,7 +137,9 @@ function target(over: Partial<DecideTarget> = {}): DecideTarget {
 }
 
 function deps(llm: LlmPort): DecideDeps {
-  return { llm, now: () => NOW };
+  // 両方の provider に opt-in している合成ルートを模す。渡さないと `agent` の
+  // 選択肢そのものが出ない（`DecideDeps.availableActors`）。
+  return { llm, now: () => NOW, availableActors: ["claude-code", "codex"] };
 }
 
 function occurrences(haystack: string, needle: string): number {
@@ -205,5 +208,17 @@ describe("DECIDE のプロンプト", () => {
     expect(prompt).toContain("## Actions you may choose");
     expect(prompt).toContain("COMPLETE and ESCALATE cannot be chosen");
     expect(prompt).toContain("## Budget remaining");
+  });
+
+  it("agent の語彙は EFFORT_VOCABULARY から書き出す", async () => {
+    // プロンプトに直書きすると、受け取り側の検証（`unusableEffortIn`）と
+    // 食い違ったときに「書いてある通りに返したのに採用されない」状態になる。
+    const prompt = await promptOf();
+
+    for (const [actor, levels] of Object.entries(EFFORT_VOCABULARY)) {
+      expect(prompt).toContain(`${actor}: ${levels.join(" / ")}`);
+    }
+    // 実在しない model 名は Run ごと失敗させるので、既定は「書かない」に倒す。
+    expect(prompt).toContain('Leave "agent" out unless there is a reason');
   });
 });

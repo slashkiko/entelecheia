@@ -53,7 +53,7 @@ Codex CLI の2つがある。その走っている実体を指すときは **Age
 | 確かめられなかったことを黙って落とさない | 「対象が無い」と「対象を確かめられなかった」を区別し、後者は `unobserved` / `unverified` に理由付きで残す | 済 |
 | 検証に還元できない Goal は受け付けない | Acceptance Criteria を検証手段（コマンド / Fact 参照 / 人間の承認）に落とせない Goal は ACTIVE にしない | 済 |
 | 待機はプロセスではなく状態 | reconcile はどのティックも有限時間で return する。常駐して sleep しない | 済 |
-| 宣言と収束の分離 | 人間が書くのは Desired State と Acceptance Criteria。Actor 実装は起動時にphaseごとに選び、Goal内のActor roleと実装手順はcontrollerが決める | 一部（Goalをまたぐ分解は順序の宣言（`goal.depends_on`）まで。分割の判断は人間が持つ（design.md §10-12）） |
+| 宣言と収束の分離 | 人間が書くのは Desired State と Acceptance Criteria。Actor 実装は起動時にphaseごとの既定を人間が選び、ティックごとの上書き・Goal内のActor role・実装手順はcontrollerが決める | 一部（Goalをまたぐ分解は順序の宣言（`goal.depends_on`）まで。分割の判断は人間が持つ（design.md §10-12）） |
 | write-ahead | 副作用の前に意図を DB へ書く。任意の瞬間に kill されても次ティックで回収できる | 済 |
 | 隔離は場所だけでは足りない | worktree でファイルを分けるだけでなく、Agent の出力を controller のシェルに流さない・Agent が書いたものを controller の権限で実行しない | 一部（シェルに流さない側は design.md §7 で対応済み、controller の権限で実行しない側は §10-9 が未決） |
 
@@ -319,6 +319,8 @@ ENT_NODE="$(mise which node)"       # Node 24以上の絶対パスを先に固�
 alias ent="$ENT_NODE $(pwd)/dist/cli.js"
 
 ent init                           # いまのリポジトリを回せる状態にする（冪等）
+ent plan --desire "…"              # 散文のゴールをサブ Goal の宣言に分解する
+ent plan --desire "…" --dry-run    # 検証まで済ませて、書かずに出す
 ent start <slug>                   # Goal を登録して ACTIVE にする
 ent run <slug>                     # 1ティック回して終了する
 ent run <slug> --pr <n>            # 観測対象の PR を指定する（controller が立てた分は自動）
@@ -342,7 +344,8 @@ ent agent-context                  # CLI の構造を機械可読な JSON で出
 
 ### provider・model・effort を選ぶ
 
-provider・model・effort は `DECIDE`、`IMPLEMENT`、`REVIEW`、`INVESTIGATE` ごとに選べる。
+provider・model・effort は `DECIDE`、`PLAN`、`IMPLEMENT`、`REVIEW`、`INVESTIGATE` ごとに
+選べる（`PLAN` だけはティックの外で動くが、選び方は同じ）。
 `ENT_<PHASE>_ACTOR` / `ENT_<PHASE>_MODEL` / `ENT_<PHASE>_EFFORT` がphase固有の指定で、
 無ければ共通の `ENT_ACTOR` / `ENT_MODEL` / `ENT_EFFORT` へ落ちる。providerの未指定時は、
 既存の挙動を保つため `claude-code` になる。
@@ -360,6 +363,25 @@ ENT_IMPLEMENT_ACTOR=claude-code \
 ENT_REVIEW_MODEL=<model> \
 ent run <slug>
 ```
+
+環境変数が決めるのは**既定**になる。ティックごとの上書きは DECIDE が持っていて、
+`ACT` に `agent` を添えて返せば、その1回だけ別の provider・model・effort で走る。
+
+```json
+{"type":"ACT","intent":"fix the failing test","agent":{"actor":"codex","effort":"high"}}
+```
+
+`actor` は必須で、`model` と `effort` は任意になる。省いた分は名指しした provider の
+既定で走り、そのphaseの環境変数からは引き継がない。**名指しできるのは環境変数で
+既に選ばれている provider だけ**で、その外を指した出力と、provider に無い effort を
+書いた出力は起動前に弾く。ACT の予算は減らない。
+
+添えなかった ACT はこれまでどおり環境変数の選択で走る。名指しされた provider は
+Run に残るので `ent get` から読める。model と effort は Run の列に無く、
+Decision の rationale（`ACT(implement on codex/high: ...)`）に出る。
+
+**DECIDE 自身の provider はこの経路では選べない。** `agent` を返す時点で DECIDE は
+もう走っており、自分を起動し直すことはできない。decide phase は環境変数だけになる。
 
 ### Codex を使うとき
 
@@ -803,8 +825,32 @@ cron の1周で回らなくなるからになる。判定は `ent start` では�
 依存の判定も端末ごとの状態 DB を読む。別の端末では依存の `COMPLETED` が見えないので、
 未登録＝待ち扱いになる（上の lease と同じ制約）。
 
-**割る判断そのものは人間が持つ。** controller は書かれた順序に従うだけで、
-粗いタスクを自分で N 本に割ることはしない（design.md §10-12）。
+その N 本を書き出すのが `ent plan` になる。分解したいことを散文で渡すと、順序を
+`depends_on` に入れた状態で宣言が並ぶ。
+
+```sh
+ent plan --desire "CLI に plan サブコマンドを足す" --dry-run   # 検証だけ。何も書かない
+ent plan --desire "CLI に plan サブコマンドを足す"             # .goals/<id>.yaml を書く
+```
+
+**書くのは宣言部だけになる。** 実行時状態には触らず、Goal の登録もしない。`ent start` を
+打つまで何も動かず、そこが承認点であることも変わらない（design.md §3.2）。書かれたものを
+読んで、要らなければ消す。
+
+**機械に書かせないものが4つある。** `repository` は `git remote get-url origin` と
+`refs/remotes/origin/HEAD` から読む（`--repo <owner>/<name>` と `--default-branch <name>` で
+上書きできる。後者は `git clone` でしか張られないので、必要になることが多い）。`policies` と
+`budget` は `ent init` の雛形と同じ値を写すので、機械が書いた Goal だけが緩いところから
+始まることはない。そして**1本も書く前に、集合まるごとを検証する**——スキーマ、既存の
+`.goals/` との id 衝突、指す先の無い依存、循環の4つになる。落ちたら理由を添えて投げ直し、
+再試行を使い切ったら1本も書かずに断る。既存の宣言は上書きしないし、`--force` も無い。
+
+`--max <n>` で書き出す本数の上限を決める（既定 5）。ここで使ったトークンは
+`.goals/.state/runs/plan-*/` の生ログに残り、**どの Goal の budget にも数えられない**。
+数える先の Goal がまだ無いため。
+
+**割った結果を残す判断は人間が持つ。** ティックの中では、controller が粗いタスクを
+自分で N 本に割ることはしない（design.md §10-12）。
 
 ### 複数の Goal を同時に回す
 

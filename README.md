@@ -340,6 +340,8 @@ ENT_NODE="$(mise which node)"       # pin an absolute path to Node 24+ first
 alias ent="$ENT_NODE $(pwd)/dist/cli.js"
 
 ent init                           # make the current repository runnable (idempotent)
+ent plan --desire "…"              # split one prose objective into sub-Goal declarations
+ent plan --desire "…" --dry-run    # validate and print the set without writing it
 ent start <slug>                   # register a Goal and make it ACTIVE
 ent run <slug>                     # run one tick and exit
 ent run <slug> --pr <n>            # name the PR to observe (ones the controller opened are automatic)
@@ -363,10 +365,11 @@ procedure aimed at agents is in `.claude/skills/ent/SKILL.md`.
 
 ### Choosing provider, model, and effort
 
-Provider, model, and effort can be chosen separately for `DECIDE`, `IMPLEMENT`, `REVIEW`, and
+Provider, model, and effort can be chosen separately for `DECIDE`, `PLAN`, `IMPLEMENT`, `REVIEW`, and
 `INVESTIGATE`. `ENT_<PHASE>_ACTOR` / `ENT_<PHASE>_MODEL` / `ENT_<PHASE>_EFFORT` are the
 phase-specific settings; without them it falls back to the shared `ENT_ACTOR` / `ENT_MODEL` /
-`ENT_EFFORT`. When no provider is specified it is `claude-code`, preserving existing behavior.
+`ENT_EFFORT`. When no provider is specified it is `claude-code`, preserving existing behavior. `PLAN`
+is selectable the same way (`ENT_PLAN_ACTOR` and friends), even though it runs outside the tick.
 
 Valid effort values differ per provider. Claude Code accepts `low / medium / high / xhigh / max`;
 Codex accepts `none / minimal / low / medium / high / xhigh`.
@@ -381,6 +384,26 @@ ENT_IMPLEMENT_ACTOR=claude-code \
 ENT_REVIEW_MODEL=<model> \
 ent run <slug>
 ```
+
+What the environment variables set is the **default**. The per-tick override belongs to DECIDE: an
+`ACT` may carry an `agent`, and that one run uses the provider, model, and effort named there.
+
+```json
+{"type":"ACT","intent":"fix the failing test","agent":{"actor":"codex","effort":"high"}}
+```
+
+`actor` is required; `model` and `effort` are optional. What is left out runs on the named
+provider's own default and is not inherited from that phase's environment variables. **Only a
+provider already selected by the environment variables can be named**, and an output naming
+anything outside that set — or an effort the provider does not have — is rejected before launch, so
+it costs no ACT budget.
+
+An ACT without it runs on the environment's selection as before. The provider that was named is
+recorded on the Run, so `ent get` shows it. Model and effort have no column on the Run; they appear
+in the Decision's rationale (`ACT(implement on codex/high: ...)`).
+
+**DECIDE cannot choose its own provider this way.** By the time it returns `agent` it is already
+running and cannot relaunch itself. The decide phase stays on the environment variables.
 
 ### Using Codex
 
@@ -844,8 +867,34 @@ Dependency judgments also read the per-machine state DB. On another machine a de
 `COMPLETED` is not visible, so it counts as unregistered, i.e. waiting (the same constraint as the
 lease above).
 
-**The decision to split is the human's.** The controller merely follows the order as written; it
-never splits a coarse task into N by itself (design.md §10-12).
+`ent plan` writes that set for you. Hand it the objective as prose and it emits the declarations with
+the ordering already in `depends_on`.
+
+```sh
+ent plan --desire "add a plan subcommand to the CLI" --dry-run   # validate; write nothing
+ent plan --desire "add a plan subcommand to the CLI"             # write .goals/<id>.yaml
+```
+
+**It writes the declaration and nothing else.** No runtime state is touched, no Goal is registered,
+and nothing runs until you type `ent start` — that command is still the approval point (design.md
+§3.2). Read what it wrote and delete whatever you do not want.
+
+Four things are deliberately kept away from the model. `repository` comes from `git remote get-url
+origin` and `refs/remotes/origin/HEAD` (override with `--repo <owner>/<name>` and `--default-branch
+<name>`; the latter is often needed, because only `git clone` sets that ref). `policies` and `budget`
+are copied from the same values the `ent init` template carries, so a machine-written Goal never
+starts from a looser place than a hand-written one. And **the whole set is validated before a single
+file is written** — schema, id collisions with what is already in `.goals/`, dependencies that point
+nowhere, and cycles. If any of that fails, the set is thrown back at the planner with the reason
+attached, and after the retries are used up nothing is written at all. Existing declarations are
+never overwritten, and there is no `--force`.
+
+`--max <n>` caps how many Goals may be written (default 5). Tokens spent here land in the raw log
+under `.goals/.state/runs/plan-*/` and are **not** counted against any Goal's budget — no Goal exists
+yet to count them against.
+
+**The decision to keep the split is still the human's.** During a tick the controller does not split
+a coarse task into N by itself; that remains outside the loop (design.md §10-12).
 
 ### Running several Goals at once
 

@@ -625,6 +625,50 @@ export type Goal = z.infer<typeof goalSchema>;
 export const TEMPLATE_SLUG = "example-goal";
 
 /**
+ * 人間が書かないまま Goal を1本立てるときの、`policies` の既定。
+ *
+ * **雛形（`goalTemplate`）が書いているのと同じ値**にする。`ent plan` は宣言部を
+ * 機械が書くが、そこで配る `policies` が雛形より緩いと、plan から始めた Goal だけが
+ * 緩いところから始まることになる。下限（`APPROVAL_GATE_FLOOR` /
+ * `PROTECTED_PATH_FLOOR`）はスキーマが混ぜるので、ここに書くのは**人間が書く側の値**
+ * だけになる（`goalSchema` を通した後の値ではない）。
+ *
+ * 雛形は注釈込みの文字列で持つので、この定数から生成はしない。代わりに
+ * **雛形を解析した結果とここが一致することをテストで固定する**
+ * （`tests/goal.test.ts`）。片方だけ動かすと落ちる。
+ */
+export const DEFAULT_DECLARED_POLICIES = {
+  require_human_approval: [
+    "merge",
+    "force_push",
+    "push_to_default_branch",
+    "deploy",
+    "secret_access",
+    "external_send",
+  ],
+  protected_paths: [],
+  publish: { push_branch: "auto", open_pull_request: "auto" },
+} as const satisfies {
+  require_human_approval: readonly ApprovalGate[];
+  protected_paths: readonly string[];
+  publish: { push_branch: PublishMode; open_pull_request: PublishMode };
+};
+
+/**
+ * 同じく `budget` の既定。雛形と同じ値で、`tests/goal.test.ts` が一致を固定する。
+ *
+ * **`usd` は書かない。** 雛形も書いていない。任意項目なので、書かなければ
+ * 「上限を宣言していない」がそのまま残る。機械が勝手に金額を決めない。
+ */
+export const DEFAULT_BUDGET = {
+  max_actor_runs: 8,
+  max_reconciles: 20,
+  max_wall_clock: "3h",
+  max_consecutive_failures: 3,
+  max_unchanged_reconciles: 4,
+} as const satisfies Budget;
+
+/**
  * `ent init` が置く、埋めるための Goal YAML。
  *
  * **ここに置くのは、中身が関門の一部だから。** `policies` は Agent の拒否ルールを

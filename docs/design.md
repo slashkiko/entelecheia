@@ -249,6 +249,27 @@ provider actually used. The effort vocabulary is validated per provider. Claude 
 `low / medium / high / xhigh / max` and Codex takes `none / minimal / low / medium / high / xhigh`;
 a value belonging to only one is never passed silently to the other.
 
+What the environment variables set is the default; **the per-tick override belongs to DECIDE**. An
+`ACT` may carry an `agent` block (`actor` required, `model` and `effort` optional), and that Run
+alone uses the set named there. Who does the work is part of how the Gap gets closed, so unlike the
+stop conditions it may be entrusted to the LLM. The vocabulary is still validated before launch: an
+output naming an effort the provider does not have is not adopted — letting the Adapter throw after
+launch would spend the same budget as one failed ACT. **DECIDE cannot pick its own provider this
+way.** By the time it returns `agent` it has already finished running, and there is no path back to
+relaunching itself.
+
+**Only a provider the environment variables already selected can be named.** Codex is an explicit
+opt-in because its permission control is not the same (see below), and that declaration means
+nothing if a single LLM output can route around it. The set handed to DECIDE is the same one
+`ent doctor` checks login prerequisites against, so no provider doctor never looked at can run. A
+call that is handed none does not offer `agent` at all and adopts none that comes back — **an
+omission is not read as "no restriction."**
+
+An `agent` that omits `model` and `effort` runs on the named provider's own defaults. It does not
+inherit them from that phase's environment variables; inheriting would hand an
+`ENT_IMPLEMENT_EFFORT` written for Claude to a Codex run, which is exactly the "never passed
+silently to the other" this section forbids.
+
 Codex also has an official TypeScript SDK (`@openai/codex-sdk`), which in substance is a wrapper
 that launches the Codex CLI and exchanges JSONL events. But the current SDK's public options cannot
 pass `--ephemeral`, `--ignore-user-config`, or `--ignore-rules`, which are used for the isolation
@@ -305,6 +326,10 @@ the lease, and exit. A state where Ctrl+C does not work is never created.
 
 In this document, **Provider** means an interface and **Adapter** means one implementation of it.
 The relationship is the GitHub Adapter for `CodeProvider`.
+
+**The "provider" in §3.5 is a different axis.** There it means the Actor and LLM vendor
+(`claude-code` / `codex`), which by this section's classification sits on the Adapter side. The word
+overlaps, so tell them apart by which section you are reading.
 
 **Port** sits at a different granularity from these: it refers to the function-level interface each
 stage of reconcile depends on. Like the `CodeProviderPort` that `observe()` receives, it lists only
@@ -2304,12 +2329,15 @@ between Goals. No Task layer is cut under a Goal.**
 `dependencyGate` (`src/domain/guard-rules.ts`) and, like `resume_after`, it returns at the entrance
 **without taking a lease** (the reason is in "Where the dependency judgement goes" below).
 
-**What is not in yet is the side where the machine performs the decomposition itself.** Today the
-one who writes sub-Goals is a human, and the controller merely follows the written order. That is
-the reason §1 attaches a proviso to "the controller also decides task decomposition". What holds is
-only inside a single Goal (`intent` and `REPLAN`), and **decomposition across Goals — one coarse
-task splitting into N, each with its own worktree and PR — does not exist.** Splitting Phase 2 into
-four and Phase 3 into five was a human judgement (§8).
+**The side where the machine performs the decomposition is in now, but only outside the tick.**
+`ent plan` (`src/usecase/plan.ts`) takes the objective as prose, calls the planner once, and writes N
+sub-Goal declarations into repoRoot's `.goals/`, ordering them with `depends_on`. A human invokes it,
+and it writes nothing but the declaration — no runtime state, no Goal row, not even `DRAFT` — so
+`ent start` stays the approval point (§3.2).
+
+**Inside the tick nothing changed.** The controller still follows the order as written and never
+splits a coarse task on its own, which is why §1 keeps its proviso on "the controller also decides
+task decomposition". Splitting Phase 2 into four and Phase 3 into five was a human judgement (§8).
 
 **It was a choice between two.** (a) sub-Goals + declared dependencies, (b) a Task layer under the
 Goal (`Plan / Task` in §4.5).
@@ -2348,12 +2376,26 @@ worktree.** If `.goals/*.yaml` appears in the implement role's working tree, eve
 `.goals/*.yaml` out of §4.6's "edited by a human", and §3.2's "the YAML review is the approval gate"
 then applies only to what a human wrote.**
 
-**Here it was decided on the side of letting the planner write. What was decided is the policy;
-there is not one line of code** (the "not in yet" above stands as it is). Since the need to fix the
-plan arises while the loop is running, if the planner cannot rewrite the YAML then `REPLAN` ends up
-as just "think again". The repoRoot-side gate counts only the difference before and after ACT
-(§10-6), so the reading is that what is written in DECIDE is not a violation, but **that gets
-verified when the path is built.**
+**Here it was decided on the side of letting the planner write, and that half is built.**
+What is kept out of the model's hands in `ent plan` is `repository` / `policies` / `budget`. The
+repository identity is read from `git remote` (a fabricated owner would surface only as a GitHub 404
+on the first tick), and the two gate-bearing blocks are copied from the same values `ent init`'s
+template carries, so a machine-written Goal never starts from a looser place than a hand-written one.
+The whole set is validated — schema, id collisions with existing declarations, dependencies pointing
+nowhere, cycles across the set and what is already declared — **before a single file is written**, so
+a rejected set leaves `.goals/` exactly as it was rather than half-written.
+
+**What is still not built is the planner rewriting YAML while the loop is running.** Since the need
+to fix the plan arises mid-run, without it `REPLAN` ends up as just "think again". The repoRoot-side
+gate counts only the difference before and after ACT (§10-6), so the reading is that what is written
+in DECIDE is not a violation, but **that gets verified when the path is built.** `ent plan` does not
+test that reading: it runs outside the tick entirely, so no gate is positioned to see it.
+
+**The tokens `ent plan` spends are not held in the DB.** `llm_calls.goal_id` is
+`NOT NULL REFERENCES goals(id)`, and at plan time no Goal row exists yet; inventing one would put a
+Goal that no YAML declares into `ent list`. They land in the raw log (`runs/plan-<time>/log.jsonl`,
+§4.6) and in the command's own output instead, which means **they count against no Goal's budget**.
+That is a knowing gap in §7's accounting, bounded only by a human typing the command each time.
 
 The proposal to narrow the writable range to a part of the declaration — putting what a human writes
 and what the planner writes on different paths — is **not adopted**. The gate only works on paths

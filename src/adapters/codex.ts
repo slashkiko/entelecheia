@@ -48,6 +48,12 @@ export interface CodexOptions {
   env?: Record<string, string | undefined> | undefined;
   /** DECIDE の呼び出しを永続化する通知 */
   onCall?: ((call: LlmCall) => void) | undefined;
+  /**
+   * この LlmPort が何のための呼び出しか（`LlmCall.purpose`）。省略すると DECIDE。
+   *
+   * `onCall` に渡すラベルと、生ログの置き場所の名前の両方に使う。
+   */
+  purpose?: LlmCall["purpose"] | undefined;
 }
 
 /**
@@ -140,13 +146,14 @@ export function codexActor(options: CodexOptions): ActorPort {
 /** Codex CLI を DECIDE の LlmPort に接続する。 */
 export function codexLlm(options: CodexOptions): LlmPort {
   const now = options.now ?? ((): Date => new Date());
+  const purpose = options.purpose ?? "decide";
   let sequence = 0;
 
   return {
     async chooseAction(prompt) {
       sequence += 1;
       const calledAt = now().toISOString();
-      const logRef = join(options.runsDir, callIdOf(calledAt, sequence), "log.jsonl");
+      const logRef = join(options.runsDir, callIdOf(purpose, calledAt, sequence), "log.jsonl");
       const signal = new AbortController().signal;
 
       let execution: CodexExecution;
@@ -160,7 +167,7 @@ export function codexLlm(options: CodexOptions): LlmPort {
         });
       } catch (error) {
         await writeFailureLog(options, logRef, error);
-        options.onCall?.({ purpose: "decide", tokens: 0, logRef, ok: false, calledAt });
+        options.onCall?.({ purpose, tokens: 0, logRef, ok: false, calledAt });
         throw new PortError(
           "unavailable",
           `Could not launch the Codex CLI: ${errorMessage(error)}`,
@@ -175,7 +182,7 @@ export function codexLlm(options: CodexOptions): LlmPort {
         }
         notified = true;
         options.onCall?.({
-          purpose: "decide",
+          purpose,
           tokens: outcome.tokens,
           logRef,
           ok,
@@ -357,8 +364,8 @@ function failureMessageOf(event: unknown): string | null {
   return null;
 }
 
-function callIdOf(calledAt: string, sequence: number): string {
-  return `decide-${calledAt.replace(/[:.]/g, "-")}-${sequence}`;
+function callIdOf(purpose: LlmCall["purpose"], calledAt: string, sequence: number): string {
+  return `${purpose}-${calledAt.replace(/[:.]/g, "-")}-${sequence}`;
 }
 
 async function writeCodexLog(
