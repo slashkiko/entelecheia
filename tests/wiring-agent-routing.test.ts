@@ -88,16 +88,16 @@ describe("phase ごとの Agent 選択", () => {
     expect(() => agentSelectionFrom({ ENT_EFFORT: "infinite" }, "decide")).toThrow(/ENT_EFFORT/);
   });
 
-  it("Codex の none / minimal を受け付け、未定義の max を拒否する", () => {
-    expect(agentSelectionFrom({ ENT_ACTOR: "codex", ENT_EFFORT: "none" }, "decide").effort).toBe(
-      "none",
+  it("Codex の max を受け付け、いまのモデルが持たない none / minimal を拒否する", () => {
+    expect(agentSelectionFrom({ ENT_ACTOR: "codex", ENT_EFFORT: "max" }, "decide").effort).toBe(
+      "max",
     );
-    expect(
-      agentSelectionFrom({ ENT_ACTOR: "codex", ENT_EFFORT: "minimal" }, "implement").effort,
-    ).toBe("minimal");
-    expect(() => agentSelectionFrom({ ENT_ACTOR: "codex", ENT_EFFORT: "max" }, "decide")).toThrow(
+    expect(() => agentSelectionFrom({ ENT_ACTOR: "codex", ENT_EFFORT: "none" }, "decide")).toThrow(
       /ENT_EFFORT/,
     );
+    expect(() =>
+      agentSelectionFrom({ ENT_ACTOR: "codex", ENT_EFFORT: "minimal" }, "implement"),
+    ).toThrow(/ENT_EFFORT/);
     expect(
       agentSelectionFrom({ ENT_ACTOR: "claude-code", ENT_EFFORT: "max" }, "decide").effort,
     ).toBe("max");
@@ -212,7 +212,7 @@ describe("phase ごとの Agent 選択", () => {
             action: actionSchema.parse({
               type: "ACT",
               intent: "直す",
-              agent: { actor: "codex", model: "decided-model", effort: "minimal" },
+              agent: { actor: "codex", model: "decided-model", effort: "max" },
             }),
             rationale: "重い変更なので別の provider に回す",
             decidedBy: "llm",
@@ -235,7 +235,7 @@ describe("phase ごとの Agent 選択", () => {
         },
       );
 
-      expect(actorCalls).toEqual([{ kind: "codex", model: "decided-model", effort: "minimal" }]);
+      expect(actorCalls).toEqual([{ kind: "codex", model: "decided-model", effort: "max" }]);
       // 副作用の前に書く Run にも、実際に走る provider が入る。
       expect(result.acted && result.run.actor).toBe("codex");
       expect(store.listRuns(GOAL.goal.id).map((run) => run.actor)).toEqual(["codex"]);

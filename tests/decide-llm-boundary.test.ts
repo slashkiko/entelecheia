@@ -214,25 +214,23 @@ describe("直らない失敗を繰り返さない", () => {
 
   it("ACT が名指しした provider・model・effort はそのまま採る", async () => {
     // 「誰にやらせるか」は Gap の埋め方の一部なので、guard ではなく LLM に委ねる。
-    const llm = spyLlm([
-      { type: "ACT", intent: "直す", agent: { actor: "codex", effort: "minimal" } },
-    ]);
+    const llm = spyLlm([{ type: "ACT", intent: "直す", agent: { actor: "codex", effort: "max" } }]);
     const decision = await decide(target(), { llm, now: () => NOW, availableActors: BOTH });
 
     expect(decision.action).toEqual({
       type: "ACT",
       intent: "直す",
-      agent: { actor: "codex", effort: "minimal" },
+      agent: { actor: "codex", effort: "max" },
     });
     expect(llm.calls).toBe(1);
   });
 
   it("provider に無い effort を名指した ACT は採らない", async () => {
-    // `max` は Claude Code の語彙で、Codex には無い（EFFORT_VOCABULARY）。
-    // 起動してから Adapter で throw させると、ACT が1回失敗したのと同じだけ
-    // 予算が減る。起動する前に弾いて言い直させる。
+    // `minimal` は現行のどの Codex モデルも持たないので語彙から落ちている
+    // （EFFORT_VOCABULARY）。起動してから Adapter で throw させると、ACT が1回
+    // 失敗したのと同じだけ予算が減る。起動する前に弾いて言い直させる。
     const llm = spyLlm([
-      { type: "ACT", intent: "直す", agent: { actor: "codex", effort: "max" } },
+      { type: "ACT", intent: "直す", agent: { actor: "codex", effort: "minimal" } },
       { type: "ACT", intent: "直す", agent: { actor: "codex", effort: "xhigh" } },
     ]);
     const decision = await decide(target(), { llm, now: () => NOW, availableActors: BOTH });

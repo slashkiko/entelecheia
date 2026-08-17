@@ -34,7 +34,13 @@ export type LaunchableActorKind = z.infer<typeof launchableActorKindSchema>;
  */
 export const EFFORT_VOCABULARY = {
   "claude-code": ["low", "medium", "high", "xhigh", "max"],
-  codex: ["none", "minimal", "low", "medium", "high", "xhigh"],
+  // Codex 側は codex-cli 0.147.0 のモデルカタログに合わせてある。`gpt-5.6-sol` /
+  // `gpt-5.6-terra` / `gpt-5.6-luna` / `gpt-5.5` / `gpt-5.4` の
+  // `supported_reasoning_levels` はどれも `low` から始まり、上は `max` まで伸びる。
+  // **`none` と `minimal` は落としてある。** 現行のどのモデルも advertise していない。
+  // config の parse は今でも通る（`-c model_reasoning_effort="minimal"` は落ちない）
+  // ので、弾いているのは ent の側になる。古い Codex に合わせる必要が出たら戻す。
+  codex: ["low", "medium", "high", "xhigh", "max"],
 } as const satisfies Record<LaunchableActorKind, readonly string[]>;
 
 /**

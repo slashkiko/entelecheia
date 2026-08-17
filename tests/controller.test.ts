@@ -3,6 +3,7 @@ import type { ActorPort, ActorResult, WorktreePort } from "../src/act/index.js";
 import { type ControllerDeps, tick } from "../src/controller/index.js";
 import type { LlmPort } from "../src/decide/index.js";
 import type { Goal } from "../src/domain/goal.js";
+import { sleepingUntil } from "../src/domain/guard-rules.js";
 import type { Store } from "../src/store/port.js";
 import { openStore } from "../src/store/sqlite.js";
 
@@ -452,6 +453,33 @@ describe("tick", () => {
         tokens: 42,
       });
       expect(store.getState("sample-goal")?.resumeAfter).toBe("2026-08-09T06:00:00.000Z");
+    });
+
+    it("再開時刻を読めなかった usage_limit にも、既定の待ちを置く", async () => {
+      // **null をそのまま書くと空転する。** `sleepingUntil` は null を「起きてよい」と
+      // 読むので、次のティックがそのまま走って同じ上限に当たる。積み上がる failed の
+      // Run が max_consecutive_failures に達すると、待てば直るものが ESCALATE になる。
+      const result = await tick(
+        GOAL,
+        deps({
+          exitCode: 1,
+          actorResult: {
+            exitCode: 1,
+            logRef: "usage-limit.jsonl",
+            tokens: 42,
+            artifacts: [],
+            errorKind: "usage_limit",
+            resumeAfter: null,
+            detail: "usage limit reached",
+          },
+        }),
+      );
+
+      const resumeAfter = store.getState("sample-goal")?.resumeAfter;
+      expect(resumeAfter).not.toBeNull();
+      expect(sleepingUntil(resumeAfter ?? null, NOW)).toBe(resumeAfter);
+      // Run に残るのは観測したまま（読めなかったので null）。既定を決めるのは guard。
+      expect(result.run).toMatchObject({ errorKind: "usage_limit", resumeAfter: null });
     });
   });
 

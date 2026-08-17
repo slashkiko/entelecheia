@@ -11,8 +11,19 @@ import type { ActorRole } from "../domain/run.js";
 import { CODEX_ACTOR_WITHHELD_ENV, withheldEnv } from "../domain/withheld-env.js";
 import { JSON_ONLY, PROMPT_FOR, parseJson } from "./agent-prompt.js";
 
-/** Codex CLI の model_reasoning_effort に渡す値。 */
-export type CodexEffort = "none" | "minimal" | "low" | "medium" | "high" | "xhigh";
+/**
+ * Codex CLI の model_reasoning_effort に渡す値。
+ *
+ * codex-cli 0.147.0 が持つモデルカタログに合わせてある。`gpt-5.6-sol` /
+ * `gpt-5.6-terra` / `gpt-5.6-luna` / `gpt-5.5` / `gpt-5.4` の
+ * `supported_reasoning_levels` はどれも `low` から始まり、上は `max` まで伸びる。
+ *
+ * **`none` と `minimal` は落としてある。** 現行のどのモデルも advertise して
+ * いない。config の parse は今でも通る（`-c model_reasoning_effort="minimal"` は
+ * 落ちない）ので、弾いているのは ent の側になる。古い Codex に合わせる必要が
+ * 出たら、ここへ戻す。
+ */
+export type CodexEffort = "low" | "medium" | "high" | "xhigh" | "max";
 
 export interface CodexCommand {
   args: string[];
@@ -104,8 +115,17 @@ export function codexActor(options: CodexOptions): ActorPort {
       }
 
       const outcome = outcomeOf(execution);
+      // 上限のときだけ、再開時刻を読む。読めたかどうかは生ログにも残す。
+      const reset = outcome.usageLimit
+        ? resetTimeIn(outcome.failure ?? "", (options.now ?? (() => new Date()))())
+        : null;
       try {
-        await writeCodexLog(options, logRef, execution);
+        await writeCodexLog(
+          options,
+          logRef,
+          execution,
+          reset === null ? [] : [resetLogLine(reset)],
+        );
       } catch (error) {
         throw new PortError(
           "unavailable",
@@ -113,14 +133,18 @@ export function codexActor(options: CodexOptions): ActorPort {
         );
       }
       if (outcome.usageLimit) {
+        const failure = outcome.failure ?? "Codex usage limit reached";
+        const at = reset?.at ?? null;
         return {
           exitCode: 1,
           logRef,
           tokens: outcome.tokens,
           artifacts: outcome.artifacts,
           errorKind: "usage_limit",
-          resumeAfter: null,
-          detail: outcome.failure ?? "Codex usage limit reached",
+          // 読めなければ null のまま返す。既定の待ちを決めるのは guard の側で、
+          // Adapter は「観測できなかった」を偽らない（design.md §3.1）。
+          resumeAfter: at,
+          detail: at === null ? `${failure} ${unreadableResetNote(reset)}` : failure,
         };
       }
 
@@ -175,6 +199,7 @@ export function codexLlm(options: CodexOptions): LlmPort {
       }
 
       const outcome = outcomeOf(execution);
+      const reset = outcome.usageLimit ? resetTimeIn(outcome.failure ?? "", now()) : null;
       let notified = false;
       const notify = (ok: boolean): void => {
         if (notified) {
@@ -191,7 +216,12 @@ export function codexLlm(options: CodexOptions): LlmPort {
       };
 
       try {
-        await writeCodexLog(options, logRef, execution);
+        await writeCodexLog(
+          options,
+          logRef,
+          execution,
+          reset === null ? [] : [resetLogLine(reset)],
+        );
       } catch (error) {
         notify(false);
         throw new PortError(
@@ -202,8 +232,17 @@ export function codexLlm(options: CodexOptions): LlmPort {
 
       if (execution.exitCode !== 0 || outcome.finalMessage === null || outcome.failure !== null) {
         notify(false);
-        const kind = outcome.usageLimit ? "usage_limit" : "unavailable";
-        throw new PortError(kind, outcome.failure ?? "The Codex CLI returned no final message");
+        const failure = outcome.failure ?? "The Codex CLI returned no final message";
+        if (reset !== null) {
+          // 上限のときは再開時刻を載せる。載せないと DECIDE の WAIT(usage_limit) が
+          // 毎ティック起き直すことになる（`resumeAfterOf`、src/domain/port-error.ts）。
+          throw new PortError(
+            "usage_limit",
+            reset.at === null ? `${failure} ${unreadableResetNote(reset)}` : failure,
+            reset.at,
+          );
+        }
+        throw new PortError("unavailable", failure);
       }
 
       try {
@@ -252,7 +291,12 @@ function argsFor(role: ActorRole, cwd: string, options: CodexOptions): string[] 
 
 function actorPrompt(invocation: ActorInvocation): string {
   const denied = invocation.deniedOperations.map((operation) => `- ${operation}`).join("\n");
-  return `${PROMPT_FOR[invocation.role](invocation)}
+  // skill は本文ごと差し込む。`codex exec` には、repo の中の skill を1回の起動へ
+  // 渡す口がフラグにも `-c` の config にも無い（`skills` は struct として在るが、
+  // 置き場所を指すフィールドが無い）。残る discovery は `$CODEX_HOME/skills` と
+  // marketplace の plugin で、どちらもホスト側に状態を置く形になり、
+  // `--ephemeral` / `--ignore-user-config` の隔離契約と噛み合わない。
+  return `${PROMPT_FOR[invocation.role](invocation, "inline")}
 
 The operations below require human approval. Do not perform them.
 ${denied === "" ? "- none" : denied}`;
@@ -368,10 +412,66 @@ function callIdOf(purpose: LlmCall["purpose"], calledAt: string, sequence: numbe
   return `${purpose}-${calledAt.replace(/[:.]/g, "-")}-${sequence}`;
 }
 
+/** 上限メッセージから読んだ再開時刻。読めなかったときも、読もうとした文字列を残す。 */
+interface ResetTime {
+  /** ISO8601。読めなければ null */
+  at: string | null;
+  /** メッセージの中で再開時刻に見えた部分。見つからなければ null */
+  text: string | null;
+}
+
+/**
+ * `... or try again at Aug 20th, 2026 9:00 PM.` から再開時刻を読む。
+ *
+ * **読めなくても失敗にはしない。** Codex CLI はこの文面を JSON の1フィールドとして
+ * 出さないので、形が変われば黙って読めなくなる。読めたら `resume_after` に入れ、
+ * 読めなければ null を返して**既定の待ちは guard に決めさせる**
+ * （`usageLimitResumeAfter`、src/domain/guard-rules.ts）。
+ *
+ * 時刻はタイムゾーンを伴わないので、走っているマシンのローカル時刻として読む。
+ * 数時間ずれても起きる時刻がずれるだけで、guard の既定が下限を持つ。
+ *
+ * **過去の時刻は読めなかったものとして扱う。** ここは「いま上限に当たった」直後で、
+ * 過去を指す値は時計のずれか誤読になる。そのまま `resume_after` に入れると
+ * `sleepingUntil` が「起きてよい」を返し、直そうとしている空転に戻る。
+ */
+function resetTimeIn(failure: string, now: Date): ResetTime {
+  const found = /\btry again (?:at|after)\s+([^.]+)/i.exec(failure);
+  const text = found?.[1]?.trim() ?? null;
+  if (text === null) {
+    return { at: null, text: null };
+  }
+  // `20th` のような序数を落とす。`Date.parse("Aug 20th, 2026 9:00 PM")` は NaN で、
+  // `Aug 20, 2026 9:00 PM` なら通る。
+  const parsed = Date.parse(text.replace(/\b(\d{1,2})(?:st|nd|rd|th)\b/gi, "$1"));
+  if (Number.isNaN(parsed) || parsed <= now.getTime()) {
+    return { at: null, text };
+  }
+  return { at: new Date(parsed).toISOString(), text };
+}
+
+/** 読めなかったことを Run の detail に残す一言。読もうとした文字列も添える */
+function unreadableResetNote(reset: ResetTime | null): string {
+  const text = reset?.text ?? null;
+  return text === null
+    ? "(ent: the message carried no reset time, so the default wait applies)"
+    : `(ent: could not read a reset time from "${text}", so the default wait applies)`;
+}
+
+/** 生ログにも残す。Run の detail と合わせて、後から読み直せる形にする */
+function resetLogLine(reset: ResetTime): string {
+  return JSON.stringify({
+    type: "ent.codex.usage_limit_reset",
+    resume_after: reset.at,
+    text: reset.text,
+  });
+}
+
 async function writeCodexLog(
   options: CodexOptions,
   path: string,
   execution: CodexExecution,
+  diagnostics: readonly string[] = [],
 ): Promise<void> {
   let contents =
     execution.stdout === "" || execution.stdout.endsWith("\n")
@@ -379,6 +479,10 @@ async function writeCodexLog(
       : `${execution.stdout}\n`;
   if (execution.stderr.trim() !== "") {
     contents += `${JSON.stringify({ type: "ent.codex.stderr", text: execution.stderr })}\n`;
+  }
+  // ent が読み取った側の1行。Codex が出した行と混ざらないよう `ent.` を頭に付ける。
+  for (const line of diagnostics) {
+    contents += `${line}\n`;
   }
   await (options.writeLog ?? writeLogToFile)(path, contents);
 }

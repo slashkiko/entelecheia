@@ -114,10 +114,19 @@ describe("codexActor", () => {
     await codexActor(h.options).run(invocation("review"));
 
     expect(h.commands[0]?.prompt).toContain(".goals/g.yaml");
-    expect(h.commands[0]?.prompt).toContain(
-      "reviewed_sha: <the 40-hex sha from git rev-parse HEAD>",
-    );
-    expect(h.commands[0]?.prompt).toContain("verdict: approved");
+    expect(h.commands[0]?.prompt).toContain("reviewed_sha: <the 40-hex sha confirmed in step 1>");
+    expect(h.commands[0]?.prompt).toContain("verdict: <either approved or changes_requested>");
+  });
+
+  it("レビュー役へ semantic-review の本文を差し込む", async () => {
+    // Codex CLI には repo の中の skill を渡す口が無い。**契約は Claude Code と
+    // 同じにする**ので、観点は本文ごとプロンプトに載る（`SkillDelivery`）。
+    const h = harness();
+    await codexActor(h.options).run(invocation("review"));
+
+    expect(h.commands[0]?.prompt).toContain("name: semantic-review");
+    expect(h.commands[0]?.prompt).toContain("| INSUFFICIENT_CONTEXT | changes_requested |");
+    expect(h.commands[0]?.prompt).not.toContain("with the Skill tool");
   });
 
   it("GitHub と別 provider の資格情報を子プロセスへ渡さない", async () => {
@@ -139,8 +148,54 @@ describe("codexActor", () => {
     await expect(codexActor(h.options).run(invocation())).resolves.toMatchObject({
       exitCode: 1,
       errorKind: "usage_limit",
+      // 文面に時刻が無い形。既定の待ちを置くのは guard の側なので、ここは null。
       resumeAfter: null,
     });
+  });
+
+  it("usage limit の文面から再開時刻を読む", async () => {
+    // 実物の文面。序数（`20th`）が入るので `Date.parse` はそのままでは NaN を返す。
+    const message =
+      "You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage " +
+      "to purchase more credits or try again at Aug 20th, 2026 9:00 PM.";
+    const h = harness(`${JSON.stringify({ type: "error", message })}\n`, 1);
+
+    const result = await codexActor(h.options).run(invocation());
+
+    // **タイムゾーンは書かれていない。** 走っているマシンのローカル時刻として読む
+    // ので、期待値もここで同じように組み立てる。固定の ISO を書くと、TZ の違う
+    // マシンで落ちるだけのテストになる。
+    expect(result.resumeAfter).toBe(new Date("Aug 20, 2026 9:00 PM").toISOString());
+    // 読めたときは detail に注記を足さない。
+    expect(result.detail).toBe(message);
+    expect(h.logs.get(result.logRef)).toContain('"type":"ent.codex.usage_limit_reset"');
+  });
+
+  it("再開時刻が読めなければ、読もうとした文字列を残す", async () => {
+    // 時刻の形が変わった場合。**黙って捨てない。** Run の detail と生ログの
+    // 両方に、読もうとした文字列を残す。
+    const message = "You've hit your usage limit. Try again at some point next week.";
+    const h = harness(`${JSON.stringify({ type: "error", message })}\n`, 1);
+
+    const result = await codexActor(h.options).run(invocation());
+
+    expect(result.resumeAfter).toBeNull();
+    expect(result.detail).toContain("some point next week");
+    expect(result.detail).toContain("could not read a reset time");
+    expect(h.logs.get(result.logRef)).toContain('"text":"some point next week"');
+    expect(h.logs.get(result.logRef)).toContain('"resume_after":null');
+  });
+
+  it("過去を指す再開時刻は読めなかったものとして扱う", async () => {
+    // いま上限に当たった直後なので、過去の時刻は時計のずれか誤読になる。そのまま
+    // 入れると `sleepingUntil` が「起きてよい」を返し、毎ティック当たり直す。
+    const message = "You've hit your usage limit. Try again at Aug 1, 2026 9:00 PM.";
+    const h = harness(`${JSON.stringify({ type: "error", message })}\n`, 1);
+
+    const result = await codexActor(h.options).run(invocation());
+
+    expect(result.resumeAfter).toBeNull();
+    expect(result.detail).toContain("Aug 1, 2026 9:00 PM");
   });
 
   it("最終メッセージの後に turn.failed が来たら成功扱いしない", async () => {
@@ -194,6 +249,20 @@ describe("codexLlm", () => {
       (error: unknown) => error instanceof PortError && error.kind === "unavailable",
     );
     expect(calls).toHaveBeenCalledWith(expect.objectContaining({ ok: false, tokens: 0 }));
+  });
+
+  it("DECIDE の usage limit も、読めた再開時刻を PortError に載せる", async () => {
+    // ここで落とすと、DECIDE 側の WAIT(usage_limit) が毎ティック起き直す
+    // （`resumeAfterOf`）。Actor 側と同じ経路にしておく。
+    const message = "You've hit your usage limit. Try again at Aug 20th, 2026 9:00 PM.";
+    const h = harness(`${JSON.stringify({ type: "error", message })}\n`, 1);
+
+    await expect(codexLlm(h.options).chooseAction("次を決める")).rejects.toSatisfy(
+      (error: unknown) =>
+        error instanceof PortError &&
+        error.kind === "usage_limit" &&
+        error.resumeAfter === new Date("Aug 20, 2026 9:00 PM").toISOString(),
+    );
   });
 
   it("壊れた JSON を成功扱いしない", async () => {

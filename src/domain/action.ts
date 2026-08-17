@@ -132,8 +132,8 @@ export type EscalateReason = z.infer<typeof escalateReasonSchema>;
  * （`ENT_<PHASE>_ACTOR` など、`src/wiring/index.ts` の `agentSelectionFrom`）。
  *
  * **`actor` は、このキーを書くなら必須にする。** `effort` の語彙は provider ごとに
- * 違い（Claude Code は `low / medium / high / xhigh / max`、Codex は
- * `none / minimal / low / medium / high / xhigh`）、model 名に至っては provider を
+ * 検証し（いまはどちらも `low / medium / high / xhigh / max`。`EFFORT_VOCABULARY`、
+ * `src/domain/run.ts`）、model 名に至っては provider を
  * またいで通じない。provider を書かせずに model や effort だけ受け取ると、
  * 「環境変数で Codex になっている実行に、Claude のモデル名が渡る」組み合わせが
  * 作れてしまう。3点を1組として選ぶ規則（design.md §3.5）を、ここでも崩さない。
@@ -183,7 +183,8 @@ export const actionSchema = z.discriminatedUnion("type", [
     type: z.literal("WAIT"),
     reason: waitReasonSchema,
     /**
-     * 再開してよい時刻。分からなければ null にして指数バックオフに任せる。
+     * 再開してよい時刻。分からなければ null にする。`usage_limit` の null には
+     * guard が既定の待ちを置く（`usageLimitResumeAfter`）。
      *
      * 省略も null と同じに扱う。LLM は `{"type":"WAIT","reason":"human_review_pending"}` を
      * 返してきたが、必須にしていたせいで弾かれ、再試行に3万トークン以上かかった。

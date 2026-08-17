@@ -1,6 +1,6 @@
 ---
 name: ent
-description: Procedure for converging a Goal with the ent CLI. Covers reading the structure with agent-context, first-time setup with init, checking prerequisites with doctor, one round of start / run / get / list, looking ahead with --dry-run, ending a Goal that is no longer pursued with abandon, sending progress to stdout or a file instead of posting it to the PR with --report, narrowing output with --limit, reading exit codes, and where WAITING_HUMAN and ESCALATE wait for human approval or intervention.
+description: Procedure for converging a Goal with the ent CLI. Covers reading the structure with agent-context, first-time setup with init, splitting one prose objective into sub-Goal declarations with plan, checking prerequisites with doctor, one round of start / run / get / list, looking ahead with --dry-run, ending a Goal that is no longer pursued with abandon, sending progress to stdout or a file instead of posting it to the PR with --report, narrowing output with --limit, reading exit codes, and where WAITING_HUMAN and ESCALATE wait for human approval or intervention.
 ---
 
 # Running ent
@@ -20,11 +20,13 @@ There is no need to read the prose of `--help`. Where the procedure below has go
 ## Choosing an Actor
 
 The default is Claude Code. To put every phase on Codex, add `ENT_ACTOR=codex` to the same command.
-Provider, model and effort can also be chosen per `DECIDE`, `IMPLEMENT`, `REVIEW` and `INVESTIGATE`.
+Provider, model and effort can also be chosen per `DECIDE`, `PLAN`, `IMPLEMENT`, `REVIEW` and `INVESTIGATE`
+(`PLAN` runs outside the tick, but is chosen the same way).
 `ENT_<PHASE>_ACTOR` / `ENT_<PHASE>_MODEL` / `ENT_<PHASE>_EFFORT` are the phase-specific settings; when
 absent they fall back to `ENT_ACTOR` / `ENT_MODEL` / `ENT_EFFORT`.
-Valid effort values are `low / medium / high / xhigh / max` for Claude Code and
-`none / minimal / low / medium / high / xhigh` for Codex. A value that does not match the provider is an argument error.
+Valid effort values are `low / medium / high / xhigh / max` for both providers; the Codex side follows
+codex-cli 0.147.0's catalog and rejects `none` and `minimal`. Any other value stops the command before the
+tick with **exit code 1**, not 2: argv parsed fine, and the environment is what cannot be run.
 
 ```sh
 ENT_ACTOR=codex ent doctor
@@ -36,18 +38,64 @@ ENT_REVIEW_MODEL=<model> \
 ent run <slug>
 ```
 
-These are the defaults. DECIDE may override them for a single tick by returning an `ACT` with an
-`agent` block (`{"actor":"claude-code|codex","model":"...","effort":"..."}`); naming a model or an
-effort requires naming the actor too, and the actor must be one these variables already selected.
+**ent carries no default model or effort.** Without a setting it runs on whatever the chosen provider
+defaults to (Claude Code unless `ENT_ACTOR=codex`).
+Where the human has not chosen, start from the combination below and change it once a few ticks have been run.
+It is grounded in how often a phase is called and how expensive it is to get wrong, nothing more.
+
+| phase | model | effort | why |
+| --- | --- | --- | --- |
+| `DECIDE` | `sonnet` | `low` | Called every tick; the output is one Zod-validated choice, re-chosen on the next tick if wrong |
+| `PLAN` | `opus` | `high` | Writes the declaration a human reads; bad criteria mean rewriting the whole Goal |
+| `IMPLEMENT` | `opus` | `high` | The most expensive to redo; the guard stops commit and push but does not look at what was written |
+| `REVIEW` | `opus` | `xhigh` | Whatever it misses passes through as broken implementation |
+| `INVESTIGATE` | `sonnet` | `medium` | Mostly reads, and holds no edit tools |
+
+**`ENT_PLAN_*` on `ent run` does nothing.** PLAN runs outside the tick, so only `ent plan` reads it
+(`ent doctor`'s login check counts `ENT_PLAN_ACTOR` too).
+
+```sh
+# inside the tick (DECIDE, IMPLEMENT, REVIEW, INVESTIGATE)
+ENT_DECIDE_MODEL=sonnet ENT_DECIDE_EFFORT=low \
+ENT_IMPLEMENT_MODEL=opus ENT_IMPLEMENT_EFFORT=high \
+ENT_REVIEW_MODEL=opus ENT_REVIEW_EFFORT=xhigh \
+ENT_INVESTIGATE_MODEL=sonnet ENT_INVESTIGATE_EFFORT=medium \
+ent run <slug>
+
+# writing the declarations (PLAN)
+ENT_PLAN_MODEL=opus ENT_PLAN_EFFORT=high \
+ent plan --desire "…"
+```
+
+On Codex the same spread is `gpt-5.6-luna` for DECIDE, `gpt-5.6-sol` for PLAN / IMPLEMENT / REVIEW and
+`gpt-5.6-terra` for INVESTIGATE, with the efforts unchanged (values from codex-cli 0.147.0's catalog).
+**`~/.codex/config.toml` does not reach it**: ent starts Codex with `--ignore-user-config`, so without an
+explicit `ENT_<PHASE>_MODEL` it runs on the Codex CLI's own default.
+
+A single `ENT_MODEL=opus` with only `ENT_<PHASE>_EFFORT` varied follows the same reasoning: fewer variables
+to pass, more usage spent. `ENT_REVIEW_ACTOR=codex` keeps the model that wrote the implementation from
+reviewing its own work; it is an option, not a recommendation, since Codex is never selected automatically.
+`semantic-review`'s points reach either provider — read with the Skill tool on Claude Code, inlined into the
+prompt on Codex — so the review contract does not change with the provider.
+
+**The environment variables are only the default.** DECIDE may override them for a single tick by
+returning an `ACT` with an `agent` block
+(`{"actor":"claude-code|codex","model":"...","effort":"..."}`); naming a model or an effort requires
+naming the actor too, and the actor must be one that these variables already selected.
 What is omitted runs on that provider's own default rather than the phase's variables. The provider
 that ran is recorded on the Run.
 DECIDE cannot pick its own provider that way — the decide phase stays on the environment variables.
 
-The chosen values are not pinned into the DB across ticks. Pass the same environment variables every time, cron included.
+The tick's values are not pinned into the DB across ticks. Pass the same environment variables every time, cron included.
 If even one phase involves Codex, confirm the login first with `codex login status`.
 When an Actor stops at a usage limit, the failure classification and tokens are saved to the Run, and the
 guard replaces the original ACT with `WAIT(usage_limit)`. The Goal transitions to
-`WAITING_EXTERNAL(usage_limit)` and is not run again until `resume_after`.
+`WAITING_EXTERNAL(usage_limit)` and is not run again until `resumeAfter`. Where the provider reports a
+reset time it becomes `resumeAfter`; where it does not, `resumeAfter` defaults to one hour later.
+Nothing sleeps inside `ent run` either way, and **this is not a stop that waits for a human**: leave cron
+running and the next tick past `resumeAfter` picks it up. A Codex limit message carries the reset time in
+prose, so the raw log of such a tick always keeps one `ent.codex.usage_limit_reset` line with what was read
+(`resume_after` and `text`); when it could not be read, `ent get`'s `runs[].detail` says so as well.
 
 ## Repositories that do not have `.goals/` yet
 
@@ -406,10 +454,10 @@ Those are stops where neither the push nor the PR may be taken over.
 | code | Meaning |
 | --- | --- |
 | 0 | Success. The tick ran to the end (`ran: false` is 0 too). For `doctor`, no failed check at all |
-| 1 | Runtime error, or a state that cannot be run. Detail on stderr. For `doctor`, one or more failed, with detail in the JSON on stdout |
+| 1 | Runtime error, or a state that cannot be run. An invalid environment variable (`ENT_*_ACTOR` / `ENT_*_EFFORT`) is here too, with its valid values on stderr. Detail on stderr. For `doctor`, one or more failed, with detail in the JSON on stdout |
 | 2 | Invalid arguments. The valid values are listed on stderr |
 
-Do not mistake 1 for 2. 2 means "retyping it will work", and the valid values are listed on stderr.
+Do not mistake 1 for 2. What separates them is argv: 2 means argv itself is wrong, so retyping it will work.
 A state where argv is valid but cannot be run — running `ent start` against a terminal Goal, for
 example — is 1. Making that 2 leaves the caller retrying with different argv forever.
 

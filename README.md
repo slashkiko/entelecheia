@@ -56,7 +56,7 @@ reflects the current state, including the post-MVP review.
 | Never silently drop what could not be confirmed | Distinguish "there is nothing there" from "we could not confirm it"; the latter stays in `unobserved` / `unverified` with a reason | Done |
 | Reject Goals that cannot be reduced to verification | A Goal whose Acceptance Criteria cannot be reduced to a means of verification (command / Fact reference / human approval) is never made ACTIVE | Done |
 | Waiting is a state, not a process | Every reconcile returns in finite time on every tick. Nothing stays resident and sleeps | Done |
-| Separate declaration from convergence | Humans write the Desired State and Acceptance Criteria. The Actor implementation is chosen per phase at launch; the Actor role within a Goal and the implementation steps are decided by the controller | Partial (decomposition across Goals goes only as far as declaring order via `goal.depends_on`; the decision to split is the human's — design.md §10-12) |
+| Separate declaration from convergence | Humans write the Desired State and Acceptance Criteria. Humans choose the per-phase default at launch; the per-tick override, the Actor role within a Goal, and the implementation steps are decided by the controller | Partial (decomposition across Goals goes only as far as declaring order via `goal.depends_on`; the decision to split is the human's — design.md §10-12) |
 | Write-ahead | Write the intent to the DB before the side effect. Killed at any instant, the next tick can recover | Done |
 | Isolation by location alone is not enough | Beyond separating files with a worktree: never pipe the Agent's output into the controller's shell, and never execute what the Agent wrote with the controller's privileges | Partial (the "not into the shell" half is handled in design.md §7; the "not with the controller's privileges" half is open in §10-9) |
 
@@ -371,8 +371,9 @@ phase-specific settings; without them it falls back to the shared `ENT_ACTOR` / 
 `ENT_EFFORT`. When no provider is specified it is `claude-code`, preserving existing behavior. `PLAN`
 is selectable the same way (`ENT_PLAN_ACTOR` and friends), even though it runs outside the tick.
 
-Valid effort values differ per provider. Claude Code accepts `low / medium / high / xhigh / max`;
-Codex accepts `none / minimal / low / medium / high / xhigh`.
+Valid effort values are `low / medium / high / xhigh / max` for both providers. The Codex side
+follows codex-cli 0.147.0's model catalog and does not accept `none` or `minimal`, because none of
+its five models offer them.
 
 ```sh
 ENT_ACTOR=codex ent doctor
@@ -385,8 +386,54 @@ ENT_REVIEW_MODEL=<model> \
 ent run <slug>
 ```
 
-What the environment variables set is the **default**. The per-tick override belongs to DECIDE: an
-`ACT` may carry an `agent`, and that one run uses the provider, model, and effort named there.
+#### A starting point when nothing has been decided
+
+**ent carries no default model or effort.** Without a setting it runs on whatever the chosen provider
+defaults to (Claude Code unless `ENT_ACTOR=codex`). The combination below is not a value ent imposes; it is where to start when there is
+nothing to go on. The two grounds are how often a phase is called and how expensive it is to get it
+wrong, and it is meant to be changed once a few ticks have been run.
+
+| phase | model | effort | why |
+| --- | --- | --- | --- |
+| `DECIDE` | `sonnet` | `low` | Called every tick. The output is one Zod-validated choice, and a bad one is re-chosen on the next tick |
+| `PLAN` | `opus` | `high` | Writes the declaration a human reads. Placing the criteria badly means rewriting the whole Goal |
+| `IMPLEMENT` | `opus` | `high` | The most expensive to redo. The guard at the end of the tick stops commit and push, but does not look at what was written |
+| `REVIEW` | `opus` | `xhigh` | Whatever it misses passes through as broken implementation. It is also the role that matches the declaration against the implementation with `semantic-review`'s points |
+| `INVESTIGATE` | `sonnet` | `medium` | Mostly reads, and holds no edit tools |
+
+**`ENT_PLAN_*` on `ent run` does nothing.** PLAN runs outside the tick, so only `ent plan` reads it
+(`ent doctor`'s login check counts `ENT_PLAN_ACTOR` too). Pass them separately.
+
+```sh
+# inside the tick (DECIDE, IMPLEMENT, REVIEW, INVESTIGATE)
+ENT_DECIDE_MODEL=sonnet ENT_DECIDE_EFFORT=low \
+ENT_IMPLEMENT_MODEL=opus ENT_IMPLEMENT_EFFORT=high \
+ENT_REVIEW_MODEL=opus ENT_REVIEW_EFFORT=xhigh \
+ENT_INVESTIGATE_MODEL=sonnet ENT_INVESTIGATE_EFFORT=medium \
+ent run <slug>
+
+# writing the declarations (PLAN)
+ENT_PLAN_MODEL=opus ENT_PLAN_EFFORT=high \
+ent plan --desire "…"
+```
+
+If passing eight variables every time is tiresome, a single `ENT_MODEL=opus` with only
+`ENT_<PHASE>_EFFORT` varied follows the same reasoning. Fewer variables to pass, more usage spent,
+since DECIDE and INVESTIGATE run on opus too.
+
+**Splitting the provider for REVIEW alone is another option.** With `ENT_REVIEW_ACTOR=codex`, the
+model that wrote the implementation is not the one reviewing its own work. Codex's permission
+controls are not identical to Claude Code's, however, which is why it is never selected
+automatically (see "Using Codex" below). This is written as an option, not a recommendation.
+`semantic-review`'s points reach both providers all the same: Claude Code is made to read the skill
+with the Skill tool, and Codex has the body of its SKILL.md and `references/` placed into its
+prompt. Only the delivery differs; what the review looks at does not.
+
+#### The per-tick override (`ACT.agent`)
+
+The set the human chose through environment variables acts as **the default for the tick**. The
+per-tick override belongs to DECIDE: an `ACT` may carry an `agent`, and that one run uses the
+provider, model, and effort named there.
 
 ```json
 {"type":"ACT","intent":"fix the failing test","agent":{"actor":"codex","effort":"high"}}
@@ -404,6 +451,26 @@ in the Decision's rationale (`ACT(implement on codex/high: ...)`).
 
 **DECIDE cannot choose its own provider this way.** By the time it returns `agent` it is already
 running and cannot relaunch itself. The decide phase stays on the environment variables.
+
+#### The same starting point on Codex
+
+The table above is written in Claude Code's model names. On Codex it comes out as follows. The
+values are taken from codex-cli 0.147.0's model catalog, where `gpt-5.6-sol` is the "Latest
+frontier agentic coding model", `gpt-5.6-terra` the "Balanced agentic coding model for everyday
+work", and `gpt-5.6-luna` the "Fast and affordable agentic coding model". The reasoning behind the
+spread is the same as above.
+
+| phase | model | effort |
+| --- | --- | --- |
+| `DECIDE` | `gpt-5.6-luna` | `low` |
+| `PLAN` | `gpt-5.6-sol` | `high` |
+| `IMPLEMENT` | `gpt-5.6-sol` | `high` |
+| `REVIEW` | `gpt-5.6-sol` | `xhigh` |
+| `INVESTIGATE` | `gpt-5.6-terra` | `medium` |
+
+**`~/.codex/config.toml` has no effect here.** ent starts Codex with `--ignore-user-config`, so the
+`model` and `model_reasoning_effort` written there are not read. Without an explicit
+`ENT_<PHASE>_MODEL`, it runs on whatever the Codex CLI defaults to.
 
 ### Using Codex
 
@@ -1030,10 +1097,12 @@ src/adapters/local.ts     Ports writable with node:child_process (command execut
 src/adapters/goal-file.ts Reads .goals/<slug>.yaml, and lays config.yaml from the same directory under it
 src/adapters/github.ts    CodeProviderPort. @octokit/rest + ETag
 src/adapters/claude.ts    ActorPort and LlmPort. Claude Agent SDK.
-                          Per-role allowed/denied tools and prompts are here too. Only the
+                          Per-role allowed/denied tools are here. Only the
                           implement role holds editing tools (design.md §4.2)
 src/adapters/codex.ts     ActorPort and LlmPort. Converts Codex CLI's non-interactive JSONL
-src/adapters/agent-prompt.ts Per-role prompts and output contract for Codex
+src/adapters/agent-prompt.ts Per-role prompts and output contract. One set for every provider;
+                          only how semantic-review is delivered (Skill tool / inlined body) differs
+plugins/ent-review/       The canonical copy of the semantic-review skill the review role reads
 src/wiring/index.ts       The composition root. The single place deciding which Adapter goes into
                           which Port. The gate's inputs (Adapter injection and verifyRoot) are
                           decided here too

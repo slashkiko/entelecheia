@@ -208,8 +208,8 @@ reconcile は「今の状態を見て差分を埋める」冪等な関数で、
 
 ### 3.5 providerとモデルはphaseごとに選ぶ
 
-controllerの判断用LLMを呼ぶのはDECIDEのうちGapが残っている経路だけで、実装・レビュー・
-調査の呼び出しはActor roleとして分ける。どちらもPortとAdapterを経由し、phaseごとに
+controllerの判断用LLMを呼ぶのは、DECIDEのうちGapが残っている経路と、ティックの外で動く
+planner（§10-12）の2つになる。実装・レビュー・調査の呼び出しはActor roleとして分ける。どちらもPortとAdapterを経由し、phaseごとに
 providerを選んでもcontroller本体へprovider固有の分岐を漏らさない。DECIDEの出力は必ず
 Zodで検証し、通らなければ受け取らない（最大2回リトライ）。
 
@@ -221,11 +221,15 @@ Gap が残る場合の `WAIT`（レビュー待ちなど）は LLM も選べる�
 
 既定はClaude Agent SDKで、Claude Codeの保存済み認証を使う。2026-08-11にCodex CLI
 Adapterを追加した。共通の`ENT_ACTOR` / `ENT_MODEL` / `ENT_EFFORT`に加えて、
-`DECIDE`、`IMPLEMENT`、`REVIEW`、`INVESTIGATE`ごとの同名上書きを受け取る。
+`DECIDE`、`PLAN`、`IMPLEMENT`、`REVIEW`、`INVESTIGATE`ごとの同名上書きを受け取る。
+**ここでの`PLAN`は`ent plan`のplanner（§10-12）を指す。** §5が並べるティック内の
+`PLAN / REPLAN`の段ではない。
 たとえば`ENT_DECIDE_ACTOR=codex`と`ENT_REVIEW_MODEL=<model>`を同時に指定できる。
 同じphaseのprovider・model・effortは1組として選び、ACTのRunには実際に使ったproviderを残す。
-effortの語彙はproviderごとに検証する。Claude Codeは`low / medium / high / xhigh / max`、
-Codexは`none / minimal / low / medium / high / xhigh`で、片方だけの値を他方へ黙って渡さない。
+effortの語彙はproviderごとに検証する。いまはどちらも
+`low / medium / high / xhigh / max`で、Codex側はcodex-cli 0.147.0のモデルカタログに
+合わせてある（`none`と`minimal`を持つモデルが1つも無い）。値が揃っているいまも、
+片方だけの値を他方へ黙って渡す形にはしない。
 
 環境変数が決めるのは既定で、**ティックごとの上書きはDECIDEが持つ**。`ACT`に
 `agent`（`actor`は必須、`model`と`effort`は任意）を添えて返せば、そのRunだけが
@@ -361,13 +365,18 @@ roleは次の5箇所を通る。
   そのまま落とす（レビュー役だからといって merge や force push を許さない）。
   プロンプトも role ごとに分ける。権限だけ分けて文面が同じだと、レビュー役は編集を
   試みて拒否され続け、ターンをそこに使い切る
-- **role がClaude Code Agentに見せるskillを決める**（`src/adapters/claude.ts`の`SKILLS_FOR`）。
-  Claude Codeのレビュー役にだけ`semantic-review`を渡す。実装役に渡すと「観点を満たすように書く」
+- **role がAgentに渡す観点（skill）を決める**（`src/adapters/claude.ts`の`SKILLS_FOR`と、
+  `src/adapters/agent-prompt.ts`の`SkillDelivery`）。
+  レビュー役にだけ`semantic-review`を渡す。実装役に渡すと「観点を満たすように書く」
   余地ができ、§3.1 が criteria で避けている構図がレビュー側で再発する。
   **`settingSources: []` は解かない。** ホストの `~/.claude` とリポジトリの `.claude` を
   読ませない判断はそのままで、controller が名指しした plugin（`plugins/ent-review/`）
   だけが Agent から見える。skill の一覧に出るのはその1件になる。
-  中身は ent の外でも使う汎用の skill で、**Goal も criteria も verdict も知らない。**
+  **Codex には同じ観点を本文ごとプロンプトへ差し込む**（`src/adapters/agent-prompt.ts` の
+  `SkillDelivery`）。`codex exec` には repo の中の skill を1回の起動へ渡す口が無く、
+  残る discovery は `$CODEX_HOME/skills` と marketplace の plugin で、どちらもホスト側に
+  状態を置く。分けるのは渡し方だけにして、**レビューの契約は provider によらず1つ**にする。
+  skill の中身は ent の外でも使う汎用のもので、**Goal も criteria も verdict も知らない。**
   PR の差分ではなく作業ツリーの HEAD を見ること、意図の一次情報が `.goals/<goal.id>.yaml` で
   あること、本文の後ろに `reviewed_sha:` と `verdict:` の2行を足すことは、すべて
   `REVIEW_PROMPT` の側に書く。観点は skill が持ち、契約は controller が持つ。
@@ -375,8 +384,8 @@ roleは次の5箇所を通る。
   そのために `ActorInvocation` が `goalId` を運ぶ——宣言部は作業ツリーに commit 済みで
   入っているので、**どのファイルを読めばよいかだけを渡せば意図が届く**
   （`intent` に載るのは constraints だけで、`desired_state` は載らない）
-  Codexのreview roleにはこのClaude pluginを渡さず、Codex向けのrole別promptと
-  `reviewed_sha:` / `verdict:`の出力契約で同じ観測境界へ接続する
+  Codexのreview roleにはこのClaude pluginを渡さず、**同じrole別promptにskillの本文を
+  差し込んで**渡し、`reviewed_sha:` / `verdict:`の出力契約で同じ観測境界へ接続する
 - **worktree の名前が (goal.id, role) から決まる**（`worktreeNameFor`）。
   **`review` は `implement` と同じ作業ツリーを見て、`investigate` だけが分かれる。**
   当初は3つとも分けていたが、分けると**レビューの対象が実装に永久に追いつかない**。
@@ -547,7 +556,7 @@ sha を読む経路は2本ある。**先に見るのは `reviewed_sha:` の名�
 読む側を先に足したのは、当時のプロンプトが言うのが「読んだ commit の sha を述べる」
 ことだけで、**数えるだけの規則が落とす出力——差分の比較元を完全形で併記する、
 `git log` の出力を1行引用する。どれも指示に従った書き方になる——を拾える形が、
-読む側にしか置けなかった**ため（`src/adapters/claude.ts` は
+読む側にしか置けなかった**ため（`src/adapters/agent-prompt.ts` は
 `PROTECTED_PATH_FLOOR` の中にあり、Actor には触れない）。
 
 いまはプロンプトの側でも名指しを要求している。レビュー役に `semantic-review` の
@@ -722,7 +731,7 @@ ESCALATE の結果として Goal は BLOCKED か WAITING_HUMAN に遷移する�
 LLM/Actor providerには時間枠や契約に応じた使用量上限がある。
 何時間も走る controller は上限に当たりうるので、クラッシュや即時再試行ではなく
 `WAITING_EXTERNAL(usage_limit)` に落ちて、リセット時刻まで寝て自動再開する。
-リセット時刻が取れなければ指数バックオフ。
+リセット時刻が取れなければ、guard が既定の待ちを置く（§10-5）。
 DECIDEだけでなくActorの実行中に上限へ達した場合も、失敗分類、トークン、生ログをRunへ残し、
 guardが当該ACTを`WAIT(usage_limit)`へ差し替える。これにより次ティックの別providerのDECIDEが、
 同じACTを即座に再試行する経路を作らない。
@@ -1036,7 +1045,8 @@ DECIDE の LLM 呼び出しは `LlmCall.tokens` に残す（§4.5）。あとか
 - **LLM は「いつまで寝るか」も決めない。** 行動の種類だけを閉じても、`WAIT` の
   `resume_after` に遠い未来を返されれば Goal を無期限に止められる。LLM が返した
   `resume_after` は採らない。埋めてよいのは、使用量上限のリセット時刻を Port から
-  受け取ったときだけになる（§10-3 / §10-5）
+  受け取ったときと、読めなかった上限に guard が既定の待ちを置くときだけになる
+  （§10-3 / §10-5）
 - **`max_wall_clock` が数えるのは、機械側が動けた実時間になる。** `WAIT` と、
   予算切れ以外の `ESCALATE` で待っていた分は引く（`waitedSeconds`）。待てと
   指示したのは controller の側で、次のティックが何をしても状態は変わらない。
@@ -1077,10 +1087,11 @@ DECIDE の LLM 呼び出しは `LlmCall.tokens` に残す（§4.5）。あとか
 
 - 関門そのもの（`src/domain/protected-paths.ts`）と、Agent の許可・拒否ツールを決める
   ファイル（`src/adapters/claude.ts`）。ここが開いていると、照合を常に false にするか
-  拒否リストを空にするだけで残りが全部外れる。同じファイルが、役割ごとに見せる skill
-  （`SKILLS_FOR`）と、レビューの結論の契約（`REVIEW_PROMPT` が求める `verdict:` と
-  `reviewed_sha:` の2行。§4.3）も持つ。**Actor が自分に渡る観点と、自分の結論の
-  読まれ方を書き換えられる**ようになるので、下限から外せない
+  拒否リストを空にするだけで残りが全部外れる。役割ごとに見せる skill（`SKILLS_FOR`）は
+  同じファイルにあり、レビューの結論の契約（`REVIEW_PROMPT` が求める `verdict:` と
+  `reviewed_sha:` の2行。§4.3）は `src/adapters/agent-prompt.ts` にある。どちらも下限の
+  中に入れてある。**Actor が自分に渡る観点と、自分の結論の読まれ方を書き換えられる**
+  ようになるので、下限から外せない
 - **guard が読む判断規則（`src/domain/guard-rules.ts`）。** 関門が差分を取る相手
   （`guardBaseOf`）、未 commit の関門が見る述語（`leavesWorkUncommitted` / `observedValue`）、
   寝ている間かの判定（`sleepingUntil`）、経過時間と連続失敗の数え方がここにある。
@@ -1659,6 +1670,17 @@ Phase 3 の3本目で確定した。`tick` が入口で判定し、過ぎるま�
 lease も取らない。取ると、寝ているだけの Goal が他のワーカーを塞ぐ。解釈できない値は
 「起きてよい」と読む。壊れた値のせいで Goal が永久に止まる方が、1ティック早く起きるより
 悪い。
+
+**リセット時刻が分からない `usage_limit` には、guard が既定の待ちを置く**
+（`usageLimitResumeAfter`、既定は1時間）。ここを null のまま通すと、上の
+「解釈できない値は起きてよい」に落ちて次のティックがそのまま走り、また上限に当たる。
+その Run は failed として積まれるので、`max_consecutive_failures` に達したところで
+「待てば直る」ものが `ESCALATE(budget_exhausted)` になる。**再開時刻を読めない Port は実在する。**
+Codex CLI は上限の文面の中に時刻を書くだけで、機械可読なフィールドを出さない
+（`resetTimeIn` が読み、読めた文字列と結果は生ログに残す）。Claude 側にも
+`rate_limit_event` を伴わない経路がある。既定を Adapter ではなく guard に置くのは、
+Run には**観測できたものだけ**を残すため（§3.1）。読めなかった Run の
+`actor_resume_after` は null のままになる。
 
 ### 10-6. ~~`require_human_approval` を誰が止めるか~~
 

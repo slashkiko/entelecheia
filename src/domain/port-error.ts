@@ -16,7 +16,7 @@ export type PortErrorKind = z.infer<typeof portErrorKindSchema>;
 
 export class PortError extends Error {
   readonly kind: PortErrorKind;
-  /** 再開してよい時刻。分からなければ null にして指数バックオフに任せる */
+  /** 再開してよい時刻。分からなければ null にして、guard の既定の待ちに任せる */
   readonly resumeAfter: string | null;
 
   constructor(kind: PortErrorKind, message: string, resumeAfter: string | null = null) {

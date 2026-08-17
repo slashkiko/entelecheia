@@ -733,3 +733,10 @@ const _effortLevelsAreExhaustive: never[] = [] as Exclude<
   (typeof EFFORT_LEVELS)[number]
 >[];
 void _effortLevelsAreExhaustive;
+
+/** `CODEX_EFFORT_LEVELS` も同じ検査に掛ける。増えた側で落ちる理由は上と同じ。 */
+const _codexEffortLevelsAreExhaustive: never[] = [] as Exclude<
+  CodexEffort,
+  (typeof CODEX_EFFORT_LEVELS)[number]
+>[];
+void _codexEffortLevelsAreExhaustive;
