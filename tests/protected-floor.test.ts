@@ -1,7 +1,6 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import { describe, expect, it } from "vitest";
-import { parse as parseYaml } from "yaml";
 import {
   APPROVAL_GATE_FLOOR,
   goalSchema,
@@ -11,6 +10,8 @@ import {
   withApprovalGateFloor,
   withProtectedPathFloor,
 } from "../src/domain/goal.js";
+import { configTemplate, parseGoalConfig } from "../src/domain/goal-config.js";
+import { parseGoal } from "../src/domain/goal-parse.js";
 
 /**
  * 保護パスの下限が、どの Goal からも外せないことを固定する。
@@ -100,6 +101,9 @@ describe("保護パスの下限", () => {
     expect(PROTECTED_PATH_FLOOR).toContain(".goals/**");
     expect(PROTECTED_PATH_FLOOR).toContain("src/domain/protected-paths.ts");
     expect(PROTECTED_PATH_FLOOR).toContain("src/domain/goal.ts");
+    // 保護パスを Goal の下へ敷く規則。ここを書き換えれば、config が配っている
+    // repo 全体の保護を、下限のファイルを1つも触らずに消せる。
+    expect(PROTECTED_PATH_FLOOR).toContain("src/domain/goal-config.ts");
     expect(PROTECTED_PATH_FLOOR).toContain("src/adapters/claude.ts");
     expect(PROTECTED_PATH_FLOOR).toContain("src/adapters/codex.ts");
     expect(PROTECTED_PATH_FLOOR).toContain("src/adapters/agent-prompt.ts");
@@ -212,8 +216,13 @@ const GUARD_RULES = [
  * `verifyRoot` は未 commit の関門と VERIFY が見る作業ツリーを決める。
  * どちらもリファクタで `src/cli.ts` から合成ルートへ移った。**下限も CODEOWNERS も
  * パスのリテラルなので、移設のたびに一緒に動かさないと保護が付いてこない。**
+ *
+ * `deliverDeclaration` も同じ枠に入る。**レビュー役が読む宣言部そのものを決める。**
+ * 配る条件を「無視されているか」から「無ければ配る」に変えるだけで、tracked な
+ * `.goals/` を上書きした差分が Actor の編集として関門に並ぶ。逆に配るのをやめれば、
+ * レビュー役は宣言を読めないまま approve を返す。
  */
-const WIRING_RULES = ["tickPorts", "verifyRoot"] as const;
+const WIRING_RULES = ["tickPorts", "verifyRoot", "deliverDeclaration"] as const;
 
 const REPO_ROOT = new URL("../", import.meta.url).pathname;
 
@@ -289,14 +298,27 @@ describe("承認ゲートの下限", () => {
  * 「スキーマとして妥当」だけでは足りない。
  */
 describe("ent init の雛形", () => {
-  const parsed = () => goalSchema.parse(parseYaml(goalTemplate(TEMPLATE_SLUG)));
+  // `ent init` が同じ1周で置く2本を、init と同じ順に重ねて読む。repo スコープの
+  // 宣言（repository / setup / policies）は config に移ったので、雛形だけを
+  // goalSchema に通しても妥当にならない。押さえたいのは「init を叩いた直後の
+  // 状態が回せること」なので、両方を敷いた結果で見る。
+  const parsed = () =>
+    parseGoal(
+      goalTemplate(TEMPLATE_SLUG),
+      TEMPLATE_SLUG,
+      parseGoalConfig(
+        configTemplate({ owner: "your-org", name: "your-repo", defaultBranch: "main" }),
+      ),
+    );
 
   it("スキーマとして妥当で、ファイル名の slug と goal.id が揃う", () => {
     expect(parsed().goal.id).toBe(TEMPLATE_SLUG);
   });
 
   it("6ゲート全部を書く", () => {
-    // 下限が混ぜるのは2つだけなので、残り4つは雛形が書かないと許可されたままになる。
+    // 下限が混ぜるのは2つだけなので、残り4つはどこかが書かないと許可されたままになる。
+    // 書く場所は config へ移った。**そのほうが広い**——雛形から始めた Goal だけで
+    // なく、この repo の Goal 全部にこの下限が掛かる。
     for (const gate of [
       "merge",
       "force_push",
@@ -312,10 +334,10 @@ describe("ent init の雛形", () => {
   it("人間が埋める箇所に案内を置く", () => {
     // repository を埋め忘れても ent start は通り、最初のティックで GitHub の
     // 404 として初めて出る。「ent の話だと分かるところで止める」という doctor の
-    // 方針と、雛形だけがずれることになる。
-    const yaml = goalTemplate(TEMPLATE_SLUG);
-
-    expect(yaml).toContain("Fill this in for the target repository");
-    expect(yaml).toContain("Must match the filename slug");
+    // 方針と、雛形だけがずれることになる。案内は repository を持つ側に置く。
+    expect(goalTemplate(TEMPLATE_SLUG)).toContain("Must match the filename slug");
+    expect(configTemplate({ owner: "o", name: "r", defaultBranch: "main" })).toContain(
+      "Fill this in for the target repository",
+    );
   });
 });

@@ -11,6 +11,7 @@ import {
   goalSchema,
   SLUG,
 } from "../domain/goal.js";
+import { CONFIG_FILENAME, CONFIG_SLUG } from "../domain/goal-config.js";
 import { parseGoal } from "../domain/goal-parse.js";
 import { renderGoal } from "../domain/goal-render.js";
 import { MAX_LLM_RETRIES } from "../domain/llm-call.js";
@@ -226,6 +227,14 @@ function accept(
   const duplicated = proposedIds.filter((id, index) => proposedIds.indexOf(id) !== index);
   if (duplicated.length > 0) {
     return `the same id was proposed twice: ${[...new Set(duplicated)].join(", ")}`;
+  }
+
+  // `config` は repo スコープの宣言（`.goals/config.yaml`）が使う予約 slug で、
+  // `existingGoals` はそれを Goal として数えない。ここで弾かないと、衝突の検査を
+  // すり抜けて `writeGoalFile` の EEXIST まで落ちる。何が起きたのかが読めない。
+  const reserved = proposedIds.filter((id) => id === CONFIG_SLUG);
+  if (reserved.length > 0) {
+    return `${CONFIG_SLUG} is the repository-wide declaration (.goals/${CONFIG_FILENAME}), not a Goal id (choose a different id)`;
   }
 
   const declared = new Set(existing.map((goal) => goal.slug));

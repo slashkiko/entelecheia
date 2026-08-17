@@ -1,6 +1,7 @@
 import { parseArgs } from "node:util";
 import { errorMessage } from "../domain/error-message.js";
 import { SLUG } from "../domain/goal.js";
+import { CONFIG_FILENAME, CONFIG_SLUG } from "../domain/goal-config.js";
 import { DEFAULT_LIMIT } from "../usecase/inspect.js";
 import { DEFAULT_MAX_GOALS } from "../usecase/plan.js";
 
@@ -15,6 +16,7 @@ import { DEFAULT_MAX_GOALS } from "../usecase/plan.js";
 export const USAGE = `ent — Declare the end state; the controller converges to it.
 
   ent init             Make the current repository runnable with ent (idempotent)
+                       --private-goals keeps .goals/ out of git via info/exclude
   ent plan             Split one prose objective into sub-Goal declarations
                        --desire "<text>" or --from <path> says what to split
                        --repo <owner>/<name> / --default-branch <name> name the target
@@ -57,7 +59,7 @@ export type Command =
    * どの Goal の話でもないので slug を受け取る理由が無く、`--force` のような
    * 上書きの口も持たない。2度目は既にあるものを一切書き換えずに 0 で返る。
    */
-  | { kind: "init"; json?: true }
+  | { kind: "init"; privateGoals?: true; json?: true }
   /**
    * 散文のゴールをサブ Goal の宣言に分解する。slug は取らない。
    *
@@ -199,7 +201,11 @@ export function parseCommand(argv: readonly string[]): Command {
         return { kind: "doctor" };
       }
       if (sub === "init") {
-        return { kind: "init", ...json };
+        // 宣言部を git に載せない。既定は変えない——いま init を叩いている側の
+        // 挙動を、フラグを足したことで動かさない。
+        const privateGoals =
+          values["private-goals"] === true ? ({ privateGoals: true } as const) : {};
+        return { kind: "init", ...privateGoals, ...json };
       }
       if (sub === "plan") {
         return planCommand(values, json);
@@ -218,6 +224,15 @@ export function parseCommand(argv: readonly string[]): Command {
     }
     if (positionals.length > 1) {
       return { kind: "error", message: `too many arguments: ${positionals.join(" ")}` };
+    }
+    if (slug === CONFIG_SLUG) {
+      // `.goals/config.yaml` は repo スコープの宣言で、Goal ではない。SLUG には
+      // 一致するので、名指しで断らないと `goalSchema` の「`goal` が無い」という
+      // 文句が出る。打った人間には、それが config を読みに行った結果だと分からない。
+      return {
+        kind: "error",
+        message: `${CONFIG_SLUG} is the repository-wide declaration (.goals/${CONFIG_FILENAME}), not a Goal. Pass a Goal slug instead`,
+      };
     }
     if (!SLUG.test(slug)) {
       // slug はそのまま `.goals/<slug>.yaml` のパスになる。`../` を通すと
@@ -355,7 +370,10 @@ function optionsFor(sub: Subcommand): ParseArgsOptions {
     case "init":
       // `--force` は置かない。上書きできる口があると、人間が埋めた宣言部を
       // 消す経路が公式のものになる。2度目は黙って既存を残す。
-      return { json: { type: "boolean" } };
+      //
+      // `--private-goals` は別の軸になる。上書きの口ではなく、**書き先を選ぶ**口で、
+      // tracked な `.gitignore` を触るか `info/exclude` だけで済ませるかが変わる。
+      return { json: { type: "boolean" }, "private-goals": { type: "boolean" } };
     case "plan":
       return {
         json: { type: "boolean" },

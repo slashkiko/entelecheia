@@ -20,6 +20,10 @@
 /src/wiring/ @slashkiko
 /src/domain/protected-paths.ts @slashkiko
 /src/domain/goal.ts @slashkiko
+# repo スコープの宣言を Goal の下へ敷く規則。protected_paths と
+# require_human_approval を「足す」判断がここにあり、置き換えに変えるだけで
+# config が配っている repo 全体の保護が消える。goal.ts と同じ扱いにする。
+/src/domain/goal-config.ts @slashkiko
 /src/adapters/claude.ts @slashkiko
 /src/adapters/local.ts @slashkiko
 /.goals/ @slashkiko

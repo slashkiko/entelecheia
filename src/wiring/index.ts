@@ -10,10 +10,13 @@ import { loadGoalFile } from "../adapters/goal-file.js";
 import {
   commandRunner,
   findGitRoot,
+  GOALS_IGNORE_LINE,
   ghAuthToken,
   gitBranch,
   gitDefaultBranch,
+  gitInfoExcludePath,
   gitRemoteRepository,
+  gitRepositoryIdentity,
   gitWorktree,
   localRepo,
   pendingApproval,
@@ -26,6 +29,7 @@ import type { LlmPort } from "../decide/index.js";
 import type { ActionAgent } from "../domain/action.js";
 import { errorMessage } from "../domain/error-message.js";
 import type { Goal } from "../domain/goal.js";
+import { CONFIG_FILENAME } from "../domain/goal-config.js";
 import type { LlmCall } from "../domain/llm-call.js";
 import { PortError } from "../domain/port-error.js";
 import { type ActorKind, type ActorRole, EFFORT_VOCABULARY } from "../domain/run.js";
@@ -173,7 +177,17 @@ export function gitRootOf(repoRoot: string): string | null {
  * `src/adapters/local.ts` にあるので、選ぶのはここになる。
  */
 export function initProbes(): InitProbes {
-  return { gitRoot: gitRootOf, stateIgnoreLine: STATE_IGNORE_LINE };
+  return {
+    gitRoot: gitRootOf,
+    stateIgnoreLine: STATE_IGNORE_LINE,
+    // `.goals/config.yaml` の `repository` を埋める材料。git に聞くので Adapter を
+    // 選ぶのはここになる。読めなければ null で、init は雛形の値を書く。
+    repository: gitRepositoryIdentity,
+    // `--private-goals` の行と、その書き先。`.gitignore` ではなく info/exclude に
+    // 書くので、tracked なファイルは1つも動かない。
+    goalsIgnoreLine: GOALS_IGNORE_LINE,
+    infoExcludePath: gitInfoExcludePath,
+  };
 }
 
 /**
@@ -298,18 +312,24 @@ export function doctorProbes(repoRoot: string, stateDir: string): DoctorProbes {
  * 同じものになる。
  */
 function loadGoalSummaries(goalsDir: string): DoctorGoal[] {
-  return readdirSync(goalsDir)
-    .filter((name) => name.endsWith(".yaml") || name.endsWith(".yml"))
-    .sort()
-    .map((name) => {
-      const slug = basename(name, extnameOf(name));
-      try {
-        const goal = loadGoalFile(join(goalsDir, name));
-        return { slug, error: null, dependsOn: [...goal.goal.depends_on] };
-      } catch (error) {
-        return { slug, error: errorMessage(error), dependsOn: [] };
-      }
-    });
+  return (
+    readdirSync(goalsDir)
+      // config.yaml は repo スコープの宣言で、Goal ではない。外さないと doctor が
+      // `config` という壊れた Goal を毎回1本報告する。`loadGoalFile` は同じ
+      // ディレクトリの config を敷いて読むので、ここで読み直す必要も無い。
+      .filter((name) => name !== CONFIG_FILENAME)
+      .filter((name) => name.endsWith(".yaml") || name.endsWith(".yml"))
+      .sort()
+      .map((name) => {
+        const slug = basename(name, extnameOf(name));
+        try {
+          const goal = loadGoalFile(join(goalsDir, name));
+          return { slug, error: null, dependsOn: [...goal.goal.depends_on] };
+        } catch (error) {
+          return { slug, error: errorMessage(error), dependsOn: [] };
+        }
+      })
+  );
 }
 
 function extnameOf(name: string): string {

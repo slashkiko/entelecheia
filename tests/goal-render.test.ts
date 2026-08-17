@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { type Goal, goalTemplate, TEMPLATE_SLUG } from "../src/domain/goal.js";
+import { configTemplate, parseGoalConfig } from "../src/domain/goal-config.js";
 import { parseGoal } from "../src/domain/goal-parse.js";
 import { renderGoal } from "../src/domain/goal-render.js";
 
@@ -79,7 +80,19 @@ describe("Goal を YAML に落とす", () => {
   it("`ent init` が置く雛形も往復する", () => {
     // 雛形は人間が読む注釈だらけだが、値としては妥当（`goalTemplate` の JSDoc）。
     // 実際に書き出しうる形の中で最も項目が多いので、往復の対象に入れておく。
-    const { before, after } = roundTrip(goalTemplate(TEMPLATE_SLUG), TEMPLATE_SLUG);
+    //
+    // **妥当と言えるのは config を敷いた後になった。** `repository` と `setup` と
+    // `policies` の中身は `.goals/config.yaml` へ移った。init は同じ1周で両方を
+    // 置くので、init を叩いた直後の状態で往復を見る。書き出す側（`renderGoal`）は
+    // 実効 Goal を丸ごと出すので、読み戻すときに config は要らない。
+    const before = parseGoal(
+      goalTemplate(TEMPLATE_SLUG),
+      TEMPLATE_SLUG,
+      parseGoalConfig(
+        configTemplate({ owner: "your-org", name: "your-repo", defaultBranch: "main" }),
+      ),
+    );
+    const after = parseGoal(renderGoal(before), TEMPLATE_SLUG);
     expect(after).toEqual(before);
   });
 

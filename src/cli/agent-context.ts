@@ -46,6 +46,13 @@ export interface AgentContext {
 
 const JSON_FLAG = { name: "--json", type: "boolean", summary: "emit JSON" } as const;
 
+const PRIVATE_GOALS_FLAG = {
+  name: "--private-goals",
+  type: "boolean",
+  summary:
+    "keep .goals/ out of git. The ignore line goes to info/exclude, so no tracked file is touched, and the controller delivers the declaration into each worktree instead",
+} as const;
+
 const LIMIT_FLAG = {
   name: "--limit",
   type: "integer",
@@ -62,9 +69,9 @@ export function agentContextPayload(): AgentContext {
       {
         name: "init",
         summary:
-          "make the current repository runnable. Places .goals/, the gitignore line, and a Goal template. Idempotent",
+          "make the current repository runnable. Places .goals/, the gitignore line, config.yaml (the repository-scoped declaration), and a Goal template. Idempotent",
         args: [],
-        flags: [JSON_FLAG],
+        flags: [JSON_FLAG, PRIVATE_GOALS_FLAG],
       },
       {
         name: "plan",

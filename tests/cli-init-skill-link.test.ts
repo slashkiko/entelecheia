@@ -18,6 +18,7 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { main } from "../src/cli.js";
+import { CONFIG_FILENAME } from "../src/domain/goal-config.js";
 
 /**
  * `ent init` が、ent の手順書を Claude Code の skill として引けるようにする。
@@ -236,7 +237,10 @@ describe("既存の init の振る舞いを変えない", () => {
   it(".goals/ と雛形と gitignore の行は今までどおり置く", async () => {
     await main(["init"]);
 
-    const goals = readdirSync(join(repoRoot, ".goals")).filter((name) => name.endsWith(".yaml"));
+    // config.yaml は repo スコープの宣言で Goal ではないので、数から外す。
+    const goals = readdirSync(join(repoRoot, ".goals"))
+      .filter((name) => name !== CONFIG_FILENAME)
+      .filter((name) => name.endsWith(".yaml"));
     expect(goals).toHaveLength(1);
     expect(readFileSync(join(repoRoot, ".gitignore"), "utf8")).toContain(".goals/.state");
   });

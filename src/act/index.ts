@@ -29,8 +29,20 @@ export interface WorktreePort {
   /**
    * Goal 専用の worktree を用意する。同じ name で2回呼んでも同じものを返す。
    * ティックをまたいで同じ作業ツリーを使い続けるため、作り直しにはしない。
+   *
+   * `goalId` を渡すと、宣言部（`.goals/<goalId>.yaml` と `.goals/config.yaml`）を
+   * 作業ツリーへ配る。**git に無視されているものだけを配る**（実装の
+   * `deliverDeclaration` に理由がある）。`.goals/` を commit しない構成では
+   * `git worktree add` が宣言部を持ってこないので、レビュー役が読む材料が消える。
+   *
+   * **name からは導けないので、明示的に受け取る。** `worktreeNameFor` は
+   * `implement` では id をそのまま使うが `investigate` では接尾辞を足すので、
+   * 名前を後ろから割ると役が増えるたびに壊れる。
+   *
+   * 省略できる形にしてあるのは、この Port を差し替えるテストを全部書き換えずに
+   * 済ませるため。実運用の呼び出し（`runActor`）は必ず渡す。
    */
-  ensure(name: string, baseBranch: string): Promise<Worktree>;
+  ensure(name: string, baseBranch: string, goalId?: string): Promise<Worktree>;
   /**
    * その worktree で実際に変わったパスを、worktree からの相対で返す。
    * 作業ツリーがまだ無ければ空配列。
@@ -422,7 +434,8 @@ async function runActor(
 
   let worktree: Worktree;
   try {
-    worktree = await deps.worktree.ensure(worktreeName, base);
+    // goal.id も渡す。宣言部を配る先を決めるのに要る（`WorktreePort.ensure`）。
+    worktree = await deps.worktree.ensure(worktreeName, base, goal.goal.id);
   } catch (error) {
     // 隔離できていない状態で Agent を走らせると、controller 本体を書き換えうる。
     // 起動しなかったので exit_code は無い。

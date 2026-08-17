@@ -93,8 +93,10 @@ policies:
     open_pull_request: manual
 ```
 
-Write nothing and push and PR creation proceed automatically, as before. A step set to `manual` is
-not performed by the controller, and that tick stops at `WAITING_HUMAN`. Which step was stopped, and
+Write nothing and push and PR creation proceed automatically, as before. `policies` is
+repository-scoped, so this normally goes in `.goals/config.yaml`; a Goal that writes `publish` itself
+overrides it key by key. A step set to `manual` is not performed by the controller, and that tick
+stops at `WAITING_HUMAN`. Which step was stopped, and
 what a human must do to move on, appears in `decision` from `ent get <slug>`.
 
 The stop also appears structurally in `ent run` output: `publishHold` is present only on ticks
@@ -129,7 +131,8 @@ Dropping environment variables is not enough to cut it off. **`gh` inside the Ag
 verification commands is de-authenticated as well** (`GH_CONFIG_DIR` is pointed at a directory that
 does not exist). `HOME` has to be passed through, so merely dropping variables would leave the
 host's login intact. Shell paths are narrowed too: git is invoked with an argv array, and the only
-things routed through a shell are `setup` and `verification.run` from the Goal YAML.
+things routed through a shell are `setup` and `verification.run` from the Goal YAML (or from
+`.goals/config.yaml` laid underneath it).
 
 `type: human` approvals count only those from people with write access to the repository. Review
 approvals exclude the PR's author, but **the comment boilerplate counts the author too**. In a
@@ -150,8 +153,8 @@ connected", "The controller does the committing", "Everything green does not mea
 broken", "The more central the design, the less it reduces to a verification command", and
 "Scope per phase".
 
-The Goal YAML schema is in `src/domain/goal.ts`; the registry of observation keys is in
-`src/domain/fact-keys.ts`.
+The Goal YAML schema is in `src/domain/goal.ts`, the repository-scoped half in
+`src/domain/goal-config.ts`; the registry of observation keys is in `src/domain/fact-keys.ts`.
 
 ### Inside Phase 3
 
@@ -326,10 +329,10 @@ to update it would leave the README claiming things fail.
 **Every invocation of `ent` runs exactly one tick and exits.** The first half below covers running a
 single Goal in this repository. After the command list come "Common options", "Choosing provider,
 model, and effort", "Using Codex", "The commit the gate measures against", and "How to launch it, and
-the exception when working on ent itself". The second half covers operations, in six sections: "Using
-it on a repository outside this repo", "Excluding permanently failing workflows from the count", "Not
-posting progress to the PR", "Opening PRs as drafts", "Splitting a coarse task across several Goals",
-and "Running several Goals at once".
+the exception when working on ent itself". The second half covers operations, in seven sections: "Using
+it on a repository outside this repo", "Excluding permanently failing workflows from the count",
+"Declaring once per repository", "Not posting progress to the PR", "Opening PRs as drafts",
+"Splitting a coarse task across several Goals", and "Running several Goals at once".
 
 ```sh
 mise run build                     # produce dist/cli.js
@@ -475,16 +478,25 @@ ENT_NODE="$(mise which node)"       # pin an absolute path to Node 24+ at this p
 alias ent="$ENT_NODE /path/to/entelecheia/dist/cli.js"
 
 cd /path/to/your-repo
-ent init            # place .goals/, the .gitignore line, and a Goal template
+ent init            # place .goals/, the .gitignore line, config.yaml, and a Goal template
 ent doctor          # read-only check of whether it can run in this location
 ```
 
-`ent init` is idempotent: it does not overwrite existing `.goals/*.yaml` and does not add the same
-line twice to `.gitignore`. If this is not a git repository it creates nothing and refuses with exit
-code 1. The template is filled in only as far as schema validity requires; `desired_state` and
-`acceptance_criteria` are written by a human. For how to write CI criteria, see the `[!IMPORTANT]`
-under
+On a repository other people share, pass `--private-goals`: the ignore line goes to `info/exclude`
+instead, no tracked file is touched, and the controller delivers the declaration into each worktree.
+See "[Running ent on a team's repository without committing `.goals/`](#running-ent-on-a-teams-repository-without-committing-goals)".
+
+`ent init` is idempotent: it does not overwrite existing `.goals/*.yaml` or `.goals/config.yaml`, and
+does not add the same line twice to `.gitignore`. If this is not a git repository it creates nothing
+and refuses with exit code 1. `desired_state` and `acceptance_criteria` are written by a human. For
+how to write CI criteria, see the `[!IMPORTANT]` under
 "[Excluding permanently failing workflows from the count](#excluding-permanently-failing-workflows-from-the-count)".
+
+`.goals/config.yaml` holds what is decided per repository rather than per Goal — see
+"[Declaring once per repository](#declaring-once-per-repository)". `repository` is filled in from
+`origin` and the current branch when they can be read, and left as `your-org/your-repo` when they
+cannot. The Goal template does not repeat those keys, so **the template alone does not satisfy the
+schema; it does once `config.yaml` is laid underneath it.** `ent init` places both in the same run.
 
 **`ent init` also writes outside the target repository.** It places a symlink at
 `~/.claude/skills/ent` pointing at ent's own `.claude/skills/ent` directory, so that an agent working
@@ -535,7 +547,10 @@ Three constraints remain.
   belonging to that Goal (`Store.guardDigest`), and from there they connect to the gate. The raw log
   is watched because its body becomes the `review.verdict` Fact: protect the row but not what the row
   points at, and the verdict can be forged. What stays invisible is gitignored paths other than these
-  two, and anything outside repoRoot (holes (a) and (b) in design.md §10-6)
+  two, and anything outside repoRoot (holes (a) and (b) in design.md §10-6). **`--private-goals`
+  widens that hole to the declaration itself**: ignoring `.goals/` whole puts the Goal YAML and
+  `config.yaml` in the invisible bucket, at repoRoot as well as in the worktree, so an edit to either
+  no longer reaches the gate
 
 ### Excluding permanently failing workflows from the count
 
@@ -556,9 +571,11 @@ Because it spans runs, **workflows your repository deliberately leaves red or pe
 policy are included too.** The "do not make it mergeable until a specific person's review passes"
 kind of workflow is one such: if it fails it joins the count, and if it never reaches `completed`
 while awaiting approval the count itself never settles. Either way `equals: 0` is never satisfied. To
-exclude them, write it in the declaration.
+exclude them, write it in the declaration. `ci` is a `repository` key, so it belongs in
+`.goals/config.yaml` unless one Goal alone needs it.
 
 ```yaml
+# .goals/config.yaml
 repository:
   provider: github
   owner: your-org
@@ -650,6 +667,73 @@ Pagination is not implemented. Fetching page two and beyond would eat the same G
 budget that pinact (run by `mise run check`) uses, once per run. Losing the ability to reason about
 round trips per tick was judged worse than not emitting a count.
 
+### Declaring once per repository
+
+`repository`, `setup`, and `policies` are decided by the repository, not by the Goal. Written in
+every Goal YAML they become the same text copied N times, and changing the practice means editing
+every file. Put them in `.goals/config.yaml` once and every Goal under `.goals/` inherits them.
+
+```yaml
+# .goals/config.yaml
+version: 1
+repository:
+  provider: github
+  owner: your-org
+  name: your-repo
+  default_branch: main
+setup:
+  - pnpm install --frozen-lockfile
+policies:
+  require_human_approval: [merge, force_push, push_to_default_branch, deploy, secret_access, external_send]
+  protected_paths: []
+```
+
+`version: 1` is required; everything under it is optional. Three rules govern how a Goal and this
+file combine.
+
+- **A Goal's own value always survives.** The merge happens before validation, key by key — not
+  subtree by subtree. A Goal that writes `repository.owner` but not `repository.ci` keeps its owner
+  and still picks up `ci` from here
+- **`require_human_approval` and `protected_paths` are added, never replaced.** They are floors, so a
+  Goal cannot open a gate the repository closed. `APPROVAL_GATE_FLOOR` and `PROTECTED_PATH_FLOOR`
+  still apply underneath. Everything else — `setup` included — replaces
+- **Goal-specific keys are refused here.** `goal`, `acceptance_criteria`, `context`, and `budget` fail
+  validation if written in `config.yaml`. Stopping conditions in particular stay in the Goal: were
+  they pushed out to a repository-wide default, reading one Goal YAML would no longer tell you when
+  that Goal stops
+
+Without the file nothing changes: Goals that declare everything themselves parse exactly as before.
+`config` is a reserved slug — every subcommand that takes one (`start` / `run` / `get` / `abandon`)
+refuses it rather than reading the file as a Goal, and `doctor` does not count it among the
+declarations.
+
+#### Running ent on a team's repository without committing `.goals/`
+
+Using ent by yourself inside a repository other people share, you do not want the declaration in
+their history. `ent init --private-goals` sets that up.
+
+```sh
+ent init --private-goals
+```
+
+It differs from a plain `ent init` in one way: **no tracked file is touched.** The ignore line goes
+to `info/exclude` — per checkout, never committed — and it ignores `.goals/` whole rather than only
+`.goals/.state/`. `.gitignore` is not read or written, so `git status` stays clean.
+
+Ignoring the directory would normally cost the review role its source: `git worktree add` carries
+only tracked files, so an ignored `.goals/` never reaches the Actor's worktree, and the review role
+is told to read `.goals/<id>.yaml` there. The controller delivers it instead — the Goal YAML and
+`config.yaml` are copied in each time a role is launched.
+
+**Only files git ignores are delivered.** Delivering to a path git can see would add an untracked
+file: it would show up in `changedPaths` and stop an Actor that never touched it
+(`protected_path_touched`), and `add --all` would carry it into the PR diff. Ignored, the copies
+appear in neither. They are also rewritten on every launch, so an edit the Actor makes to its own
+copy — invisible to the gate, since the path is ignored — is discarded before the next role reads it.
+
+The reverse case is left alone: **where `.goals/` is committed, a stale copy in an old worktree stays
+stale.** Refreshing a tracked file would line the diff up as an Actor edit.
+
 ### Not posting progress to the PR
 
 By default, the pass status of the criteria is accumulated in PR comments. With `--report`, that pass
@@ -674,6 +758,21 @@ Specifying `stdout` does not stream raw Markdown. `run`'s standard output is JSO
 goes in `report.body`. Only `run` accepts it, and it cannot be combined with `--dry-run`. What goes
 into the JSON, and what happens when it could not be written, are in `.claude/skills/ent/SKILL.md`.
 
+**To stop posting for good rather than per invocation, declare it.** `policies.progress.report` takes
+the same values as the flag, plus `pr` for the default, and belongs in `.goals/config.yaml` when it
+holds for the whole repository.
+
+```yaml
+policies:
+  progress:
+    report: stdout      # pr (default) / stdout / a file path
+```
+
+`--report` wins for the tick it is passed on: the declaration applies to every tick, the flag only to
+this one, so the flag has to be able to send this run's progress somewhere else. Unlike the flag, the
+declaration and `--dry-run` are not an error — dry-run never reaches publish, so nothing is written
+either way, and erroring would mean writing the declaration cost you the ability to preview.
+
 **This output also carries the review body the review role returned last, as a
 `## Review role message` section.** On its way to becoming Facts, the review role's reply is folded into
 just two things — `review.verdict` and `review.reviewed_sha` — so the reasons and reservations behind
@@ -683,15 +782,18 @@ criteria table stays in the same position regardless of destination, so you reac
 without scrolling past a long review body. The review body is not summarized: line breaks, tables,
 and code blocks are emitted as they are.
 
-The section appears only on ticks with `--report`. It is not posted to PR comments, so `report.body`
+The section appears only on ticks whose progress went somewhere other than the PR — passed
+`--report`, or carrying a `policies.progress.report` of `stdout` or a path. It is not posted to PR
+comments, so `report.body`
 and the PR comment are no longer the same content. For a Goal whose review role has never been
 launched, the section itself does not appear. When the raw log could not be read, the reason appears
 in the section; for a Run with no review body left (an execution cut short), the id of the Run that
 was read appears. **On no path is anything silently dropped, and no path fails the tick.**
 
 > [!NOTE]
-> **The two destinations accumulate differently.** `--report stdout` emits once per invocation and
-> does not pile up, but `--report <path>` **appends** to the file. What the section reads is the most
+> **The two destinations accumulate differently.** `stdout` emits once per invocation and does not
+> pile up, but a file path **appends**. This bites hardest on a declared destination: a path in
+> `policies.progress.report` appends on every cron tick, forever. What the section reads is the most
 > recent completed review-role Run, so the content stays the same every tick until the next review
 > finishes — keep running while waiting for review and the same body lines up once per run. For long
 > runs, use `stdout` or split the destination file.
@@ -699,9 +801,11 @@ was read appears. **On no path is anything silently dropped, and no path fails t
 ### Opening PRs as drafts
 
 If the target repository has a "publish as a draft first" practice, write it in
-`repository.pull_request.draft`.
+`repository.pull_request.draft` — a `repository` key, so `.goals/config.yaml` is where it belongs
+unless one Goal alone needs it.
 
 ```yaml
+# .goals/config.yaml
 repository:
   provider: github
   owner: your-org
@@ -881,7 +985,10 @@ verification commands are still not given `ANTHROPIC_*` / `CLAUDE_CODE_*` / `OPE
 ## Directories
 
 ```
-.goals/<slug>.yaml        Edited by humans. Under Git. Declaration only. slug must match goal.id
+.goals/<slug>.yaml        Edited by humans. Under Git unless --private-goals. Declaration only.
+                          slug must match goal.id
+.goals/config.yaml        Edited by humans, same as above. The repository-scoped part every Goal
+                          inherits. config is a reserved slug, so no Goal can take this name
 .goals/.state/goals.db    Runtime state written by the controller. Gitignored
 .goals/.state/worktrees/  Worktrees the Actor edits. Physically separate from the controller itself.
                           The name is derived from (goal.id, role). The implement and review roles
@@ -893,6 +1000,7 @@ src/domain/fact.ts        The Fact type (separating VERIFIED / INFERRED) and Unr
 src/domain/fact-keys.ts   Registry of observation keys. fact verification in Goal YAML refers here
 src/domain/goal.ts        The Zod schema for Goal YAML
 src/domain/goal-parse.ts  Goal YAML validation and the slug/goal.id match. Reads no files
+src/domain/goal-config.ts The .goals/config.yaml schema and how it merges under a Goal
 src/domain/gap.ts         The Gap and Assessment types ASSESS produces
 src/domain/action.ts      The Action and Decision types DECIDE chooses
 src/domain/run.ts         The Actor's execution-record type and ActorRole (implement and review
@@ -919,7 +1027,7 @@ src/store/port.ts         The Port for runtime state. Owned by the consumer; hol
 src/store/sqlite.ts       Its SQLite implementation (node:sqlite). Only the composition root plugs it in
 src/controller/           Outside one tick. lease → recovery → reconcile → ACT → persist → transition
 src/adapters/local.ts     Ports writable with node:child_process (command execution, git, worktree)
-src/adapters/goal-file.ts Reads .goals/<slug>.yaml from the filesystem
+src/adapters/goal-file.ts Reads .goals/<slug>.yaml, and lays config.yaml from the same directory under it
 src/adapters/github.ts    CodeProviderPort. @octokit/rest + ETag
 src/adapters/claude.ts    ActorPort and LlmPort. Claude Agent SDK.
                           Per-role allowed/denied tools and prompts are here too. Only the
@@ -929,7 +1037,7 @@ src/adapters/agent-prompt.ts Per-role prompts and output contract for Codex
 src/wiring/index.ts       The composition root. The single place deciding which Adapter goes into
                           which Port. The gate's inputs (Adapter injection and verifyRoot) are
                           decided here too
-src/usecase/init.ts       ent init. Places .goals/, the gitignore line, and a Goal template
+src/usecase/init.ts       ent init. Places .goals/, the gitignore line, config.yaml, and a Goal template
 src/usecase/doctor.ts     ent doctor. Inspects the prerequisites for running, writing nothing
 src/usecase/inspect.ts    The payload ent get / ent list emit. Read-only
 src/cli/parse.ts          Argument interpretation. Executes nothing

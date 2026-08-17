@@ -303,6 +303,64 @@ export function publishPolicyOf(goal: Goal): PublishPolicy {
   return goal.policies.publish ?? DEFAULT_PUBLISH_POLICY;
 }
 
+/** 進捗を PR コメントに投稿する。宣言が無いときの既定で、これまでの挙動になる */
+export const PROGRESS_REPORT_PR = "pr";
+/** 進捗を stdout に出す。`ent run --report stdout` と同じ宛先 */
+export const PROGRESS_REPORT_STDOUT = "stdout";
+
+/**
+ * 進捗をどこへ書くか。`ent run --report` を宣言側から決める口になる。
+ *
+ * **`policies.publish` とは止めるものが違う。** あちらは controller が行わない段
+ * （push と PR の作成）で、PR が既にあれば追記は止めない。進捗のコメントを
+ * 止める口はどこにも無く、`--report` を毎回渡すしか手段が無かった。cron から
+ * 回す構成では、フラグを書き忘れた1周がそのまま PR に出る。
+ *
+ * **値は `--report` と同じ読み方にする。** 予約語だけを名前で受け、それ以外は
+ * ファイルのパスとして読む（`src/cli/parse.ts` の `ReportTarget`）。予約語が
+ * `pr` と `stdout` の2つになるのは、宣言側には「PR に投稿する」を明示的に
+ * 書き戻す必要があるため。`--report` にはその値が無い——フラグを付けないことが
+ * 「PR に投稿する」にあたるので、名前を持つ理由が無かった。
+ *
+ * `./pr` と書けばファイルとして読む。ここも `--report` と揃えてある。
+ */
+export const progressPolicySchema = z.strictObject({
+  /**
+   * `pr` / `stdout` / ファイルのパス。省略時は `pr`。
+   *
+   * 空白だけは弾く。`--report` は空白だけを error にしている（`reportTarget`）ので、
+   * こちらだけ既定に畳むと、投稿しないつもりで書いた1行が黙って PR に出る。
+   */
+  report: z
+    .string()
+    .refine((value) => value.trim() !== "", "report must not be blank")
+    .default(PROGRESS_REPORT_PR),
+});
+export type ProgressPolicy = z.infer<typeof progressPolicySchema>;
+
+/**
+ * 進捗の宛先。`pr` なら PR コメントで、これまでどおり publish が書く。
+ *
+ * 文字列のまま読む側へ渡さない。`stdout` かどうかの判定が読む側に散ると、
+ * `--report` を読んでいる `reportTarget` と規則が二重になる。
+ */
+export type ProgressTarget = { kind: "pr" } | { kind: "stdout" } | { kind: "file"; path: string };
+
+/**
+ * この Goal が宣言した進捗の宛先。書いていなければ PR コメントになる。
+ *
+ * 空白だけの値はスキーマが弾いているので、ここへは来ない（`progressPolicySchema`）。
+ * 畳む先を持たない——「宛先が読めなかったので PR に出した」は、投稿しないと
+ * 決めた宣言の意味を反転させる。
+ */
+export function progressTargetOf(goal: Goal): ProgressTarget {
+  const raw = goal.policies.progress?.report.trim() ?? PROGRESS_REPORT_PR;
+  if (raw === PROGRESS_REPORT_PR) {
+    return { kind: "pr" };
+  }
+  return raw === PROGRESS_REPORT_STDOUT ? { kind: "stdout" } : { kind: "file", path: raw };
+}
+
 /**
  * 使える単位と、その秒数。
  *
@@ -427,6 +485,11 @@ export const PROTECTED_PATH_FLOOR = [
   "src/domain/guard-rules.ts",
   // 関門の適用範囲を決めるスキーマ。この定数もここにある。
   "src/domain/goal.ts",
+  // repo スコープの宣言を Goal の下へ敷く規則。`protected_paths` と
+  // `require_human_approval` を**足す**のはここで、`added` を `return rawValue` に
+  // 変えるだけで、config が配っている repo 全体の保護が全部消える。
+  // 下限のファイルは1つも触らずに済むので、`goal.ts` と同じ扱いにする。
+  "src/domain/goal-config.ts",
   // Agent の許可・拒否ツールを決める場所。
   "src/adapters/claude.ts",
   "src/adapters/codex.ts",
@@ -544,6 +607,15 @@ export const goalSchema = z.strictObject({
      * 1行も足させずに済ませるため。読むときは `publishPolicyOf(goal)` を通す。
      */
     publish: publishPolicySchema.optional(),
+    /**
+     * 進捗をどこへ書くか（`progressPolicySchema`）。
+     *
+     * `publish` と同じく任意にしてある。書いていない既存の `.goals/*.yaml` は
+     * これまでどおり PR コメントに出る。`ent run --report` を渡したティックは
+     * そちらが勝つ——打った側の指定を宣言が上書きすると、手元に出したい1回が
+     * 出せなくなる。
+     */
+    progress: progressPolicySchema.optional(),
   }),
   budget: budgetSchema,
 });
@@ -607,12 +679,19 @@ export const DEFAULT_BUDGET = {
  *
  * そのまま `ent start` に渡せる必要は無い（`desired_state` と criteria は人間が
  * 書くもの）が、**スキーマとしては妥当**にする。埋める前に「何が悪いのか」を
- * 調べることになるのを避けるため。項目は上の goalSchema だけで書く。
+ * 調べることになるのを避けるため。
+ *
+ * **妥当と言えるのは `.goals/config.yaml` を敷いた後になった。** `repository` と
+ * `setup` と `policies` の中身は repo スコープの宣言に移したので、この雛形だけを
+ * `goalSchema` に通すと `repository` が無いと言われる。`ent init` は config と
+ * 雛形を同じ1周で置くので、init が作った状態はそのまま通る（`configTemplate`）。
+ * 雛形だけを他所へ持ち出すと通らないが、そこで止まるほうが、repo の識別子を
+ * 前のリポジトリのまま回すより安全になる。
  *
  * 人間が埋める箇所には、例外なくコメントを置く。`repository` を埋め忘れても
  * `ent start` は通り、最初のティックで `your-org/your-repo` への 404 として
  * 初めて表面化する。「ent の話だと分かるところで止める」という doctor の
- * 方針と、雛形だけがずれることになる。
+ * 方針と、雛形だけがずれることになる。その案内は config 側へ移した。
  */
 export function goalTemplate(slug: string): string {
   return `version: 1
@@ -635,21 +714,6 @@ goal:
   # satisfied, ent run waits without even taking the lease.
   depends_on: []
 
-# Fill this in for the target repository. ent start still passes if you
-# forget, but the first tick surfaces it as a GitHub 404.
-repository:
-  provider: github
-  owner: your-org
-  name: your-repo
-  default_branch: main
-  # If the target repository opens pull requests as drafts first, uncomment
-  # the next two lines. Left out, pull requests open ready (as before).
-  # pull_request:
-  #   draft: true
-
-# Run once before VERIFY executes any criterion. Must be idempotent.
-setup: []
-
 # design.md §3.2: a Goal that cannot be reduced to criteria is not made ACTIVE.
 # type is one of command / fact / human.
 acceptance_criteria:
@@ -666,34 +730,26 @@ context:
     - List anything you do not want touched here
   references: []
 
-policies:
-  # Only the gates you write become deny rules for the Agent.
-  # **What you leave out is permitted.** All six are listed here. To relax
-  # one, deleting it has to be a deliberate act. secret_access and
-  # external_send are always merged in by APPROVAL_GATE_FLOOR, so they keep
-  # applying even if you delete them.
-  require_human_approval:
-    - merge
-    - force_push
-    - push_to_default_branch
-    - deploy
-    - secret_access
-    - external_send
-  # Paths the Agent must not rewrite. PROTECTED_PATH_FLOOR always applies
-  # even when this is empty.
-  protected_paths: []
+# repository, setup and policies come from .goals/config.yaml, which every
+# Goal here shares. Write a key below only where this Goal differs.
+#
+# require_human_approval and protected_paths are ADDED to what config
+# declares, never subtracted — a Goal cannot open a gate the repository
+# closed. Everything else replaces the config value key by key.
+policies: {}
   # How far the controller carries its own publish automatically.
-  # require_human_approval above covers operations the Agent is not allowed
-  # to perform; this covers stages the controller does not perform. The
-  # subject differs, so the declarations are kept separate.
+  # require_human_approval covers operations the Agent is not allowed to
+  # perform; this covers stages the controller does not perform. The subject
+  # differs, so the declarations are kept separate.
   # The controller does not perform a stage set to manual, and that tick
   # stops at WAITING_HUMAN. Why it stopped and what to do next appear in
   # the decision shown by ent get.
-  publish:
-    push_branch: auto
-    # Set this to manual for a repository shared with a team. Opening a pull
-    # request notifies reviewers, and undoing it does not recall the notice.
-    open_pull_request: auto
+  # publish:
+  #   push_branch: auto
+  #   # Set this to manual for a repository shared with a team. Opening a
+  #   # pull request notifies reviewers, and undoing it does not recall the
+  #   # notice.
+  #   open_pull_request: auto
 
 budget:
   max_actor_runs: 8
