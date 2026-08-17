@@ -33,6 +33,9 @@ const CRITERIA: AcceptanceCriterion[] = [
 
 const UNMET: Gap = { criterionId: "ac-1", kind: "unmet", detail: "exit_code=1" };
 
+/** 両方の provider に opt-in している合成ルートを模した `availableActors` */
+const BOTH = ["claude-code", "codex"] as const;
+
 function target(): DecideTarget {
   return {
     criteria: CRITERIA,
@@ -207,6 +210,84 @@ describe("直らない失敗を繰り返さない", () => {
       expect(llm.calls).toBe(3);
       expect(decision.action).toEqual({ type: "ESCALATE", reason: "invalid_decision" });
     });
+  });
+
+  it("ACT が名指しした provider・model・effort はそのまま採る", async () => {
+    // 「誰にやらせるか」は Gap の埋め方の一部なので、guard ではなく LLM に委ねる。
+    const llm = spyLlm([{ type: "ACT", intent: "直す", agent: { actor: "codex", effort: "max" } }]);
+    const decision = await decide(target(), { llm, now: () => NOW, availableActors: BOTH });
+
+    expect(decision.action).toEqual({
+      type: "ACT",
+      intent: "直す",
+      agent: { actor: "codex", effort: "max" },
+    });
+    expect(llm.calls).toBe(1);
+  });
+
+  it("provider に無い effort を名指した ACT は採らない", async () => {
+    // `minimal` は現行のどの Codex モデルも持たないので語彙から落ちている
+    // （EFFORT_VOCABULARY）。起動してから Adapter で throw させると、ACT が1回
+    // 失敗したのと同じだけ予算が減る。起動する前に弾いて言い直させる。
+    const llm = spyLlm([
+      { type: "ACT", intent: "直す", agent: { actor: "codex", effort: "minimal" } },
+      { type: "ACT", intent: "直す", agent: { actor: "codex", effort: "xhigh" } },
+    ]);
+    const decision = await decide(target(), { llm, now: () => NOW, availableActors: BOTH });
+
+    expect(decision.action).toEqual({
+      type: "ACT",
+      intent: "直す",
+      agent: { actor: "codex", effort: "xhigh" },
+    });
+    expect(llm.calls).toBe(2);
+  });
+
+  it("actor を書かずに model や effort だけを名指した ACT は採らない", async () => {
+    // 3点は1組で選ぶ（design.md §3.5）。provider が分からないまま model を
+    // 受け取ると、Codex の実行に Claude のモデル名が渡る組み合わせを作れる。
+    const llm = spyLlm([
+      { type: "ACT", intent: "直す", agent: { model: "some-model" } },
+      { type: "ACT", intent: "直す" },
+    ]);
+    const decision = await decide(target(), { llm, now: () => NOW, availableActors: BOTH });
+
+    expect(decision.action).toEqual({ type: "ACT", intent: "直す" });
+    expect(llm.calls).toBe(2);
+  });
+
+  it("opt-in していない provider を名指した ACT は採らない", async () => {
+    // Codex は権限制御が Claude Agent SDK と同じではないので、人間が環境変数で
+    // 明示的に選んだときだけ走る（design.md §3.5）。LLM の出力1つでその opt-in を
+    // 迂回できると、`ent doctor` が確かめていない provider も走ることになる。
+    const llm = spyLlm([
+      { type: "ACT", intent: "直す", agent: { actor: "codex" } },
+      { type: "ACT", intent: "直す", agent: { actor: "claude-code", effort: "high" } },
+    ]);
+    const decision = await decide(target(), {
+      llm,
+      now: () => NOW,
+      availableActors: ["claude-code"],
+    });
+
+    expect(decision.action).toEqual({
+      type: "ACT",
+      intent: "直す",
+      agent: { actor: "claude-code", effort: "high" },
+    });
+    expect(llm.calls).toBe(2);
+  });
+
+  it("availableActors を渡さない呼び出しでは agent を1つも採らない", async () => {
+    // 省略を「制限なし」と読まない。確かめられない状態を許可の側に倒さない。
+    const llm = spyLlm([
+      { type: "ACT", intent: "直す", agent: { actor: "claude-code" } },
+      { type: "ACT", intent: "直す" },
+    ]);
+    const decision = await decide(target(), { llm, now: () => NOW });
+
+    expect(decision.action).toEqual({ type: "ACT", intent: "直す" });
+    expect(llm.calls).toBe(2);
   });
 
   it("usage_limit は再試行せず WAIT のまま", async () => {

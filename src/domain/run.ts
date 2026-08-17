@@ -12,6 +12,48 @@ import { portErrorKindSchema } from "./port-error.js";
 export const actorKindSchema = z.enum(["claude-code", "codex", "human"]);
 export type ActorKind = z.infer<typeof actorKindSchema>;
 
+/** controller から起動できる provider。`human` を除いたもの */
+export const launchableActorKindSchema = actorKindSchema.exclude(["human"]);
+export type LaunchableActorKind = z.infer<typeof launchableActorKindSchema>;
+
+/**
+ * provider ごとの effort の語彙。**片方だけの値をもう片方へ黙って渡さない**
+ * （design.md §3.5）。
+ *
+ * ここに置くのは、読む側が2つに分かれたため。選択の時点で検証する
+ * `agentSelectionFrom`（`src/wiring/index.ts`）と、DECIDE が返した
+ * `ACT.agent` を採用してよいか見る `askLlm`（`src/decide/index.ts`）になる。
+ * decide は合成ルートを import できない（wiring が reconcile 経由で decide を
+ * import する）ので、語彙をあちらに置いたままでは受け取り側で検証できない。
+ *
+ * **SDK の型との突き合わせは wiring に残す。** ここは文字列の集合しか持たず、
+ * `@anthropic-ai/claude-agent-sdk` の `EffortLevel` に増減があったときに
+ * ビルドで落とす検査は、SDK を import している側（`src/wiring/index.ts`）が
+ * 引き続き持つ。ドメインが SDK の型に依存すると、Adapter を差し替えるたびに
+ * ドメインが動くことになる。
+ */
+export const EFFORT_VOCABULARY = {
+  "claude-code": ["low", "medium", "high", "xhigh", "max"],
+  // Codex 側は codex-cli 0.147.0 のモデルカタログに合わせてある。`gpt-5.6-sol` /
+  // `gpt-5.6-terra` / `gpt-5.6-luna` / `gpt-5.5` / `gpt-5.4` の
+  // `supported_reasoning_levels` はどれも `low` から始まり、上は `max` まで伸びる。
+  // **`none` と `minimal` は落としてある。** 現行のどのモデルも advertise していない。
+  // config の parse は今でも通る（`-c model_reasoning_effort="minimal"` は落ちない）
+  // ので、弾いているのは ent の側になる。古い Codex に合わせる必要が出たら戻す。
+  codex: ["low", "medium", "high", "xhigh", "max"],
+} as const satisfies Record<LaunchableActorKind, readonly string[]>;
+
+/**
+ * その provider がその effort を持つか。
+ *
+ * 幅を広げる型注釈をここ1箇所に閉じ込める。`EFFORT_VOCABULARY` の各値は
+ * リテラルの組（SDK の型との突き合わせに要る）なので、任意の文字列を
+ * `includes` に渡すと呼び出し側ごとに cast が要る。
+ */
+export function supportsEffort(actor: LaunchableActorKind, effort: string): boolean {
+  return (EFFORT_VOCABULARY[actor] as readonly string[]).includes(effort);
+}
+
 /**
  * Actor の役割。design.md §4.2 の `ActorRole` に対応する。
  *

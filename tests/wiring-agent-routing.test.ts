@@ -27,6 +27,9 @@ const GOAL: Goal = {
   },
 };
 
+/** Adapter を作るときに渡った model と effort だけを見る */
+type CapturedOptions = { model?: string | undefined; effort?: string | undefined };
+
 describe("phase ごとの Agent 選択", () => {
   it("phase 指定が無ければ既存の共通指定へ落ちる", () => {
     const env = { ENT_ACTOR: "codex", ENT_MODEL: "global-model", ENT_EFFORT: "high" };
@@ -171,6 +174,71 @@ describe("phase ごとの Agent 選択", () => {
       expect(actorCalls).toEqual([{ kind: "codex", role: "review" }]);
       expect(result.acted && result.run.actor).toBe("codex");
       expect(store.listLlmCalls(GOAL.goal.id)).toHaveLength(1);
+    } finally {
+      store.close();
+    }
+  });
+
+  it("DECIDE が ACT に書いた agent が、環境変数の phase 指定より優先される", async () => {
+    const store = openStore(":memory:");
+    store.upsertGoal(GOAL);
+    const actorCalls: { kind: string; model?: string | undefined; effort?: string | undefined }[] =
+      [];
+    const actor = (kind: "claude-code" | "codex", options: CapturedOptions): ActorPort => ({
+      kind,
+      run: async () => {
+        actorCalls.push({ kind, model: options.model, effort: options.effort });
+        return { exitCode: 0, logRef: `${kind}.jsonl`, tokens: 1, artifacts: [] };
+      },
+    });
+    const factories: AgentFactories = {
+      claudeActor: vi.fn((options) => actor("claude-code", options)),
+      codexActor: vi.fn((options) => actor("codex", options)),
+      claudeLlm: vi.fn(() => ({ chooseAction: async () => ({ type: "REPLAN" }) })),
+      codexLlm: vi.fn(() => ({ chooseAction: async () => ({ type: "REPLAN" }) })),
+    };
+
+    try {
+      const ports = tickPorts(GOAL, store, "/repo", "/state", {
+        // 環境は実装役を Claude Code にしている。DECIDE の名指しがそれを覆す。
+        env: { GITHUB_TOKEN: "", ENT_IMPLEMENT_ACTOR: "claude-code", ENT_MODEL: "env-model" },
+        agentFactories: factories,
+      });
+      const result = await act(
+        {
+          goal: GOAL,
+          decision: {
+            decidedAt: "2026-08-11T00:00:00.000Z",
+            action: actionSchema.parse({
+              type: "ACT",
+              intent: "直す",
+              agent: { actor: "codex", model: "decided-model", effort: "max" },
+            }),
+            rationale: "重い変更なので別の provider に回す",
+            decidedBy: "llm",
+          },
+          attempt: 1,
+        },
+        {
+          actor: ports.actor,
+          worktree: {
+            ensure: async () => ({ path: "/worktree", branch: "entelecheia/routing" }),
+            commit: async () => true,
+            changedPaths: async () => [],
+            repoDirtyState: async () => new Map(),
+          },
+          runs: {
+            start: async (intent) => store.startRun(GOAL.goal.id, intent),
+            finish: async (id, outcome) => store.finishRun(id, outcome),
+          },
+          now: () => new Date("2026-08-11T00:00:00.000Z"),
+        },
+      );
+
+      expect(actorCalls).toEqual([{ kind: "codex", model: "decided-model", effort: "max" }]);
+      // 副作用の前に書く Run にも、実際に走る provider が入る。
+      expect(result.acted && result.run.actor).toBe("codex");
+      expect(store.listRuns(GOAL.goal.id).map((run) => run.actor)).toEqual(["codex"]);
     } finally {
       store.close();
     }

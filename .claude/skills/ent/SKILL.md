@@ -78,6 +78,14 @@ reviewing its own work; it is an option, not a recommendation, since Codex is ne
 `semantic-review`'s points reach either provider — read with the Skill tool on Claude Code, inlined into the
 prompt on Codex — so the review contract does not change with the provider.
 
+**The environment variables are only the default.** DECIDE may override them for a single tick by
+returning an `ACT` with an `agent` block
+(`{"actor":"claude-code|codex","model":"...","effort":"..."}`); naming a model or an effort requires
+naming the actor too, and the actor must be one these variables already selected.
+What is omitted runs on that provider's own default rather than the phase's variables. The provider
+that ran is recorded on the Run.
+DECIDE cannot pick its own provider that way — the decide phase stays on the environment variables.
+
 The tick's values are not pinned into the DB across ticks. Pass the same environment variables every time, cron included.
 If even one phase involves Codex, confirm the login first with `codex login status`.
 When an Actor stops at a usage limit, the failure classification and tokens are saved to the Run, and the

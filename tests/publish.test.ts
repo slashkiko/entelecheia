@@ -381,6 +381,104 @@ describe("進捗を書く", () => {
     expect(s.pushes).toEqual([]);
   });
 
+  it("loop_detected も、観測が同じでも必ず書く", async () => {
+    // `loop_detected` はダイジェストが動かないことが発火条件そのものなので、
+    // 「観測が前ティックと同じなら飛ばす」に必ず捕まる。飛ばすと、空回りで止めた
+    // ティックが PR に一度も出ないまま WAITING_HUMAN になり、PR だけ見ている人間には
+    // 止まった理由が届かない（design.md §4.3）。
+    const s = sink({ existing: 11 });
+    const result = await publish(
+      target({
+        digest: "same",
+        previousDigest: "same",
+        prNumber: 11,
+        // criterion が参照する観測を読めていない状態が、rationale と criteria の
+        // 両方に出る。
+        verifications: [
+          verification({
+            result: "unresolved",
+            reason: "pending",
+            evidence: null,
+            detail: "github.pr.unresolved_threads is not observed as a VERIFIED Fact",
+          }),
+        ],
+        decision: {
+          decidedAt: NOW.toISOString(),
+          action: { type: "ESCALATE", reason: "loop_detected" },
+          rationale:
+            "stopping: the observation stayed unchanged for 3/3 reconciles, yet these Gaps remain: " +
+            "ac-1 [unknown] criteria.ac-1.passed has no conclusion " +
+            "(pending: github.pr.unresolved_threads is not observed as a VERIFIED Fact)",
+          decidedBy: "guard",
+        },
+      }),
+      deps(s),
+    );
+
+    expect(result.commented).toBe(true);
+    // 停止理由も、詰まっている criterion も PR から読める。
+    expect(s.comments[0]?.body).toContain("loop_detected");
+    expect(s.comments[0]?.body).toContain("github.pr.unresolved_threads is not observed");
+  });
+
+  it("同じガード停止が観測も変わらず続けば、2度目は書かない", async () => {
+    // 恒久的に読めない観測で止まった Goal は WAITING_HUMAN のまま毎ティック
+    // 再ティックされる。同じ停止理由の同じコメントを積み続けると、人間はかえって
+    // 読まなくなる。停止の初回は出し、変化の無い繰り返しは畳む。
+    const s = sink({ existing: 11 });
+    const loop: Decision = {
+      decidedAt: NOW.toISOString(),
+      action: { type: "ESCALATE", reason: "loop_detected" },
+      rationale: "stopping: the observation stayed unchanged for 3/3 reconciles",
+      decidedBy: "guard",
+    };
+    const result = await publish(
+      target({
+        digest: "same",
+        previousDigest: "same",
+        prNumber: 11,
+        decision: loop,
+        // 前ティックも同じ loop_detected だった。
+        previousDecision: loop,
+      }),
+      deps(s),
+    );
+
+    expect(result.commented).toBe(false);
+    expect(result.skipped).toContain("identical to the previous tick");
+    expect(s.comments).toEqual([]);
+  });
+
+  it("停止に入ったティックは、前が別の行動なら観測が同じでも書く", async () => {
+    // 隔離が破れた・空回りに落ちた「その瞬間」は、観測が前ティックと変わらなくても
+    // 必ず PR に出す。畳むのは、同じ停止が続く2ティック目以降だけ。
+    const s = sink({ existing: 11 });
+    const result = await publish(
+      target({
+        digest: "same",
+        previousDigest: "same",
+        prNumber: 11,
+        decision: {
+          decidedAt: NOW.toISOString(),
+          action: { type: "ESCALATE", reason: "loop_detected" },
+          rationale: "stopping: the observation stayed unchanged for 3/3 reconciles",
+          decidedBy: "guard",
+        },
+        // 前ティックは実装役を動かしていた（別の行動）。
+        previousDecision: {
+          decidedAt: NOW.toISOString(),
+          action: { type: "ACT", intent: "fix the failing test" },
+          rationale: "a Gap remained",
+          decidedBy: "llm",
+        },
+      }),
+      deps(s),
+    );
+
+    expect(result.commented).toBe(true);
+    expect(s.comments[0]?.body).toContain("loop_detected");
+  });
+
   it("action と rationale と criteria の結果を載せる", async () => {
     const s = sink({ existing: 11 });
     await publish(target(), deps(s));

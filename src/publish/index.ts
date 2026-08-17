@@ -66,6 +66,15 @@ export interface PublishTarget {
   digest: string;
   /** 前のティックのダイジェスト。初回は null */
   previousDigest: string | null;
+  /**
+   * 前のティックの Decision。初回は null。
+   *
+   * ガード停止（`GUARD_REASONS`）が続くあいだ、同じ通知を毎ティック積まないための材料。
+   * 停止に入った最初のティックは書き、観測が変わらないまま同じ停止が続くティックは
+   * 飛ばす（`repeatsGuardStop`）。省略時（既存の呼び出し）は「前が無い」と同じ扱いで、
+   * ガード停止は従来どおり書く。
+   */
+  previousDecision?: Decision | null;
 }
 
 /** 進捗を PR の外に書くときの宛先。実体は CLI が作る（`ent run --report`） */
@@ -293,25 +302,30 @@ export async function publish(target: PublishTarget, deps: PublishDeps): Promise
 
   // 同じ状態を毎ティック通知しない。読まれなくなる通知は無いのと同じ。
   //
-  // ただし関門が止めたティックは必ず書く。ダイジェストは Fact だけから作るので
-  // Decision を含まない。Actor が worktree の外だけを書いた場合、観測は
-  // 前ティックと1文字も変わらないまま decision だけが ESCALATE に差し替わる。
-  // そこを黙って飛ばすと、隔離が破れたことが PR に一度も出ないまま
-  // WAITING_HUMAN になる。人間に届かない関門は鳴っていないのと同じ。
+  // ただし関門が止めたティックは、その停止が**新しいうちは**書く。ダイジェストは
+  // Fact だけから作るので Decision を含まない。Actor が worktree の外だけを書いた
+  // 場合、観測は前ティックと1文字も変わらないまま decision だけが ESCALATE に
+  // 差し替わる。そこを黙って飛ばすと、隔離が破れたことが PR に一度も出ないまま
+  // WAITING_HUMAN になる。人間に届かない関門は鳴っていないのと同じ。だから
+  // 「停止に入ったティック」（前ティックが同じガード停止でない）は必ず書く。
   //
-  // 未 commit の関門（`uncommitted_changes`）も同じ性質を持つ。止まっているあいだ
-  // 観測は1文字も変わらないので、初回しか書かないと2ティック目以降は PR が静かな
-  // まま max_reconciles に当たって BLOCKED になり、止めた理由がどこにも出ない。
+  // **一方、畳んでよいガード停止（`DEDUP_WHEN_REPEATED`、いまは loop_detected だけ）が
+  // 観測も変わらないまま続くティックは飛ばす**（`repeatsGuardStop`）。恒久的に読めない
+  // 観測で止まった Goal は WAITING_HUMAN のまま `ent run` のたびに再ティックされ、
+  // 同じ停止理由の同じコメントを max_reconciles まで積み続けていた。初回で伝わる
+  // ものを積み増しても、人間はかえって読まなくなる。停止の初回は必ず出し、変化の
+  // 無い繰り返しだけを畳む（`PublishTarget.previousDecision`）。
   //
-  // push が落ちたティックも必ず書く。同じ理由で、観測が変わらないまま push だけ
-  // 落ち続ける状態を黙って飛ばすと、PR は静かなまま人間が待ち続ける。
-  //
-  // 宣言で止めたティックも同じ扱いにする。止まっているあいだ観測は動かないので、
-  // 初回しか書かなければ PR は静かなまま人間が待つ。宣言したのは人間だが、
-  // 「いま止まっている」を知らせないのは押せなかったときと同じ壊れ方になる。
+  // **それ以外のガード停止（protected_path_touched / guard_unavailable /
+  // uncommitted_changes）は、これまでどおり毎ティック書く。** 安全側の信号と督促は
+  // 止まっているあいだ出し続けるのが既存の意図になる（`DEDUP_WHEN_REPEATED` の注記）。
+  // push が落ちたティックと宣言で止めたティックも畳まない。どちらも `pushFailure` /
+  // `held` が今ティックの状態から毎回作られ、前ティックの Decision には現れないので、
+  // 繰り返しかどうかをここでは判定できない。黙って飛ばすと PR は静かなまま人間が待つ。
   if (
     target.previousDigest === target.digest &&
-    !stoppedByGuard(target.decision) &&
+    (!stoppedByGuard(target.decision) ||
+      repeatsGuardStop(target.decision, target.previousDecision)) &&
     pushFailure === null &&
     held === null
   ) {
@@ -600,12 +614,54 @@ const UNPUSHABLE_REASONS = new Set<string>(["protected_path_touched", "guard_una
  * push を止める理由に `uncommitted_changes` を足さないのは、あれが「commit された
  * ものは出してよい」状態だから。逆に通知の側では同じ扱いにする。どれもダイジェストに
  * 現れない理由で止まるので、黙って飛ばすと PR が静かなまま max_reconciles に当たる。
+ *
+ * `loop_detected` もここに入れる。**あれはダイジェストが動かないことが発火条件そのもの**
+ * なので、下の「観測が前ティックと同じなら飛ばす」に必ず捕まる。足さないと、空回りで
+ * 止めたティックが PR に一度も出ないまま WAITING_HUMAN になり、PR だけ見ている人間には
+ * 止まった理由が届かない。report の宛先（`--report`）は早期リターンより前に必ず書くので
+ * ここには関係せず、PR コメントの側だけを塞ぐ（`deliver` の位置、design.md §4.3）。
+ * 通知は1度きり。次のティックは WAITING_HUMAN で idle なので publish に達しない。
  */
-const GUARD_REASONS = new Set<string>([...UNPUSHABLE_REASONS, "uncommitted_changes"]);
+const GUARD_REASONS = new Set<string>([
+  ...UNPUSHABLE_REASONS,
+  "uncommitted_changes",
+  "loop_detected",
+]);
 
 /** 関門が止めたティックか。通知の必須化が読む */
 function stoppedByGuard(decision: Decision): boolean {
   return decision.action.type === "ESCALATE" && GUARD_REASONS.has(decision.action.reason);
+}
+
+/**
+ * 観測が変わらないまま続いたとき、2ティック目以降の通知を畳んでよいガード停止。
+ *
+ * **`GUARD_REASONS` の全部は入れない。** protected_path_touched / guard_unavailable は
+ * 隔離・関門の破れを知らせる安全側の信号で、uncommitted_changes は「機械が済んだと
+ * 言ったのに commit されていない」の督促になる。これらは止まっているあいだ毎ティック
+ * 出し続けるのが既存の意図（design.md §10-6、`tests/controller-uncommitted.test.ts`）で、
+ * 畳むと安全側の信号や督促が1回で黙る。畳むのは `loop_detected` だけにする。あれは
+ * 恒久的に読めない観測で WAITING_HUMAN のまま再ティックされ続け、同じ理由の同じ
+ * コメントを max_reconciles まで積むのが実害だった。
+ */
+const DEDUP_WHEN_REPEATED = new Set<string>(["loop_detected"]);
+
+/**
+ * 前ティックと同じ、畳んでよいガード停止の繰り返しか。観測が変わらないまま同じ
+ * 停止が続くティックを、通知から畳むために読む。
+ *
+ * 「同じ」は ESCALATE の reason で見る。停止に入った最初のティックは前ティックが
+ * 別の行動（ACT など）なので false になり、必ず書かれる。前ティックが無いとき
+ * （初回・`previousDecision` 省略）も false で、停止は書かれる。
+ */
+function repeatsGuardStop(decision: Decision, previous: Decision | null | undefined): boolean {
+  return (
+    decision.action.type === "ESCALATE" &&
+    DEDUP_WHEN_REPEATED.has(decision.action.reason) &&
+    previous != null &&
+    previous.action.type === "ESCALATE" &&
+    previous.action.reason === decision.action.reason
+  );
 }
 
 /** 関門が push まで止めるティックか */

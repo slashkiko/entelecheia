@@ -253,6 +253,27 @@ provider actually used. The effort vocabulary is validated per provider. Both cu
 (not one of its models offers `none` or `minimal`). The validation stays per provider even while
 the values agree, so that a value belonging to only one is never passed silently to the other.
 
+What the environment variables set is the default; **the per-tick override belongs to DECIDE**. An
+`ACT` may carry an `agent` block (`actor` required, `model` and `effort` optional), and that Run
+alone uses the set named there. Who does the work is part of how the Gap gets closed, so unlike the
+stop conditions it may be entrusted to the LLM. The vocabulary is still validated before launch: an
+output naming an effort the provider does not have is not adopted — letting the Adapter throw after
+launch would spend the same budget as one failed ACT. **DECIDE cannot pick its own provider this
+way.** By the time it returns `agent` it has already finished running, and there is no path back to
+relaunching itself.
+
+**Only a provider the environment variables already selected can be named.** Codex is an explicit
+opt-in because its permission control is not the same (see below), and that declaration means
+nothing if a single LLM output can route around it. The set handed to DECIDE is the same one
+`ent doctor` checks login prerequisites against, so no provider doctor never looked at can run. A
+call that is handed none does not offer `agent` at all and adopts none that comes back — **an
+omission is not read as "no restriction."**
+
+An `agent` that omits `model` and `effort` runs on the named provider's own defaults. It does not
+inherit them from that phase's environment variables; inheriting would hand an
+`ENT_IMPLEMENT_EFFORT` written for Claude to a Codex run, which is exactly the "never passed
+silently to the other" this section forbids.
+
 Codex also has an official TypeScript SDK (`@openai/codex-sdk`), which in substance is a wrapper
 that launches the Codex CLI and exchanges JSONL events. But the current SDK's public options cannot
 pass `--ephemeral`, `--ignore-user-config`, or `--ignore-rules`, which are used for the isolation
@@ -309,6 +330,10 @@ the lease, and exit. A state where Ctrl+C does not work is never created.
 
 In this document, **Provider** means an interface and **Adapter** means one implementation of it.
 The relationship is the GitHub Adapter for `CodeProvider`.
+
+**The "provider" in §3.5 is a different axis.** There it means the Actor and LLM vendor
+(`claude-code` / `codex`), which by this section's classification sits on the Adapter side. The word
+overlaps, so tell them apart by which section you are reading.
 
 **Port** sits at a different granularity from these: it refers to the function-level interface each
 stage of reconcile depends on. Like the `CodeProviderPort` that `observe()` receives, it lists only

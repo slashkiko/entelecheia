@@ -1,4 +1,10 @@
-import { type Action, actionSchema, type Decision, type WaitReason } from "../domain/action.js";
+import {
+  type Action,
+  type ActionAgent,
+  actionSchema,
+  type Decision,
+  type WaitReason,
+} from "../domain/action.js";
 import { errorMessage } from "../domain/error-message.js";
 import { type Fact, type Unresolved, verifiedOnly } from "../domain/fact.js";
 import {
@@ -12,6 +18,7 @@ import { type AcceptanceCriterion, type Budget, durationSeconds } from "../domai
 import { usageLimitResumeAfter } from "../domain/guard-rules.js";
 import { MAX_LLM_RETRIES } from "../domain/llm-call.js";
 import { isUnavailable, isUsageLimit, resumeAfterOf } from "../domain/port-error.js";
+import { EFFORT_VOCABULARY, type LaunchableActorKind, supportsEffort } from "../domain/run.js";
 
 /**
  * これまでに使った分。Goal の budget と突き合わせて上限判定に使う。
@@ -47,6 +54,23 @@ export interface DecideDeps {
   llm: LlmPort;
   /** テスト時に固定するための時刻ソース */
   now: () => Date;
+  /**
+   * ACT の `agent` で名指してよい provider。**人間が既に opt-in したものだけ**を渡す。
+   *
+   * 合成ルートが環境変数から作る（`selectedActorKinds`、`src/wiring/index.ts`）。
+   * Codex は「Claude Agent SDK と同じ command 単位の allow/deny が無く、完全に同じ
+   * 権限制御ではない」という理由で明示 opt-in にしてある（design.md §3.5）。
+   * DECIDE が env に無い provider を名指せると、その opt-in が LLM の出力1つで
+   * 迂回できることになる。**権限の緩い側へ回す判断を LLM に持たせない。**
+   *
+   * `ent doctor` が確かめるログイン前提も、環境変数から選んだ集合を見ている。
+   * 名指しをそこに閉じておけば、「doctor が確かめていない provider が走る」形も
+   * 同時に塞げる。
+   *
+   * 渡されなければ `agent` は選択肢に出さず、返ってきても採用しない。
+   * **省略を「制限なし」と読まない。** 確かめられない状態を、許可の側に倒さない。
+   */
+  availableActors?: readonly LaunchableActorKind[] | undefined;
 }
 
 export interface DecideTarget {
@@ -198,9 +222,15 @@ export async function decide(target: DecideTarget, deps: DecideDeps): Promise<De
   //    停止条件なので LLM には決めさせない。判断するのは guard だけ。
   const unchanged = unchangedReconciles(target);
   if (unchanged >= target.budget.max_unchanged_reconciles) {
+    // 何が詰まって空回りしていたかを rationale に書く。ここへ来るのは Gap が
+    // 残っているティックだけ（3番目が Gap ゼロを先に返す）なので、gaps は必ず
+    // 1件以上ある。理由が `loop_detected`（＝観測が動かない）としか出ないと、
+    // その裏で「criterion が参照する観測を読めていない」まで来ている恒久失敗が、
+    // 一時的な空回りと同じ見た目で止まる。停止理由だけを見て原因に辿り着けるよう、
+    // 残った Gap の criterion と detail をここに添える（design.md §4.3）。
     return guard(
       { type: "ESCALATE", reason: "loop_detected" },
-      `stopping: the observation stayed unchanged for ${unchanged}/${target.budget.max_unchanged_reconciles} reconciles`,
+      `stopping: the observation stayed unchanged for ${unchanged}/${target.budget.max_unchanged_reconciles} reconciles, yet these Gaps remain: ${describeGaps(target.assessment.gaps)}`,
     );
   }
 
@@ -291,6 +321,18 @@ function describeUnresolved(unresolved: readonly Unresolved[]): string {
 }
 
 /**
+ * 空回りの停止理由に添える、残った Gap の一覧。
+ *
+ * `buildPrompt` が LLM に見せる Gap の並び（`- <id> [<kind>] <detail>`）と同じ形を、
+ * rationale の1行に畳んだもの。detail には assess の `unknownDetail` が入るので、
+ * criterion が参照する観測を読めていないティックでは「<key> has no conclusion
+ * (<reason>: <detail>)」まで届く（`src/assess/index.ts`）。
+ */
+function describeGaps(gaps: readonly Gap[]): string {
+  return gaps.map((g) => `${g.criterionId} [${g.kind}] ${g.detail}`).join(" / ");
+}
+
+/**
  * プロンプト用に unresolved を並べる。Gap に現れる分は detail を落とす。
  *
  * `type: human` の criterion が pending のとき、verify は prompt 全文を
@@ -378,6 +420,8 @@ async function askLlm(
   // その Goal がレビューの結論を criteria で求めているか。求めていなければ
   // レビュー役は選択肢に無く、返ってきても採用しない。
   const asksForReview = criteriaAskForReview(target.criteria);
+  // ACT に `agent` を書いてよい provider。渡されていなければ 1 つも無い扱いにする。
+  const availableActors = deps.availableActors ?? [];
   // レビュー役を選択肢から外しているか。外している場合は、その commit の sha。
   const reviewedHead = reviewedHeadOf(target);
   // WAIT を選択肢から外しているか。外している場合は、指摘の付いた commit の sha。
@@ -390,7 +434,7 @@ async function askLlm(
     let raw: unknown;
     try {
       raw = await deps.llm.chooseAction(
-        buildPrompt(target, failures, reviewedHead, changesRequestedHead),
+        buildPrompt(target, failures, reviewedHead, changesRequestedHead, availableActors),
       );
     } catch (error) {
       // 使用量上限だけは名指しで分かる（design.md §10-3）。待てば直るので
@@ -459,6 +503,15 @@ async function askLlm(
           );
           continue;
         }
+      }
+
+      // provider に無い effort を名指してきた。Zod は通る（語彙は provider ごとに
+      // 違うのでスキーマでは閉じられない）が、このまま渡すと Adapter を作る時点で
+      // throw し、ACT が1回失敗したのと同じ扱いになる。**起動する前に弾く。**
+      const unusable = unusableAgentIn(parsed.data, availableActors);
+      if (unusable !== null) {
+        failures.push(unusable);
+        continue;
       }
 
       // 選択肢から外した WAIT を返してきた。こちらの条件は1つで、
@@ -587,6 +640,60 @@ function changesRequestedHeadOf(target: DecideTarget): string | null {
   return verdict?.value === "changes_requested" ? reviewedHead : null;
 }
 
+/**
+ * 名指しした provider に無い effort を使っていれば、その理由を返す。問題なければ null。
+ *
+ * プロンプトにも同じ語彙を書いているが（`agentOptionLines`）、**書いていない値は
+ * 返らないことを前提にしない。** 同じファイルの `LLM_MAY_CHOOSE` に、その油断で
+ * 一度焼かれた記録が残っている。
+ */
+function unusableAgentIn(action: Action, available: readonly LaunchableActorKind[]): string | null {
+  if (action.type !== "ACT" || action.agent === undefined) {
+    return null;
+  }
+  const { actor, effort } = action.agent;
+
+  // opt-in していない provider は名指せない。**外した理由を書く。**
+  // 黙って弾くと、同じ出力を再試行の分だけ繰り返す。
+  if (!available.includes(actor)) {
+    return available.length === 0
+      ? `The ACT cannot be adopted. This controller does not accept an "agent" on the ACT. Leave it out and let the configured default run`
+      : `The ACT cannot be adopted. ${actor} is not among the providers this controller may launch (${available.join(" / ")})`;
+  }
+
+  if (effort === undefined || supportsEffort(actor, effort)) {
+    return null;
+  }
+  return `The ACT cannot be adopted. ${actor} has no effort named ${effort}. Valid values are ${EFFORT_VOCABULARY[actor].join(" / ")}`;
+}
+
+/**
+ * ACT に `agent` を添えてよいことを伝える行。
+ *
+ * **選択肢を1つ増やすのではなく、ACT の書き方を1つ足す。** 独立した行動として
+ * 並べると「provider を変える」だけの ACT を返せてしまい、Gap が1つも埋まらない
+ * ティックが増える。
+ *
+ * effort の語彙は `EFFORT_VOCABULARY` から書き出す。プロンプトに直書きすると、
+ * 受け取り側の検証（`askLlm`）と食い違ったときに「書いてある通りに返したのに
+ * 採用されない」状態になる。
+ *
+ * model は「理由が無ければ書くな」と明示する。実在しない名前を1つ返されると、
+ * その Run はまるごと失敗し、`max_actor_runs` と連続失敗の数だけが減る。
+ */
+function agentOptionLines(available: readonly LaunchableActorKind[]): string[] {
+  if (available.length === 0) {
+    return [];
+  }
+  const vocabulary = available
+    .map((actor) => `${actor}: ${EFFORT_VOCABULARY[actor].join(" / ")}`)
+    .join(", ");
+  return [
+    `- Any ACT may carry {"agent":{"actor":"${available.join("|")}","effort":"..."}} to pick who runs it. Valid effort per actor - ${vocabulary}. Naming an effort or a model requires naming the actor as well`,
+    '- Leave "agent" out unless there is a reason. Omitted, the Actor runs on the controller\'s configured default. Do not name a "model" unless you know the id exists for that actor; a wrong id fails the whole Run and spends budget',
+  ];
+}
+
 /** レビュー役として Actor を起動する ACT か */
 function isReviewAct(action: Action): boolean {
   return action.type === "ACT" && action.role === "review";
@@ -632,6 +739,7 @@ function buildPrompt(
   failures: readonly string[],
   reviewedHead: string | null,
   changesRequestedHead: string | null,
+  availableActors: readonly LaunchableActorKind[],
 ): string {
   const criteria = target.criteria
     .map((c) => `- ${c.id} (${c.verification.type}): ${c.description}`)
@@ -654,6 +762,7 @@ function buildPrompt(
       "## Actions you may choose",
       '- {"type":"ACT","intent":"what to make the Actor do"} - fill a Gap by implementing or fixing. Without a role it runs as the implement role',
       ...reviewActionLines(target.criteria, reviewedHead),
+      ...agentOptionLines(availableActors),
       '- {"type":"VERIFY"} - confirm criteria that have not been verified. Use it for Gaps whose kind is unknown',
       ...waitActionLines(changesRequestedHead),
       '- {"type":"REPLAN"} - the current approach will not fill the Gap',
@@ -777,12 +886,25 @@ function criteriaAskForReview(criteria: readonly AcceptanceCriterion[]): boolean
   );
 }
 
+/** 名指しされた provider の並べ方。書かれていなければ空文字（既定で走る） */
+function describeAgent(agent: ActionAgent | undefined): string {
+  if (agent === undefined) {
+    return "";
+  }
+  const detail = [agent.model, agent.effort].filter((value) => value !== undefined);
+  return detail.length === 0 ? ` on ${agent.actor}` : ` on ${agent.actor}/${detail.join("/")}`;
+}
+
 function describeAction(action: Action): string {
   switch (action.type) {
     case "ACT":
       // role も残す。`ent show` と Decision テーブルから、実装役とレビュー役の
       // どちらを起動したティックだったかを読み分けられるようにする。
-      return `ACT(${action.role ?? "implement"}: ${action.intent})`;
+      //
+      // provider を名指ししたティックは、その名前も rationale に出す。実際に
+      // 走った provider は Run に残るが、rationale だけを読む人間には
+      // 「既定と違う組で走らせると決めた」ことがそこにしか見えない。
+      return `ACT(${action.role ?? "implement"}${describeAgent(action.agent)}: ${action.intent})`;
     case "WAIT":
       return `WAIT(${action.reason})`;
     case "ESCALATE":

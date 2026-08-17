@@ -98,6 +98,14 @@ export interface Store {
    */
   latestDigest(goalId: string): string | null;
   /**
+   * 直近の Decision そのもの。1件も無ければ null。
+   *
+   * `latestDigest` が「観測が変わったか」を答えるのに対し、こちらは「前のティックが
+   * 何を選んだか」を答える。publish が「同じガード停止を前ティックでもう出したか」を
+   * 判定するのに読む（`src/publish/index.ts` の再通知の抑止）。
+   */
+  latestDecision(goalId: string): Decision | null;
+  /**
    * 末尾から数えて、同じ観測ダイジェストが何回連続しているか。
    * ループ検知（design.md §7 の `max_unchanged_reconciles`）が読む。
    */

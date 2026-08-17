@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { actorRoleSchema } from "./run.js";
+import { actorRoleSchema, launchableActorKindSchema } from "./run.js";
 
 /**
  * DECIDE が選ぶ行動。design.md §1 の図の分岐にあたる。
@@ -124,6 +124,36 @@ export const escalateReasonSchema = z.enum([
 ]);
 export type EscalateReason = z.infer<typeof escalateReasonSchema>;
 
+/**
+ * その ACT を、どの provider・model・effort で走らせるか。
+ *
+ * DECIDE が次のティックで何をさせるかを決める場所なので、**誰にやらせるか**も
+ * ここで決められるようにする。書かなければ従来どおり環境変数から選ぶ
+ * （`ENT_<PHASE>_ACTOR` など、`src/wiring/index.ts` の `agentSelectionFrom`）。
+ *
+ * **`actor` は、このキーを書くなら必須にする。** `effort` の語彙は provider ごとに
+ * 検証し（いまはどちらも `low / medium / high / xhigh / max`。`EFFORT_VOCABULARY`、
+ * `src/domain/run.ts`）、model 名に至っては provider を
+ * またいで通じない。provider を書かせずに model や effort だけ受け取ると、
+ * 「環境変数で Codex になっている実行に、Claude のモデル名が渡る」組み合わせが
+ * 作れてしまう。3点を1組として選ぶ規則（design.md §3.5）を、ここでも崩さない。
+ *
+ * `model` と `effort` は省略できる。**model は書かせないほうが既定**で、実在しない
+ * 名前を1つ返されるとその Run はまるごと失敗し、予算だけが減る。
+ *
+ * **DECIDE 自身の provider はここでは選べない。** この値を返す時点で DECIDE は
+ * もう走っており、自分を起動し直すことはできない。decide phase の指定は
+ * `ENT_DECIDE_ACTOR` などの環境変数のままになる。
+ */
+export const actionAgentSchema = z.strictObject({
+  /** provider。`human` は選べない（controller から起動できる実装が無い） */
+  actor: launchableActorKindSchema,
+  model: z.string().min(1).optional(),
+  /** provider ごとに語彙が違うので、ここでは検証しない（`agentSelectionFrom` が見る） */
+  effort: z.string().min(1).optional(),
+});
+export type ActionAgent = z.infer<typeof actionAgentSchema>;
+
 export const actionSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("COMPLETE") }),
   /** Actor に実装させる。intent はそのまま Claude Code へのプロンプトになる */
@@ -138,6 +168,14 @@ export const actionSchema = z.discriminatedUnion("type", [
      * 必須にすると、読み直した時点で既存の ACT が Zod に落ちる。
      */
     role: actorRoleSchema.optional(),
+    /**
+     * 誰に実行させるか（`actionAgentSchema`）。書かなければ環境変数の選択に落ちる。
+     *
+     * `role` と同じく任意にしてある。既に走っている Goal の Decision にはこのキーが
+     * 無く、`listDecisions` は読むたびに `actionSchema.parse` を通すので、必須に
+     * すると過去の ACT がそこで落ちて履歴を読み直せなくなる。
+     */
+    agent: actionAgentSchema.optional(),
   }),
   /** criteria を検証しにいく。Fact が無くて判定できないときに選ぶ */
   z.object({ type: z.literal("VERIFY") }),
