@@ -64,8 +64,9 @@ decomposition inside a Goal, the choice of Actor role, and the implementation st
 the controller. The decomposition holds only inside a single Goal — decomposition across Goals,
 splitting one coarse task into N Goals — is still done by humans (the ordering declaration
 `goal.depends_on` is in, as far as that goes. §10-12). The Actor implementation, model, and effort
-used per phase are chosen by the human through environment variables at invocation, and fall back to
-the default Claude Code when unspecified (§3.5 / §4.2).
+used per phase have their default chosen by the human through environment variables at invocation,
+falling back to Claude Code when unspecified. The per-tick override is returned by DECIDE, but only
+from among the providers the human already selected (§3.5 / §4.2).
 
 ```
         Desired State (declared by a human)

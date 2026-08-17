@@ -81,7 +81,7 @@ prompt on Codex — so the review contract does not change with the provider.
 **The environment variables are only the default.** DECIDE may override them for a single tick by
 returning an `ACT` with an `agent` block
 (`{"actor":"claude-code|codex","model":"...","effort":"..."}`); naming a model or an effort requires
-naming the actor too, and the actor must be one these variables already selected.
+naming the actor too, and the actor must be one that these variables already selected.
 What is omitted runs on that provider's own default rather than the phase's variables. The provider
 that ran is recorded on the Run.
 DECIDE cannot pick its own provider that way — the decide phase stays on the environment variables.

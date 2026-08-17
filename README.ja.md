@@ -406,6 +406,28 @@ ent plan --desire "…"
 Claude Codeにはこの skill を Skill ツールで読ませ、Codex にはその SKILL.md と
 `references/` の本文をプロンプトへ差し込む。渡し方が違うだけで、レビューが見るものは変えない。
 
+#### ティックごとの上書き（`ACT.agent`）
+
+環境変数で人間が選んだ組は、**そのティックの既定**として働く。ティックごとの上書きは
+DECIDE が持っていて、`ACT` に `agent` を添えて返せば、その1回だけ別の provider・model・
+effort で走る。
+
+```json
+{"type":"ACT","intent":"fix the failing test","agent":{"actor":"codex","effort":"high"}}
+```
+
+`actor` は必須で、`model` と `effort` は任意になる。省いた分は名指しした provider の
+既定で走り、そのphaseの環境変数からは引き継がない。**名指しできるのは環境変数で
+既に選ばれている provider だけ**で、その外を指した出力と、provider に無い effort を
+書いた出力は起動前に弾く。起動していないので、ACT の予算は減らない。
+
+`agent` を添えなかった ACT は、これまでどおり環境変数の選択で走る。名指しされた provider は
+Run に残るので `ent get` から読める。model と effort は Run の列に無く、
+Decision の rationale（`ACT(implement on codex/high: ...)`）に出る。
+
+**DECIDE 自身の provider はこの経路では選べない。** `agent` を返す時点で DECIDE は
+もう走っており、自分を起動し直すことはできない。decide phase は環境変数だけになる。
+
 #### Codexで回すときの叩き台
 
 上の表はClaude Codeのモデル名で書いてある。Codexなら次になる。値はcodex-cli 0.147.0の
@@ -424,25 +446,6 @@ Claude Codeにはこの skill を Skill ツールで読ませ、Codex にはそ�
 **`~/.codex/config.toml`はここに効かない。** ent は Codex を `--ignore-user-config` 付きで
 起動するので、そちらに書いた `model` と `model_reasoning_effort` は読まれない。
 `ENT_<PHASE>_MODEL` を明示しなければ、Codex CLI の内蔵既定で回る。
-
-環境変数が決めるのは**既定**になる。ティックごとの上書きは DECIDE が持っていて、
-`ACT` に `agent` を添えて返せば、その1回だけ別の provider・model・effort で走る。
-
-```json
-{"type":"ACT","intent":"fix the failing test","agent":{"actor":"codex","effort":"high"}}
-```
-
-`actor` は必須で、`model` と `effort` は任意になる。省いた分は名指しした provider の
-既定で走り、そのphaseの環境変数からは引き継がない。**名指しできるのは環境変数で
-既に選ばれている provider だけ**で、その外を指した出力と、provider に無い effort を
-書いた出力は起動前に弾く。ACT の予算は減らない。
-
-添えなかった ACT はこれまでどおり環境変数の選択で走る。名指しされた provider は
-Run に残るので `ent get` から読める。model と effort は Run の列に無く、
-Decision の rationale（`ACT(implement on codex/high: ...)`）に出る。
-
-**DECIDE 自身の provider はこの経路では選べない。** `agent` を返す時点で DECIDE は
-もう走っており、自分を起動し直すことはできない。decide phase は環境変数だけになる。
 
 ### Codex を使うとき
 

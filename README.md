@@ -56,7 +56,7 @@ reflects the current state, including the post-MVP review.
 | Never silently drop what could not be confirmed | Distinguish "there is nothing there" from "we could not confirm it"; the latter stays in `unobserved` / `unverified` with a reason | Done |
 | Reject Goals that cannot be reduced to verification | A Goal whose Acceptance Criteria cannot be reduced to a means of verification (command / Fact reference / human approval) is never made ACTIVE | Done |
 | Waiting is a state, not a process | Every reconcile returns in finite time on every tick. Nothing stays resident and sleeps | Done |
-| Separate declaration from convergence | Humans write the Desired State and Acceptance Criteria. The Actor implementation is chosen per phase at launch; the Actor role within a Goal and the implementation steps are decided by the controller | Partial (decomposition across Goals goes only as far as declaring order via `goal.depends_on`; the decision to split is the human's — design.md §10-12) |
+| Separate declaration from convergence | Humans write the Desired State and Acceptance Criteria. Humans choose the per-phase default at launch; the per-tick override, the Actor role within a Goal, and the implementation steps are decided by the controller | Partial (decomposition across Goals goes only as far as declaring order via `goal.depends_on`; the decision to split is the human's — design.md §10-12) |
 | Write-ahead | Write the intent to the DB before the side effect. Killed at any instant, the next tick can recover | Done |
 | Isolation by location alone is not enough | Beyond separating files with a worktree: never pipe the Agent's output into the controller's shell, and never execute what the Agent wrote with the controller's privileges | Partial (the "not into the shell" half is handled in design.md §7; the "not with the controller's privileges" half is open in §10-9) |
 
@@ -426,6 +426,29 @@ automatically (see "Using Codex" below). This is written as an option, not a rec
 with the Skill tool, and Codex has the body of its SKILL.md and `references/` placed into its
 prompt. Only the delivery differs; what the review looks at does not.
 
+#### The per-tick override (`ACT.agent`)
+
+The set the human chose through environment variables acts as **the default for the tick**. The
+per-tick override belongs to DECIDE: an `ACT` may carry an `agent`, and that one run uses the
+provider, model, and effort named there.
+
+```json
+{"type":"ACT","intent":"fix the failing test","agent":{"actor":"codex","effort":"high"}}
+```
+
+`actor` is required; `model` and `effort` are optional. What is left out runs on the named
+provider's own default and is not inherited from that phase's environment variables. **Only a
+provider already selected by the environment variables can be named**, and an output naming
+anything outside that set — or an effort the provider does not have — is rejected before launch, so
+it costs no ACT budget.
+
+An ACT without it runs on the environment's selection as before. The provider that was named is
+recorded on the Run, so `ent get` shows it. Model and effort have no column on the Run; they appear
+in the Decision's rationale (`ACT(implement on codex/high: ...)`).
+
+**DECIDE cannot choose its own provider this way.** By the time it returns `agent` it is already
+running and cannot relaunch itself. The decide phase stays on the environment variables.
+
 #### The same starting point on Codex
 
 The table above is written in Claude Code's model names. On Codex it comes out as follows. The
@@ -445,26 +468,6 @@ spread is the same as above.
 **`~/.codex/config.toml` has no effect here.** ent starts Codex with `--ignore-user-config`, so the
 `model` and `model_reasoning_effort` written there are not read. Without an explicit
 `ENT_<PHASE>_MODEL`, it runs on whatever the Codex CLI defaults to.
-
-What the environment variables set is the **default**. The per-tick override belongs to DECIDE: an
-`ACT` may carry an `agent`, and that one run uses the provider, model, and effort named there.
-
-```json
-{"type":"ACT","intent":"fix the failing test","agent":{"actor":"codex","effort":"high"}}
-```
-
-`actor` is required; `model` and `effort` are optional. What is left out runs on the named
-provider's own default and is not inherited from that phase's environment variables. **Only a
-provider already selected by the environment variables can be named**, and an output naming
-anything outside that set — or an effort the provider does not have — is rejected before launch, so
-it costs no ACT budget.
-
-An ACT without it runs on the environment's selection as before. The provider that was named is
-recorded on the Run, so `ent get` shows it. Model and effort have no column on the Run; they appear
-in the Decision's rationale (`ACT(implement on codex/high: ...)`).
-
-**DECIDE cannot choose its own provider this way.** By the time it returns `agent` it is already
-running and cannot relaunch itself. The decide phase stays on the environment variables.
 
 ### Using Codex
 
