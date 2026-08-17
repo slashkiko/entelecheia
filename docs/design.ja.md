@@ -827,6 +827,7 @@ UPDATE goals
 
 ```
 .goals/<slug>.yaml            人間が編集。Git 管理。宣言部のみ
+.goals/config.yaml            人間が編集。Git 管理。宣言部のうち repo スコープの分
 .goals/.state/goals.db        SQLite。機械のみが書く。gitignore
 .goals/.state/runs/<run-id>/  Agent の生ログ・diff。DB にはパスだけ持つ
 .goals/.state/worktrees/<slug>/ 実装役とレビュー役が共有するworktree。実装役が書き、レビュー役が読む（§4.2）
@@ -839,8 +840,28 @@ UPDATE goals
 `.goals/<slug>.yaml` を機械が書く経路を入れるかは §10-12 で決めた。**書き手が増えても
 宣言部と実行時状態を分ける線は動かない。動くのは「人間が編集」の側だけになる。**
 
+**宣言部は2つに分かれる。分ける軸は「誰が編集するか」ではなく「誰が値を決めるか」になる。**
+`repository` と `setup` と `policies` は Goal ではなくリポジトリが決めるもので、Goal ごとに
+書くと同じ文面が N 本並ぶ。これらは `.goals/config.yaml` に置き、`.goals/` の下の Goal 全部が
+受け取る。混ぜるのは検証の前の生 YAML で、キー単位になる。Goal が書いた値は必ず残り、
+`goalSchema` から下は1行も変わらない。下限を持つ2つ（`protected_paths` /
+`require_human_approval`）は置き換えではなく**追加の下限**として混ざる。Goal 固有のキー——
+とりわけ `budget`——は config に書けない。リポジトリ側の既定に逃がすと、Goal YAML を1本
+読んでもその Goal がいつ止まるのか分からなくなる。スキーマと混ぜ方は
+`src/domain/goal-config.ts` にある。**これは「1本読めば挙動が分かる」性質と引き換えになる。**
+いまは「1本と config を読めば分かる」になった。
+
+**宣言部は commit しなくてよい。** 他の人と共有しているリポジトリで自分だけ ent を回すときは、
+`ent init --private-goals` が無視の行を tracked な `.gitignore` ではなく `info/exclude` へ書き、
+`.goals/` ごと無視する。これで壊れるのはレビュー役になる——`git worktree add` が持ってくるのは
+tracked なファイルだけなので、無視した宣言部は、レビュー役が読めと指示されている作業ツリーに
+現れない。controller が配って解くが、**配るのは git が無視しているパスだけ**にする。git から
+見えるパスに置いた写しは untracked な変更になり、触ってもいない Actor を止め、PR の diff にも
+乗る。配布は役を起動するたびに繰り返すので、レビュー役が読むのは常に controller の写しになる。
+
 `.goals/<slug>.yaml` のスキーマは `src/domain/goal.ts` にある。slug は `goal.id` と
-一致させる（突き合わせは `src/domain/goal-parse.ts`）。ファイル名は Phase 番号ではなく
+一致させる（突き合わせは `src/domain/goal-parse.ts`）。`config` を予約語にしてあるのはこのため
+で、あのファイルは Goal ではないので、スキーマに文句を言わせず CLI が名指しで断る。ファイル名は Phase 番号ではなく
 Goal の内容から付ける。Phase は本書側の計画であって Goal の属性ではない。
 こうしておけば、Phase の区切りを変えてもファイル名は腐らない。
 

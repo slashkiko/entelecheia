@@ -15,6 +15,7 @@ import { promisify } from "node:util";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { loadGoalFile } from "../src/adapters/goal-file.js";
 import { agentContextPayload, main, parseCommand } from "../src/cli.js";
+import { CONFIG_FILENAME } from "../src/domain/goal-config.js";
 
 /**
  * `ent init`。この repo の外のリポジトリで ent を回し始められるようにする。
@@ -46,13 +47,14 @@ let stdout: string[];
 let home: string;
 let realHome: string | undefined;
 
-/** `.goals/` にある Goal YAML のファイル名 */
+/** `.goals/` にある Goal YAML のファイル名。config.yaml は Goal ではないので外す */
 function goalFiles(): string[] {
   const dir = join(repoRoot, ".goals");
   if (!existsSync(dir)) {
     return [];
   }
   return readdirSync(dir)
+    .filter((name) => name !== CONFIG_FILENAME)
     .filter((name) => name.endsWith(".yaml") || name.endsWith(".yml"))
     .sort();
 }
@@ -169,6 +171,46 @@ describe("何も無いリポジトリで叩く", () => {
     expect(ignoreLines()).toHaveLength(1);
   });
 
+  it("repo スコープの宣言を置く", async () => {
+    // Goal ごとに書き写していた `repository` / `setup` / `policies` の置き場。
+    await main(["init"]);
+
+    expect(existsSync(join(repoRoot, ".goals", CONFIG_FILENAME))).toBe(true);
+  });
+
+  it("config の repository を origin から埋める", async () => {
+    // 埋められる値を人間に打ち直させない。読めなければ雛形の値を書く（下の it）。
+    await run("git", ["remote", "add", "origin", "git@github.com:acme/widgets.git"], {
+      cwd: repoRoot,
+    });
+
+    await main(["init"]);
+
+    const config = readFileSync(join(repoRoot, ".goals", CONFIG_FILENAME), "utf8");
+    expect(config).toContain("owner: acme");
+    expect(config).toContain("name: widgets");
+    expect(config).toContain("default_branch: main");
+  });
+
+  it("origin が無ければ、埋める先が分かる値を書く", async () => {
+    // **推測で埋めない。** 別のリポジトリの名前が入った config は、最初のティックで
+    // 404 になるだけでなく、人間が疑う場所を1つ増やす。
+    await main(["init"]);
+
+    expect(readFileSync(join(repoRoot, ".goals", CONFIG_FILENAME), "utf8")).toContain(
+      "owner: your-org",
+    );
+  });
+
+  it("init が置いた2本は、重ねればそのまま読める", async () => {
+    // 雛形から `repository` を落としたので、config と一緒でなければ通らない。
+    // init は同じ1周で両方を置くので、叩いた直後の状態は回せる必要がある。
+    await main(["init"]);
+
+    const file = goalFiles()[0] ?? "";
+    expect(() => loadGoalFile(join(repoRoot, ".goals", file))).not.toThrow();
+  });
+
   it("Goal YAML の雛形を1本置く", async () => {
     await main(["init"]);
 
@@ -230,10 +272,40 @@ describe("2度目に叩く", () => {
     expect(goalFiles()).toHaveLength(1);
   });
 
+  it("既にある config を上書きしない", async () => {
+    // repo スコープの宣言も人間が埋めるもので、2度目の init が白紙に戻すと
+    // 取り返しがつかない。Goal YAML と同じ扱いにする。
+    const path = join(repoRoot, ".goals", CONFIG_FILENAME);
+    const edited = `${readFileSync(path, "utf8")}\n# 人間が書き足した行\n`;
+    writeFileSync(path, edited);
+
+    await main(["init"]);
+
+    expect(readFileSync(path, "utf8")).toBe(edited);
+  });
+
   it("gitignore の行を二重に足さない", async () => {
     await main(["init"]);
 
     expect(ignoreLines()).toHaveLength(1);
+  });
+});
+
+describe("commit が1つも無いリポジトリで叩く", () => {
+  it("それでも config の repository を埋める", async () => {
+    // `git init` の直後に `ent init` を叩くのがいちばんありそうな順番になる。
+    // `rev-parse --abbrev-ref HEAD` は HEAD を解決できずに落ちるので、そこだけ
+    // 読めない状態を作っていた。ブランチ名は commit の有無に依らない。
+    await run("git", ["init", "-b", "trunk", repoRoot]);
+    await run("git", ["remote", "add", "origin", "https://github.com/acme/widgets"], {
+      cwd: repoRoot,
+    });
+
+    await main(["init"]);
+
+    const config = readFileSync(join(repoRoot, ".goals", CONFIG_FILENAME), "utf8");
+    expect(config).toContain("owner: acme");
+    expect(config).toContain("default_branch: trunk");
   });
 });
 

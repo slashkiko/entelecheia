@@ -9,6 +9,7 @@ import {
   goalTemplate,
   TEMPLATE_SLUG,
 } from "../src/domain/goal.js";
+import { configTemplate, parseGoalConfig } from "../src/domain/goal-config.js";
 import { parseGoal } from "../src/domain/goal-parse.js";
 
 const GOALS_DIR = join(import.meta.dirname, "..", ".goals");
@@ -123,12 +124,20 @@ describe("goal schema", () => {
     // `budget` を定数（`DEFAULT_DECLARED_POLICIES` / `DEFAULT_BUDGET`）から埋める。
     // 雛形は注釈込みの文字列なので生成できず、**片方だけ動かせてしまう**。
     // 動かした側が緩ければ、plan から始めた Goal だけが緩いところから始まる。
-    const template = parseGoal(goalTemplate(TEMPLATE_SLUG), TEMPLATE_SLUG);
+    // `ent init` が置く2本を、init と同じ順に重ねて読む。`policies` の中身は
+    // repo スコープの宣言（`.goals/config.yaml`）へ移ったので、雛形だけを読むと
+    // `repository` が無いと言われる。**押さえたい不変条件は動いていない**——
+    // init から始めた Goal と plan から始めた Goal で、下限が食い違わないこと。
+    const config = parseGoalConfig(
+      configTemplate({ owner: "your-org", name: "your-repo", defaultBranch: "main" }),
+    );
+    const template = parseGoal(goalTemplate(TEMPLATE_SLUG), TEMPLATE_SLUG, config);
     const fromDefaults = parseGoal(
       goalTemplate(TEMPLATE_SLUG)
         .replace(/policies:[\s\S]*?\nbudget:/, `${declaredBlock()}\nbudget:`)
         .replace(/budget:[\s\S]*$/, budgetBlock()),
       TEMPLATE_SLUG,
+      config,
     );
 
     expect(template.policies).toEqual(fromDefaults.policies);

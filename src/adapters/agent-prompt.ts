@@ -7,6 +7,7 @@ import {
   PULL_REQUEST_SECTION,
   renderPullRequestText,
 } from "../act/index.js";
+import { CONFIG_FILENAME } from "../domain/goal-config.js";
 import type { ActorRole } from "../domain/run.js";
 
 /**
@@ -179,6 +180,8 @@ What can be confirmed about the PR is limited to what the section below carries.
 
 1. Run git rev-parse HEAD to confirm the commit you read
 2. Read \`.goals/${goalId}.yaml\`. This is the primary source of the intent.
+   Read \`.goals/${CONFIG_FILENAME}\` too when it is there: it carries the repository-wide part
+   of the declaration, and the Goal file alone leaves those constraints out.
    Read the in-repository files listed in context.references as well.
    **If you cannot read it, do not evaluate point A, make the assessment
    INSUFFICIENT_CONTEXT, and write "the declaration could not be read" as the first

@@ -1,9 +1,10 @@
 import { exec, execFile, execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { promisify } from "node:util";
 import { type Worktree, type WorktreePort, worktreeBranchFor } from "../act/index.js";
+import { CONFIG_FILENAME } from "../domain/goal-config.js";
 import { VERIFY_WITHHELD_ENV, withheldEnv } from "../domain/withheld-env.js";
 import type { LocalRepoPort } from "../observe/index.js";
 import type { BranchPort, PushResult } from "../publish/index.js";
@@ -98,6 +99,96 @@ export function findGitRoot(from: string): string | null {
 
 /** `.goals/.state/` を無視する行。init が書き、doctor が読む。文言を2箇所に持たない */
 export const STATE_IGNORE_LINE = ".goals/.state/";
+
+/**
+ * `.goals/` ごと無視する行。宣言部を git に載せない構成で init が書く。
+ *
+ * `STATE_IGNORE_LINE` の代わりになる。`.goals/` はその下の `.state/` も覆うので、
+ * 両方を書く必要は無い（`git check-ignore` に聞く doctor もこれで通る）。
+ */
+export const GOALS_IGNORE_LINE = ".goals/";
+
+/**
+ * 宣言部を worktree に配る。**無視されているものだけを配る。**
+ *
+ * チームのリポジトリで個人が ent を回すと、`.goals/` を commit したくない。だが
+ * `git worktree add` が持ってくるのは tracked なファイルだけなので、無視した
+ * 宣言部は worktree に現れない。レビュー役は worktree の中の
+ * `.goals/<id>.yaml` を読めと指示されている（`src/adapters/agent-prompt.ts`）ので、
+ * 読む材料が丸ごと消える。controller が代わりに置く。
+ *
+ * **配る条件は「その worktree で git に無視されていること」で、ファイルの有無では
+ * ない。** 無視されていないパスに置くと untracked なファイルが1本増え、
+ * `changedPaths` に出て `protected_path_touched` になる。触ってもいない Actor が
+ * 止められるうえ、`commit` の `add --all` がそれを PR の diff に入れる。逆に
+ * 無視されていれば、`status --porcelain` にも `add --all` にも現れない。
+ *
+ * **毎回上書きする。** 無視されている＝関門から見えないので、Actor は配られた
+ * 写しを書き換えられる。controller が読むのは repoRoot 側なので判断は変わらないが、
+ * レビュー役は書き換えられた宣言に対してレビューすることになる。役を起動する
+ * たびに置き直せば、前の役が書き換えた分はそこで捨てられる。
+ *
+ * `goalId` が無ければ何もしない。宣言部の場所が決まらないので配りようが無い。
+ */
+async function deliverDeclaration(
+  repoRoot: string,
+  worktreePath: string,
+  goalId: string | undefined,
+): Promise<void> {
+  if (goalId === undefined) {
+    return;
+  }
+
+  const names = [`${goalId}.yaml`, `${goalId}.yml`, CONFIG_FILENAME];
+  for (const name of names) {
+    const source = join(repoRoot, ".goals", name);
+    if (!existsSync(source)) {
+      continue;
+    }
+    const relative = `.goals/${name}`;
+    if (!(await ignoredIn(worktreePath, relative))) {
+      continue;
+    }
+    const destination = join(worktreePath, relative);
+    mkdirSync(dirname(destination), { recursive: true });
+    copyFileSync(source, destination);
+  }
+}
+
+/**
+ * その作業ツリーで、そのパスが git に無視されるか。
+ *
+ * 判定できなかったときは false に倒す。`stateDirIgnored` は3値（無視される /
+ * されない / 分からない）を返すが、こちらの読み手は1人で、分からないときに
+ * 取るべき側が決まっている——**配らない**。配って外すほうの間違いは、Actor が
+ * 触っていない変更で関門に止められる形になる。
+ */
+async function ignoredIn(worktreePath: string, path: string): Promise<boolean> {
+  try {
+    await gitRaw(worktreePath, ["check-ignore", "-q", "--", path]);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * そのリポジトリの `info/exclude` の絶対パス。引けなければ null。
+ *
+ * `join(repoRoot, ".git", "info", "exclude")` とは書かない。`.git` はディレクトリ
+ * とは限らず（worktree では gitdir を指すファイルになる）、`info/` が無いことも
+ * ある。git に聞けば、どの形でも共通の置き場を返す。
+ *
+ * この行を worktree 側ではなく共通の `info/exclude` に書くのが要点になる。
+ * linked worktree もここを読むので、1度書けば作業ツリー全部に効く。
+ */
+export function gitInfoExcludePath(repoRoot: string): string | null {
+  const path = gitOutput(repoRoot, ["rev-parse", "--git-path", "info/exclude"]);
+  if (path === null) {
+    return null;
+  }
+  return isAbsolute(path) ? path : resolve(repoRoot, path);
+}
 
 /**
  * `.goals/.state/` が gitignore されているか。判定は git にさせる。
@@ -196,19 +287,24 @@ export function gitWorktree(repoRoot: string, root: string): WorktreePort {
   const pathOf = (name: string): string => join(root, name);
 
   return {
-    async ensure(name, baseBranch): Promise<Worktree> {
+    async ensure(name, baseBranch, goalId): Promise<Worktree> {
       const path = pathOf(name);
       // 規則は act/index.ts が正。controller の関門も同じ関数を通す。
       const branch = worktreeBranchFor(name);
       // 既にある作業ツリーは作り直さない。作り直すと前ティックの差分が消える。
       // `worktree list` の出力は realpath なので、パスの表記が揺れても
       // 取りこぼさないようにディレクトリの実在も見る。
+      //
+      // **宣言部の配布だけは、既にある作業ツリーでも必ず通す。** ここで一緒に
+      // return してしまうと、配るのが1ティック目だけになる。
       if (existsSync(join(path, ".git"))) {
+        await deliverDeclaration(repoRoot, path, goalId);
         return { path, branch };
       }
 
       const existing = await git(repoRoot, ["worktree", "list", "--porcelain"]);
       if (existing.split("\n").includes(`worktree ${path}`)) {
+        await deliverDeclaration(repoRoot, path, goalId);
         return { path, branch };
       }
 
@@ -221,6 +317,7 @@ export function gitWorktree(repoRoot: string, root: string): WorktreePort {
           ? ["worktree", "add", path, branch]
           : ["worktree", "add", "-b", branch, path, baseBranch],
       );
+      await deliverDeclaration(repoRoot, path, goalId);
       return { path, branch };
     },
 
@@ -696,7 +793,8 @@ export function ghAuthToken(): string | null {
 /**
  * `origin` が指す GitHub リポジトリ。読めなければ null。
  *
- * `ent plan` が書き出す宣言の `repository` を埋めるのに使う。**LLM には書かせない。**
+ * `ent plan` が書き出す宣言と、`ent init` が書く `.goals/config.yaml` の
+ * `repository` を埋めるのに使う。**LLM にも人間の記憶にも書かせない。**
  * 存在しない owner 名を埋められると、最初のティックで GitHub の 404 として初めて
  * 表面化する（`goalTemplate` が同じ注意を書いている）。
  *
@@ -733,6 +831,31 @@ export function gitDefaultBranch(repoRoot: string): string | null {
   }
   const branch = head.startsWith("origin/") ? head.slice("origin/".length) : head;
   return branch === "" ? null : branch;
+}
+
+/**
+ * 対象リポジトリの識別子。`ent init` が `.goals/config.yaml` の `repository` を埋める。
+ *
+ * owner と name は `gitRemoteRepository` が、既定ブランチは `gitDefaultBranch` が読む。
+ * **後者が読めないときは、いま HEAD が指しているブランチに落とす。** `git init` から
+ * 始めた repo には `refs/remotes/origin/HEAD` が無く、`ent init` を叩くいちばん
+ * ありそうな順番（`git init` の直後）がまさにそれになる。`symbolic-ref --short HEAD` は
+ * commit が1つも無くても読めるので、`rev-parse --abbrev-ref HEAD` は使わない。
+ *
+ * どちらも読めなければ null を返し、init は雛形の `your-org/your-repo` を書く。
+ * **推測で埋めない。** 別のリポジトリの名前が入った config は、404 になるだけでなく、
+ * 「埋めた覚えのない値が入っている」ので人間が疑う場所を1つ増やす。
+ */
+export function gitRepositoryIdentity(
+  repoRoot: string,
+): { owner: string; name: string; defaultBranch: string } | null {
+  const repository = gitRemoteRepository(repoRoot);
+  if (repository === null) {
+    return null;
+  }
+  const defaultBranch =
+    gitDefaultBranch(repoRoot) ?? gitOutput(repoRoot, ["symbolic-ref", "--short", "HEAD"]);
+  return defaultBranch === null ? null : { ...repository, defaultBranch };
 }
 
 /** git を1回叩いて標準出力を読む。落ちたら null。argv 配列で叩く（シェルを経由しない） */

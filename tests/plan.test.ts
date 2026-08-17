@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { CONFIG_SLUG } from "../src/domain/goal-config.js";
 import { parseGoal } from "../src/domain/goal-parse.js";
 import { MAX_LLM_RETRIES } from "../src/domain/llm-call.js";
 import {
@@ -103,6 +104,18 @@ describe("ent plan", () => {
       name: "entelecheia",
       default_branch: "main",
     });
+  });
+
+  it("config を id にした提案は、1本も書かずに断る", async () => {
+    // `existingGoals` は `.goals/config.yaml` を Goal に数えないので、id 衝突の
+    // 検査は素通りする。名指しで弾かないと `writeGoalFile` の EEXIST まで落ちて、
+    // 何が起きたのかが読めない。
+    const { probes, written } = harness([
+      proposal([proposedGoal(CONFIG_SLUG), proposedGoal("alpha")]),
+    ]);
+
+    expect(await planGoals(REQUEST, probes)).not.toBe(0);
+    expect(written.size).toBe(0);
   });
 
   it("関門の入力は LLM ではなく ent が埋める", async () => {
