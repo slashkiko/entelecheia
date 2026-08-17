@@ -860,6 +860,7 @@ UPDATE goals
 
 ```
 .goals/<slug>.yaml            Edited by humans. Git-managed. Declaration only
+.goals/config.yaml            Edited by humans. Git-managed. The repository-scoped part of the declaration
 .goals/.state/goals.db        SQLite. Written by machines only. gitignore
 .goals/.state/runs/<run-id>/  Agent raw logs and diffs. The DB holds only the path
 .goals/.state/worktrees/<slug>/ Worktree shared by the implement role and the review role. The implement role writes, the review role reads (§4.2)
@@ -873,8 +874,29 @@ looks like one file. Whether to add a path where the machine writes `.goals/<slu
 in §10-12. **Even as the number of writers grows, the line separating the declaration from runtime
 state does not move. What moves is only the "edited by humans" side.**
 
+**The declaration is split in two, by who decides the value — not by who edits it.** `repository`,
+`setup`, and `policies` are decided by the repository rather than by the Goal, and written per Goal
+they become the same text copied N times. They live in `.goals/config.yaml`, and every Goal under
+`.goals/` inherits it. The merge happens on the raw YAML before validation, key by key, so a Goal's
+own value always survives and `goalSchema` and everything below it stay unchanged; the two floors
+(`protected_paths`, `require_human_approval`) take the config as an additional floor rather than a
+replacement. Goal-specific keys — `budget` above all — are refused in `config.yaml`: pushed out to a
+repository-wide default, reading one Goal YAML would no longer tell you when that Goal stops. The
+schema and the merge are in `src/domain/goal-config.ts`. **This does cost the "read one file and you
+know the behavior" property**, which is now "read one file plus the config".
+
+**The declaration does not have to be committed.** Running ent by yourself inside a repository other
+people share, `ent init --private-goals` writes the ignore line to `info/exclude` rather than the
+tracked `.gitignore`, and ignores `.goals/` whole. What that would otherwise break is the review
+role: `git worktree add` carries only tracked files, so an ignored declaration never reaches the
+worktree the review role is told to read it from. The controller delivers it — but **only where git
+ignores the path**, because a delivered file git can see becomes an untracked change that stops an
+Actor which never touched it and rides into the PR diff. Delivery repeats on every role launch, so
+the copy the review role reads is always the controller's.
+
 The schema of `.goals/<slug>.yaml` is in `src/domain/goal.ts`. The slug is kept identical to `goal.id`
-(the cross-check is in `src/domain/goal-parse.ts`). File names come from the content of the Goal, not
+(the cross-check is in `src/domain/goal-parse.ts`). `config` is a reserved slug for that reason: the
+file is not a Goal, and the CLI refuses it by name rather than letting the schema complain. File names come from the content of the Goal, not
 from the Phase number. Phase is a plan on this document's side, not an attribute of the Goal.
 Doing it this way keeps file names from rotting when the Phase boundaries change.
 

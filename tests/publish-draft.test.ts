@@ -3,6 +3,8 @@ import { parse as parseYaml } from "yaml";
 import { githubCodeWriter } from "../src/adapters/github.js";
 import type { Decision } from "../src/domain/action.js";
 import { type Goal, goalSchema, goalTemplate, TEMPLATE_SLUG } from "../src/domain/goal.js";
+import { configTemplate, parseGoalConfig } from "../src/domain/goal-config.js";
+import { parseGoal } from "../src/domain/goal-parse.js";
 import {
   type BranchPort,
   type CodeWriterPort,
@@ -178,9 +180,16 @@ describe("repository.pull_request の宣言", () => {
     ).toThrow();
   });
 
-  it("ent init の雛形はスキーマとして妥当なまま", () => {
-    // 雛形に例を足しても、そのまま ent start に渡せる状態は崩さない。
-    const parsed = goalSchema.parse(parseYaml(goalTemplate(TEMPLATE_SLUG)));
+  it("ent init が置く2本は、重ねればスキーマとして妥当なまま", () => {
+    // 雛形に例を足しても、init を叩いた直後の状態が ent start に渡せることは崩さない。
+    // `repository` は `.goals/config.yaml` へ移ったので、init と同じ順に重ねて読む。
+    const parsed = parseGoal(
+      goalTemplate(TEMPLATE_SLUG),
+      TEMPLATE_SLUG,
+      parseGoalConfig(
+        configTemplate({ owner: "your-org", name: "your-repo", defaultBranch: "main" }),
+      ),
+    );
 
     expect(parsed.goal.id).toBe(TEMPLATE_SLUG);
     // 雛形が draft を有効にして配ると、そこから始めたリポジトリは全部 draft になる。

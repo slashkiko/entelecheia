@@ -37,7 +37,9 @@ Only read, and run commands to confirm.
 
 Work only inside the current directory. The steps are as follows.
 
-1. Read .goals/${invocation.goalId}.yaml and the diff, and confirm what must be satisfied
+1. Read .goals/${invocation.goalId}.yaml and the diff, and confirm what must be satisfied.
+   Read .goals/config.yaml too when it is there: it carries the repository-wide part of
+   the declaration, and the Goal file alone leaves those constraints out
 2. Run git rev-parse HEAD to confirm which commit you read
 3. Read "${PULL_REQUEST_SECTION}" below. If it was passed down, check
    there whether the constraints in the declaration are reflected in the body. If it was

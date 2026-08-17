@@ -3,7 +3,7 @@ import { existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { agentContextPayload } from "./cli/agent-context.js";
-import { type Command, parseCommand, USAGE } from "./cli/parse.js";
+import { type Command, parseCommand, type ReportTarget, USAGE } from "./cli/parse.js";
 import {
   type ReportRecord,
   reportPayload,
@@ -13,7 +13,7 @@ import {
 } from "./cli/present.js";
 import { type TickResult, tick } from "./controller/index.js";
 import { errorMessage } from "./domain/error-message.js";
-import type { Goal } from "./domain/goal.js";
+import { type Goal, progressTargetOf } from "./domain/goal.js";
 import { isTerminal } from "./domain/goal-state.js";
 import type { Store } from "./store/port.js";
 import { doctorPayload } from "./usecase/doctor.js";
@@ -102,7 +102,9 @@ async function runCommand(argv: readonly string[]): Promise<number> {
   if (command.kind === "init") {
     // Goal も DB も読まない。読める状態を作るのがこのコマンドなので、
     // 読めないことを理由に落とすと最初の1回が通らない。
-    return initRepository(repoRoot, command.json === true, initProbes());
+    return initRepository(repoRoot, command.json === true, initProbes(), {
+      privateGoals: command.privateGoals === true,
+    });
   }
 
   if (command.kind === "doctor") {
@@ -242,9 +244,14 @@ async function runCommand(argv: readonly string[]): Promise<number> {
     process.on("SIGTERM", stop);
     process.on("SIGINT", stop);
 
-    // 進捗の宛先。指定が無ければ publish は従来どおり PR コメントに書く。
+    // 進捗の宛先。**フラグ > 宣言 > PR コメント**の順で決まる。
+    //
+    // フラグを上に置く。打った側の指定を宣言が上書きすると、宣言で stdout に
+    // 倒してある Goal の進捗を、手元の1回だけファイルに出すことができなくなる。
+    // 逆向きにする理由が無い——宣言は毎周に効き、フラグはその1周にしか効かない。
+    const target = command.report ?? declaredReportTarget(goal);
     const record: ReportRecord = { body: null, error: null };
-    const report = command.report === undefined ? undefined : reportSink(command.report, record);
+    const report = target === undefined ? undefined : reportSink(target, record);
 
     const result = await tick(goal, {
       ...tickPorts(goal, store, repoRoot, stateDir),
@@ -257,9 +264,9 @@ async function runCommand(argv: readonly string[]): Promise<number> {
       `${JSON.stringify(
         {
           ...summarize(result),
-          ...(command.report === undefined
-            ? {}
-            : { report: reportPayload(command.report, record) }),
+          // 宛先があるティックにだけ足す。宣言で決まった宛先も載せる——載せないと、
+          // フラグを付けていない側からは「どこに出たのか」を読む手段が無くなる。
+          ...(target === undefined ? {} : { report: reportPayload(target, record) }),
         },
         null,
         2,
@@ -274,6 +281,24 @@ async function runCommand(argv: readonly string[]): Promise<number> {
   } finally {
     store.close();
   }
+}
+
+/**
+ * 宣言（`policies.progress`）が決めた進捗の宛先。PR コメントなら undefined。
+ *
+ * `undefined` を返すのは、`publish` が「宛先が無ければ PR コメント」で動いている
+ * ため（`PublishDeps.report`）。`{ kind: "pr" }` をそのまま下ろすと、PR に書く
+ * 経路が2つになる。
+ *
+ * ドメインの `ProgressTarget` をここで `ReportTarget` に移す。判定（予約語かパスか）は
+ * ドメイン側の1箇所にあり、ここがやるのは形を合わせるだけになる。
+ */
+function declaredReportTarget(goal: Goal): ReportTarget | undefined {
+  const target = progressTargetOf(goal);
+  if (target.kind === "pr") {
+    return undefined;
+  }
+  return target.kind === "stdout" ? { kind: "stdout" } : { kind: "file", path: target.path };
 }
 
 /**

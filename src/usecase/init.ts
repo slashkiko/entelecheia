@@ -9,9 +9,10 @@ import {
   writeFileSync,
 } from "node:fs";
 import { homedir } from "node:os";
-import { basename, dirname, extname, join, resolve } from "node:path";
+import { basename, dirname, extname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { goalTemplate, TEMPLATE_SLUG } from "../domain/goal.js";
+import { CONFIG_FILENAME, configTemplate } from "../domain/goal-config.js";
 
 /**
  * `ent init` の本体。いまのリポジトリを ent で回せる状態にする。
@@ -32,6 +33,43 @@ export interface InitProbes {
    * init が書いた行を doctor が認識しない状態を作れる。
    */
   stateIgnoreLine: string;
+  /**
+   * `origin` と現在のブランチから読んだ、対象リポジトリの識別子。読めなければ null。
+   *
+   * `.goals/config.yaml` の `repository` を埋めるのに使う。git に聞く判定なので
+   * `gitRoot` と同じく Port で受け取る。読めなくても init は止めない——雛形の
+   * `your-org/your-repo` を書いて、人間が埋める形にする。
+   */
+  repository(repoRoot: string): { owner: string; name: string; defaultBranch: string } | null;
+  /**
+   * `.goals/` ごと無視する行。`--private-goals` を渡したときに書く。
+   *
+   * `.goals/` はその下の `.state/` も覆うので、`stateIgnoreLine` の代わりになる。
+   */
+  goalsIgnoreLine: string;
+  /**
+   * そのリポジトリの `info/exclude` の絶対パス。引けなければ null。
+   *
+   * `--private-goals` の書き先になる。`join(repoRoot, ".git", ...)` を自前で
+   * 組み立てないのは、`.git` がファイルのこともあり `info/` が無いこともあるため。
+   */
+  infoExcludePath(repoRoot: string): string | null;
+}
+
+/** `ent init` の振る舞いを変える指定。いまは1つだけになる */
+export interface InitOptions {
+  /**
+   * 宣言部を git に載せない。`.gitignore` ではなく `info/exclude` に書く。
+   *
+   * **チームのリポジトリで個人が ent を回す形がこれにあたる。** `.goals/` の行を
+   * tracked な `.gitignore` に足すと、それ自体がチームのリポジトリへの変更になる。
+   * 避けたいのはまさにそれなので、このモードでは `.gitignore` を1文字も触らない。
+   *
+   * `info/exclude` は commit されず、linked worktree からも読まれる。Actor の
+   * 作業ツリーで宣言部が無視されることが、controller が宣言部をそこへ配れる条件に
+   * なっている（`deliverDeclaration`）。
+   */
+  privateGoals?: boolean;
 }
 
 /**
@@ -66,8 +104,10 @@ interface InitReport {
  * いまのリポジトリを ent で回せる状態にする。
  *
  * 満たすべき性質:
- * - 冪等。2度目は既にある `.goals/*.yaml` を上書きせず、`.gitignore` に同じ行を
- *   二重に足さない。この repo のルートで叩いても壊れない
+ * - 冪等。2度目は既にある `.goals/*.yaml` を上書きせず、無視の行を二重に足さない。
+ *   この repo のルートで叩いても壊れない
+ * - `--private-goals` なら宣言部を git に載せない。書き先は `.gitignore` ではなく
+ *   `info/exclude` で、**tracked なファイルは1つも触らない**
  * - git のワークツリーのルートでなければ何も作らずに 1 で断る。argv は妥当なので
  *   2 ではない
  * - 書き込み先がシンボリックリンクなら何も書かない。リンク先はリポジトリの外を
@@ -76,7 +116,12 @@ interface InitReport {
  *   repoRoot にも `$HOME` にも何も置かずに 1 で断る
  * - 出力は他のサブコマンドと揃える。`--json` のときは stdout に JSON だけを書く
  */
-export function initRepository(repoRoot: string, json: boolean, probes: InitProbes): number {
+export function initRepository(
+  repoRoot: string,
+  json: boolean,
+  probes: InitProbes,
+  options: InitOptions = {},
+): number {
   const refuse = (message: string): number => {
     // 作ってから気づかせない。何も置かずに、打ち直せる形を添える（gist 2.3）。
     process.stderr.write(`${message}\n`);
@@ -102,8 +147,24 @@ export function initRepository(repoRoot: string, json: boolean, probes: InitProb
   }
 
   const goalsDir = join(repoRoot, ".goals");
-  const gitignore = join(repoRoot, ".gitignore");
-  for (const path of [goalsDir, gitignore]) {
+  const configPath = join(goalsDir, CONFIG_FILENAME);
+
+  // 無視の行をどこへ書くか。**private では tracked な `.gitignore` を候補にすら
+  // しない。** 1行足すだけでもチームのリポジトリへの変更になり、避けたいのが
+  // まさにそれになる。
+  const ignore = options.privateGoals === true ? probes.infoExcludePath(repoRoot) : null;
+  if (options.privateGoals === true && ignore === null) {
+    return refuse(
+      "Could not resolve info/exclude for this repository, so nothing is written. " +
+        "--private-goals writes the ignore line there instead of .gitignore " +
+        "(check that git rev-parse --git-path info/exclude works here)",
+    );
+  }
+  const ignorePath = ignore ?? join(repoRoot, ".gitignore");
+  const ignoreLine =
+    options.privateGoals === true ? probes.goalsIgnoreLine : probes.stateIgnoreLine;
+
+  for (const path of [goalsDir, ignorePath, configPath]) {
     // 書き込み系はどれもリンクを辿るので、`.gitignore -> ~/.zshrc` のような
     // リポジトリなら、clone して init を叩いた人の設定ファイルに書くことになる。
     if (isSymbolicLink(path)) {
@@ -123,15 +184,16 @@ export function initRepository(repoRoot: string, json: boolean, probes: InitProb
 
   // 順に片付ける。`.goals/` が無い状態で雛形は置けないので、並べ替えられない。
   const dir = ensureGoalsDir(goalsDir);
-  const ignore = ensureStateIgnored(gitignore, probes.stateIgnoreLine);
+  const ignored = ensureIgnored(ignorePath, ignoreLine, repoRoot);
+  const config = ensureGoalConfig(configPath, probes.repository(repoRoot));
   const template = ensureGoalTemplate(goalsDir);
-  const entries = [dir, ignore, template, ...applySkillLink(skill)];
-  const report: InitReport = { repoRoot, entries, next: nextStep(template) };
+  const entries = [dir, ignored, config, template, ...applySkillLink(skill)];
+  const report: InitReport = { repoRoot, entries, next: nextStep(template, config) };
 
   process.stdout.write(
     json
       ? `${JSON.stringify(report, null, 2)}\n`
-      : `${entries.map((entry) => `${entry.action.padEnd(8)}${entry.path}`).join("\n")}\n\n${report.next}\n`,
+      : `${entries.map((entry) => `${entry.action.padEnd(9)}${entry.path}`).join("\n")}\n\n${report.next}\n`,
   );
   return 0;
 }
@@ -145,12 +207,19 @@ export function initRepository(repoRoot: string, json: boolean, probes: InitProb
  * 1本目なので、終わった Goal を「これを埋めろ」と名指しすることになる。
  * ファイルは壊れないが、init の唯一の出力が常に誤った指示になる。
  */
-function nextStep(template: InitEntry): string {
+function nextStep(template: InitEntry, config: InitEntry): string {
+  // repo スコープの宣言は config に移った。埋める先が2つに分かれたので、
+  // どちらを埋めるのかを両方名指しする。片方だけ挙げると、もう片方は
+  // 最初のティックで GitHub の 404 として初めて表面化する。
+  const repository =
+    config.action === "created"
+      ? ` Check repository in .goals/${CONFIG_FILENAME} too — it is filled in from origin, or left as your-org/your-repo when that could not be read.`
+      : "";
   if (template.action === "kept") {
-    return ".goals/ already holds a Goal, so no template was placed. Run ent doctor to check the prerequisites";
+    return `.goals/ already holds a Goal, so no template was placed. Run ent doctor to check the prerequisites.${repository}`;
   }
   const slug = basename(template.path, extname(template.path));
-  return `Fill in goal.name / desired_state / acceptance_criteria / repository in ${template.path}, then run ent doctor and ent start ${slug}`;
+  return `Fill in goal.name / desired_state / acceptance_criteria in ${template.path}, then run ent doctor and ent start ${slug}.${repository}`;
 }
 
 /**
@@ -290,28 +359,36 @@ function ensureGoalsDir(goalsDir: string): InitEntry {
 }
 
 /**
- * `.gitignore` に `.goals/.state/` を足す。既に無視できていれば触らない。
+ * 無視の行を足す。既にその行があれば触らない。
  *
  * 足し忘れると、状態 DB と worktree と Agent の生ログが対象リポジトリの git に載る。
  * 既存の内容は消さずに末尾へ追記する。人間が書いた行を init が捨てる理由が無い。
  *
- * 「既に無視できているか」は自分で判定しない。`stateDirIgnored`（git に聞く）と
- * 判定を分けると、doctor が ok と言う状態に init が行を足すことになる。
+ * **書き先は2つある。** 既定は `.gitignore` で、`--private-goals` なら
+ * `info/exclude` になる。後者は commit されないので、チームのリポジトリに1行も
+ * 足さずに宣言部を隠せる。行そのものも `.goals/.state/` と `.goals/` で変わる。
+ *
+ * 「既にその行があるか」は文字列の完全一致で見る。git に聞く形（`check-ignore`）に
+ * すると、祖先の設定で既に無視できている repo に1行も書かなくなる。init が
+ * **自分の書いた行を後から見分けられる**ことに意味があるので、ここは一致で見る。
  */
-function ensureStateIgnored(path: string, stateIgnoreLine: string): InitEntry {
+function ensureIgnored(path: string, ignoreLine: string, repoRoot: string): InitEntry {
+  const shown = relative(repoRoot, path) || path;
   const existed = existsSync(path);
   const body = existed ? readFileSync(path, "utf8") : "";
-  if (body.split("\n").some((line) => line.trim() === stateIgnoreLine)) {
-    return { path: ".gitignore", action: "kept" };
+  if (body.split("\n").some((line) => line.trim() === ignoreLine)) {
+    return { path: shown, action: "kept" };
   }
 
   // 末尾に改行が無いファイルへ追記すると、最後の行と繋がって別の pattern になる。
   const head = body === "" ? "" : body.endsWith("\n") ? `${body}\n` : `${body}\n\n`;
-  writeFileSync(
-    path,
-    `${head}# ent runtime state (goals.db / worktrees / Agent raw logs)\n${stateIgnoreLine}\n`,
-  );
-  return { path: ".gitignore", action: existed ? "appended" : "created" };
+  const comment =
+    ignoreLine === ".goals/"
+      ? "# ent declarations and runtime state, kept out of git for this checkout only"
+      : "# ent runtime state (goals.db / worktrees / Agent raw logs)";
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, `${head}${comment}\n${ignoreLine}\n`);
+  return { path: shown, action: existed ? "appended" : "created" };
 }
 
 /**
@@ -320,8 +397,35 @@ function ensureStateIgnored(path: string, stateIgnoreLine: string): InitEntry {
  * 「雛形のファイルが無ければ置く」にはしない。人間が雛形を自分の slug に
  * 改名した直後にもう一度叩くと、消したはずの `example-goal.yaml` が戻ってくる。
  */
+/**
+ * repo スコープの宣言を置く。既にあれば触らない。
+ *
+ * `repository` は git から読めた分を埋める。読めなければ雛形と同じ
+ * `your-org/your-repo` になる。**読めなかったことを黙らない**——`nextStep` が
+ * 埋める先として config を名指しするので、そこで人間に届く。
+ */
+function ensureGoalConfig(
+  path: string,
+  repository: { owner: string; name: string; defaultBranch: string } | null,
+): InitEntry {
+  const shown = `.goals/${CONFIG_FILENAME}`;
+  if (existsSync(path)) {
+    return { path: shown, action: "kept" };
+  }
+
+  writeFileSync(
+    path,
+    configTemplate(repository ?? { owner: "your-org", name: "your-repo", defaultBranch: "main" }),
+    { encoding: "utf8" },
+  );
+  return { path: shown, action: "created" };
+}
+
 function ensureGoalTemplate(goalsDir: string): InitEntry {
   const [existing] = readdirSync(goalsDir)
+    // config.yaml は Goal ではない。数に入れると、init の1周目が置いた config を
+    // 「Goal が既にある」と読んで、同じ1周で雛形を置かなくなる。
+    .filter((name) => name !== CONFIG_FILENAME)
     .filter((name) => name.endsWith(".yaml") || name.endsWith(".yml"))
     .sort();
   if (existing !== undefined) {

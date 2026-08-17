@@ -48,11 +48,24 @@ Where `.goals/` is absent, `ent doctor` fails `goals` and `state_ignored` at the
 Nothing is broken; it has simply not been started. There is one command to invoke once before the first round.
 
 ```
-ent init                    # place .goals/, the .gitignore line and the Goal template
+ent init                    # place .goals/, the .gitignore line, config.yaml and the Goal template
+ent init --private-goals    # same, but keep .goals/ out of git (the line goes to info/exclude)
 ```
 
-`ent init` is idempotent: a second run does not overwrite existing `.goals/*.yaml` and does not add the same
-line to `.gitignore` twice. Outside a git repository it creates nothing and refuses with exit code 1.
+`ent init` is idempotent: a second run does not overwrite existing `.goals/*.yaml` or `.goals/config.yaml`, and
+does not add the same line to `.gitignore` twice. Outside a git repository it creates nothing and refuses with
+exit code 1.
+
+`.goals/config.yaml` holds what the repository decides rather than the Goal — `repository`, `setup`, and
+`policies`. Every Goal under `.goals/` inherits it, a Goal's own keys always win, and `require_human_approval`
+and `protected_paths` are added rather than replaced. `config` is a reserved slug: `ent run config` refuses
+instead of reading that file as a Goal.
+
+`--private-goals` is for a repository other people share. It touches no tracked file: the ignore line
+goes to `info/exclude` and covers `.goals/` whole. Because `git worktree add` carries only tracked
+files, the controller then delivers the Goal YAML and `config.yaml` into each worktree every time a
+role is launched — but only where git ignores them, so the copies never reach `changedPaths` or the
+PR diff.
 
 **It writes outside the repository as well.** It places at `~/.claude/skills/ent` a symlink pointing at ent's own
 `.claude/skills/ent`, so that an agent working in the target repository can read this procedure as a

@@ -90,8 +90,9 @@ policies:
     open_pull_request: manual
 ```
 
-書かなければ、これまでどおり push も PR 作成も自動で進む。`manual` にした段は controller が
-行わず、そのティックは `WAITING_HUMAN` で止まる。止めた段と、人間が何をすれば進むのかは
+書かなければ、これまでどおり push も PR 作成も自動で進む。`policies` は repo スコープなので、
+通常は `.goals/config.yaml` に置く。Goal 側が `publish` を書けばキー単位で上書きする。
+`manual` にした段は controller が行わず、そのティックは `WAITING_HUMAN` で止まる。止めた段と、人間が何をすれば進むのかは
 `ent get <slug>` の `decision` に出る。
 
 止めたことは `ent run` の出力にも構造で出る。宣言で止めたティックにだけ `publishHold` が
@@ -122,7 +123,8 @@ Anthropic/Claude Codeの資格情報を渡さず、選んだprovider自身の認
 遮断は環境変数を落とすだけでは足りない。**Agent と検証コマンドの中の `gh` も未認証にする**
 （`GH_CONFIG_DIR` を実在しないディレクトリへ向ける）。`HOME` は渡すしかないので、落とすだけでは
 ホストのログインが残るからになる。シェルを通す経路も絞る。git は argv 配列で叩き、シェルを
-通すのは Goal YAML の `setup` と `verification.run` だけにする。
+通すのは Goal YAML の `setup` と `verification.run`（およびその下に敷いた
+`.goals/config.yaml` の `setup`）だけにする。
 
 `type: human` の承認は、リポジトリに書き込み権限がある人のものだけを数える。レビュー承認は
 PR の作成者を除くが、**コメントの定型文は作成者も数える**。1人で回すリポジトリではそこが
@@ -141,8 +143,8 @@ Goal の状態（ACTIVE / COMPLETED など）は `.goals/.state/goals.db` が持
 打つ」「全件が緑でも壊れていることがある」「設計の中核ほど検証コマンドに落ちない」
 「Phase ごとの担当範囲」を順に示す。
 
-Goal YAML のスキーマは `src/domain/goal.ts`、観測キーのレジストリは `src/domain/fact-keys.ts`
-にある。
+Goal YAML のスキーマは `src/domain/goal.ts`、repo スコープの側は `src/domain/goal-config.ts`、
+観測キーのレジストリは `src/domain/fact-keys.ts` にある。
 
 ### Phase 3 の内訳
 
@@ -308,8 +310,8 @@ mise run check    # サプライチェーンと workflow のチェック（basel
 手順を扱う。コマンドの一覧に続けて、「共通のオプション」「provider・model・effort を選ぶ」
 「Codex を使うとき」「関門の基準になる commit」「起動の仕方と、ent 自身を直すときの例外」の
 順になる。後半は運用にあたる。「この repo の外のリポジトリで使う」「恒久的に落ちる workflow を
-数から外す」「進捗を PR に投稿しない」「PR を draft で立てる」「粗いタスクを複数の Goal に
-割る」「複数の Goal を同時に回す」の6つが続く。
+数から外す」「リポジトリごとに1度だけ宣言する」「進捗を PR に投稿しない」「PR を draft で立てる」
+「粗いタスクを複数の Goal に割る」「複数の Goal を同時に回す」の7つが続く。
 
 ```sh
 mise run build                     # dist/cli.js を作る
@@ -429,16 +431,25 @@ ENT_NODE="$(mise which node)"       # この時点でNode 24以上の絶対パ�
 alias ent="$ENT_NODE /path/to/entelecheia/dist/cli.js"
 
 cd /path/to/your-repo
-ent init            # .goals/ と .gitignore の行と Goal の雛形を置く
+ent init            # .goals/ と .gitignore の行と config.yaml と Goal の雛形を置く
 ent doctor          # その場所で回せるかを読み取り専用で調べる
 ```
 
-`ent init` は冪等で、既にある `.goals/*.yaml` を上書きせず、`.gitignore` に
-同じ行を二重に足さない。git リポジトリでなければ何も作らずに終了コード 1 で断る。
-雛形はスキーマとして妥当なところまでしか埋まっていない。`desired_state` と
-`acceptance_criteria` は人間が書く。CI の criterion の書き方は
+他の人と共有しているリポジトリでは `--private-goals` を付ける。無視の行は `info/exclude` へ書き、
+tracked なファイルを1つも触らず、宣言部は controller が worktree へ配る。
+「[チームのリポジトリで、`.goals/` を commit せずに回す](#チームのリポジトリでgoals-を-commit-せずに回す)」を見る。
+
+`ent init` は冪等で、既にある `.goals/*.yaml` も `.goals/config.yaml` も上書きせず、
+`.gitignore` に同じ行を二重に足さない。git リポジトリでなければ何も作らずに終了コード 1 で
+断る。`desired_state` と `acceptance_criteria` は人間が書く。CI の criterion の書き方は
 「[恒久的に落ちる workflow を数から外す](#恒久的に落ちる-workflow-を数から外す)」の
 `[!IMPORTANT]` を見る。
+
+`.goals/config.yaml` は、Goal ごとではなくリポジトリごとに決まる分を持つ
+（「[リポジトリごとに1度だけ宣言する](#リポジトリごとに1度だけ宣言する)」）。`repository` は
+`origin` と現在のブランチから読めた分を埋め、読めなければ `your-org/your-repo` のままになる。
+Goal の雛形はそのぶんを書かないので、**雛形だけではスキーマを満たさない。config.yaml を
+敷いて初めて通る。** `ent init` は同じ1周で両方を置く。
 
 **`ent init` は対象リポジトリの外にも書く。** `~/.claude/skills/ent` に、ent 本体の
 `.claude/skills/ent` を指すシンボリックリンクを張る。対象リポジトリで作業するエージェントが、
@@ -489,7 +500,9 @@ ent 本体がマシンに1つ入るからになる。対象リポジトリの中
   生ログまで見るのは、その本文が `review.verdict` の Fact になるからで、
   行を守っても指す先を守らなければ verdict を偽造できる。
   見えないまま残るのは、この2つ以外の gitignore されたパスと repoRoot の外に
-  なる（design.md §10-6 の穴 (a)(b)）
+  なる（design.md §10-6 の穴 (a)(b)）。**`--private-goals` はその穴を宣言部まで
+  広げる。** `.goals/` ごと無視するので、Goal YAML も `config.yaml` も——worktree の
+  中だけでなく repoRoot 側も——見えない側に入り、どちらへの編集も関門に届かなくなる
 
 ### 恒久的に落ちる workflow を数から外す
 
@@ -509,9 +522,11 @@ issue #58 の誤収束はそちらに残る）。
 横断するので、**リポジトリの運用として意図的に赤いまま／保留のままにしてある workflow も
 対象に入る。**「特定の人のレビューが通るまで mergeable にしない」種類の workflow がそれで、
 落ちれば数に加わり、承認待ちのまま `completed` にならなければ数そのものが確定しない。
-どちらにしても `equals: 0` は埋まらない。外すなら宣言部に書く。
+どちらにしても `equals: 0` は埋まらない。外すなら宣言部に書く。`ci` は `repository` の下の
+キーなので、1本の Goal だけの話でなければ `.goals/config.yaml` に置く。
 
 ```yaml
+# .goals/config.yaml
 repository:
   provider: github
   owner: your-org
@@ -596,6 +611,71 @@ run の本数を疑う。**除外はページを取ったあとに走る**ので
 GitHub API のレート制限の枠を run の本数だけ食う。1ティックあたりの往復が読めなくなる方が、
 数が出ないより重いと見た。
 
+### リポジトリごとに1度だけ宣言する
+
+`repository` と `setup` と `policies` は、Goal ではなくリポジトリが決める。Goal YAML 全部に
+書くと同じ文面が N 本並び、運用を1つ変えるたびに全部を直すことになる。`.goals/config.yaml` に
+1度書けば、`.goals/` の下の Goal 全部がそれを受け取る。
+
+```yaml
+# .goals/config.yaml
+version: 1
+repository:
+  provider: github
+  owner: your-org
+  name: your-repo
+  default_branch: main
+setup:
+  - pnpm install --frozen-lockfile
+policies:
+  require_human_approval: [merge, force_push, push_to_default_branch, deploy, secret_access, external_send]
+  protected_paths: []
+```
+
+`version: 1` だけが必須で、その下は全部書かなくてよい。Goal とこのファイルの重なり方は
+3つの規則で決まる。
+
+- **Goal が書いた値は必ず残る。** 混ぜるのは検証の前で、サブツリーではなくキー単位になる。
+  `repository.owner` を書いて `repository.ci` を書いていない Goal は、owner を保ったまま
+  `ci` だけをここから受け取る
+- **`require_human_approval` と `protected_paths` は足す。置き換えない。** 下限なので、
+  リポジトリが閉じたゲートを Goal から開けられない。`APPROVAL_GATE_FLOOR` と
+  `PROTECTED_PATH_FLOOR` はその下でこれまでどおり効く。残り（`setup` を含む）は置き換える
+- **Goal 固有のキーはここに書けない。** `goal` / `acceptance_criteria` / `context` / `budget` は
+  書いた時点で落ちる。とくに停止条件を Goal から出さないのは、リポジトリ側の既定に逃がすと
+  Goal YAML を1本読んでもいつ止まるのか分からなくなるため
+
+ファイルが無ければ何も変わらない。全部を自分で書いている Goal は、これまでと同じに読める。
+`config` は予約 slug で、slug を取るサブコマンド（`start` / `run` / `get` / `abandon`）は
+どれもこのファイルを Goal として読まずに断る。`doctor` も宣言の数に入れない。
+
+#### チームのリポジトリで、`.goals/` を commit せずに回す
+
+他の人と共有しているリポジトリで自分だけ ent を使うとき、宣言部を相手の履歴に載せたくない。
+`ent init --private-goals` がその形を作る。
+
+```sh
+ent init --private-goals
+```
+
+素の `ent init` との違いは1つ、**tracked なファイルを1つも触らない**ことになる。無視の行は
+`info/exclude`——checkout ごとに持つもので、commit されない——へ書き、`.goals/.state/` ではなく
+`.goals/` ごと無視する。`.gitignore` は読みも書きもしないので、`git status` は綺麗なまま残る。
+
+ディレクトリごと無視すると、本来はレビュー役が読む材料を失う。`git worktree add` が持ってくるのは
+tracked なファイルだけなので、無視した `.goals/` は Actor の作業ツリーに現れない。レビュー役は
+そこの `.goals/<id>.yaml` を読めと指示されている。代わりに controller が配る——役を起動する
+たびに、Goal YAML と `config.yaml` をそこへ写す。
+
+**配るのは git が無視しているものだけになる。** git から見えるパスに置くと untracked な
+ファイルが1本増え、`changedPaths` に出て、触ってもいない Actor を
+`protected_path_touched` で止める。`add --all` もそれを PR の diff に入れる。無視されていれば
+どちらにも現れない。写しは役を起動するたびに置き直すので、Actor が自分の写しを書き換えても
+（無視されている＝関門から見えない）、次の役が読む前に捨てられる。
+
+逆の側はそのままにしてある。**`.goals/` を commit している構成では、古い worktree の中の
+写しは古いまま残る。** tracked なファイルを配り直すと、その差分が Actor の編集として関門に並ぶ。
+
 ### 進捗を PR に投稿しない
 
 既定では、criteria の pass 状況を PR コメントに積む。`--report` を付けると、その pass 状況を
@@ -619,6 +699,21 @@ ent run <slug> --report ./progress.md                 # ファイルに追記す
 本文は `report.body` に入る。受け取るのは `run` だけで、`--dry-run` とは併用できない。
 JSON に何が入るか、書けなかったときにどうなるかは `.claude/skills/ent/SKILL.md` にある。
 
+**毎回ではなく恒久的に投稿を止めるなら、宣言に書く。** `policies.progress.report` はフラグと
+同じ値を取り、既定を表す `pr` が増える。リポジトリ全体で決まるものなら `.goals/config.yaml` に
+置く。
+
+```yaml
+policies:
+  progress:
+    report: stdout      # pr（既定）/ stdout / ファイルのパス
+```
+
+`--report` を付けたティックはそちらが勝つ。宣言は毎周に効き、フラグはその1周にしか効かないので、
+手元に出したい1回を出せる側を上に置く。フラグと違い、宣言と `--dry-run` はエラーにしない——
+dry-run は publish を通らないのでどちらにせよ何も書かれず、断ると宣言を書いただけで
+dry-run が打てなくなる。
+
 **この出力には、レビュー役が最後に返したレビュー本文も `## Review role message` の節として
 付く。** レビュー役の返答は Fact になる過程で `review.verdict` と `review.reviewed_sha` の
 2つに畳まれるので、`approved` の理由も留保も、そのままでは誰も読めないまま
@@ -626,24 +721,27 @@ JSON に何が入るか、書けなかったときにどうなるかは `.claude
 criteria の表の位置は宛先を問わず同じで、長いレビュー本文を読み飛ばさなくても pass 状況に
 届く。レビュー本文は要約せず、改行も表もコードブロックもそのまま出す。
 
-節が出るのは `--report` を付けたティックだけになる。PR コメントには載せないので、
+節が出るのは、進捗の宛先が PR の外へ移ったティックだけになる（`--report` を付けたか、
+`policies.progress.report` に `stdout` かパスを書いたか）。PR コメントには載せないので、
 `report.body` と PR コメントは同じ内容でなくなる。レビュー役を1度も起動していない
 Goal では節そのものが出ない。生ログを読めなかったときは理由が、レビュー本文が残っていない
 Run（途中で切れた実行）では読んだ Run の id が節に出る。**どの経路でも黙って欠落させないし、
 ティックも失敗させない。**
 
 > [!NOTE]
-> **積まれ方は2つの宛先で違う。** `--report stdout` は1回叩いて1回出すので積み上がらないが、
-> `--report <path>` はファイルへの**追記**になる。節が読むのは直近の完了したレビュー役の
+> **積まれ方は2つの宛先で違う。** `stdout` は1回叩いて1回出すので積み上がらないが、パスを
+> 指定するとファイルへの**追記**になる。フラグでもそうなるが、効きが大きいのは宣言のほうで、
+> `policies.progress.report` にパスを書くと cron の毎周ぶんが永久に積まれる。節が読むのは直近の完了したレビュー役の
 > Run なので、次のレビューが終わるまで中身は毎ティック同じで、レビュー待ちで回し続けると
 > 同じ本文が回した数だけ並ぶ。長く回すなら `stdout` を使うか、宛先のファイルを分ける。
 
 ### PR を draft で立てる
 
 対象リポジトリに「まず draft で出す」運用があるなら、`repository.pull_request.draft` に
-書く。
+書く。`repository` の下のキーなので、1本の Goal だけの話でなければ `.goals/config.yaml` に置く。
 
 ```yaml
+# .goals/config.yaml
 repository:
   provider: github
   owner: your-org
@@ -792,7 +890,10 @@ gh のトークンが黙って使われないようにするためになる。**
 ## ディレクトリ
 
 ```
-.goals/<slug>.yaml        人間が編集。Git 管理。宣言部のみ。slug は goal.id と一致させる
+.goals/<slug>.yaml        人間が編集。--private-goals でなければ Git 管理。宣言部のみ。
+                          slug は goal.id と一致させる
+.goals/config.yaml        人間が編集。扱いは上と同じ。宣言部のうち Goal 全部が受け取る
+                          repo スコープの分。config は予約 slug なので、この名前の Goal は作れない
 .goals/.state/goals.db    controller が書く実行時状態。gitignore 済み
 .goals/.state/worktrees/  Actor が編集する worktree。controller 本体とは物理的に分ける
                           名前は (goal.id, role) から決まる。実装役とレビュー役は
@@ -804,6 +905,7 @@ src/domain/fact.ts        Fact の型（VERIFIED / INFERRED の分離）と Unre
 src/domain/fact-keys.ts   観測キーのレジストリ。Goal YAML の fact 検証はここを参照する
 src/domain/goal.ts        Goal YAML の Zod スキーマ
 src/domain/goal-parse.ts  Goal YAML の検証と、slug と goal.id の突き合わせ。ファイルは読まない
+src/domain/goal-config.ts .goals/config.yaml のスキーマと、Goal の下への敷き方
 src/domain/gap.ts         ASSESS が出す Gap と Assessment の型
 src/domain/action.ts      DECIDE が選ぶ Action と Decision の型
 src/domain/run.ts         Actor の実行記録の型と ActorRole（実装役とレビュー役は同じ
@@ -828,7 +930,7 @@ src/store/port.ts         実行時状態の Port。使う側が所有する口�
 src/store/sqlite.ts       その SQLite 実装（node:sqlite）。挿すのは合成ルートだけ
 src/controller/           1ティックの外側。lease → 回収 → reconcile → ACT → 永続化 → 遷移
 src/adapters/local.ts     node:child_process で書ける Port（コマンド実行、git、worktree）
-src/adapters/goal-file.ts .goals/<slug>.yaml をファイルシステムから読む
+src/adapters/goal-file.ts .goals/<slug>.yaml を読み、同じディレクトリの config.yaml を下に敷く
 src/adapters/github.ts    CodeProviderPort。@octokit/rest + ETag
 src/adapters/claude.ts    ActorPort と LlmPort。Claude Agent SDK
                           role ごとの許可・拒否ツールとプロンプトもここ。編集の
@@ -837,7 +939,7 @@ src/adapters/codex.ts     ActorPort と LlmPort。Codex CLI の非対話JSONLを
 src/adapters/agent-prompt.ts Codex向けのrole別プロンプトと出力契約
 src/wiring/index.ts       合成ルート。どの Port にどの Adapter を挿すかを決める唯一の場所。
                           関門への入力（Adapter の注入と verifyRoot）もここで決まる
-src/usecase/init.ts       ent init。.goals/ と gitignore の行と Goal の雛形を置く
+src/usecase/init.ts       ent init。.goals/ と gitignore の行と config.yaml と Goal の雛形を置く
 src/usecase/doctor.ts     ent doctor。回す前の前提を、書かずに調べる
 src/usecase/inspect.ts    ent get / ent list が出す payload。読むだけ
 src/cli/parse.ts          引数の解釈。実行はしない
