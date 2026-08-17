@@ -53,7 +53,7 @@ Codex CLI の2つがある。その走っている実体を指すときは **Age
 | 確かめられなかったことを黙って落とさない | 「対象が無い」と「対象を確かめられなかった」を区別し、後者は `unobserved` / `unverified` に理由付きで残す | 済 |
 | 検証に還元できない Goal は受け付けない | Acceptance Criteria を検証手段（コマンド / Fact 参照 / 人間の承認）に落とせない Goal は ACTIVE にしない | 済 |
 | 待機はプロセスではなく状態 | reconcile はどのティックも有限時間で return する。常駐して sleep しない | 済 |
-| 宣言と収束の分離 | 人間が書くのは Desired State と Acceptance Criteria。Actor 実装は起動時にphaseごとに選び、Goal内のActor roleと実装手順はcontrollerが決める | 一部（Goalをまたぐ分解は順序の宣言（`goal.depends_on`）まで。分割の判断は人間が持つ（design.md §10-12）） |
+| 宣言と収束の分離 | 人間が書くのは Desired State と Acceptance Criteria。Actor 実装は起動時にphaseごとの既定を人間が選び、ティックごとの上書き・Goal内のActor role・実装手順はcontrollerが決める | 一部（Goalをまたぐ分解は順序の宣言（`goal.depends_on`）まで。分割の判断は人間が持つ（design.md §10-12）） |
 | write-ahead | 副作用の前に意図を DB へ書く。任意の瞬間に kill されても次ティックで回収できる | 済 |
 | 隔離は場所だけでは足りない | worktree でファイルを分けるだけでなく、Agent の出力を controller のシェルに流さない・Agent が書いたものを controller の権限で実行しない | 一部（シェルに流さない側は design.md §7 で対応済み、controller の権限で実行しない側は §10-9 が未決） |
 
@@ -361,6 +361,25 @@ ENT_IMPLEMENT_ACTOR=claude-code \
 ENT_REVIEW_MODEL=<model> \
 ent run <slug>
 ```
+
+環境変数が決めるのは**既定**になる。ティックごとの上書きは DECIDE が持っていて、
+`ACT` に `agent` を添えて返せば、その1回だけ別の provider・model・effort で走る。
+
+```json
+{"type":"ACT","intent":"fix the failing test","agent":{"actor":"codex","effort":"high"}}
+```
+
+`actor` は必須で、`model` と `effort` は任意になる。省いた分は名指しした provider の
+既定で走り、そのphaseの環境変数からは引き継がない。**名指しできるのは環境変数で
+既に選ばれている provider だけ**で、その外を指した出力と、provider に無い effort を
+書いた出力は起動前に弾く。ACT の予算は減らない。
+
+添えなかった ACT はこれまでどおり環境変数の選択で走る。名指しされた provider は
+Run に残るので `ent get` から読める。model と effort は Run の列に無く、
+Decision の rationale（`ACT(implement on codex/high: ...)`）に出る。
+
+**DECIDE 自身の provider はこの経路では選べない。** `agent` を返す時点で DECIDE は
+もう走っており、自分を起動し直すことはできない。decide phase は環境変数だけになる。
 
 ### Codex を使うとき
 
