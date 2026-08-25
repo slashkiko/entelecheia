@@ -3,6 +3,7 @@ import { describeCycles, findCycles } from "../domain/dependency-graph.js";
 import { errorMessage } from "../domain/error-message.js";
 import { observedFactKeySchema } from "../domain/fact-keys.js";
 import {
+  type AcceptanceCriterion,
   acceptanceCriterionSchema,
   DEFAULT_BUDGET,
   DEFAULT_DECLARED_POLICIES,
@@ -132,6 +133,9 @@ interface PlanReport {
  *   部分だけで、関門の入力（`protected_paths` / `require_human_approval`）は渡さない
  * - **`type: human` の criterion を1つも持たない Goal が混じる提案は、1本も書かない。**
  *   VERIFY が自力で満たせる criteria だけの Goal は、誰も読まないまま COMPLETED になる
+ * - **`type: command` の criteria が宣言時点で全部通る Goal が混じる提案も、1本も書かない。**
+ *   やることが無い Goal で、`ent start` すると1ティック目で COMPLETE になる。
+ *   判定は `--dry-run` でも同じで、**実行できなかった criterion は「通った」に数えない**
  * - **planner が `setup` を提案しなければ、`setup` キーごと書かない。** `setup: []` と
  *   書くと `.goals/config.yaml` の setup を打ち消す。明示的な `[]` はそのまま書く
  * - 既存の `.goals/<id>.yaml` を上書きしない。`--force` も置かない
@@ -157,6 +161,11 @@ export async function planGoals(request: PlanRequest, probes: PlanProbes): Promi
   }
 
   const failures: string[] = [];
+  // 実行した criterion の結果を、投げ直しをまたいで覚えておく。plan は最後まで
+  // 何も書かないので、同じチェックアウトで同じコマンドを2度走らせても答えは変わらない。
+  // `mise run verify` は20秒前後かかるので、投げ直しのたびに走らせると、直す気のない
+  // planner に付き合って1分を捨てることになる。
+  const probed = new Map<string, CommandOutcome>();
   for (let attempt = 0; attempt <= MAX_LLM_RETRIES; attempt += 1) {
     const prompt = buildPlanPrompt(request, existing, failures);
 
@@ -169,7 +178,7 @@ export async function planGoals(request: PlanRequest, probes: PlanProbes): Promi
       return refuse(`The planner could not be called: ${errorMessage(error)}`);
     }
 
-    const accepted = accept(raw, request, existing, repository);
+    const accepted = await accept(raw, request, existing, repository, probes, probed);
     if (typeof accepted === "string") {
       failures.push(accepted);
       continue;
@@ -230,12 +239,14 @@ interface AcceptedPlan {
  * 理由をそのまま次のプロンプトに載せるので、機械可読な形にはしない。
  * 直せる文にしておかないと、投げ直しても同じものが返る。
  */
-function accept(
+async function accept(
   raw: unknown,
   request: PlanRequest,
   existing: readonly ExistingGoal[],
   repository: Extract<RepositoryResolution, { kind: "resolved" }>,
-): AcceptedPlan | string {
+  probes: PlanProbes,
+  probed: Map<string, CommandOutcome>,
+): Promise<AcceptedPlan | string> {
   const parsed = proposalSchema.safeParse(raw);
   if (!parsed.success) {
     return `the output did not match the required shape: ${z.prettifyError(parsed.error)}`;
@@ -361,7 +372,101 @@ function accept(
     goals.push({ goal: goal.data, body });
   }
 
+  // 最後に、シェルを起動する検査を1つだけ置く。ここまでの検査は提案オブジェクトを
+  // 読むだけなので、落ちる提案にコマンドを走らせない順序にしてある。
+  const done = await alreadyDone(proposal.goals, probes.criterionProbe, probed);
+  if (done.length > 0) {
+    return (
+      `every type: command criterion already passes in the current checkout for: ${done.join(", ")} ` +
+      "(there is nothing left to do, so ent would reach COMPLETED on the first tick without " +
+      "changing anything). Either drop those Goals from the set, or replace their criteria with " +
+      "commands that fail until the work is actually done"
+    );
+  }
+
   return { rationale: proposal.rationale, goals };
+}
+
+/**
+ * 1本のコマンドを走らせて分かったこと。
+ *
+ * **`unknown` を `passed` に潰さない。** 潰すと、実行できなかった criterion が
+ * 「もう通っている」に化け、まだ何もしていない Goal が書かれずに消える（design.md 3.1
+ * が Fact でやっている「観測できなかったものは Fact にしない」と同じ分け方になる）。
+ */
+type CommandOutcome = "passed" | "failed" | "unknown";
+
+/**
+ * 提案のうち、**宣言時点で既にやることが無い** Goal の id を返す。
+ *
+ * 2026-08-25 に生成された `calculate-metered-cost-from-raw-logs` の ac-1 は
+ * `mise run verify` 1本で、無変更のチェックアウトで既に通っていた。DECIDE は Gap が
+ * 無ければ COMPLETE を選ぶ（`src/decide/index.ts`）ので、`ent start` すると何もせず
+ * 1ティック目で完了扱いになる。**書く前に、その1本を実際に走らせて確かめる。**
+ *
+ * 数えるのは `type: command` だけになる。
+ *
+ * - `type: fact` は OBSERVE の結果が要る。plan は状態 DB も GitHub も開かない
+ * - `type: human` は VERIFY ですら判定せず pending を返す（`src/verify/index.ts`）
+ *
+ * **どちらも「通った」に数えない。** 数えると、fact と human だけで書かれた提案が
+ * 「全部通っている」と誤判定され、まだ誰も手を付けていない Goal が黙って消える。
+ * 同じ理由で、`type: command` を1本も持たない Goal はここでは何も言わない——
+ * 空集合を「全部通った」と読むのがその誤判定そのものになる。
+ *
+ * 実行できなかったコマンドも同じ扱いにする。落とす側の誤りより落とさない側の誤りの
+ * ほうが害が小さい: 余分に書かれた Goal は人間が消せるが、書かれなかった Goal は
+ * 消えたことにすら気づけない。
+ */
+async function alreadyDone(
+  goals: readonly { id: string; acceptance_criteria: readonly AcceptanceCriterion[] }[],
+  probe: CommandRunnerPort,
+  probed: Map<string, CommandOutcome>,
+): Promise<string[]> {
+  const run = async (command: string): Promise<CommandOutcome> => {
+    const remembered = probed.get(command);
+    if (remembered !== undefined) {
+      return remembered;
+    }
+    let outcome: CommandOutcome;
+    try {
+      // 終了コードだけを見る。VERIFY が `type: command` を判定するのと同じ基準に
+      // しておかないと、ここで「通る」と読んだものが走らせると落ちることになる。
+      outcome = (await probe.run(command)).exitCode === 0 ? "passed" : "failed";
+    } catch {
+      // 起動そのものに失敗した（`CommandRunnerPort` はそこで throw する）。
+      // 「落ちた」ではなく「確かめられなかった」なので、`failed` にも寄せない。
+      outcome = "unknown";
+    }
+    probed.set(command, outcome);
+    return outcome;
+  };
+
+  const done: string[] = [];
+  for (const goal of goals) {
+    const commands = goal.acceptance_criteria
+      .map((criterion) => criterion.verification)
+      .filter((verification) => verification.type === "command")
+      .map((verification) => verification.run);
+    // 実行できる criterion が1本も無い。判定材料がゼロで、「全部通った」とは言えない。
+    if (commands.length === 0) {
+      continue;
+    }
+
+    let all = true;
+    for (const command of commands) {
+      // 1本でも `passed` 以外があれば、その Goal にはやることが残っている。
+      // 残りは走らせない——結論が変わらないコマンドに20秒を払う理由が無い。
+      if ((await run(command)) !== "passed") {
+        all = false;
+        break;
+      }
+    }
+    if (all) {
+      done.push(goal.id);
+    }
+  }
+  return done;
 }
 
 /** 検証を全部通った集合を書き出す。`--dry-run` なら書かずに同じ報告だけ出す */
@@ -471,6 +576,11 @@ export function buildPlanPrompt(
     '    { "type": "fact", "key": "<one of the observed keys below>", "equals": <string|number|boolean> }',
     '    { "type": "human", "prompt": "<what the approver must confirm>" }',
     "- Prefer command verification. It is the only kind the Actor can satisfy on its own.",
+    "- Every command criterion must fail in the current checkout. This is checked by running them",
+    "  before anything is written: a Goal whose command criteria all pass already has nothing left to",
+    "  do, and a set containing one is rejected whole. Write commands that exercise the work being",
+    "  asked for (a test file that does not exist yet, a flag that is not implemented), not a",
+    "  repository-wide check that is green today.",
     "- Every Goal must carry at least one type: human criterion, naming what a person has to look at",
     "  before this Goal counts as done. This is checked, not requested: a set where any Goal lacks",
     "  one is rejected whole and nothing is written. Everything else can be satisfied by the Actor,",
