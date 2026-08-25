@@ -118,6 +118,10 @@ interface PlanReport {
  *   使い切ったら1本も書かずに 1 で断る
  * - `repository` / `policies` / `budget` は ent が埋める。LLM が書くのは Goal 固有の
  *   部分だけで、関門の入力（`protected_paths` / `require_human_approval`）は渡さない
+ * - **`type: human` の criterion を1つも持たない Goal が混じる提案は、1本も書かない。**
+ *   VERIFY が自力で満たせる criteria だけの Goal は、誰も読まないまま COMPLETED になる
+ * - **planner が `setup` を提案しなければ、`setup` キーごと書かない。** `setup: []` と
+ *   書くと `.goals/config.yaml` の setup を打ち消す。明示的な `[]` はそのまま書く
  * - 既存の `.goals/<id>.yaml` を上書きしない。`--force` も置かない
  * - 実行時状態には触らない。状態 DB を開かず、`ent start` も打たない
  */
@@ -186,7 +190,15 @@ const proposalSchema = z.strictObject({
         depends_on: z
           .array(z.string().regex(SLUG, "depends_on entries must be kebab-case ids"))
           .default([]),
-        setup: z.array(z.string().min(1)).default([]),
+        /**
+         * **`.default([])` を置かない。** 既定を入れると「planner が setup を
+         * 提案しなかった」が消え、`setup: []` として書き出される。`mergeGoalConfig`
+         * はキーの有無で config を敷くかを決めるので（`src/domain/goal-config.ts`）、
+         * その `[]` は `.goals/config.yaml` の setup を打ち消す——生成された Goal の
+         * worktree でだけ `mise trust` も依存インストールも走らなくなる。
+         * 提案されなかったことを `undefined` のまま持ち上げて、書き出す側で落とす。
+         */
+        setup: z.array(z.string().min(1)).optional(),
         acceptance_criteria: z.array(acceptanceCriterionSchema).min(1),
         context: goalContextSchema,
       }),
@@ -272,6 +284,28 @@ function accept(
     return `depends_on forms a cycle: ${describeCycles(cycles)} (every Goal in a closed cycle waits for its dependency, so none of them progresses)`;
   }
 
+  // 誰も読まないまま COMPLETED になる提案を弾く。VERIFY は `type: human` を
+  // 判定せず pending を返す（`src/domain/goal.ts`）ので、その1本が無い Goal は
+  // command と fact だけで最後まで抜けられる。実際に抜けた
+  // （`calculate-metered-cost-from-raw-logs` / PR #7）。手書きの宣言は全部が
+  // 持っているが、planner はプロンプトに書式があっても出さなかった。
+  // **頼んで得られるのは確認できない遵守でしかない**（design.md 10-11）ので、
+  // ここで見る。判定に要るのは提案オブジェクトだけで、シェルは起動しない。
+  const unreviewed = proposal.goals
+    .filter((goal) => !goal.acceptance_criteria.some((c) => c.verification.type === "human"))
+    .map((goal) => goal.id);
+  if (unreviewed.length > 0) {
+    return (
+      `no acceptance criterion has verification type: human in: ${unreviewed.join(", ")} ` +
+      "(without one, VERIFY can satisfy every criterion on its own and the Goal reaches " +
+      "COMPLETED without any person reading the result). " +
+      "Add one criterion to each of those Goals, shaped like " +
+      '{ "id": "ac-N", "description": "<what the approver checks>", "verification": ' +
+      '{ "type": "human", "prompt": "<what the approver must confirm>" } }, ' +
+      "and keep the command criteria you already wrote"
+    );
+  }
+
   // ここまで通ってから、宣言としての妥当性を見る。ent が埋める側を足して
   // `goalSchema` を通し、書き出す文字列に落として、**読み戻せることまで**確かめる。
   const goals: AcceptedPlan["goals"] = [];
@@ -290,7 +324,7 @@ function accept(
         name: repository.name,
         default_branch: repository.defaultBranch,
       },
-      setup: proposed.setup,
+      setup: proposed.setup ?? [],
       acceptance_criteria: proposed.acceptance_criteria,
       context: proposed.context,
       policies: DEFAULT_DECLARED_POLICIES,
@@ -300,7 +334,11 @@ function accept(
       return `${proposed.id} is not a valid Goal declaration: ${z.prettifyError(goal.error)}`;
     }
 
-    const body = renderGoal(goal.data, planHeader());
+    // 提案されなかった `setup` は、キーごと書かない。`goalSchema` を通した
+    // `goal.data.setup` は `[]` になっていて区別が付かないので、提案が持っていた
+    // 「言わなかった」を `renderGoal` にそのまま渡す。**明示的な `[]` は落とさない。**
+    // 空にしたつもりの宣言に、config の setup が下から生えることになる。
+    const body = renderGoal(goal.data, planHeader(), { omitSetup: proposed.setup === undefined });
     try {
       // 書いたものが読み戻せることを、書く前に確かめる。往復性は
       // `renderGoal` と `parseGoal` の間の性質で、テストでも固定してある。
@@ -421,12 +459,19 @@ export function buildPlanPrompt(
     '    { "type": "fact", "key": "<one of the observed keys below>", "equals": <string|number|boolean> }',
     '    { "type": "human", "prompt": "<what the approver must confirm>" }',
     "- Prefer command verification. It is the only kind the Actor can satisfy on its own.",
+    "- Every Goal must carry at least one type: human criterion, naming what a person has to look at",
+    "  before this Goal counts as done. This is checked, not requested: a set where any Goal lacks",
+    "  one is rejected whole and nothing is written. Everything else can be satisfied by the Actor,",
+    "  so without it the Goal reaches COMPLETED with nobody having read the result.",
     "- context.background is why this is being done; context.constraints lists what must not be touched.",
     '- context.references is a list of { "title": "...", "path": "..." } and nothing else.',
     "  path is a path inside the repository. **URLs are not accepted** — the Actor often cannot open",
     "  them, and a reference it silently skips is worse than none. Leave it [] unless you are naming a",
     "  path you are sure exists.",
-    "- setup lists shell commands run once before verification. Leave it [] when nothing is needed.",
+    "- setup lists shell commands run once before verification. **Omit the key entirely** unless this",
+    "  Goal needs something the rest of the repository does not; the repository-wide setup in",
+    "  .goals/config.yaml then applies. Writing setup — including an empty [] — replaces that",
+    "  repository-wide list for this Goal, which is how a Goal ends up with no toolchain at all.",
     "- Write every field in English.",
     "",
     "## Observed fact keys (the only values allowed for type: fact)",
@@ -442,12 +487,15 @@ export function buildPlanPrompt(
     "Return one JSON object:",
     '{ "rationale": "<why this split, in one paragraph>",',
     '  "goals": [ { "id": "...", "name": "...", "desired_state": "...", "depends_on": [],',
-    '              "setup": [], "acceptance_criteria": [ { "id": "ac-1", "description": "...",',
-    '              "verification": { ... } } ],',
+    '              "acceptance_criteria": [ { "id": "ac-1", "description": "...",',
+    '              "verification": { "type": "command", "run": "..." } },',
+    '              { "id": "ac-2", "description": "...",',
+    '              "verification": { "type": "human", "prompt": "..." } } ],',
     '              "context": { "background": "...", "constraints": ["..."], "references": [] } } ] }',
     "",
     "Do not write repository, policies, or budget. ent fills those in.",
-    "Every key above is required and no other key is accepted; an extra key rejects the whole set.",
+    "setup is the only optional key; leave it out unless this Goal needs its own commands.",
+    "Every other key above is required and no other key is accepted; an extra key rejects the whole set.",
     ...(failures.length === 0
       ? []
       : [
