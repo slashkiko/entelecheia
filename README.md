@@ -349,6 +349,7 @@ ent run <slug> --issue <n>         # name the Issue to observe
 ent run <slug> --dry-run           # write nothing; just look at what the next tick would contain
 ent run <slug> --report stdout     # send progress to your hands instead of posting it to the PR
 ent get <slug>                     # show the declaration and the runtime state together
+ent cost <slug> --prices <path>    # price Run and DECIDE raw-log token categories
 ent abandon <slug> --reason "…"    # declare it no longer pursued and terminate it (reason required)
 ent list                           # list registered Goals
 ent doctor                         # read-only check that the prerequisites for running are in place
@@ -357,11 +358,18 @@ ent agent-context                  # emit the CLI's structure as machine-readabl
 
 ### Common options
 
-`--json` makes the output JSON (`run` / `get` / `list` are JSON by default; `start`, `abandon`, and
+`--json` makes the output JSON (`run` / `get` / `cost` / `list` are JSON by default; `start`, `abandon`, and
 `init` produce JSON only with `--json`). `doctor` and `agent-context` are always JSON and do not
 accept `--json`. `--limit <n>` narrows the number of entries for `get` / `list`. There is a cap by
 default too, and the way to narrow further is printed to stderr only when entries were cut. The
 procedure aimed at agents is in `.claude/skills/ent/SKILL.md`.
+
+`cost` reads the four token categories from the raw logs referenced by both Actor Runs and DECIDE
+LlmCalls. Its required price file declares `unit: "usd_per_million_tokens"` and a `prices` object
+with `input_tokens`, `cache_creation_input_tokens`, `cache_read_input_tokens`, and `output_tokens`.
+The values in `examples/prices.example.json` are illustrative, not built-in provider prices. The
+result keeps all usage in `metered_usd`; Claude OAuth usage remains visible there and in
+`token_usage`, but is excluded from `charged_usd`.
 
 ### Choosing provider, model, and effort
 
@@ -1109,6 +1117,7 @@ src/wiring/index.ts       The composition root. The single place deciding which 
 src/usecase/init.ts       ent init. Places .goals/, the gitignore line, config.yaml, and a Goal template
 src/usecase/doctor.ts     ent doctor. Inspects the prerequisites for running, writing nothing
 src/usecase/inspect.ts    The payload ent get / ent list emit. Read-only
+src/usecase/cost.ts       Reads Run / LlmCall raw logs and applies caller-supplied category prices
 src/cli/parse.ts          Argument interpretation. Executes nothing
 src/cli/present.ts        Output formatting. stdout is JSON only; diagnostics go to stderr
 src/cli/agent-context.ts  The CLI structure ent agent-context emits

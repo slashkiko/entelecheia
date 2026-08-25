@@ -16,6 +16,7 @@ import { errorMessage } from "./domain/error-message.js";
 import { type Goal, progressTargetOf } from "./domain/goal.js";
 import { isTerminal } from "./domain/goal-state.js";
 import type { Store } from "./store/port.js";
+import { costPayload, emptyCostPayload, parseCostPriceFile } from "./usecase/cost.js";
 import { doctorPayload } from "./usecase/doctor.js";
 import { initRepository } from "./usecase/init.js";
 import { listPayload, showPayload } from "./usecase/inspect.js";
@@ -145,6 +146,29 @@ async function runCommand(argv: readonly string[]): Promise<number> {
   // snapshot / verifications / decision / status も書かない」と書いている。
   if (command.kind === "run" && command.dryRun === true) {
     return previewOnly(command, repoRoot, stateDir);
+  }
+
+  if (command.kind === "cost") {
+    const prices = parseCostPriceFile(readFileSync(command.prices, "utf8"));
+    const dbPath = join(stateDir, "goals.db");
+
+    // cost は読み取り用のコマンド。まだ1回も start していない checkout で
+    // `.goals/.state` を作る理由は無く、0件を読むためだけに DB を作らない。
+    if (!existsSync(dbPath)) {
+      process.stdout.write(`${JSON.stringify(emptyCostPayload(command.slug), null, 2)}\n`);
+      return 0;
+    }
+
+    const store = openStore(dbPath);
+    try {
+      const payload = costPayload(command.slug, store, prices, {
+        readLog: (path) => readFileSync(path, "utf8"),
+      });
+      process.stdout.write(`${JSON.stringify(payload, null, 2)}\n`);
+      return 0;
+    } finally {
+      store.close();
+    }
   }
 
   mkdirSync(join(stateDir, "worktrees"), { recursive: true });

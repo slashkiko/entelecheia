@@ -58,13 +58,74 @@ afterEach(() => {
 
 const FILL_INPUT = "printf 'protocol=https\\nhost=example.com\\n\\n' | git credential fill";
 
+/**
+ * 「素の環境」を、この test process の環境から作り直す。
+ *
+ * 再現側は `process.env` をそのまま子へ渡していた。手元で回している限りはそれで
+ * 素の環境だったが、**ent 自身の VERIFY はこのテスト一式を無効化済みの環境で
+ * 流す。** `verification.run` に渡るのは `withheldEnv()` の結果で、そこには
+ * `NEUTRALIZED_ENV` の `GIT_CONFIG_COUNT` / `GIT_CONFIG_KEY_0` /
+ * `GIT_CONFIG_VALUE_0` が入っている。vitest はそれを継承し、子の git まで
+ * 届く。helper のリストは reset された状態で `credential fill` が走り、
+ * stdout は空になる——つまり **落ちていたのは無効化が効きすぎたからで、
+ * 再現の主張そのものは正しい。**
+ *
+ * 質が悪いのは、これが再現側だけの問題では終わらないところ。この環境では
+ * 「無効化されている」を見る側も、`commandRunner` が何もしなくても緑になる。
+ * このテストが守ろうとしていた空振りが、まさにそこで起きていた。
+ *
+ * なので無効化を測定の外へ出すが、出すのは**この1つの子プロセスの分だけ**に
+ * する。`NEUTRALIZED_ENV` の側を緩めたり setup ファイルで process 全体から
+ * 消したりすると、Actor が自分の防具を外す形になる。
+ *
+ * 外して安全なのは、`tests/setup-git-env.ts` が `GIT_CONFIG_GLOBAL` と
+ * `GIT_CONFIG_SYSTEM` を `/dev/null` に倒しているため。人間の system 設定の
+ * `osxkeychain` はここからは見えず、届く helper は `installLocalHelper()` が
+ * repo local に置いた偽物だけになる。出てくるのはこのファイルの sentinel で、
+ * 本物の資格情報ではない。
+ *
+ * 消す鍵は `NEUTRALIZED_ENV` から引く。手で並べると、無効化に鍵が1つ増えた日に
+ * 再現側だけが古い前提のまま緑になる。`GH_CONFIG_DIR` は git の経路ではないので
+ * 残し、`gh` は未認証のままにしておく。
+ */
+function bareGitEnv(
+  source: Record<string, string | undefined> = process.env,
+): Record<string, string | undefined> {
+  const env: Record<string, string | undefined> = { ...source };
+  for (const key of Object.keys(NEUTRALIZED_ENV)) {
+    if (key.startsWith("GIT_")) {
+      delete env[key];
+    }
+  }
+  return env;
+}
+
 describe("Actor と検証コマンドに渡す git の資格情報", () => {
   it("この repo の設定なら、素の環境では helper がトークンを出す（再現）", async () => {
     // 直したことを確かめる側だけを書くと、helper の設定を書き損ねた日に
     // 「塞げている」ではなく「そもそも出ていない」で緑になる。
-    const { stdout } = await run("sh", ["-c", `${FILL_INPUT} 2>/dev/null || true`], { cwd: repo });
+    const { stdout } = await run("sh", ["-c", `${FILL_INPUT} 2>/dev/null || true`], {
+      cwd: repo,
+      env: bareGitEnv(),
+    });
 
     expect(stdout).toContain(SECRET);
+  });
+
+  it("素の環境に戻すのは git の経路だけで、gh の無効化は残る", () => {
+    // 実際の `process.env` を見に行くと、ent の VERIFY で回すか人間が
+    // `mise run test` で回すかによって前提が変わる。作り直しの規則そのものを
+    // 固定して、どちらで回しても同じことを見る。
+    const bare = bareGitEnv(withheldEnv({ PATH: "/usr/bin" }));
+
+    // git の経路は消える。ここが残っていたのが、再現側が空になっていた原因。
+    expect(bare.GIT_CONFIG_COUNT).toBeUndefined();
+    expect(bare.GIT_CONFIG_KEY_0).toBeUndefined();
+    expect(bare.GIT_CONFIG_VALUE_0).toBeUndefined();
+    // gh は git の経路ではないので、未認証のまま置いておく。
+    expect(bare.GH_CONFIG_DIR).toBe(NEUTRALIZED_ENV.GH_CONFIG_DIR);
+    // 子プロセスが動くための環境は残す。
+    expect(bare.PATH).toBe("/usr/bin");
   });
 
   it("検証コマンドの中では credential helper が無効化されている", async () => {

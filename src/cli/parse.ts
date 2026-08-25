@@ -28,12 +28,14 @@ export const USAGE = `ent — Declare the end state; the controller converges to
                        --dry-run writes nothing; it only shows what the next tick would contain
                        --report stdout|<path> sends progress to your hands instead of the PR
   ent get <slug>       Show the declaration and the runtime state together
+  ent cost <slug>      Calculate metered cost from raw logs
+                       --prices <path> supplies USD-per-million-token category prices
   ent abandon <slug>   Declare it no longer pursued and terminate it (--reason is required)
   ent list             List registered Goals
   ent doctor           Read-only check that the prerequisites for running are in place
   ent agent-context    Emit the CLI's structure as machine-readable JSON
 
-  --json               Emit JSON (run / get / list are JSON by default)
+  --json               Emit JSON (run / get / cost / list are JSON by default)
   --limit <n>          Cap how many entries are printed (get / list; default ${String(DEFAULT_LIMIT)})
 `;
 
@@ -44,6 +46,7 @@ const SUBCOMMANDS = [
   "start",
   "run",
   "get",
+  "cost",
   "abandon",
   "list",
   "doctor",
@@ -109,6 +112,11 @@ export type Command =
    * 揃えたいのはサブコマンド名であって、内部の識別子ではない。
    */
   | { kind: "show"; slug: string; limit?: number; json?: true }
+  /**
+   * Run と LlmCall の生ログから4分類の使用量を読み、caller の価格表で金額を出す。
+   * 価格を省略可能にすると compiled-in default が必要になるので、必須にする。
+   */
+  | { kind: "cost"; slug: string; prices: string; json?: true }
   /**
    * もう追わないと宣言して ABANDONED にする。
    *
@@ -257,6 +265,17 @@ export function parseCommand(argv: readonly string[]): Command {
       return { kind: "show", slug, ...(limit === undefined ? {} : { limit }), ...json };
     }
 
+    if (sub === "cost") {
+      const prices = typeof values.prices === "string" ? values.prices.trim() : "";
+      if (prices === "") {
+        return {
+          kind: "error",
+          message: `cost needs caller-supplied prices: ent cost ${slug} --prices <path>`,
+        };
+      }
+      return { kind: "cost", slug, prices, ...json };
+    }
+
     if (sub === "abandon") {
       // 空白だけも弾く。必須にしても空文字で通れば、結局は書かれない。
       const reason = typeof values.reason === "string" ? values.reason.trim() : "";
@@ -401,6 +420,8 @@ function optionsFor(sub: Subcommand): ParseArgsOptions {
     case "get":
     case "list":
       return { json: { type: "boolean" }, limit: { type: "string" } };
+    case "cost":
+      return { json: { type: "boolean" }, prices: { type: "string" } };
     case "abandon":
       // 書ける終端は ABANDONED だけ。`--status` のような、状態を選べる口は
       // 置かない。置いた時点で COMPLETED を書ける経路になる。

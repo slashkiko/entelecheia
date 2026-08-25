@@ -32,6 +32,23 @@ describe("parseCommand", () => {
     });
   });
 
+  it("cost は slug と caller-supplied price file を取る", () => {
+    expect(parseCommand(["cost", "assess-and-decide", "--prices", "./prices.json"])).toEqual({
+      kind: "cost",
+      slug: "assess-and-decide",
+      prices: "./prices.json",
+    });
+  });
+
+  it("cost は price file を省略できない", () => {
+    const result = parseCommand(["cost", "assess-and-decide"]);
+
+    expect(result.kind).toBe("error");
+    if (result.kind === "error") {
+      expect(result.message).toContain("--prices");
+    }
+  });
+
   it("引数が無ければ help", () => {
     expect(parseCommand([])).toEqual({ kind: "help" });
   });
