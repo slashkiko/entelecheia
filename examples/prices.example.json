@@ -1,0 +1,9 @@
+{
+  "unit": "usd_per_million_tokens",
+  "prices": {
+    "input_tokens": 1,
+    "cache_creation_input_tokens": 2,
+    "cache_read_input_tokens": 0.1,
+    "output_tokens": 4
+  }
+}

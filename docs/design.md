@@ -2198,9 +2198,13 @@ injected, and that is not in the scope of the MVP.
 
 ### 10-10. How to derive an amount of money from tokens
 
-What is recorded is only the totals of four kinds, so an accurate amount cannot be derived (see the
-measured results in §9). The breakdown is in the raw log, so producing §7's "what it would have cost
-under usage-based pricing" requires an interface to read from there.
+Settled. `ent cost <slug> --prices <path>` reads the four-category breakdown from the raw logs
+referenced by Actor Runs and DECIDE LlmCalls. The caller supplies all prices in USD per million
+tokens; ent has no compiled-in provider rates. Claude and Codex fields are normalized to input,
+cache creation, cache read, and output without double-counting Codex's cached input or reasoning
+output subsets. The raw-log sum is checked against `Run.tokens` or `LlmCall.tokens` before a price is
+reported. `metered_usd` is the hypothetical metered amount for all usage. Claude OAuth usage remains
+recorded and included there, while `charged_usd` excludes it as §7 requires.
 
 ### 10-11. ~~Who verifies the premise that "the Actor commits"~~
 

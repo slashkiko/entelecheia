@@ -166,6 +166,21 @@ export function agentContextPayload(): AgentContext {
         flags: [JSON_FLAG, LIMIT_FLAG],
       },
       {
+        name: "cost",
+        summary:
+          "read per-category token usage from a Goal's Run and LlmCall raw logs, then calculate metered and charged USD with caller-supplied prices. Claude OAuth is excluded only from charged USD",
+        args: [slug],
+        flags: [
+          JSON_FLAG,
+          {
+            name: "--prices",
+            type: "string",
+            summary:
+              "required JSON price file; declares USD per million tokens for input, cache creation, cache read, and output",
+          },
+        ],
+      },
+      {
         name: "abandon",
         summary:
           "declare it no longer pursued and make it ABANDONED. Completion is never self-declared, so there is no complete",

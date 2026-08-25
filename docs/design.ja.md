@@ -2059,9 +2059,13 @@ worktree で `mise run test` を流すということは、worktree の `mise.to
 
 ### 10-10. トークンから金額をどう出すか
 
-記録しているのは4種類の合計だけで、正確な
-金額は出ない（§9 の実測を参照）。内訳は生ログにあるので、§7 の「従量課金だったら
-いくらだったか」を出すには、そこから読む口が要る。
+確定した。`ent cost <slug> --prices <path>` が Actor Run と DECIDE LlmCall の参照する
+生ログから4分類の内訳を読む。価格は caller が100万 token あたりの USD としてすべて渡し、
+ent は provider の単価を組み込まない。Claude と Codex のフィールドを input、cache creation、
+cache read、output に揃え、Codex の cached input と reasoning output の内数を二重計上しない。
+金額を出す前に、生ログの合計を `Run.tokens` または `LlmCall.tokens` と照合する。
+`metered_usd` は全利用の仮想従量額で、Claude OAuth の token も記録したまま含む。
+一方 `charged_usd` からは §7 の規則どおり除外する。
 
 ### 10-11. ~~「Actor が commit する」という前提を誰が確かめるか~~
 

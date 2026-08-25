@@ -1,6 +1,6 @@
 ---
 name: ent
-description: Procedure for converging a Goal with the ent CLI. Covers reading the structure with agent-context, first-time setup with init, splitting one prose objective into sub-Goal declarations with plan, checking prerequisites with doctor, one round of start / run / get / list, looking ahead with --dry-run, ending a Goal that is no longer pursued with abandon, sending progress to stdout or a file instead of posting it to the PR with --report, narrowing output with --limit, reading exit codes, and where WAITING_HUMAN and ESCALATE wait for human approval or intervention.
+description: Procedure for converging a Goal with the ent CLI. Covers reading the structure with agent-context, first-time setup with init, splitting one prose objective into sub-Goal declarations with plan, checking prerequisites with doctor, one round of start / run / get / list, calculating raw-log usage with cost, looking ahead with --dry-run, ending a Goal that is no longer pursued with abandon, sending progress to stdout or a file instead of posting it to the PR with --report, narrowing output with --limit, reading exit codes, and where WAITING_HUMAN and ESCALATE wait for human approval or intervention.
 ---
 
 # Running ent
@@ -216,6 +216,20 @@ If the state cannot be dropped, it stops with exit code 1 and writes nothing.
 - `ent start` was never run. There is no state to step down to
 
 Only a forgotten `--reason` gives 2. Retyping argv makes it pass, so it falls the other way from 1.
+
+## Calculating metered cost from raw logs
+
+```
+ent cost <slug> --prices examples/prices.example.json --json
+```
+
+`--prices` is required. The JSON file declares `unit: "usd_per_million_tokens"` and four fields under
+`prices`: `input_tokens`, `cache_creation_input_tokens`, `cache_read_input_tokens`, and
+`output_tokens`. ent carries no provider price defaults. It reads the breakdown from every Run and
+DECIDE LlmCall raw log for the Goal, checks that it still adds up to the token total recorded in the
+DB, and prints JSON. `metered_usd` includes all usage as a hypothetical metered amount. Claude OAuth
+usage remains in `token_usage` and `metered_usd`, but is excluded from `charged_token_usage` and
+`charged_usd`.
 
 `ent doctor` writes nothing at all. It does not even create the state directory.
 

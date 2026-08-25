@@ -328,6 +328,7 @@ ent run <slug> --issue <n>         # 観測対象の Issue を指定する
 ent run <slug> --dry-run           # 書かずに、次のティックの中身だけを見る
 ent run <slug> --report stdout     # 進捗を PR に投稿せず、手元に出す
 ent get <slug>                     # 宣言部と実行時状態をまとめて表示する
+ent cost <slug> --prices <path>    # Run と DECIDE の生ログにある分類別 token を価格換算する
 ent abandon <slug> --reason "…"    # もう追わないと宣言して終端にする（理由は必須）
 ent list                           # 登録済みの Goal を一覧する
 ent doctor                         # 回す前の前提が揃っているかを読み取り専用で調べる
@@ -336,11 +337,17 @@ ent agent-context                  # CLI の構造を機械可読な JSON で出
 
 ### 共通のオプション
 
-`--json` は出力を JSON にする（`run` / `get` / `list` は既定で JSON。`start` と `abandon` と
+`--json` は出力を JSON にする（`run` / `get` / `cost` / `list` は既定で JSON。`start` と `abandon` と
 `init` は `--json` を付けたときだけ JSON になる）。`doctor` と `agent-context` は常に JSON で、
 `--json` は受け取らない。`--limit <n>` は `get` / `list` の件数を絞る。既定でも上限で切り、
 切れたときだけ絞り込み方が stderr に出る。エージェント向けの手順は
 `.claude/skills/ent/SKILL.md` に置いてある。
+
+`cost` は Actor Run と DECIDE LlmCall の両方が参照する生ログから4種類の token を読む。
+必須の価格ファイルは `unit: "usd_per_million_tokens"` と、`input_tokens`、
+`cache_creation_input_tokens`、`cache_read_input_tokens`、`output_tokens` を持つ `prices`
+を宣言する。`examples/prices.example.json` の値は例示で、provider 価格の組み込み値ではない。
+全利用は `metered_usd` と `token_usage` に残し、Claude OAuth 分だけ `charged_usd` から外す。
 
 ### provider・model・effort を選ぶ
 
@@ -1056,6 +1063,7 @@ src/wiring/index.ts       合成ルート。どの Port にどの Adapter を挿
 src/usecase/init.ts       ent init。.goals/ と gitignore の行と config.yaml と Goal の雛形を置く
 src/usecase/doctor.ts     ent doctor。回す前の前提を、書かずに調べる
 src/usecase/inspect.ts    ent get / ent list が出す payload。読むだけ
+src/usecase/cost.ts       Run / LlmCall の生ログを読み、caller が渡した分類別価格を適用する
 src/cli/parse.ts          引数の解釈。実行はしない
 src/cli/present.ts        出力の整形。stdout は JSON 専用、診断は stderr
 src/cli/agent-context.ts  ent agent-context が出す CLI の構造
