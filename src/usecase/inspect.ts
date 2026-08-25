@@ -1,6 +1,7 @@
 import type { Action, Decision } from "../domain/action.js";
 import type { Snapshot } from "../domain/fact.js";
 import type { Goal } from "../domain/goal.js";
+import { CONFIG_FILENAME } from "../domain/goal-config.js";
 import type { GoalListItem, GoalState } from "../domain/goal-state.js";
 import type { Run } from "../domain/run.js";
 import type { Verification } from "../domain/verification.js";
@@ -165,17 +166,146 @@ export function listPayload(store: Store, options: LimitOptions = {}): GoalListE
   const limit = options.limit ?? DEFAULT_LIMIT;
   const shown = goals.length <= limit ? goals : goals.slice(0, limit);
 
-  return shown.map((goal) => {
-    // listDecisions は古い順に返す。読むのは最後の1件だけにする。履歴に古い
-    // ESCALATE が残っていても、次のティックで動き出していれば止まってはいない。
-    const decision = store.listDecisions(goal.id).at(-1) ?? null;
-    return {
-      ...goal,
-      stopped: stoppedReason(decision),
-      criteria: tallyCriteria(store.latestVerifications(goal.id)),
-      lastDecidedAt: decision?.decidedAt ?? null,
-    };
-  });
+  return shown.map((goal) => goalListEntry(store, goal));
+}
+
+/** 1件分の Goal に、Goal をまたいで読むための3つを足す。上限で切ったあとに呼ぶ */
+function goalListEntry(store: Store, goal: GoalListItem): GoalListEntry {
+  // listDecisions は古い順に返す。読むのは最後の1件だけにする。履歴に古い
+  // ESCALATE が残っていても、次のティックで動き出していれば止まってはいない。
+  const decision = store.listDecisions(goal.id).at(-1) ?? null;
+  return {
+    ...goal,
+    stopped: stoppedReason(decision),
+    criteria: tallyCriteria(store.latestVerifications(goal.id)),
+    lastDecidedAt: decision?.decidedAt ?? null,
+  };
+}
+
+/**
+ * `.goals/` に置かれている宣言ファイル1本。**中身は読まない。**
+ *
+ * 読むのはファイル名だけにする。「状態ストアに登録されていない」は、その YAML が
+ * 妥当かどうかとは無関係に決まる事実で、壊れた宣言でも未登録であることは変わらない。
+ * 読みに行くと、読めなかった1本のせいで一覧そのものが出せなくなる。
+ */
+export interface Declaration {
+  /** ファイル名から決まる slug。`parseGoal` が `goal.id` と一致を強制する側 */
+  id: string;
+  /** リポジトリルートからのパス。人間がそのまま開ける形にする */
+  path: string;
+}
+
+/**
+ * `.goals/` のファイル名から、Goal の宣言だけを取り出す。
+ *
+ * **`config.yaml` は数えない。** あれは repo スコープの宣言（`CONFIG_SLUG`）で
+ * Goal ではない。外さないと「未登録の Goal が1本ある」と毎回報告することになり、
+ * `ent start config` を叩いた人間が CLI に断られる（`src/cli/parse.ts`）。
+ * doctor の `loadGoalSummaries` が同じ理由で同じ除外をしている。
+ *
+ * ファイルシステムには触らない。読むのは呼び出し側（`src/cli.ts`）の仕事にして、
+ * 「何を Goal と数えるか」の規則だけをここに置く。
+ */
+export function declarationsIn(fileNames: readonly string[]): Declaration[] {
+  const found = new Map<string, Declaration>();
+  for (const name of [...fileNames].sort()) {
+    if (name === CONFIG_FILENAME || !(name.endsWith(".yaml") || name.endsWith(".yml"))) {
+      continue;
+    }
+    const id = name.slice(0, name.lastIndexOf("."));
+    // `x.yaml` と `x.yml` が両方あっても、Goal は1本。先に来た方を残す。
+    if (id !== "" && !found.has(id)) {
+      found.set(id, { id, path: `.goals/${name}` });
+    }
+  }
+  return [...found.values()];
+}
+
+/**
+ * 一覧の1件が何であるかを表す種別。**すべての要素がこのキーを持つ。**
+ *
+ * 欠けたフィールドから推測させない。`status` が無いことを「未登録」と読ませる形に
+ * すると、キーが1つ増えた日に読む側の分岐が黙って壊れる。
+ */
+export type ListEntryKind = "registered" | "unregistered";
+
+/** 状態ストアに登録済みの Goal。既定の `ent list` が出す形に `kind` だけを足す */
+export interface RegisteredListEntry extends GoalListEntry {
+  kind: "registered";
+}
+
+/**
+ * `.goals/` にあるが、状態ストアに登録されていない宣言。
+ *
+ * **なぜ未登録なのかは書かない。** 実装まで終わっていて状態 DB を作り直しただけの
+ * ものと、まだ始めていないものは、ent からは同じに見える。片方に寄せた語を1つでも
+ * 置けば、それは観測ではなく推測になる（design.md §3.1）。区別するのは人間で、
+ * ent が出すのは「登録されていない」という事実と、その宣言の在り処だけにする。
+ */
+export interface UnregisteredListEntry {
+  kind: "unregistered";
+  id: string;
+  path: string;
+}
+
+export type ListEntry = RegisteredListEntry | UnregisteredListEntry;
+
+/**
+ * 登録されていない宣言を、宣言の一覧と状態ストアの差から取る。
+ *
+ * 突き合わせるのは id だけにする。宣言が消えている登録済み Goal は、ここには
+ * 現れない（登録済みの側に出る）。逆向きだけを answer する関数にしてある。
+ */
+export function unregisteredDeclarations(
+  store: Store,
+  declared: readonly Declaration[],
+): UnregisteredListEntry[] {
+  const registered = new Set(store.listGoals().map((goal) => goal.id));
+  return declared
+    .filter((declaration) => !registered.has(declaration.id))
+    .map((declaration) => ({
+      kind: "unregistered",
+      id: declaration.id,
+      path: declaration.path,
+    }));
+}
+
+/**
+ * `ent list --include-unregistered` が出すもの。登録済みと未登録を1つの配列で返す。
+ *
+ * **既定の出力は変えない。** 登録済みの要素の形を1つでも動かすと、`ent list --json`
+ * を読んでいるスクリプトが壊れる。ここは opt-in の枝で、その枝でだけ全要素に
+ * `kind` が付く。既存の呼び出し（`listPayload`）は1文字も変わらない。
+ *
+ * 並びは登録済みが先で、それぞれの中は id の昇順になる。先頭から読めば、既定の
+ * 出力と同じ順に同じものが並ぶ。
+ *
+ * `listPayload` と同じく**上限で切ってから読む**。1件あたり Store を2回引くので、
+ * 出さない分を読む理由は無い。
+ */
+export function listEntries(
+  store: Store,
+  declared: readonly Declaration[],
+  options: LimitOptions = {},
+): ListEntry[] {
+  const goals = store.listGoals();
+  const limit = options.limit ?? DEFAULT_LIMIT;
+  const shownGoals = goals.slice(0, limit);
+  const unregistered = unregisteredDeclarations(store, declared).slice(
+    0,
+    Math.max(0, limit - shownGoals.length),
+  );
+
+  return [
+    ...shownGoals.map((goal) => ({ kind: "registered" as const, ...goalListEntry(store, goal) })),
+    ...unregistered,
+  ];
+}
+
+/** 切り捨てを知らせるための全件数。登録済みと未登録の合計になる */
+export function listEntryTotal(store: Store, declared: readonly Declaration[]): number {
+  return store.listGoals().length + unregisteredDeclarations(store, declared).length;
 }
 
 /**

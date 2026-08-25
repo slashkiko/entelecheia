@@ -194,7 +194,24 @@ export function agentContextPayload(): AgentContext {
         name: "list",
         summary: "list registered Goals",
         args: [],
-        flags: [JSON_FLAG, LIMIT_FLAG],
+        flags: [
+          JSON_FLAG,
+          LIMIT_FLAG,
+          {
+            name: "--include-unregistered",
+            type: "boolean",
+            summary:
+              "also list .goals/ declarations that are not registered in the state store, so no one has to diff ls .goals/ against ent list by hand. config.yaml is the repository-scoped declaration and is never counted. ent reports only that a declaration is unregistered, never why",
+          },
+        ],
+        output: [
+          {
+            key: "kind",
+            when: "--include-unregistered",
+            summary:
+              "registered / unregistered, on every element. Without the flag the elements are unchanged and carry no kind, so existing readers keep working; with it, filter on kind rather than on which fields are absent. An unregistered element carries only kind / id / path",
+          },
+        ],
       },
       {
         name: "doctor",
