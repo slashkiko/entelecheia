@@ -1,0 +1,144 @@
+version: 1
+
+goal:
+  id: plan-writes-declarations-that-hold
+  name: ent plan が書いた宣言が、そのままでは通らないようにする
+  desired_state: |
+    **`ent plan` が生成した宣言をそのまま `ent start` すると、人間の関門を一度も
+    通らずに COMPLETED まで進む。** 実際に起きた。`calculate-metered-cost-from-raw-logs`
+    は生成された criteria が `type: command` だけで、誰のレビューも経ずに完了した
+    （PR #7）。手書きの既存 Goal 31本は全て `type: human` を持っている。
+    生成された宣言にだけこの穴がある。
+
+    もう1つ、同じ Goal で `setup: []` のせいで検証コマンドが1つも動かなかった。
+    worktree は毎回まっさらに切られるので、依存も mise の信頼も無い状態から始まる。
+    criteria は「コードの問題ではなく実行できない」で落ち続ける。
+
+    プロンプトで頼む形にはしない。`src/usecase/plan.ts` は `type: human` の書式を
+    既に提示している（`{ "type": "human", "prompt": ... }`）のに、planner はそれを
+    出さなかった。**§10-11 と同じで、頼んで得られるのは確認できない遵守でしかない。**
+    決定的なバリデーションで落とす。
+
+    どう作るかは Actor が決める。以下は「何が満たされていればよいか」を書く。
+
+    1. `setup` を提案しなかったら、キーごと書かない
+
+      いまは `setup: proposed.setup` を無条件で書き出す。`proposed.setup` は
+      `.default([])` なので、planner が何も言わなければ `setup: []` が YAML に残る。
+      `mergeGoalConfig` は**キーの有無**で config を敷くかを決めるため
+      （`src/domain/goal-config.ts` の `raw.setup === undefined ? config.setup : raw.setup`）、
+      この `[]` は `.goals/config.yaml` の setup を黙って打ち消す。
+      **空なら書かない。** そうすれば repo スコープの宣言が下に敷ける。
+
+      `[]` を「空にしたつもり」として尊重する既存の意味は変えない。変えるのは
+      「planner が何も言わなかった」を `[]` と書き出している側だけ。
+
+    2. `type: human` の criterion が1つも無い提案は、書かずに落とす
+
+      検証は決定的に行う。1本でも `type: human` があれば通す。無ければ、その
+      提案一式を書かない。`ent plan` は既に「validation に落ちた一式は1つも
+      書かない」挙動なので、そこへ乗せる。
+
+      落ちたときの出力で、**何が足りないのかと、どう直すのかが分かること。**
+      「validation error」だけを出して終わりにしない。
+
+    3. 現状で既に全部通る criteria しか無い提案は、書かずに落とす
+
+      生成された ac-1 は `mise run verify` 1本だった。**無変更のチェックアウトで
+      既に通る。** ent は Gap が無ければ COMPLETE と決めるので
+      （`src/decide/index.ts` の「Gap が無く unresolved も無い → COMPLETE」）、
+      そのまま起動すると何もせず1ティック目で完了扱いになる。
+
+      提案された `type: command` の criteria を宣言時点で実行し、**全部が通るなら
+      その Goal は「やることが無い」ので書かない。** 1本でも落ちれば書く。
+
+      - シェルを起動するのは `src/adapters/local.ts` だけ。あれは
+        `PROTECTED_PATH_FLOOR` にあるので**中身は変えない**。呼ぶだけにする。
+      - `type: fact` と `type: human` は実行できない。**実行できないものを
+        「通った」に数えない。** 数えると、fact と human だけの提案が
+        「全部通っている」と誤判定されて落ちる。
+      - 実行には時間がかかる（`mise run verify` で20秒前後）。`--dry-run` でも
+        同じ判定を出すこと。書く前に分かるほうが直しやすい。
+
+    ## 触る場所
+
+    `src/usecase/plan.ts` が主。`PROTECTED_PATH_FLOOR` の外にある。
+    `src/domain/goal.ts` と `src/domain/goal-config.ts` は下限の中なので触れない。
+    スキーマを変えないと実現できない案を選ばないこと。
+
+acceptance_criteria:
+  - id: ac-1
+    description: 既存の検証一式が通る。3つの変更で既存の31本の宣言や CLI の他の経路を壊していない
+    verification:
+      type: command
+      run: mise run verify
+
+  - id: ac-2
+    description: >-
+      3つの性質を名指しで検証するテストがあり、通る。(1) planner が setup を
+      提案しなければ書き出した YAML に setup キーが無い、(2) type: human を
+      含まない提案は1本も書かれない、(3) type: command の criteria が現状で
+      全部通る提案は書かれず、fact と human だけの提案がそれで誤判定されない。
+      このファイルは今は無いので、この criterion は今日は赤い。
+    verification:
+      type: command
+      run: mise exec -- pnpm exec vitest run tests/plan-declaration-quality.test.ts
+
+  - id: ac-3
+    description: レビュー役が現在の HEAD を読んで approved を出している
+    verification: { type: fact, key: review.verdict, equals: approved }
+
+  - id: ac-4
+    description: 関門が本当に機械で効いているかを人間が確認する
+    verification:
+      type: human
+      prompt: |
+        この Goal は「頼んでも守られないので機械で落とす」ためのものです。
+        プロンプトの文言を足しただけで終わっていないかを見てください。
+
+        1. `type: human` の必須化は、**プロンプトの追記ではなく検証コード**に
+           なっているか。planner の出力を信じる形になっていないか
+        2. 「現状で全部通る」の判定が、`type: fact` と `type: human` を
+           「通った」に数えていないか。数えていると、fact と human だけの
+           提案が誤って落とされる
+        3. `setup` を書かなくなったことで、`[]` を明示的に書いた既存の意味
+           （空にしたつもりを尊重する）が壊れていないか
+        4. `src/adapters/local.ts` の中身を変えていないか。シェルを起動する
+           唯一の場所で、`PROTECTED_PATH_FLOOR` にある
+        5. 落ちたときの出力を実際に読んで、何を直せばよいか分かるか
+
+context:
+  background: |
+    2026-08-25 に `ent plan` で `calculate-metered-cost-from-raw-logs` を生成し、
+    1周回して PR #7 まで到達させた。そのとき見つかった生成物の欠陥のうち、
+    `ent plan` 側で塞げる3つを閉じる。
+
+    **`harden-what-plan-writes` を ABANDONED にして立て直したもの。** あちらは
+    PR #7 のマージ前に start したためベースが `5f56e9b` で、PR #7 が直したのと
+    同じ資格情報テストの修正を独立にやり直していた。2本の PR が同じファイルを
+    書き換えてマージ時に衝突するので、新しい main（`07081f4`）を基点にした。
+
+    残る1つ（`protected_paths` に `tests/**` が入らない）はここでは扱わない。
+    `PROTECTED_PATH_FLOOR` の注記が「検証系や依存は入れない。Goal によっては
+    正当に触る対象になりうる。下限は最小に保つ」と明記しており、意図された
+    設計になっている。実際 `tests/**` を保護すると、テストを1本足す Goal が
+    全部関門で止まる。緩和は `type: human` と `review.verdict` の側で行う。
+  constraints:
+    - src/domain/goal.ts と src/domain/goal-config.ts は PROTECTED_PATH_FLOOR にあるため変更できない。スキーマ変更を要する案を選ばない
+    - src/adapters/local.ts も同じく変更できない。シェルの起動は呼ぶだけにする
+    - 既存31本の宣言を書き換えない。config.yaml も書き換えない
+    - setup キーの省略は「planner が提案しなかった場合」に限る。明示的な [] の意味は変えない
+  references:
+    - title: "生成された宣言と、それが完了まで進んだ記録"
+      path: .goals/calculate-metered-cost-from-raw-logs.yaml
+    - title: "config を Goal の下へ敷く規則（キーの有無で判断している箇所）"
+      path: src/domain/goal-config.ts
+    - title: "設計: 頼んでも確認できる遵守は得られない（10-11）"
+      path: docs/design.md
+
+budget:
+  max_actor_runs: 10
+  max_reconciles: 24
+  max_wall_clock: 4h
+  max_consecutive_failures: 3
+  max_unchanged_reconciles: 4

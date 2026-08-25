@@ -1,0 +1,78 @@
+# Written by ent plan. Review it before running ent start — typing that command
+# is the approval point, and nothing runs until you do (design.md §3.2).
+# Edit anything here freely; this file is an ordinary Goal declaration.
+version: 1
+goal:
+  id: surface-unregistered-declarations
+  name: Surface unregistered declarations in ent list
+  desired_state: "`ent list` gives a human a way to see declarations that exist in `.goals/` but have never been registered in the state store, so no one has to diff `ls .goals/` against `ent list` by hand. Whether this is the new default output or a flag is the Actor's decision, but three things hold. First, unregistered declarations are reachable from the list command in both human and `--json` output. Second, in `--json`, a registered Goal and an unregistered declaration are distinguishable per element by a key present on every element — a consumer must never have to infer the difference from missing fields. Third, existing consumers of `ent list --json` keep working: the shape of elements representing registered Goals is unchanged, and if the default output gains unregistered entries, the added elements carry the distinguishing key so old consumers can filter them out. The declaration file named by `CONFIG_SLUG` (`config.yaml`) is not a Goal and is never counted or listed as one. ent draws no conclusion about *why* a declaration is unregistered: a declaration whose implementation is already done but whose state DB was rebuilt, and a declaration that has never been started, are both reported as simply unregistered. That distinction belongs to the human and must not be guessed at. A test file at `tests/list-unregistered-declarations.test.ts` covers this behaviour: unregistered declarations appear, registered and unregistered are distinguishable in `--json`, `config.yaml` is excluded, and the registered-element shape is stable."
+  depends_on: []
+repository:
+  provider: github
+  owner: slashkiko
+  name: entelecheia
+  default_branch: main
+# setup は書かない。.goals/config.yaml の setup（mise trust + pnpm install）を敷かせる。
+# `setup: []` と書くと config が打ち消され、worktree で検証コマンドが動かなくなる。
+# PR #8 がマージされれば ent plan 側が空の setup を書かなくなる。
+acceptance_criteria:
+  - id: ac-1
+    description: The new test file covering unregistered-declaration listing exists and passes.
+    verification:
+      type: command
+      run: mise exec -- pnpm exec vitest run tests/list-unregistered-declarations.test.ts
+  - id: ac-2
+    description: The full verification suite passes, so no existing behaviour regressed.
+    verification:
+      type: command
+      run: mise run verify
+  - id: ac-3
+    description: "Confirm that unregistered declarations and registered Goals cannot be confused by a `--json` consumer: if they share one array, every element carries a key that identifies which it is; and that the default `ent list --json` element shape for registered Goals is unchanged, or the reason for changing it is written down and readable."
+    verification:
+      type: human
+      prompt: "Run `ent list` and `ent list --json` (plus any new flag) in a repo with both registered Goals and unregistered declarations. Confirm: (1) registered and unregistered entries are distinguishable per element in JSON via an explicit key, not by absent fields; (2) the registered-element shape in the default `--json` output is unchanged, or the change is justified in the PR description; (3) ent does not classify *why* a declaration is unregistered (no guess at 'already implemented' vs 'not yet started'); (4) `config.yaml` is not listed or counted as a declaration."
+context:
+  background: The repository holds 36 readable declarations in `.goals/`, but `ent list --json` returns only the 4 that are registered in the state store, and `ent doctor` reports only a count. The remaining 32 declarations are invisible to every command, so deciding what to start next requires manually diffing `ls .goals/` against `ent list`. `ent list` returning only registered Goals is intentional — `.goals/list-goals.yaml` specifies exactly that — the gap is that nothing was ever provided to see outside it. A declaration can be unregistered for several distinct reasons (not yet started, implemented but the state DB was rebuilt, or parked deliberately), and today all of them collapse into the same invisibility; ent must expose the fact of being unregistered without inferring the reason.
+  constraints:
+    - "`src/domain/goal.ts` and `src/domain/goal-config.ts` are under PROTECTED_PATH_FLOOR — do not modify them, and do not choose an approach that requires a schema change."
+    - Confine changes to `src/cli/`, `src/store/`, and `src/usecase/`, which are outside the floor.
+    - Do not change the shape of elements representing registered Goals in `ent list --json`; scripts consuming that output must keep working.
+    - Do not treat the file named by `CONFIG_SLUG` (`config.yaml`) as a Goal declaration.
+    - Do not have ent infer or report why a declaration is unregistered; classifying 'implemented but deregistered' versus 'not yet started' is a human judgement.
+  references:
+    - title: Declaration that scoped ent list to registered Goals
+      path: .goals/list-goals.yaml
+    - title: Design document
+      path: docs/design.md
+policies:
+  require_human_approval:
+    - merge
+    - force_push
+    - push_to_default_branch
+    - deploy
+    - secret_access
+    - external_send
+  protected_paths:
+    - src/controller/**
+    - .goals/**
+    - src/domain/protected-paths.ts
+    - src/domain/guard-rules.ts
+    - src/domain/goal.ts
+    - src/domain/goal-config.ts
+    - src/adapters/claude.ts
+    - src/adapters/codex.ts
+    - src/adapters/agent-prompt.ts
+    - src/adapters/local.ts
+    - src/domain/withheld-env.ts
+    - src/wiring/index.ts
+    - .git/**
+    - .goals/.state/**
+  publish:
+    push_branch: auto
+    open_pull_request: auto
+budget:
+  max_actor_runs: 8
+  max_reconciles: 20
+  max_wall_clock: 3h
+  max_consecutive_failures: 3
+  max_unchanged_reconciles: 4
