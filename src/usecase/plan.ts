@@ -15,7 +15,6 @@ import { CONFIG_FILENAME, CONFIG_SLUG } from "../domain/goal-config.js";
 import { parseGoal } from "../domain/goal-parse.js";
 import { renderGoal } from "../domain/goal-render.js";
 import { MAX_LLM_RETRIES } from "../domain/llm-call.js";
-import type { CommandRunnerPort } from "../verify/index.js";
 
 /**
  * `ent plan` の本体。散文のゴールを、サブ Goal の宣言に分解する。
@@ -77,17 +76,6 @@ export interface PlanProbes {
    */
   writeGoalFile(slug: string, body: string): string;
   now(): Date;
-  /**
-   * 提案された `type: command` の criterion を、書き出す前に1本ずつ実行する口。
-   *
-   * **合成ルートが基点を決める。** 判定したいのは「いま人間が見ているチェック
-   * アウトで、その criterion がもう通るのか」で、worktree はまだ1つも無い。
-   *
-   * 必須にしてある。`?:` にすると「渡されなければ検査を飛ばす」が書けてしまい、
-   * 検査そのものが黙って消える経路ができる。実装が無い間は、必ず落ちる
-   * スタブを渡す側で明示する。
-   */
-  criterionProbe: CommandRunnerPort;
 }
 
 export interface PlanRequest {

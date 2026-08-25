@@ -71,14 +71,6 @@ function harness(responses: readonly unknown[], existing: readonly ExistingGoal[
           return response;
         },
       },
-      // criterion の実行はまだ実装されていない。呼ばれたら落とす。
-      // 黙って「通った」を返すスタブを置くと、検査が入った日に
-      // 「全部通っている」と誤判定される側で気づけなくなる。
-      criterionProbe: {
-        run: async (command: string) => {
-          throw new Error(`criterionProbe was called but is not implemented yet: ${command}`);
-        },
-      },
       repository: () => ({
         kind: "resolved",
         owner: "slashkiko",

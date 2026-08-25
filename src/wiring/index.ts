@@ -210,10 +210,6 @@ export function planProbes(
   const llm = selectedLlm(stateDir, process.env, () => {}, DEFAULT_AGENT_FACTORIES, "plan");
   return {
     planner: { propose: async (prompt) => llm.chooseAction(prompt) },
-    // 基点は repoRoot にする。worktree はまだ1つも無く、判定したいのは
-    // 「いま人間が見ているチェックアウトで、その criterion がもう通るのか」になる。
-    // `commandRunner` の中身は触らない（`PROTECTED_PATH_FLOOR`）。呼ぶだけ。
-    criterionProbe: commandRunner(repoRoot),
     repository: () => resolveRepository(repoRoot, overrides),
     existingGoals: () =>
       existsSync(goalsDir)
