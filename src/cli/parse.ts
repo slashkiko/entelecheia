@@ -32,6 +32,8 @@ export const USAGE = `ent — Declare the end state; the controller converges to
                        --prices <path> supplies USD-per-million-token category prices
   ent abandon <slug>   Declare it no longer pursued and terminate it (--reason is required)
   ent list             List registered Goals
+                       --include-unregistered also lists .goals/ declarations that
+                       are not registered; every element then carries kind
   ent doctor           Read-only check that the prerequisites for running are in place
   ent agent-context    Emit the CLI's structure as machine-readable JSON
 
@@ -131,7 +133,15 @@ export type Command =
    */
   | { kind: "abandon"; slug: string; reason: string; json?: true }
   /** 登録済みの Goal を一覧する。slug は取らない */
-  | { kind: "list"; limit?: number; json?: true }
+  /**
+   * 登録済みの Goal を一覧する。
+   *
+   * `includeUnregistered` は指定があったときだけ入る。必ず持たせると、
+   * `parseCommand(["list"])` が `{ kind: "list" }` であることを仕様として
+   * 固定しているテスト（`tests/cli-list.test.ts`）が壊れる。既定の出力を
+   * 動かさないという約束を、解釈の側でも同じ形にしておく。
+   */
+  | { kind: "list"; limit?: number; includeUnregistered?: true; json?: true }
   /**
    * 回す前の前提を調べる。slug は取らず、副作用も持たない。
    *
@@ -222,7 +232,15 @@ export function parseCommand(argv: readonly string[]): Command {
       if (typeof limit === "string") {
         return { kind: "error", message: limit };
       }
-      return { kind: "list", ...(limit === undefined ? {} : { limit }), ...json };
+      // 既定の出力を変えないための opt-in。付いていなければキーごと足さない。
+      const includeUnregistered =
+        values["include-unregistered"] === true ? ({ includeUnregistered: true } as const) : {};
+      return {
+        kind: "list",
+        ...(limit === undefined ? {} : { limit }),
+        ...includeUnregistered,
+        ...json,
+      };
     }
 
     const slug = positionals[0];
@@ -418,8 +436,15 @@ function optionsFor(sub: Subcommand): ParseArgsOptions {
         report: { type: "string" },
       };
     case "get":
-    case "list":
       return { json: { type: "boolean" }, limit: { type: "string" } };
+    case "list":
+      // `--include-unregistered` は list だけに置く。get が読むのは1本の Goal で、
+      // 登録されていない宣言はそこには現れない（付ければ終了コード 2 になる）。
+      return {
+        json: { type: "boolean" },
+        limit: { type: "string" },
+        "include-unregistered": { type: "boolean" },
+      };
     case "cost":
       return { json: { type: "boolean" }, prices: { type: "string" } };
     case "abandon":

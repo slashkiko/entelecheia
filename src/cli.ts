@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { agentContextPayload } from "./cli/agent-context.js";
@@ -19,7 +19,13 @@ import type { Store } from "./store/port.js";
 import { costPayload, emptyCostPayload, parseCostPriceFile } from "./usecase/cost.js";
 import { doctorPayload } from "./usecase/doctor.js";
 import { initRepository } from "./usecase/init.js";
-import { listPayload, showPayload } from "./usecase/inspect.js";
+import {
+  declarationsIn,
+  listEntries,
+  listEntryTotal,
+  listPayload,
+  showPayload,
+} from "./usecase/inspect.js";
 import { DEFAULT_MAX_GOALS, planGoals } from "./usecase/plan.js";
 import {
   doctorProbes,
@@ -55,11 +61,20 @@ export {
   doctorPayload,
 } from "./usecase/doctor.js";
 export {
+  type Declaration,
+  declarationsIn,
   type LimitOptions,
+  type ListEntry,
+  type ListEntryKind,
+  listEntries,
+  listEntryTotal,
   listPayload,
+  type RegisteredListEntry,
   type ShowPayload,
   showPayload,
   truncationHint,
+  type UnregisteredListEntry,
+  unregisteredDeclarations,
 } from "./usecase/inspect.js";
 
 /**
@@ -174,9 +189,20 @@ async function runCommand(argv: readonly string[]): Promise<number> {
   mkdirSync(join(stateDir, "worktrees"), { recursive: true });
 
   if (command.kind === "list") {
-    // list は slug を取らない。Goal YAML を読まずに DB だけ見る。
+    // list は slug を取らない。既定では Goal YAML を読まずに DB だけ見る。
     const store = openStore(join(stateDir, "goals.db"));
     try {
+      if (command.includeUnregistered === true) {
+        // 読むのは `.goals/` のファイル名だけ。中身は開かない——壊れた宣言でも
+        // 「登録されていない」ことは変わらないので、1本読めないせいで一覧が
+        // 出せなくなる形にはしない。
+        const declared = declarationsIn(goalDeclarationNames(join(repoRoot, ".goals")));
+        const entries = listEntries(store, declared, { limit: command.limit });
+        process.stdout.write(`${JSON.stringify(entries, null, 2)}\n`);
+        writeTruncationHint(entries.length, listEntryTotal(store, declared));
+        return 0;
+      }
+
       const items = listPayload(store, { limit: command.limit });
       process.stdout.write(`${JSON.stringify(items, null, 2)}\n`);
       writeTruncationHint(items.length, store.listGoals().length);
@@ -330,6 +356,20 @@ async function runCommand(argv: readonly string[]): Promise<number> {
   } finally {
     store.close();
   }
+}
+
+/**
+ * `.goals/` に置かれているファイル名を読む。ディレクトリが無ければ空。
+ *
+ * ここが読むのは名前だけで、何を Goal と数えるか（`config.yaml` を外す規則）は
+ * `declarationsIn`（`src/usecase/inspect.ts`）が持つ。副作用のある側と規則を
+ * 分けてあるので、除外の規則はファイルシステム無しで確かめられる。
+ *
+ * `ent init` より前の checkout では `.goals/` がまだ無い。読めないことを理由に
+ * 落とすと、まだ何も始めていないリポジトリで `ent list` が使えなくなる。
+ */
+function goalDeclarationNames(goalsDir: string): string[] {
+  return existsSync(goalsDir) ? readdirSync(goalsDir) : [];
 }
 
 /**
