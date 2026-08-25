@@ -9,13 +9,15 @@ import {
   goalTemplate,
   TEMPLATE_SLUG,
 } from "../src/domain/goal.js";
-import { configTemplate, parseGoalConfig } from "../src/domain/goal-config.js";
+import { CONFIG_FILENAME, configTemplate, parseGoalConfig } from "../src/domain/goal-config.js";
 import { parseGoal } from "../src/domain/goal-parse.js";
 
 const GOALS_DIR = join(import.meta.dirname, "..", ".goals");
 
+/** `.goals/` にある Goal YAML。config.yaml は Goal ではないので外す */
 function goalFiles(): string[] {
   return readdirSync(GOALS_DIR)
+    .filter((f) => f !== CONFIG_FILENAME)
     .filter((f) => f.endsWith(".yaml"))
     .map((f) => join(GOALS_DIR, f));
 }
