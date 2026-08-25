@@ -19,8 +19,30 @@ import type { Goal } from "./goal.js";
  * キーの有無で表している（`src/domain/goal.ts`）。`null` や `{}` を書き出すと、
  * 書いていないはずの宣言が生えたように読める。
  */
-export function renderGoal(goal: Goal, header?: string): string {
-  const body = stringify(canonical(goal), {
+
+/**
+ * 書き出し方の指定。**既定は「`Goal` にある値をそのまま全部書く」で、これまでと同じ。**
+ */
+export interface RenderGoalOptions {
+  /**
+   * `setup` をキーごと落とす。
+   *
+   * `Goal.setup` は `setupSchema.default([])` を通った後なので、その時点では
+   * 「宣言が `setup` を書かなかった」と「`setup: []` と書いた」の区別が消えている。
+   * 一方 `mergeGoalConfig` はその区別を**キーの有無**で見て、無ければ
+   * `.goals/config.yaml` の `setup` を下に敷く（`src/domain/goal-config.ts`）。
+   * 区別を持っているのは `Goal` を組み立てた側だけなので、落とすかどうかを
+   * そこから渡してもらう。
+   *
+   * **`goal.setup` が空だから落とす、にはしない。** それをやると、空にした
+   * つもりで `setup: []` と書いた宣言を往復させたときに、書いた覚えのない
+   * config の setup が下から生えてくる。
+   */
+  omitSetup?: boolean;
+}
+
+export function renderGoal(goal: Goal, header?: string, options: RenderGoalOptions = {}): string {
+  const body = stringify(canonical(goal, options), {
     // 人間が読む前提の YAML なので、機械的な折り返しで文を割らない。
     lineWidth: 0,
     // `desired_state` と `background` は複数行で書かれる。引用符付きの1行に
@@ -35,7 +57,7 @@ export function renderGoal(goal: Goal, header?: string): string {
  *
  * 戻り値の型を `Goal` にしない。省略したキーを型の上でも「無い」ままにするため。
  */
-function canonical(goal: Goal): Record<string, unknown> {
+function canonical(goal: Goal, options: RenderGoalOptions): Record<string, unknown> {
   return {
     version: goal.version,
     goal: {
@@ -56,7 +78,7 @@ function canonical(goal: Goal): Record<string, unknown> {
         ? {}
         : { pull_request: { draft: goal.repository.pull_request.draft } }),
     },
-    setup: [...goal.setup],
+    ...(options.omitSetup === true ? {} : { setup: [...goal.setup] }),
     acceptance_criteria: goal.acceptance_criteria.map((criterion) => ({
       id: criterion.id,
       description: criterion.description,

@@ -27,6 +27,14 @@ function proposedGoal(id: string, dependsOn: string[] = []): Record<string, unkn
     setup: [],
     acceptance_criteria: [
       { id: "ac-1", description: "the tests pass", verification: { type: "command", run: "true" } },
+      // `type: human` を1本入れておく。無い提案は採用されないので、ここが空だと
+      // この describe の全部が「human が無い」で落ちて、見たいものが見えなくなる。
+      // その規則そのものは `tests/plan-declaration-quality.test.ts` が見ている。
+      {
+        id: "ac-2",
+        description: "a person read the result",
+        verification: { type: "human", prompt: "confirm the output is what you wanted" },
+      },
     ],
     context: { background: "why", constraints: ["do not touch tests"], references: [] },
   };
