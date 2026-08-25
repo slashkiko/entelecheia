@@ -1,0 +1,107 @@
+version: 1
+
+# ⚠️ この Goal はまだ start しない。着手には人間の手が1つ要る（下の「着手条件」）。
+
+goal:
+  id: plan-refuses-goals-with-nothing-to-do
+  name: 現状で既に全部通る criteria しか無い提案は、書かずに落とす
+  desired_state: |
+    `ent plan` が生成した ac-1 は `mise run verify` 1本だった。**無変更の
+    チェックアウトで既に通る。** ent は Gap が無ければ COMPLETE と決めるので
+    （`src/decide/index.ts` の「Gap が無く unresolved も無い → COMPLETE」）、
+    そのまま `ent start` すると何もせず1ティック目で完了扱いになる。
+
+    提案された `type: command` の criteria を宣言時点で実行し、**全部が通るなら
+    その Goal は「やることが無い」ので書かない。** 1本でも落ちれば書く。
+
+    - `type: fact` と `type: human` は実行できない。**実行できないものを
+      「通った」に数えない。** 数えると、fact と human だけの提案が
+      「全部通っている」と誤判定されて落ちる
+    - 実行には時間がかかる（`mise run verify` で20秒前後）。`--dry-run` でも
+      同じ判定を出すこと。書く前に分かるほうが直しやすい
+    - シェルを起動するのは `src/adapters/local.ts` だけ。あれは
+      `PROTECTED_PATH_FLOOR` にあるので**中身は変えない**。呼ぶだけにする
+
+    ## 着手条件（人間がやること）
+
+    **この Goal は `src/wiring/index.ts` への Port 注入を必要とする。** あそこは
+    `PROTECTED_PATH_FLOOR` にあり、Actor が触ると関門が `ESCALATE` で止める。
+    2026-08-25 に1度実際に止まった。ブランチ側にコミットしても回避できない。
+    関門は `guardBaseSha` との差分を見るため（`src/domain/guard-rules.ts` の
+    `guardBaseOf`）。
+
+    そのとき Actor が書いた注入は次の4行だった。
+
+    ```ts
+    // planProbes() の中
+    criterionProbe: commandRunner(repoRoot),
+    ```
+
+    基点を `repoRoot` にしているのは、判定したいのが「いま人間が見ている
+    チェックアウトで、その criterion がもう通るのか」だから。worktree はまだ
+    1つも無い。
+
+    **人間がこの注入と対応する型を main に入れてから start すること。**
+    型（`PlanProbes` 側）は `src/usecase/plan.ts` にあり保護外なので、
+    注入と型をセットで1コミットにする。そのうえで start すれば、
+    `guardBaseSha` が新しい main を指すので関門は鳴らない。
+
+    ## 触る場所
+
+    `src/usecase/plan.ts`。`src/wiring/index.ts` は着手条件で人間が済ませてある前提。
+
+# setup は書かない。.goals/config.yaml の setup を敷かせる。
+
+acceptance_criteria:
+  - id: ac-1
+    description: 既存の検証一式が通る
+    verification:
+      type: command
+      run: mise run verify
+
+  - id: ac-2
+    description: >-
+      「宣言時点で type: command の criteria が全部通る提案は書かれない」と
+      「fact と human だけの提案がそれで誤判定されない」を名指しで検証する
+      テストがあり、通る。
+    verification:
+      type: command
+      run: mise exec -- pnpm exec vitest run tests/plan-refuses-nothing-to-do.test.ts
+
+  # `review.verdict == approved` はここには書けない。それを作るコードが
+  # `src/` に無いため（未着手の `.goals/start-the-review-we-wired.yaml` 参照）。
+  # 置くと Fact が永久に現れず `loop_detected` で止まる。あの Goal が
+  # 済んだら、ここに足す。
+
+  - id: ac-3
+    description: 誤判定の方向を人間が確認する
+    verification:
+      type: human
+      prompt: |
+        落とす側の誤りより、**落とさない側の誤り**のほうが害が小さい Goal です。
+        次を確認してください。
+
+        1. `type: fact` と `type: human` を「通った」に数えていないか。
+           数えていると、fact と human だけの提案が誤って落ちる
+        2. `--dry-run` でも同じ判定が出るか
+        3. `src/adapters/local.ts` の中身を変えていないか
+        4. 判定に失敗した（コマンドが実行できなかった）ときに、「通った」側に
+           倒していないか。確かめられなかったことは確かめられなかったとして
+           扱う（design.md 3.1）
+
+context:
+  background: |
+    2026-08-25 に `plan-writes-declarations-that-hold` としてこの内容を
+    `plan-writes-yaml-that-holds` の2点と一緒に回そうとしたが、保護パスの関門で
+    止まったため切り離した。経緯は当該 Goal の background にある。
+  constraints:
+    - src/adapters/local.ts を変更しない。PROTECTED_PATH_FLOOR にある
+    - src/domain/goal.ts と src/domain/goal-config.ts も変更できない
+    - 判定できなかったものを「通った」に数えない
+
+budget:
+  max_actor_runs: 8
+  max_reconciles: 20
+  max_wall_clock: 3h
+  max_consecutive_failures: 3
+  max_unchanged_reconciles: 4
