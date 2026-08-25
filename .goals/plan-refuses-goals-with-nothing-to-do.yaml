@@ -1,6 +1,6 @@
 version: 1
 
-# ⚠️ この Goal はまだ start しない。着手には人間の手が1つ要る（下の「着手条件」）。
+# 着手条件は 36ef860 で満たした。start してよい。
 
 goal:
   id: plan-refuses-goals-with-nothing-to-do
@@ -41,7 +41,9 @@ goal:
     チェックアウトで、その criterion がもう通るのか」だから。worktree はまだ
     1つも無い。
 
-    **人間がこの注入と対応する型を main に入れてから start すること。**
+    **済み。** `36ef860` で `PlanProbes.criterionProbe` と合成ルートの注入を入れた。
+    テストのスタブは呼ばれたら throw する。判定を実装したら、通る側のスタブへ
+    差し替えること。旧文: 人間がこの注入と対応する型を main に入れてから start する。
     型（`PlanProbes` 側）は `src/usecase/plan.ts` にあり保護外なので、
     注入と型をセットで1コミットにする。そのうえで start すれば、
     `guardBaseSha` が新しい main を指すので関門は鳴らない。
