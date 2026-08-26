@@ -71,13 +71,14 @@ function harness(responses: readonly unknown[], existing: readonly ExistingGoal[
           return response;
         },
       },
-      // criterion の実行はまだ実装されていない。呼ばれたら落とす。
-      // 黙って「通った」を返すスタブを置くと、検査が入った日に
-      // 「全部通っている」と誤判定される側で気づけなくなる。
+      // 「コマンドは動いたが落ちた」を返す。つまり「やることが残っている」側。
+      //
+      // **`exitCode: 0` にしない。** 0 は「もう通っている」になり、command criterion を
+      // 持つ fixture が軒並み「やることが無い」で弾かれて、このファイルの他のテストが
+      // 全部落ちる。throw させるのも避ける。throw は `unknown` に落ちて結果的に同じ枝を
+      // 通るが、それは判定できなかっただけで、ここで見たいものとは別の経路になる。
       criterionProbe: {
-        run: async (command: string) => {
-          throw new Error(`criterionProbe was called but is not implemented yet: ${command}`);
-        },
+        run: async () => ({ exitCode: 1, stdout: "", stderr: "" }),
       },
       repository: () => ({
         kind: "resolved",
