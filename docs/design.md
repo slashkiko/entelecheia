@@ -245,8 +245,8 @@ What is entrusted to the LLM is only how to close the Gap.
 The default is the Claude Agent SDK, using Claude Code's saved credentials. The Codex CLI Adapter
 was added on 2026-08-11. In addition to the common `ENT_ACTOR` / `ENT_MODEL` / `ENT_EFFORT`, it
 accepts same-named overrides per `DECIDE`, `PLAN`, `IMPLEMENT`, `REVIEW`, and `INVESTIGATE`.
-**`PLAN` here means the planner behind `ent plan` (§10-12)**, not the `PLAN / REPLAN` stage §5 lists
-inside the tick. For example `ENT_DECIDE_ACTOR=codex` and `ENT_REVIEW_MODEL=<model>` can be
+**`PLAN` here means the planner behind `ent plan` (§10-12)**. There is no `PLAN` stage inside the
+tick (`docs/decisions/0002-no-plan-phase.md`). For example `ENT_DECIDE_ACTOR=codex` and `ENT_REVIEW_MODEL=<model>` can be
 specified at the same time.
 The provider, model, and effort for the same phase are chosen as one set, and the ACT Run keeps the
 provider actually used. The effort vocabulary is validated per provider. Both currently take
@@ -972,7 +972,8 @@ the Slack workspace) does not yet exist, the dependencies were narrowed down to 
 
 - Goal registration and persistence. Desired State and Acceptance Criteria are hand-written in `.goals/*.yaml`
 - OBSERVE (GitHub Issue / PR / CI, local repo)
-- ASSESS (Gap computation), PLAN / REPLAN, DECIDE
+- ASSESS (Gap computation), REPLAN, DECIDE. No `PLAN` stage is placed inside the tick
+  (`docs/decisions/0002-no-plan-phase.md`)
 - ACT (non-interactive execution of the selected Actor, git worktree isolation)
 - VERIFY (`command` = verification command, `fact` = matching against observed values such as CI status, `human` = human approval)
 - State machine, polling, write-ahead persistence, budget and loop limits, automatic waiting on usage limits

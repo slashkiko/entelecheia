@@ -222,8 +222,8 @@ Gap が残る場合の `WAIT`（レビュー待ちなど）は LLM も選べる�
 既定はClaude Agent SDKで、Claude Codeの保存済み認証を使う。2026-08-11にCodex CLI
 Adapterを追加した。共通の`ENT_ACTOR` / `ENT_MODEL` / `ENT_EFFORT`に加えて、
 `DECIDE`、`PLAN`、`IMPLEMENT`、`REVIEW`、`INVESTIGATE`ごとの同名上書きを受け取る。
-**ここでの`PLAN`は`ent plan`のplanner（§10-12）を指す。** §5が並べるティック内の
-`PLAN / REPLAN`の段ではない。
+**ここでの`PLAN`は`ent plan`のplanner（§10-12）を指す。** ティックの中に`PLAN`の段は
+無い（`docs/decisions/0002-no-plan-phase.md`）。
 たとえば`ENT_DECIDE_ACTOR=codex`と`ENT_REVIEW_MODEL=<model>`を同時に指定できる。
 同じphaseのprovider・model・effortは1組として選び、ACTのRunには実際に使ったproviderを残す。
 effortの語彙はproviderごとに検証する。いまはどちらも
@@ -900,7 +900,8 @@ PRAGMA foreign_keys = ON;
 
 - Goal の登録と永続化。Desired State と Acceptance Criteria は `.goals/*.yaml` に手書き
 - OBSERVE（GitHub Issue / PR / CI、ローカル repo）
-- ASSESS（ギャップ算出）、PLAN / REPLAN、DECIDE
+- ASSESS（ギャップ算出）、REPLAN、DECIDE。ティックの中に `PLAN` の段は置かない
+  （`docs/decisions/0002-no-plan-phase.md`）
 - ACT（選択した Actor の非対話実行、git worktree 隔離）
 - VERIFY（`command` = 検証コマンド、`fact` = CI ステータスなど観測値との照合、`human` = 人間承認）
 - 状態機械、ポーリング、write-ahead 永続化、予算とループ上限、使用量上限での自動待機
