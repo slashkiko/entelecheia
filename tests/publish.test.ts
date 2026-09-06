@@ -449,6 +449,31 @@ describe("進捗を書く", () => {
     expect(s.comments).toEqual([]);
   });
 
+  it("ガード停止（protected_path_touched）も、同じ停止が続けば2度目は畳む", async () => {
+    // 安全側の信号も、Goal が止まっている以上は停止そのものが危険を抑えている。
+    // 同じ reason の同じコメントを積み増しても情報は増えないので、初回だけ出す。
+    const s = sink({ existing: 11 });
+    const guard: Decision = {
+      decidedAt: NOW.toISOString(),
+      action: { type: "ESCALATE", reason: "protected_path_touched" },
+      rationale: "制御ループ自体に触れたので停止する",
+      decidedBy: "guard",
+    };
+    const result = await publish(
+      target({
+        digest: "same",
+        previousDigest: "same",
+        prNumber: 11,
+        decision: guard,
+        previousDecision: guard,
+      }),
+      deps(s),
+    );
+
+    expect(result.commented).toBe(false);
+    expect(s.comments).toEqual([]);
+  });
+
   it("停止に入ったティックは、前が別の行動なら観測が同じでも書く", async () => {
     // 隔離が破れた・空回りに落ちた「その瞬間」は、観測が前ティックと変わらなくても
     // 必ず PR に出す。畳むのは、同じ停止が続く2ティック目以降だけ。
