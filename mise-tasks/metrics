@@ -1,0 +1,101 @@
+#!/usr/bin/env bash
+#MISE description="Print the per-Goal convergence metrics defined in docs/metrics.md"
+#MISE depends=["build"]
+set -euo pipefail
+
+# docs/metrics.md が「いま測れる」と分類した指標だけを、1 Goal 1行の TSV で出す。
+#
+# **読むのは ent の出力だけにする。** goals.db を直接引くと、CLI が出していない列まで
+# 測れることになり、docs/metrics.md の3分類（測れる / 集計を足せば出せる / 観測が無い）と
+# 食い違う。分類の境界をこのスクリプトが体現する。
+#
+# 状態ストアは cwd 直下の .goals/.state に出来るので、測る対象のディレクトリで実行する。
+
+usage() {
+  cat <<'EOF'
+Usage: mise run metrics [--prices <path>]
+
+Prints one TSV row per registered Goal. Without --prices the cost columns are
+left as "-"; ent cost refuses to guess a price table.
+EOF
+}
+
+prices=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --prices)
+      if [[ $# -lt 2 ]]; then
+        echo "--prices needs a path to a price file." >&2
+        exit 1
+      fi
+      prices="$2"
+      shift 2
+      ;;
+    -h | --help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "Unknown argument: $1" >&2
+      usage >&2
+      exit 1
+      ;;
+  esac
+done
+
+for tool in node jq; do
+  if ! command -v "$tool" >/dev/null 2>&1; then
+    echo "metrics needs $tool on PATH." >&2
+    exit 1
+  fi
+done
+
+readonly cli="dist/cli.js"
+if [[ ! -f "$cli" ]]; then
+  echo "$cli is missing; run mise run build first." >&2
+  exit 1
+fi
+
+printf 'goal\tstatus\treconciles\tactor_runs\tdecide_calls\tmetered_usd\telapsed_hours\tstopped_action\tstopped_reason\n'
+
+# ent list は登録済みの Goal を出す。宣言 YAML を消した Goal もここには残るので、
+# 一覧は list から取り、1件ずつ get が読めるかを個別に確かめる。
+goal_ids="$(node "$cli" list --json | jq -r '.[].id')"
+
+while IFS= read -r goal_id; do
+  [[ -n "$goal_id" ]] || continue
+
+  # ent get は宣言 YAML を読む。使い捨ての Goal を畳んで YAML を消した後は
+  # ここで落ちるので、行を落とさずに理由を出す（実例: zz-driver-boundary-probe）。
+  if ! get_json="$(node "$cli" get "$goal_id" --json 2>/dev/null)"; then
+    printf '%s\tDECLARATION_MISSING\t-\t-\t-\t-\t-\t-\t-\n' "$goal_id"
+    continue
+  fi
+
+  usd="-"
+  if [[ -n "$prices" ]]; then
+    if cost_json="$(node "$cli" cost "$goal_id" --prices "$prices" 2>/dev/null)"; then
+      usd="$(printf '%s' "$cost_json" | jq -r '.metered_usd')"
+    fi
+  fi
+
+  stopped_json="$(node "$cli" list --json | jq -c --arg id "$goal_id" '.[] | select(.id == $id) | .stopped')"
+
+  # 実時間は activatedAt と COMPLETE 判断の decidedAt の差にする。COMPLETE 以外で
+  # 止まっている Goal には終端時刻が無いので "-" を出す。**この値は人間の承認待ちを
+  # 含む**（docs/metrics.md M4）。ISO 8601 の小数秒は jq の fromdate が読まないので落とす。
+  printf '%s\t' "$goal_id"
+  printf '%s' "$get_json" | jq -r --arg usd "$usd" --argjson stopped "$stopped_json" '
+    def secs: sub("\\.[0-9]+Z$"; "Z") | fromdate;
+    [ .state.status,
+      (.state.reconciles | tostring),
+      (.runs | length | tostring),
+      (.llm.calls | tostring),
+      $usd,
+      (if .decision.action.type == "COMPLETE"
+       then ((((.decision.decidedAt | secs) - (.state.activatedAt | secs)) / 3600) * 100 | round / 100 | tostring)
+       else "-" end),
+      ($stopped.action // "-"),
+      ($stopped.reason // "-") ]
+    | @tsv'
+done <<<"$goal_ids"
