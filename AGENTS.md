@@ -4,6 +4,11 @@ The procedure for invoking `ent` in this repository is written in `.claude/skill
 Claude Code picks it up as a skill. Codex picks up the same canonical copy through the
 `.agents/skills/ent` symlink, and every other agent gets there from this file.
 
+What a human does on either side of a Goal — writing the failing test and the declaration before
+`ent start`, and tidying the history once the Goal is terminal — is a second skill,
+`.claude/skills/ent-bookend/SKILL.md`, reached the same way (`.agents/skills/ent-bookend` for Codex).
+It is separate because ent itself never does those steps.
+
 The procedure is not copied here. Writing the same thing in two places leaves no way to tell
 which one is authoritative once one of them goes stale. Read one place only: `.claude/skills/ent/SKILL.md`.
 

@@ -60,6 +60,9 @@ const IDENTITY = ["-c", "user.email=t@example.com", "-c", "user.name=t"];
 /** ent 本体の skill ディレクトリ。symlink の向け先そのもの */
 const SKILL_DIR = fileURLToPath(new URL("../.claude/skills/ent", import.meta.url));
 
+/** Goal の前後の作法。`ent` と違い、張れなくても init は止まらない */
+const BOOKEND_DIR = fileURLToPath(new URL("../.claude/skills/ent-bookend", import.meta.url));
+
 let repoRoot: string;
 let home: string;
 let cwd: string;
@@ -67,8 +70,8 @@ let realHome: string | undefined;
 let stdout: string[];
 
 /** user scope の skill の置き場 */
-function linkPath(): string {
-  return join(home, ".claude", "skills", "ent");
+function linkPath(name = "ent"): string {
+  return join(home, ".claude", "skills", name);
 }
 
 /** `--json` の entries から、末尾が `.claude/skills/ent` の1件を引く */
@@ -77,6 +80,16 @@ function skillEntry(): { path: string; action: string } | undefined {
     entries?: { path: string; action: string }[];
   };
   return report.entries?.find((entry) => entry.path.endsWith(join(".claude", "skills", "ent")));
+}
+
+/** `--json` の entries から、末尾が `.claude/skills/ent-bookend` の1件を引く */
+function bookendEntry(): { path: string; action: string } | undefined {
+  const report = JSON.parse(stdout.at(-1) ?? "{}") as {
+    entries?: { path: string; action: string }[];
+  };
+  return report.entries?.find((entry) =>
+    entry.path.endsWith(join(".claude", "skills", "ent-bookend")),
+  );
 }
 
 async function makeGitRepo(dir: string): Promise<void> {
@@ -230,6 +243,90 @@ describe("同じ名前が既に埋まっているとき", () => {
     await main(["init"]);
 
     expect(existsSync(join(repoRoot, ".goals"))).toBe(false);
+  });
+});
+
+/**
+ * `ent-bookend` は Goal の前後の作法を書いた2本目の skill になる。
+ *
+ * `ent` と分けてあるのは、あちらが CLI の手順書で、こちらが「その前後で人間側が
+ * やること」だから。ent が変われば両方が変わるので、正本は ent 本体に置いて
+ * 1つの変更で直せる形にしてある。
+ *
+ * **配り方だけが `ent` と違う。** `ent` はレビュー役も人間の側のエージェントも
+ * 読むので、埋まっていたら断る。`ent-bookend` は無くても ent は回るので、
+ * 埋まっていたらそこだけ飛ばす。必須でないものが `.goals/` の作成を止めない。
+ */
+describe("ent-bookend も張る", () => {
+  it("~/.claude/skills/ent-bookend を作る", async () => {
+    await main(["init"]);
+
+    expect(realpathSync(linkPath("ent-bookend"))).toBe(realpathSync(BOOKEND_DIR));
+  });
+
+  it("シンボリックリンクにする", async () => {
+    await main(["init"]);
+
+    expect(lstatSync(linkPath("ent-bookend")).isSymbolicLink()).toBe(true);
+  });
+
+  it("辿った先から SKILL.md を読める", async () => {
+    await main(["init"]);
+
+    expect(readFileSync(join(linkPath("ent-bookend"), "SKILL.md"), "utf8")).toContain(
+      "ent-bookend",
+    );
+  });
+
+  it("--json の entries に created で載る", async () => {
+    await main(["init", "--json"]);
+
+    expect(bookendEntry()?.action).toBe("created");
+  });
+
+  it("2度目は kept になる", async () => {
+    await main(["init"]);
+
+    await main(["init", "--json"]);
+
+    expect(bookendEntry()?.action).toBe("kept");
+  });
+});
+
+describe("ent-bookend の名前だけが埋まっているとき", () => {
+  beforeEach(() => {
+    const dir = join(home, ".claude", "skills");
+    mkdirSync(dir, { recursive: true });
+    mkdirSync(join(dir, "ent-bookend"));
+    writeFileSync(join(dir, "ent-bookend", "SKILL.md"), "人間が書いた skill\n");
+  });
+
+  it("終了コード 0 のまま進む", async () => {
+    // **必須でないものが必須のものを止めない。** ここで 1 を返すと、
+    // ent と無関係な skill が1つあるだけで `.goals/` を作る道まで塞がる。
+    expect(await main(["init"])).toBe(0);
+  });
+
+  it("埋まっているものを消さない", async () => {
+    await main(["init"]);
+
+    expect(readFileSync(join(linkPath("ent-bookend"), "SKILL.md"), "utf8")).toBe(
+      "人間が書いた skill\n",
+    );
+  });
+
+  it(".goals/ と ent の skill はそのまま置く", async () => {
+    await main(["init"]);
+
+    expect(existsSync(join(repoRoot, ".goals"))).toBe(true);
+    expect(realpathSync(linkPath())).toBe(realpathSync(SKILL_DIR));
+  });
+
+  it("--json の entries に載せない", async () => {
+    // 置いていないものを「置いた」と並べない。理由は stderr に出す。
+    await main(["init", "--json"]);
+
+    expect(bookendEntry()).toBeUndefined();
   });
 });
 
