@@ -47,10 +47,10 @@ repository:
 setup: []
 acceptance_criteria:
   - id: ac-1
-    description: 何もしなくても通る検証
+    description: 目印のファイルが置かれたら通る検証
     verification:
       type: command
-      run: exit 0
+      run: test -f work-done
 context:
   background: |
     降りる口の検証用。
@@ -133,6 +133,23 @@ afterEach(() => {
   rmSync(repoRoot, { recursive: true, force: true });
 });
 
+/** criterion を通す目印。start の後に置く（`startGoal`） */
+const WORK_DONE = "work-done";
+
+/**
+ * start してから、criterion を通す目印を置く。
+ *
+ * `ent start` は、着手した時点で落ちる `type: command` の criterion が1本も無い Goal を
+ * ACTIVE にしない（`src/usecase/start.ts`）。無変更で通るだけの criterion を書くと
+ * そこで断られるので、目印のファイルが現れたら通る形にして、置くのは start の後にする。
+ * ティックの時点では criteria が全部通るので、LLM も Actor も GitHub も呼ばれない。
+ */
+async function startGoal(): Promise<number> {
+  const exitCode = await main(["start", "abandon-goal"]);
+  writeFileSync(join(repoRoot, WORK_DONE), "");
+  return exitCode;
+}
+
 describe("引数の解釈", () => {
   it("slug と --reason を受け取る", () => {
     expect(parseCommand(["abandon", "abandon-goal", "--reason", REASON])).toEqual({
@@ -179,7 +196,7 @@ describe("引数の解釈", () => {
 
 describe("終端へ落とす", () => {
   it("ACTIVE の Goal を ABANDONED にして、理由を残す", async () => {
-    await main(["start", "abandon-goal"]);
+    await startGoal();
 
     expect(await main(["abandon", "abandon-goal", "--reason", REASON])).toBe(0);
 
@@ -189,7 +206,7 @@ describe("終端へ落とす", () => {
   });
 
   it("--json なら理由まで機械可読で出す", async () => {
-    await main(["start", "abandon-goal"]);
+    await startGoal();
     await main(["abandon", "abandon-goal", "--reason", REASON, "--json"]);
 
     expect(lastJson()).toEqual({
@@ -201,7 +218,7 @@ describe("終端へ落とす", () => {
 
   it("ent get から理由が読める", async () => {
     // 「どこかに書いた」では足りない。人間とエージェントが読む経路に出す。
-    await main(["start", "abandon-goal"]);
+    await startGoal();
     await main(["abandon", "abandon-goal", "--reason", REASON]);
 
     expect(await main(["get", "abandon-goal"])).toBe(0);
@@ -212,7 +229,7 @@ describe("終端へ落とす", () => {
 
   it("ABANDONED になった Goal は run が拾わない", async () => {
     // 終端に落とす目的そのもの。ここが通らないなら、予算を使う経路は塞げていない。
-    await main(["start", "abandon-goal"]);
+    await startGoal();
     await main(["abandon", "abandon-goal", "--reason", REASON]);
 
     expect(await main(["run", "abandon-goal"])).toBe(0);
@@ -224,7 +241,7 @@ describe("観測の履歴は書き換えない", () => {
   it("snapshot と verifications をそのまま残す", async () => {
     // ここは「最後のティックが何を見たか」の記録になる。書き換えるのは観測の捏造で、
     // criteria が false のまま残るのは正しい。その時点では実際に落ちていた。
-    await main(["start", "abandon-goal"]);
+    await startGoal();
     await main(["run", "abandon-goal"]);
     const before = readState();
 
@@ -240,7 +257,7 @@ describe("落とせない場合は何も書かない", () => {
   it("既に終端なら終了コード 1 で、status を塗り替えない", async () => {
     // design.md §4.4「終端の Goal を ACTIVE に戻さない」。終端から別の終端へ
     // 移すのも同じ違反で、COMPLETED を ABANDONED で塗り替えられるなら記録が残らない。
-    await main(["start", "abandon-goal"]);
+    await startGoal();
     await main(["run", "abandon-goal"]);
     expect(readState().status).toBe("COMPLETED");
 
@@ -252,7 +269,7 @@ describe("落とせない場合は何も書かない", () => {
   });
 
   it("二度目の abandon も弾く", async () => {
-    await main(["start", "abandon-goal"]);
+    await startGoal();
     await main(["abandon", "abandon-goal", "--reason", REASON]);
 
     expect(await main(["abandon", "abandon-goal", "--reason", "別の理由"])).toBe(1);
@@ -263,7 +280,7 @@ describe("落とせない場合は何も書かない", () => {
   it("lease を持っている Goal は落とさない", async () => {
     // 別のプロセスがそのティックを回している。横から終端へ落とすと、
     // 走っている controller が終端の Goal に書き戻す。
-    await main(["start", "abandon-goal"]);
+    await startGoal();
 
     const store = openStore(join(repoRoot, ".goals", ".state", "goals.db"));
     const now = new Date();

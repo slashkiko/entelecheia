@@ -40,6 +40,7 @@ import { openStore } from "../store/sqlite.js";
 import type { DoctorGoal, DoctorProbes } from "../usecase/doctor.js";
 import type { InitProbes } from "../usecase/init.js";
 import type { PlanProbes, RepositoryResolution } from "../usecase/plan.js";
+import type { StartProbes } from "../usecase/start.js";
 import type { ApprovalPort } from "../verify/index.js";
 
 /**
@@ -232,6 +233,17 @@ export function planProbes(
     },
     now: () => new Date(),
   };
+}
+
+/**
+ * `ent start` の着手検査が criteria を走らせる口。
+ *
+ * 基点は `repoRoot` にする。判定したいのは「いま人間が見ているチェックアウトで、
+ * その criterion がもう通るのか」で、worktree はまだ1つも無い（`planProbes` と同じ）。
+ * `commandRunner` の中身は触らない（`PROTECTED_PATH_FLOOR`）。呼ぶだけ。
+ */
+export function startProbes(repoRoot: string): StartProbes {
+  return { criterionProbe: commandRunner(repoRoot) };
 }
 
 /** `--repo` / `--default-branch` で宣言部の値を上書きする口。省略時は git に聞く */

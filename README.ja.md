@@ -477,6 +477,20 @@ Codexには公式のTypeScript SDKもあるが、いまは使っていない。�
 ラッパーで、このAdapterが隔離契約に使う `--ephemeral`、`--ignore-user-config`、`--ignore-rules` を
 公開オプションから渡せないからになる。そのため、現時点では `codex exec` を直接起動する。
 
+### start が登録の前に確かめること
+
+`ent start` は、その Goal の `type: command` の criteria を走らせ、**全部が既に通るなら
+start しない**。通ってしまった criterion の id を stderr に出し、状態を1行も書かずに 1 で
+返すので、`ent run <slug>` は変わらず「登録されていない」と答える。落ちる criterion が
+1本も無い Goal は、何も変えないまま1ティック目で `COMPLETE` に達し、`COMPLETED` は
+終端なので `ent start` では戻せない。同じ判定は `ent plan` が宣言を書く時点にもあり、
+ここが受け持つのは手で書いた Goal と、`ent plan` の後で人間が criteria を足した Goal になる。
+
+待たされる長さはそのコマンド次第で、検証一式なら20秒前後になる。飛ばすフラグは無い。
+1本でも落ちた時点で残りは走らせない——1本落ちれば結論が決まるからになる。実行できない
+ものは何も決めない。`type: fact` と `type: human` は通ったに数えず、起動そのものに失敗した
+コマンドも数えず、`type: command` を1本も持たない Goal はこれまでどおり start できる。
+
 ### 関門の基準になる commit
 
 `ent start` は、そのとき叩いたディレクトリの HEAD を**関門の基準**として記録する。

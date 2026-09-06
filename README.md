@@ -504,6 +504,21 @@ launches the Codex CLI with JSONL, and it cannot pass `--ephemeral`, `--ignore-u
 `--ignore-rules` — which this Adapter relies on for its isolation contract — through its public
 options. For now, therefore, `codex exec` is launched directly.
 
+### What start checks before it registers anything
+
+`ent start` runs the Goal's `type: command` criteria and refuses the Goal when every one of them
+already passes. It writes the criterion ids to stderr and exits 1 without writing any state, so
+`ent run <slug>` still reports the Goal as not registered. A Goal with nothing left to fail reaches
+`COMPLETE` on the first tick without changing anything, and `COMPLETED` is terminal, so `ent start`
+cannot take it back afterwards. `ent plan` refuses the same thing when it writes a declaration; this
+covers the Goals written by hand, and the ones whose criteria a human edited after `ent plan` wrote them.
+
+The wait is the length of those commands, often around 20 seconds for a verification suite, and there is
+no flag to skip it. It stops at the first criterion that fails, since one failure already settles the
+question. What cannot be run decides nothing: `type: fact` and `type: human` are not counted as passing,
+neither is a command that fails to launch, and a Goal declaring no `type: command` criterion starts as
+before.
+
 ### The commit the gate measures against
 
 `ent start` records the HEAD of the directory you invoked it in as **the gate's baseline**. The

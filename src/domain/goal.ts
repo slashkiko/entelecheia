@@ -716,6 +716,10 @@ goal:
 
 # design.md §3.2: a Goal that cannot be reduced to criteria is not made ACTIVE.
 # type is one of command / fact / human.
+# At least one type: command criterion has to FAIL as things stand now.
+# ent start runs them before it registers the Goal and refuses when they all
+# pass already, because there would be nothing left to do. Write the failing
+# test first and this holds on its own.
 acceptance_criteria:
   - id: ac-1
     description: a condition whose satisfaction can be checked from outside

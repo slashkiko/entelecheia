@@ -38,10 +38,10 @@ repository:
 setup: []
 acceptance_criteria:
   - id: ac-1
-    description: 何もしなくても通る検証
+    description: 目印のファイルが置かれたら通る検証
     verification:
       type: command
-      run: exit 0
+      run: test -f work-done
 context:
   background: |
     CLI の配線を実物で確かめる。
@@ -110,9 +110,26 @@ afterEach(() => {
   rmSync(repoRoot, { recursive: true, force: true });
 });
 
+/** criterion を通す目印。start の後に置く（`startGoal`） */
+const WORK_DONE = "work-done";
+
+/**
+ * start してから、criterion を通す目印を置く。
+ *
+ * `ent start` は、着手した時点で落ちる `type: command` の criterion が1本も無い Goal を
+ * ACTIVE にしない（`src/usecase/start.ts`）。無変更で通るだけの criterion を書くと
+ * そこで断られるので、目印のファイルが現れたら通る形にして、置くのは start の後にする。
+ * ティックの時点では criteria が全部通るので、LLM も Actor も GitHub も呼ばれない。
+ */
+async function startGoal(): Promise<number> {
+  const exitCode = await main(["start", "smoke-goal"]);
+  writeFileSync(join(repoRoot, WORK_DONE), "");
+  return exitCode;
+}
+
 describe("ent の一周", () => {
   it("start で ACTIVE になり、状態がファイルに残る", async () => {
-    expect(await main(["start", "smoke-goal"])).toBe(0);
+    expect(await startGoal()).toBe(0);
 
     expect(stdout.at(-1)).toContain("smoke-goal: ACTIVE");
     // .goals/.state/ は ent start を最初に叩いたときに作られる（README）。
@@ -120,7 +137,7 @@ describe("ent の一周", () => {
   });
 
   it("run が1ティック回して COMPLETED まで進む", async () => {
-    await main(["start", "smoke-goal"]);
+    await startGoal();
     expect(await main(["run", "smoke-goal"])).toBe(0);
 
     // criteria が全部 VERIFIED で満たされ、結論の出ていない対象も無いので
@@ -135,7 +152,7 @@ describe("ent の一周", () => {
   });
 
   it("get が宣言部と実行時状態をまとめて出す", async () => {
-    await main(["start", "smoke-goal"]);
+    await startGoal();
     await main(["run", "smoke-goal"]);
     expect(await main(["get", "smoke-goal"])).toBe(0);
 
@@ -158,7 +175,7 @@ describe("ent の一周", () => {
   });
 
   it("list が登録済みの Goal を出す", async () => {
-    await main(["start", "smoke-goal"]);
+    await startGoal();
     await main(["run", "smoke-goal"]);
     expect(await main(["list"])).toBe(0);
 
@@ -170,7 +187,7 @@ describe("ent の一周", () => {
   it("start は関門の基準を1回だけ書く。打ち直しても動かさない", async () => {
     // worktree は最初の基準から切られたまま残る。基準だけを今の HEAD に移すと、
     // 「切った元」と「比べる相手」がずれ、切った元に無いものを Actor が書いたと読む。
-    await main(["start", "smoke-goal"]);
+    await startGoal();
     const store = openStore(join(repoRoot, ".goals", ".state", "goals.db"));
     const first = store.getState("smoke-goal")?.guardBaseSha;
     store.close();
@@ -187,7 +204,7 @@ describe("ent の一周", () => {
       { cwd: repoRoot },
     );
 
-    expect(await main(["start", "smoke-goal"])).toBe(0);
+    expect(await startGoal()).toBe(0);
 
     const reopened = openStore(join(repoRoot, ".goals", ".state", "goals.db"));
     try {
@@ -201,7 +218,7 @@ describe("ent の一周", () => {
     // 条件を「記録がまだ無い」だけにすると、この列より前に start して worktree が
     // default_branch から切られている Goal に、今の HEAD を基準として与えてしまう。
     // 「切った元」と「比べる相手」がずれ、切った元に無いものを Actor が書いたと読む。
-    await main(["start", "smoke-goal"]);
+    await startGoal();
 
     const dbPath = join(repoRoot, ".goals", ".state", "goals.db");
     const raw = new DatabaseSync(dbPath);
@@ -219,7 +236,7 @@ describe("ent の一周", () => {
     });
     store.close();
 
-    expect(await main(["start", "smoke-goal"])).toBe(0);
+    expect(await startGoal()).toBe(0);
 
     const reopened = openStore(dbPath);
     try {
@@ -231,13 +248,13 @@ describe("ent の一周", () => {
 
   it("終端の Goal は start し直せない", async () => {
     // COMPLETED を後から取り消せると、§9 の完了判定そのものが意味を失う。
-    await main(["start", "smoke-goal"]);
+    await startGoal();
     await main(["run", "smoke-goal"]);
 
     // 1 を返す。2 は「引数が不正。stderr に有効値が並ぶ」なので、argv が妥当で
     // 打ち直せる値も無いこの経路には当てはまらない。2 を返していたころは、
     // SKILL.md に従うエージェントが argv を変えて再試行し続けられた。
-    expect(await main(["start", "smoke-goal"])).toBe(1);
+    expect(await startGoal()).toBe(1);
 
     await main(["list"]);
     expect(lastJson()).toEqual([
@@ -246,7 +263,7 @@ describe("ent の一周", () => {
   });
 
   it("終端の Goal は run しても回さない", async () => {
-    await main(["start", "smoke-goal"]);
+    await startGoal();
     await main(["run", "smoke-goal"]);
     await main(["run", "smoke-goal"]);
 
