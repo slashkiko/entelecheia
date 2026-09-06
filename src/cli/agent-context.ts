@@ -167,6 +167,13 @@ export function agentContextPayload(): AgentContext {
         flags: [JSON_FLAG, LIMIT_FLAG],
       },
       {
+        name: "decisions",
+        summary:
+          "list every decision, oldest first: when, which action, why, and who decided. Reads the state store only, so a Goal whose declaration was deleted still has its history",
+        args: [slug],
+        flags: [JSON_FLAG, LIMIT_FLAG],
+      },
+      {
         name: "cost",
         summary:
           "read per-category token usage from a Goal's Run and LlmCall raw logs, then calculate metered and charged USD with caller-supplied prices. Claude OAuth is excluded only from charged USD",

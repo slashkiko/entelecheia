@@ -28,6 +28,7 @@ export const USAGE = `ent — Declare the end state; the controller converges to
                        --dry-run writes nothing; it only shows what the next tick would contain
                        --report stdout|<path> sends progress to your hands instead of the PR
   ent get <slug>       Show the declaration and the runtime state together
+  ent decisions <slug> List every decision the Goal has made, oldest first
   ent cost <slug>      Calculate metered cost from raw logs
                        --prices <path> supplies USD-per-million-token category prices
   ent abandon <slug>   Declare it no longer pursued and terminate it (--reason is required)
@@ -37,8 +38,8 @@ export const USAGE = `ent — Declare the end state; the controller converges to
   ent doctor           Read-only check that the prerequisites for running are in place
   ent agent-context    Emit the CLI's structure as machine-readable JSON
 
-  --json               Emit JSON (run / get / cost / list are JSON by default)
-  --limit <n>          Cap how many entries are printed (get / list; default ${String(DEFAULT_LIMIT)})
+  --json               Emit JSON (run / get / decisions / cost / list are JSON by default)
+  --limit <n>          Cap how many entries are printed (get / decisions / list; default ${String(DEFAULT_LIMIT)})
 `;
 
 /** エージェントが叩けるサブコマンド。エラーはこの集合をそのまま並べる（gist 2.3） */
@@ -48,6 +49,7 @@ const SUBCOMMANDS = [
   "start",
   "run",
   "get",
+  "decisions",
   "cost",
   "abandon",
   "list",
@@ -114,6 +116,13 @@ export type Command =
    * 揃えたいのはサブコマンド名であって、内部の識別子ではない。
    */
   | { kind: "show"; slug: string; limit?: number; json?: true }
+  /**
+   * その Goal の判断を古い順に並べて出す。**宣言 YAML は読まない。**
+   *
+   * `get` と別のサブコマンドにしてある理由は `src/cli.ts` の分岐に書いた。
+   * ここでは受け取る形だけを決める——slug 1本と `--limit` で、`get` と同じになる。
+   */
+  | { kind: "decisions"; slug: string; limit?: number; json?: true }
   /**
    * Run と LlmCall の生ログから4分類の使用量を読み、caller の価格表で金額を出す。
    * 価格を省略可能にすると compiled-in default が必要になるので、必須にする。
@@ -283,6 +292,14 @@ export function parseCommand(argv: readonly string[]): Command {
       return { kind: "show", slug, ...(limit === undefined ? {} : { limit }), ...json };
     }
 
+    if (sub === "decisions") {
+      const limit = positiveInteger(values.limit, "--limit");
+      if (typeof limit === "string") {
+        return { kind: "error", message: limit };
+      }
+      return { kind: "decisions", slug, ...(limit === undefined ? {} : { limit }), ...json };
+    }
+
     if (sub === "cost") {
       const prices = typeof values.prices === "string" ? values.prices.trim() : "";
       if (prices === "") {
@@ -436,6 +453,9 @@ function optionsFor(sub: Subcommand): ParseArgsOptions {
         report: { type: "string" },
       };
     case "get":
+    case "decisions":
+      // 絞り方は get と同じにする。読むのは1本の Goal に属する列で、
+      // 切るときの向き（古い方から落とす）も runs と揃えてある。
       return { json: { type: "boolean" }, limit: { type: "string" } };
     case "list":
       // `--include-unregistered` は list だけに置く。get が読むのは1本の Goal で、

@@ -4,8 +4,11 @@
 これから入れる2つの変更（ループ検知の二系統化、Actor の試行台帳）より先に固定するため、
 入れたものを正当化する指標を後から選べない。
 
-指標ごとに実データ7本で叩いて確かめた結果、**7つのうち4つはいまの出力で測れ、1つは集計を足せば出せ、
-2つは観測そのものが無い。** 観測が無い2つはここでは埋めない。足すかどうかは別の作業になる。
+指標ごとに実データ7本で叩いて確かめた結果、**7つのうち5つはいまの出力で測れ、2つは観測そのものが無い。**
+観測が無い2つはここでは埋めない。足すかどうかは別の作業になる。
+
+**M6 は5つ目として後から入った。** 判断の履歴を出す口（`ent decisions`）が無かったころは
+「記録はあるが読めない」に分類していた。口ができたので §4 に測り方を書いてある。
 
 **ループ検知の変更には、過去データの基準線が無い。** `loop_detected` は7本を通して一度も
 出ていないので、変更の前後を履歴で比べることはできない。§5 で前向きの測定に切り替える。
@@ -83,8 +86,8 @@ Goal を ACTIVE にしてから COMPLETE 判断が出るまでの時計。基準
 
 **この値を単独で読まない。** 人間の承認待ちを含んでいる。8.18h の
 `plan-refuses-goals-with-nothing-to-do` は2ティック目が `WAIT(human_review_pending)` で、
-差の大半は人間が寝ていた時間になる。機械の時間と人間の時間を分けるには、判断ごとの
-時刻が要る（§4 の M6 と同じ観測が要る）。
+差の大半は人間が寝ていた時間になる。機械の時間と人間の時間を分けるには判断ごとの時刻が要り、
+それは M6 と同じ口（`ent decisions`）から取れる。読み方は §4 に書いてある。
 
 ### M5 同一失敗シグネチャの反復回数
 
@@ -179,11 +182,11 @@ ENOENT: no such file or directory, open '.../.goals/zz-driver-boundary-probe.yam
 **畳んだ Goal の宣言を消すと、M1 と M3 は残るが M2 と M4 が測れなくなる。**
 測定対象にする Goal の宣言は消さない。
 
-## 4. 集計を足せば出せるもの
+## 4. M6 を理由ごとに数える
 
-**M6 は、記録には残っているが、いまの出力からは読めない。** `ent get` の `decision` も
-`ent list` の `stopped` も**直近1件だけ**を出す（`src/usecase/inspect.ts:128`）。生涯の
-回数ではないので、そのまま数えると取りこぼす。
+**判断の履歴を出す口ができた。`ent decisions <slug>` が、その Goal の判断を古い順に全部出す。**
+`ent get` の `decision` も `ent list` の `stopped` も**直近1件だけ**を出す
+（`src/usecase/inspect.ts:163` の `stoppedReason`）。生涯の回数ではないので、そのまま数えると取りこぼす。
 
 実例が基準線にある。`surface-unregistered-declarations` は `ESCALATE(protected_path_touched)` を
 3回出しているが、`ent list` には1件にしか見えない。
@@ -201,10 +204,98 @@ $ ent list --json | jq -c '.[] | {id, status, stopped}'
 
 `harden-what-plan-writes` の `stopped` が `null` なのも同じ理由になる。最後の判断が `ACT` で、
 人間はその後に手で畳んだ。**`stopped` は「いま誰の番か」を出すもので、履歴ではない。**
+履歴の口を足しても、この性質は変えていない。
 
-材料は `decisions` テーブルにあり、`Store.listDecisions` は全件を返す。出す口が無いだけになる。
-**この口を足すのは別の作業にする。** この作業では挙動を変えない。M4 の「機械の時間と
-人間の時間を分ける」も同じ口で解ける。
+### `ent decisions` — 判断を全件出す
+
+同じ Goal を新しい口で読むと、3回とも出る。
+
+```console
+$ ent decisions surface-unregistered-declarations \
+    | jq -c '.[] | {decidedAt, action, decidedBy}'
+{"decidedAt":"2026-08-25T16:55:42.096Z","action":{"type":"ESCALATE","reason":"protected_path_touched"},"decidedBy":"guard"}
+{"decidedAt":"2026-08-25T16:58:45.606Z","action":{"type":"WAIT","reason":"human_review_pending","resumeAfter":null},"decidedBy":"llm"}
+{"decidedAt":"2026-08-25T18:26:22.351Z","action":{"type":"ESCALATE","reason":"protected_path_touched"},"decidedBy":"guard"}
+{"decidedAt":"2026-08-26T01:09:53.836Z","action":{"type":"ESCALATE","reason":"protected_path_touched"},"decidedBy":"guard"}
+```
+
+**`ent get` に相乗りさせず、別のサブコマンドにした。** あちらは宣言 YAML を読んでから状態ストアを
+開くので、畳んだあとに YAML を消した Goal では落ちる（§3）。`zz-driver-boundary-probe` が
+その形で、あれが出した `WAIT(human_review_pending)` は M6 の基準線3件のひとつになる。
+get に載せた口では、基準線をそのコマンドで再現できない。読むのを状態ストアだけにするのは
+`ent cost` と同じ判断になる。
+
+```console
+$ ent decisions zz-driver-boundary-probe | jq -c '.[] | {decidedAt, action}'
+{"decidedAt":"2026-08-26T03:04:20.172Z","action":{"type":"WAIT","reason":"human_review_pending","resumeAfter":null}}
+$ ent get zz-driver-boundary-probe --json
+ENOENT: no such file or directory, open '.../.goals/zz-driver-boundary-probe.yaml'
+```
+
+**集計は ent に持たせない。** 出すのは判断の列で、数えるのは `mise run metrics` になる。§7 の
+タスクは「読むのは ent の出力だけ」という境界を体現しているので、数え方まで ent に入れると
+その境界が動く。
+
+**切られたぶんは数え落とす。** `ent decisions` は `--limit`（既定50）を超えたぶんを古い方から
+落とす。`runs` と同じ扱いになる（§3）。タスクは 1000 を渡す。越えたときは "Printed N of M" が
+stderr に出るので、黙って足りなくなることはない。
+
+### `mise run metrics` の4列
+
+理由別の4列が TSV に増えた。
+
+```console
+$ mise run metrics | cut -f1,2,10-13 | column -t
+goal                                   status               escalate_loop_detected  escalate_budget_exhausted  escalate_protected_path_touched  wait_human_review_pending
+calculate-metered-cost-from-raw-logs   COMPLETED            0                       0                          0                                0
+harden-what-plan-writes                ABANDONED            0                       0                          0                                0
+plan-refuses-goals-with-nothing-to-do  COMPLETED            0                       0                          0                                1
+plan-writes-declarations-that-hold     ABANDONED            0                       0                          1                                0
+plan-writes-yaml-that-holds            COMPLETED            0                       0                          0                                0
+surface-unregistered-declarations      ABANDONED            0                       0                          3                                1
+zz-driver-boundary-probe               DECLARATION_MISSING  0                       0                          0                                1
+```
+
+合計は §1 の内訳表と一致する。`protected_path_touched` が 1 + 3 = 4、
+`human_review_pending` が 1 + 1 + 1 = 3、残りの2つは 0 になる。
+
+**`zz-driver-boundary-probe` の行も埋まる。** `ent get` が落ちる Goal なので `status` は
+`DECLARATION_MISSING` のままだが、判断の4列は `ent decisions` から取れる。この1件が
+`human_review_pending` の3件目になる。
+
+`WAIT(review_pending)` は `WAIT(human_review_pending)` の改名前の名前で、同じ待ちになる
+（`src/domain/action.ts`）。タスクは足して数えるので、改名をまたぐ Goal が2つの理由に割れない。
+
+### M4 の実時間も、同じ口で分けられる
+
+M4 の実時間には人間の承認待ちが混ざっている（§2）。判断ごとの時刻が並ぶので、止まった判断から
+次の判断までを人間の時間として引ける。
+
+```console
+$ ent decisions plan-refuses-goals-with-nothing-to-do \
+    | jq -c '.[] | {decidedAt, action: .action.type, reason: .action.reason}'
+{"decidedAt":"2026-08-25T17:01:00.478Z","action":"ACT","reason":null}
+{"decidedAt":"2026-08-25T17:10:49.727Z","action":"WAIT","reason":"human_review_pending"}
+{"decidedAt":"2026-08-26T01:08:29.918Z","action":"COMPLETE","reason":null}
+
+$ ent decisions plan-refuses-goals-with-nothing-to-do | jq '
+    def secs: sub("\\.[0-9]+Z$"; "Z") | fromdate;
+    [ . as $all
+      | range(0; length - 1)
+      | select($all[.].action.type == "WAIT" or $all[.].action.type == "ESCALATE")
+      | ($all[. + 1].decidedAt | secs) - ($all[.].decidedAt | secs) ]
+    | add // 0 | . / 3600 * 100 | round / 100'
+7.96
+```
+
+実時間 8.18h のうち 7.96h が人間を待っていた時間で、機械が動いていたのは 0.22h になる。
+
+**この 7.96h は上限であって、人間だけの時間ではない。** 次の判断の時刻は、再開したティックが
+観測と検証と DECIDE を終えたあとに付く。その分まで人間側に乗る。まだ止まったままの Goal では
+区間が閉じていないので、この読み方では出ない。
+
+**TSV には列を足していない。** 上限としてしか読めない値を列にすると、他の列と同じ精度の数値として
+読まれる。分けて読みたいときは、上のコマンドをその Goal に対して叩く。
 
 ## 5. 観測が無いもの
 
@@ -300,9 +391,9 @@ worktree ごとに `.goals/.state/goals.db` が分かれるため、どこで叩
 **基準線として数えるのは、本体リポジトリのルートで回した分だけにする。**
 
 このタスクが読むのは `ent` の出力だけになる。`goals.db` を直接引くと、CLI が出していない列まで
-測れることになり、§3〜§5 の3分類と食い違う。分類の境界をタスクが体現する。
+測れることになり、§3〜§5 の分類（測れる / 観測が無い）と食い違う。分類の境界をタスクが体現する。
 
-出力例が §1 の表になる。`--prices` を省くと USD の列は `-` になる。
+出力例が §1 の表と §4 の4列になる。`--prices` を省くと USD の列は `-` になる。
 
 ## 8. なぜ `docs/decisions/` ではなくここに置くか
 

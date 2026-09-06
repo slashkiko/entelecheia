@@ -328,6 +328,7 @@ ent run <slug> --issue <n>         # 観測対象の Issue を指定する
 ent run <slug> --dry-run           # 書かずに、次のティックの中身だけを見る
 ent run <slug> --report stdout     # 進捗を PR に投稿せず、手元に出す
 ent get <slug>                     # 宣言部と実行時状態をまとめて表示する
+ent decisions <slug>               # その Goal の判断を古い順に並べて出す
 ent cost <slug> --prices <path>    # Run と DECIDE の生ログにある分類別 token を価格換算する
 ent abandon <slug> --reason "…"    # もう追わないと宣言して終端にする（理由は必須）
 ent list                           # 登録済みの Goal を一覧する
@@ -337,9 +338,9 @@ ent agent-context                  # CLI の構造を機械可読な JSON で出
 
 ### 共通のオプション
 
-`--json` は出力を JSON にする（`run` / `get` / `cost` / `list` は既定で JSON。`start` と `abandon` と
-`init` は `--json` を付けたときだけ JSON になる）。`doctor` と `agent-context` は常に JSON で、
-`--json` は受け取らない。`--limit <n>` は `get` / `list` の件数を絞る。既定でも上限で切り、
+`--json` は出力を JSON にする（`run` / `get` / `decisions` / `cost` / `list` は既定で JSON。`start` と
+`abandon` と `init` は `--json` を付けたときだけ JSON になる）。`doctor` と `agent-context` は常に
+JSON で、`--json` は受け取らない。`--limit <n>` は `get` / `decisions` / `list` の件数を絞る。既定でも上限で切り、
 切れたときだけ絞り込み方が stderr に出る。エージェント向けの手順は
 `.claude/skills/ent/SKILL.md` に置いてある。
 
@@ -1076,7 +1077,7 @@ src/wiring/index.ts       合成ルート。どの Port にどの Adapter を挿
                           関門への入力（Adapter の注入と verifyRoot）もここで決まる
 src/usecase/init.ts       ent init。.goals/ と gitignore の行と config.yaml と Goal の雛形を置く
 src/usecase/doctor.ts     ent doctor。回す前の前提を、書かずに調べる
-src/usecase/inspect.ts    ent get / ent list が出す payload。読むだけ
+src/usecase/inspect.ts    ent get / ent decisions / ent list が出す payload。読むだけ
 src/usecase/cost.ts       Run / LlmCall の生ログを読み、caller が渡した分類別価格を適用する
 src/cli/parse.ts          引数の解釈。実行はしない
 src/cli/present.ts        出力の整形。stdout は JSON 専用、診断は stderr

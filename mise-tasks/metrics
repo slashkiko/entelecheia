@@ -6,8 +6,8 @@ set -euo pipefail
 # docs/metrics.md が「いま測れる」と分類した指標だけを、1 Goal 1行の TSV で出す。
 #
 # **読むのは ent の出力だけにする。** goals.db を直接引くと、CLI が出していない列まで
-# 測れることになり、docs/metrics.md の3分類（測れる / 集計を足せば出せる / 観測が無い）と
-# 食い違う。分類の境界をこのスクリプトが体現する。
+# 測れることになり、docs/metrics.md の分類（測れる / 観測が無い）と食い違う。
+# 分類の境界をこのスクリプトが体現する。
 #
 # 状態ストアは cwd 直下の .goals/.state に出来るので、測る対象のディレクトリで実行する。
 
@@ -56,7 +56,11 @@ if [[ ! -f "$cli" ]]; then
   exit 1
 fi
 
-printf 'goal\tstatus\treconciles\tactor_runs\tdecide_calls\tmetered_usd\telapsed_hours\tstopped_action\tstopped_reason\n'
+# 判断の履歴は古い方から切られる（既定は50）。理由ごとに数えるので、切られたぶんは
+# そのまま数え落としになる。越えたときは "Printed N of M" が stderr に出る。
+readonly decision_limit=1000
+
+printf 'goal\tstatus\treconciles\tactor_runs\tdecide_calls\tmetered_usd\telapsed_hours\tstopped_action\tstopped_reason\tescalate_loop_detected\tescalate_budget_exhausted\tescalate_protected_path_touched\twait_human_review_pending\n'
 
 # ent list は登録済みの Goal を出す。宣言 YAML を消した Goal もここには残るので、
 # 一覧は list から取り、1件ずつ get が読めるかを個別に確かめる。
@@ -65,10 +69,27 @@ goal_ids="$(node "$cli" list --json | jq -r '.[].id')"
 while IFS= read -r goal_id; do
   [[ -n "$goal_id" ]] || continue
 
+  # M6 は理由ごとに数える。総数1本だと、ループ検知とも試行台帳とも関係のない
+  # protected_path_touched の増減に、測りたい変化が埋もれる（docs/metrics.md M6）。
+  #
+  # 数えるのはここで、ent は判断の列をそのまま出す。**ent decisions は宣言 YAML を
+  # 読まない**ので、YAML を消した Goal でもこの4列は埋まる。
+  #
+  # human_review_pending と review_pending は同じ待ちで、後者は改名前の名前になる
+  # （src/domain/action.ts）。改名をまたぐ Goal を2行に割らないよう、足して数える。
+  counts="$(node "$cli" decisions "$goal_id" --limit "$decision_limit" | jq -r '
+    def tally(kept): [ .[] | select(kept) ] | length;
+    [ tally(.action.type == "ESCALATE" and .action.reason == "loop_detected"),
+      tally(.action.type == "ESCALATE" and .action.reason == "budget_exhausted"),
+      tally(.action.type == "ESCALATE" and .action.reason == "protected_path_touched"),
+      tally(.action.type == "WAIT"
+            and (.action.reason == "human_review_pending" or .action.reason == "review_pending")) ]
+    | @tsv')"
+
   # ent get は宣言 YAML を読む。使い捨ての Goal を畳んで YAML を消した後は
   # ここで落ちるので、行を落とさずに理由を出す（実例: zz-driver-boundary-probe）。
   if ! get_json="$(node "$cli" get "$goal_id" --json 2>/dev/null)"; then
-    printf '%s\tDECLARATION_MISSING\t-\t-\t-\t-\t-\t-\t-\n' "$goal_id"
+    printf '%s\tDECLARATION_MISSING\t-\t-\t-\t-\t-\t-\t-\t%s\n' "$goal_id" "$counts"
     continue
   fi
 
@@ -84,8 +105,7 @@ while IFS= read -r goal_id; do
   # 実時間は activatedAt と COMPLETE 判断の decidedAt の差にする。COMPLETE 以外で
   # 止まっている Goal には終端時刻が無いので "-" を出す。**この値は人間の承認待ちを
   # 含む**（docs/metrics.md M4）。ISO 8601 の小数秒は jq の fromdate が読まないので落とす。
-  printf '%s\t' "$goal_id"
-  printf '%s' "$get_json" | jq -r --arg usd "$usd" --argjson stopped "$stopped_json" '
+  row="$(printf '%s' "$get_json" | jq -r --arg usd "$usd" --argjson stopped "$stopped_json" '
     def secs: sub("\\.[0-9]+Z$"; "Z") | fromdate;
     [ .state.status,
       (.state.reconciles | tostring),
@@ -97,5 +117,6 @@ while IFS= read -r goal_id; do
        else "-" end),
       ($stopped.action // "-"),
       ($stopped.reason // "-") ]
-    | @tsv'
+    | @tsv')"
+  printf '%s\t%s\t%s\n' "$goal_id" "$row" "$counts"
 done <<<"$goal_ids"

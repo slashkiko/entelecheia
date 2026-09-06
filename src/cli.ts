@@ -20,6 +20,7 @@ import { costPayload, emptyCostPayload, parseCostPriceFile } from "./usecase/cos
 import { doctorPayload } from "./usecase/doctor.js";
 import { initRepository } from "./usecase/init.js";
 import {
+  decisionsPayload,
   declarationsIn,
   listEntries,
   listEntryTotal,
@@ -63,7 +64,9 @@ export {
   doctorPayload,
 } from "./usecase/doctor.js";
 export {
+  type DecisionsPayload,
   type Declaration,
+  decisionsPayload,
   declarationsIn,
   type LimitOptions,
   type ListEntry,
@@ -163,6 +166,32 @@ async function runCommand(argv: readonly string[]): Promise<number> {
   // snapshot / verifications / decision / status も書かない」と書いている。
   if (command.kind === "run" && command.dryRun === true) {
     return previewOnly(command, repoRoot, stateDir);
+  }
+
+  if (command.kind === "decisions") {
+    // **宣言 YAML を読まない。** 読むと、畳んだあとに `.goals/<slug>.yaml` を消した
+    // Goal の履歴が出せなくなる。基準線の `zz-driver-boundary-probe` がその形で、
+    // あれが出した `WAIT(human_review_pending)` は docs/metrics.md が数える3件の
+    // ひとつになる。`ent get` に相乗りさせると、M6 の基準線をそのコマンドでは
+    // 再現できない。読むのを状態ストアだけにするのは `ent cost` と同じ判断になる。
+    const dbPath = join(stateDir, "goals.db");
+
+    // まだ1回も start していない checkout で `.goals/.state` を作らない。
+    // 0件を読むためだけに DB を作る理由は無い（cost と同じ）。
+    if (!existsSync(dbPath)) {
+      process.stdout.write("[]\n");
+      return 0;
+    }
+
+    const store = openStore(dbPath);
+    try {
+      const decisions = decisionsPayload(command.slug, store, { limit: command.limit });
+      process.stdout.write(`${JSON.stringify(decisions, null, 2)}\n`);
+      writeTruncationHint(decisions.length, store.listDecisions(command.slug).length);
+      return 0;
+    } finally {
+      store.close();
+    }
   }
 
   if (command.kind === "cost") {
