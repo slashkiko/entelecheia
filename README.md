@@ -573,22 +573,28 @@ how to write CI criteria, see the `[!IMPORTANT]` under
 cannot. The Goal template does not repeat those keys, so **the template alone does not satisfy the
 schema; it does once `config.yaml` is laid underneath it.** `ent init` places both in the same run.
 
-**`ent init` also writes outside the target repository.** It places a symlink at
-`~/.claude/skills/ent` pointing at ent's own `.claude/skills/ent` directory, so that an agent working
-in the target repository can read ent's procedure as a Claude Code skill. The link is user scope
+**`ent init` also writes outside the target repository.** It places two symlinks under
+`~/.claude/skills/`, each pointing at ent's own directory of the same name, so that an agent working
+in the target repository can read them as Claude Code skills. `ent` is the procedure for the CLI.
+`ent-bookend` is the human's side of a Goal: writing the failing test and the declaration before
+`ent start`, and tidying the history once the Goal is terminal. The links are user scope
 because ent itself is installed once per machine; placed inside the target repository the target
 would be a machine-specific absolute path and would break for everyone else once committed. Nothing
-is copied — update ent and what the link resolves to is updated with it. `$HOME` is the only thing
+is copied — update ent and what the links resolve to is updated with it. `$HOME` is the only thing
 touched outside the target repository; the repository itself gains no `.claude/`.
 
-**That name is never taken over silently.** If `~/.claude/skills/ent` already holds anything other
-than a link to this ent — a link pointing elsewhere, a broken link, or a real directory someone
-wrote — init refuses the entire run with exit code 1 and creates nothing, neither in `$HOME` nor in
-the repository (not even `.goals/`). Which of the two is right is not ent's call to make: move the
-existing one aside, then run it again. If the link already points here it is kept, and that is where
-idempotence holds — a second run neither relinks nor rewrites it. If ent's own `.claude/skills/ent`
-cannot be found (a build artifact shipped on its own, say), a line saying so goes to stderr and init
-finishes without the link rather than refusing.
+**Neither name is taken over silently, but only one of them stops the run.** If `~/.claude/skills/ent`
+already holds anything other than a link to this ent — a link pointing elsewhere, a broken link, or a
+real directory someone wrote — init refuses the entire run with exit code 1 and creates nothing,
+neither in `$HOME` nor in the repository (not even `.goals/`). Which of the two is right is not ent's
+call to make: move the existing one aside, then run it again. `ent-bookend` is treated differently,
+because ent runs without it: init writes a line to stderr, leaves what is there alone, skips that one
+link, and finishes the rest with exit code 0. **What is not required does not stop what is** — a
+`ent-bookend` someone else wrote should not be able to block `.goals/` from being created. A link that
+already points here is kept either way, and that is where idempotence holds — a second run neither
+relinks nor rewrites it. If ent's own directory for one of them cannot be found (a build artifact
+shipped on its own, say), a line saying so goes to stderr and init finishes without that link rather
+than refusing.
 
 With `--json` the entry appears in `entries` along with the rest, `created` on the first run and
 `kept` after that. Its `path` is absolute where the in-repository entries are relative: the one thing
@@ -1124,9 +1130,15 @@ src/cli/agent-context.ts  The CLI structure ent agent-context emits
 src/cli.ts                Entry point of the ent command. Per-subcommand steps and the exit-code contract
 .claude/skills/ent/SKILL.md  What agents read as procedure. Invocation order, and where it stops for
                           human approval
-.agents/skills/ent          Codex's lookup path. A symlink pointing at the canonical file above
-AGENTS.md                 An entry point that merely points at the SKILL.md above. Procedures are
-                          never written twice
+.claude/skills/ent-bookend/SKILL.md
+                          What a human does on either side of a Goal: the failing test and the
+                          declaration before ent start, and tidying the history once it is terminal
+.agents/skills/ent        Codex's lookup path for the procedure. A symlink pointing at the canonical
+                          file above
+.agents/skills/ent-bookend
+                          The same for the bookend skill
+AGENTS.md                 An entry point that merely points at the two SKILL.md above. Procedures
+                          are never written twice
 tests/                    The substance of the Acceptance Criteria, and integration tests that hit
                           real git / real SQLite
 ```

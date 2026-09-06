@@ -112,8 +112,9 @@ interface InitReport {
  *   2 ではない
  * - 書き込み先がシンボリックリンクなら何も書かない。リンク先はリポジトリの外を
  *   指せるので、辿ると `ent init` が repoRoot の外に書くことになる
- * - user scope に ent の手順書の skill を張る。既に別のものが埋まっていれば、
- *   repoRoot にも `$HOME` にも何も置かずに 1 で断る
+ * - user scope に ent の skill を張る（`LINKED_SKILLS`）。`required` なものが
+ *   既に別のもので埋まっていれば、repoRoot にも `$HOME` にも何も置かずに 1 で断る。
+ *   `required` でないものは、埋まっていても stderr に書いてそこだけ飛ばす
  * - 出力は他のサブコマンドと揃える。`--json` のときは stdout に JSON だけを書く
  */
 export function initRepository(
@@ -177,9 +178,10 @@ export function initRepository(
   // skill の判定は書き始める前に済ませる。断るなら repoRoot にも `$HOME` にも
   // 何も残さない——`.goals/` だけ出来た状態で断られると、次に叩いた人は
   // 中途半端な状態から何を直せばよいのか分からない。
-  const skill = planSkillLink();
-  if (skill.kind === "conflict") {
-    return refuse(skill.message);
+  const skills = LINKED_SKILLS.map(planSkillLink);
+  const blocking = skills.find((plan) => plan.kind === "conflict");
+  if (blocking !== undefined && blocking.kind === "conflict") {
+    return refuse(blocking.message);
   }
 
   // 順に片付ける。`.goals/` が無い状態で雛形は置けないので、並べ替えられない。
@@ -187,7 +189,7 @@ export function initRepository(
   const ignored = ensureIgnored(ignorePath, ignoreLine, repoRoot);
   const config = ensureGoalConfig(configPath, probes.repository(repoRoot));
   const template = ensureGoalTemplate(goalsDir);
-  const entries = [dir, ignored, config, template, ...applySkillLink(skill)];
+  const entries = [dir, ignored, config, template, ...skills.flatMap(applySkillLink)];
   const report: InitReport = { repoRoot, entries, next: nextStep(template, config) };
 
   process.stdout.write(
@@ -223,7 +225,7 @@ function nextStep(template: InitEntry, config: InitEntry): string {
 }
 
 /**
- * ent の手順書の skill ディレクトリ。symlink の向け先そのもの。
+ * ent 本体の skill ディレクトリ。symlink の向け先そのもの。
  *
  * パスは `import.meta.url` から引く。cwd 基準にすると、ent は対象リポジトリの
  * ルートで叩かれる CLI なので（`repoRoot = process.cwd()`、src/cli.ts）、対象
@@ -231,10 +233,28 @@ function nextStep(template: InitEntry, config: InitEntry): string {
  * `dist/usecase/` からも、2つ上が ent 本体のリポジトリのルートになる
  * （`src/adapters/claude.ts` の `REVIEW_PLUGIN_DIR` と同じ引き方）。
  */
-const SKILL_SOURCE_DIR = fileURLToPath(new URL("../../.claude/skills/ent", import.meta.url));
+function skillSourceDir(name: string): string {
+  return fileURLToPath(new URL(`../../.claude/skills/${name}`, import.meta.url));
+}
 
-/** user scope に置く skill の名前。`~/.claude/skills/<name>` になる */
-const SKILL_NAME = "ent";
+/** user scope に張る skill。`~/.claude/skills/<name>` になる */
+interface LinkedSkill {
+  name: string;
+  /**
+   * 張れなかったときに init ごと断るか。
+   *
+   * **必須でないものが必須のものを止める形にしない。** `ent` はレビュー役も
+   * 人間の側のエージェントも読む手順書なので、別のもので埋まっていたら断る。
+   * `ent-bookend` は Goal の前後の作法で、無くても ent は回る。埋まっていたら
+   * stderr に1行書いて、そこだけ飛ばす。
+   */
+  required: boolean;
+}
+
+const LINKED_SKILLS: readonly LinkedSkill[] = [
+  { name: "ent", required: true },
+  { name: "ent-bookend", required: false },
+];
 
 /**
  * 手順書の skill をどうするか。**書き始める前に決めて、後から実行する。**
@@ -245,7 +265,15 @@ const SKILL_NAME = "ent";
 type SkillPlan =
   | { kind: "create"; link: string; target: string }
   | { kind: "kept"; link: string }
+  /** 別のもので埋まっていて、断るべきもの。`required` な skill だけがここに来る */
   | { kind: "conflict"; message: string }
+  /**
+   * 別のもので埋まっているが、断らないもの。`required` でない skill だけが来る。
+   *
+   * `unavailable` と畳まない。あちらは「ent 側に無い」で、こちらは「相手側が
+   * 埋まっている」になる。人間が次に打つ手が違うので、同じ見た目にしない。
+   */
+  | { kind: "skipped"; message: string }
   /** ent 本体の skill ディレクトリが見当たらない。張れないが init は止めない */
   | { kind: "unavailable"; message: string };
 
@@ -262,43 +290,46 @@ type SkillPlan =
  * `$HOME` は `os.homedir()` から引く。テストが `HOME` を差し替えるので、
  * 実際の `~/.claude/` を触らずに確かめられる。
  */
-function planSkillLink(): SkillPlan {
-  const link = join(homedir(), ".claude", "skills", SKILL_NAME);
-  if (!existsSync(SKILL_SOURCE_DIR)) {
+function planSkillLink(skill: LinkedSkill): SkillPlan {
+  const link = join(homedir(), ".claude", "skills", skill.name);
+  const source = skillSourceDir(skill.name);
+  if (!existsSync(source)) {
     // ビルド成果物だけを配ったなど、手順書が同梱されていない入れ方はあり得る。
     // 張れないことを伝えるだけにする。skill は init の主目的ではないので、
     // ここで 1 を返すと `.goals/` を作る道まで塞がる。
     return {
       kind: "unavailable",
-      message: `${SKILL_SOURCE_DIR} is missing, so no skill is linked (check the ent repository itself)`,
+      message: `${source} is missing, so ${skill.name} is not linked (check the ent repository itself)`,
     };
   }
 
   const linked = symlinkTargetOf(link);
   if (linked === undefined) {
-    return { kind: "create", link, target: SKILL_SOURCE_DIR };
+    return { kind: "create", link, target: source };
   }
-  if (linked === null || linked !== realpathSync(SKILL_SOURCE_DIR)) {
+  if (linked === null || linked !== realpathSync(source)) {
     // 人間が自分で張ったもの、自分で書いた skill、壊れたリンクのいずれか。
     // **どちらが正かを決めるのは ent ではない。** 黙って差し替えない。
-    return {
-      kind: "conflict",
-      message:
-        `${link} already points somewhere other than ent itself (or is a real directory), so it is left alone. ` +
-        `Check what is there, then remove it or move it aside and run again (the intended target is ${SKILL_SOURCE_DIR})`,
-    };
+    const found =
+      `${link} already points somewhere other than ent itself (or is a real directory), so it is left alone. ` +
+      `Check what is there, then remove it or move it aside and run again (the intended target is ${source})`;
+    return skill.required
+      ? { kind: "conflict", message: found }
+      : { kind: "skipped", message: `${found}. ${skill.name} is optional, so the rest still runs` };
   }
   return { kind: "kept", link };
 }
 
 /**
- * `planSkillLink` の結果をファイルに反映する。`conflict` はここへ来ない。
+ * `planSkillLink` の結果をファイルに反映する。`conflict` はここへ来ない
+ * （呼ぶ側が書き込みより前に断っている）。
  *
  * 出力に載せるのは repoRoot の外に置くものだからで、載せないと人間は
- * `$HOME` が書き換わったことに気づけない。
+ * `$HOME` が書き換わったことに気づけない。飛ばした分は entries に載せず
+ * stderr にだけ出す。**置いていないものを「置いた」と並べない。**
  */
 function applySkillLink(plan: SkillPlan): InitEntry[] {
-  if (plan.kind === "unavailable") {
+  if (plan.kind === "unavailable" || plan.kind === "skipped") {
     process.stderr.write(`${plan.message}\n`);
     return [];
   }

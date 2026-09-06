@@ -122,19 +122,25 @@ files, the controller then delivers the Goal YAML and `config.yaml` into each wo
 role is launched — but only where git ignores them, so the copies never reach `changedPaths` or the
 PR diff.
 
-**It writes outside the repository as well.** It places at `~/.claude/skills/ent` a symlink pointing at ent's own
-`.claude/skills/ent`, so that an agent working in the target repository can read this procedure as a
-skill. Nothing is copied, so the canonical copy stays in the single place inside ent itself. No
+**It writes outside the repository as well.** It places two symlinks under `~/.claude/skills/`, each
+pointing at ent's own directory of the same name, so that an agent working in the target repository can
+read them as skills. `ent` is this procedure. `ent-bookend` is what a human does on either side of a
+Goal — writing the failing test and the declaration before `ent start`, and tidying the history once the
+Goal is terminal. Nothing is copied, so the canonical copy stays in the single place inside ent itself. No
 `.claude/` appears on the target repository's side. **It rewrites `$HOME`, so it is not something to invoke without asking the human.**
 
-If it already points here, it is left untouched (that is where idempotence holds). If anything other than
-a link to this ent is already there — a link pointing elsewhere, a broken link, a real directory — it
-creates nothing at all, `.goals/` included, and refuses with exit code 1. It is not ent's place to decide
-which one is authoritative, so ask the human whether to move the existing one aside. Only when ent's own
-`.claude/skills/ent` cannot be found does it write to stderr instead of refusing and finish without the link.
+A link that already points here is left untouched (that is where idempotence holds). **What happens when
+something else holds the name differs between the two.** `ent` is required: a link pointing elsewhere, a
+broken link or a real directory makes init create nothing at all, `.goals/` included, and refuse with exit
+code 1. It is not ent's place to decide which one is authoritative, so ask the human whether to move the
+existing one aside. `ent-bookend` is optional — ent runs without it — so init writes a line to stderr,
+skips that one link, and finishes the rest with exit code 0. **What is not required does not stop what
+is.** Only when ent's own directory for a skill cannot be found does it write to stderr instead of
+refusing, for either name.
 
-With `--json`, this one entry appears in `entries` too. The first run is `created` and every run after that
-is `kept`, and while `path` is relative for things inside the repository, this one alone is an absolute path.
+With `--json`, each link that was placed or kept appears in `entries` too. The first run is `created` and
+every run after that is `kept`, and while `path` is relative for things inside the repository, these are
+absolute paths. A link that was skipped is not listed: nothing was placed, so nothing is reported as placed.
 
 The template is filled in only as far as being schema-valid. The remaining `desired_state` and
 `acceptance_criteria` are what declares what is to be achieved. **These two are the human's to write; an
