@@ -484,7 +484,7 @@ describe("Claude の Actor", () => {
   });
 
   it("実装役のプロンプトには載せない", async () => {
-    // 観点は読む側にだけ要る（`SKILLS_FOR` と同じ理由）。実装役に渡すと
+    // 観点は読む側にだけ要る（`GETS_REVIEW_SKILL` と同じ理由）。実装役に渡すと
     // 「観点を満たすように書く」余地を与える。
     const sink = recorded();
     await claudeActor({ query: sink.query, runsDir: "/tmp/runs", writeLog: async () => {} }).run(

@@ -365,13 +365,19 @@ roleは次の5箇所を通る。
   そのまま落とす（レビュー役だからといって merge や force push を許さない）。
   プロンプトも role ごとに分ける。権限だけ分けて文面が同じだと、レビュー役は編集を
   試みて拒否され続け、ターンをそこに使い切る
-- **role がAgentに渡す観点（skill）を決める**（`src/adapters/claude.ts`の`SKILLS_FOR`と、
+- **role がAgentに渡す観点（skill）を決める**（`src/adapters/claude.ts`の`GETS_REVIEW_SKILL`と、
   `src/adapters/agent-prompt.ts`の`SkillDelivery`）。
-  レビュー役にだけ`semantic-review`を渡す。実装役に渡すと「観点を満たすように書く」
+  レビュー役にだけレビュー用の skill を渡す。実装役に渡すと「観点を満たすように書く」
   余地ができ、§3.1 が criteria で避けている構図がレビュー側で再発する。
   **`settingSources: []` は解かない。** ホストの `~/.claude` とリポジトリの `.claude` を
-  読ませない判断はそのままで、controller が名指しした plugin（`plugins/ent-review/`）
-  だけが Agent から見える。skill の一覧に出るのはその1件になる。
+  読ませない判断はそのままで、controller が名指しした plugin だけが Agent から見える。
+  skill の一覧に出るのはその1件になる。**どの skill かは宣言が決める**
+  （`policies.review_skill`、`src/adapters/agent-prompt.ts` の `reviewSkillOf`）。
+  書かなければ `plugins/ent-review/` で、リポジトリが自前の plugin を名指しすればそちらになる。
+  見たい観点はリポジトリごとに違うが、下に書く契約は違わないためになる。名指しした plugin は
+  Actor の作業ツリーの中にあるので、そのディレクトリを保護パスへ足す。足さないと、実装役が
+  これから突き合わされる観点を自分で書き換えられ、この項が skill を渡さないことで避けている
+  構図がそのまま戻る。
   **Codex には同じ観点を本文ごとプロンプトへ差し込む**（`src/adapters/agent-prompt.ts` の
   `SkillDelivery`）。`codex exec` には repo の中の skill を1回の起動へ渡す口が無く、
   残る discovery は `$CODEX_HOME/skills` と marketplace の plugin で、どちらもホスト側に
@@ -1087,7 +1093,7 @@ DECIDE の LLM 呼び出しは `LlmCall.tokens` に残す（§4.5）。あとか
 
 - 関門そのもの（`src/domain/protected-paths.ts`）と、Agent の許可・拒否ツールを決める
   ファイル（`src/adapters/claude.ts`）。ここが開いていると、照合を常に false にするか
-  拒否リストを空にするだけで残りが全部外れる。役割ごとに見せる skill（`SKILLS_FOR`）は
+  拒否リストを空にするだけで残りが全部外れる。役割ごとに見せる skill（`GETS_REVIEW_SKILL`）は
   同じファイルにあり、レビューの結論の契約（`REVIEW_PROMPT` が求める `verdict:` と
   `reviewed_sha:` の2行。§4.3）は `src/adapters/agent-prompt.ts` にある。どちらも下限の
   中に入れてある。**Actor が自分に渡る観点と、自分の結論の読まれ方を書き換えられる**

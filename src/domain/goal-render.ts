@@ -92,6 +92,9 @@ function canonical(goal: Goal, options: RenderGoalOptions): Record<string, unkno
     policies: {
       require_human_approval: [...goal.policies.require_human_approval],
       protected_paths: [...goal.policies.protected_paths],
+      ...(goal.policies.review_skill === undefined
+        ? {}
+        : { review_skill: goal.policies.review_skill }),
       ...(goal.policies.publish === undefined
         ? {}
         : {

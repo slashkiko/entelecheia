@@ -75,8 +75,20 @@ explicit `ENT_<PHASE>_MODEL` it runs on the Codex CLI's own default.
 A single `ENT_MODEL=opus` with only `ENT_<PHASE>_EFFORT` varied follows the same reasoning: fewer variables
 to pass, more usage spent. `ENT_REVIEW_ACTOR=codex` keeps the model that wrote the implementation from
 reviewing its own work; it is an option, not a recommendation, since Codex is never selected automatically.
-`semantic-review`'s points reach either provider — read with the Skill tool on Claude Code, inlined into the
+The review points reach either provider — read with the Skill tool on Claude Code, inlined into the
 prompt on Codex — so the review contract does not change with the provider.
+
+**Which skill carries those points is a declaration.** `policies.review_skill` names it as
+`<plugin directory>/skills/<skill name>`, relative to the repository root; the directory must be a
+Claude Code plugin (`.claude-plugin/plugin.json` beside `skills/<name>/SKILL.md`, both checked before
+the review role starts), and `references/` beside `SKILL.md` is optional. The plugin needs its own
+directory — a bare `skills/<name>` is rejected — and `.`, `..` and empty segments are rejected too,
+because `path.join` folds them while the protected-path glob does not. Omit the key and the review role reads the `semantic-review` skill ent
+ships with. Because `policies` is repository-scoped this normally sits in `.goals/config.yaml`; a
+Goal naming a different skill replaces it rather than adding to it. **The named plugin directory
+becomes a protected path**, so the implement role cannot rewrite the points it is reviewed against.
+Whatever the skill, the review role still ends its body with `reviewed_sha:` and `verdict:` — the
+contract is in the controller's prompt, not in the skill.
 
 **The environment variables are only the default.** DECIDE may override them for a single tick by
 returning an `ACT` with an `agent` block

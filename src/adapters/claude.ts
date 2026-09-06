@@ -2,20 +2,14 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { EffortLevel, Options } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
-import type { ActorPort, ActorResult } from "../act/index.js";
+import type { ActorInvocation, ActorPort, ActorResult } from "../act/index.js";
 import type { LlmPort } from "../decide/index.js";
 import type { ApprovalGate } from "../domain/goal.js";
 import type { LlmCall } from "../domain/llm-call.js";
 import { PortError } from "../domain/port-error.js";
 import type { ActorRole } from "../domain/run.js";
 import { CLAUDE_ACTOR_WITHHELD_ENV, withheldEnv } from "../domain/withheld-env.js";
-import {
-  JSON_ONLY,
-  PROMPT_FOR,
-  parseJson,
-  REVIEW_PLUGIN_DIR,
-  REVIEW_SKILL_NAME,
-} from "./agent-prompt.js";
+import { JSON_ONLY, PROMPT_FOR, parseJson, reviewSkillOf } from "./agent-prompt.js";
 
 /**
  * 除去リストの置き場所は domain に移した。VERIFY 側（src/adapters/local.ts）も
@@ -130,8 +124,8 @@ export function claudeActor(options: ClaudeOptions): ActorPort {
           // 省略すると user / project / local がすべて読まれ、controller が
           // 与えた拒否リスト以外の設定が Agent の挙動に混ざる。
           settingSources: [],
-          // 読ませたい skill だけを、controller の側から名指しで渡す（SKILLS_FOR）。
-          ...skillOptionsFor(role),
+          // 読ませたい skill だけを、controller の側から名指しで渡す（GETS_REVIEW_SKILL）。
+          ...skillOptionsFor(role, invocation),
           // controller の資格情報を Agent のシェルに残さない。
           env: withheldEnv(options.env ?? process.env, CLAUDE_ACTOR_WITHHELD_ENV),
         });
@@ -544,14 +538,16 @@ const ACTOR_TOOLS: Record<ActorRole, readonly string[]> = {
 };
 
 /**
- * 役割ごとに読ませる skill。名前は SKILL.md の `name`（非修飾でよい）。
+ * 役割ごとにレビューの skill を渡すかどうか。渡すのはレビュー役だけになる。
  *
  * **`settingSources: []` は解かない。** ホストの `~/.claude` とリポジトリの
  * `.claude` を読ませない判断（上の `run` を参照）はそのままで、controller が
- * 名指しした plugin だけが Agent から見える。実際に叩いて確かめたところ、
- * skill の一覧に出るのは `ent-review:semantic-review` の1件だけになる。
- * 置き場所（`REVIEW_PLUGIN_DIR`）は `./agent-prompt.ts` にある。本文を差し込む
- * 側（Codex）も同じディレクトリを読むので、2つに分けない。
+ * 名指しした plugin だけが Agent から見える。宣言でリポジトリの中の skill を
+ * 選べるようになっても（`policies.review_skill`）ここは変えない。渡すのは
+ * 名指しされた plugin 1つで、同じ `.claude` の下にある他の skill は見えない。
+ *
+ * どの skill を渡すかは `reviewSkillOf`（`./agent-prompt.ts`）が決める。本文を
+ * 差し込む側（Codex）も同じ関数を通るので、provider で観点が分かれない。
  *
  * 実装役には渡さない。レビューの観点は読む側にだけ要るもので、実装役に渡すと
  * 「観点を満たすように書く」余地を与える。criteria を通すのに何を書けばよいかを
@@ -565,10 +561,10 @@ const ACTOR_TOOLS: Record<ActorRole, readonly string[]> = {
  * 「skill を渡すかどうか」を書かせる。省略できる形にすると、既定の側へ黙って
  * 倒れる——安全な向きではあるが、決めた形跡が残らない。
  */
-const SKILLS_FOR: Record<ActorRole, readonly string[]> = {
-  implement: [],
-  review: [REVIEW_SKILL_NAME],
-  investigate: [],
+const GETS_REVIEW_SKILL: Record<ActorRole, boolean> = {
+  implement: false,
+  review: true,
+  investigate: false,
 };
 
 /**
@@ -577,14 +573,17 @@ const SKILLS_FOR: Record<ActorRole, readonly string[]> = {
  * `skills: []` は「1つも有効にしない」であって「SDK の既定に任せる」ではない。
  * 省略と空配列で意味が違うので、空のときはキーを作らない。
  */
-function skillOptionsFor(role: ActorRole): Pick<Options, "plugins" | "skills"> {
-  const skills = SKILLS_FOR[role];
-  if (skills.length === 0) {
+function skillOptionsFor(
+  role: ActorRole,
+  invocation: ActorInvocation,
+): Pick<Options, "plugins" | "skills"> {
+  if (!GETS_REVIEW_SKILL[role]) {
     return {};
   }
+  const skill = reviewSkillOf(invocation);
   return {
-    plugins: [{ type: "local", path: REVIEW_PLUGIN_DIR }],
-    skills: [...skills],
+    plugins: [{ type: "local", path: skill.pluginDir }],
+    skills: [skill.name],
   };
 }
 

@@ -120,6 +120,48 @@ the start never gets a PR, so there is no way to notice other than reading `ent 
 If you plan to operate with declaration-based stops, set up a routine for reading those first. The
 reason this is named separately from `require_human_approval` is in design.md §7.
 
+### Choosing what the review role reviews against
+
+The points the review role reads are a skill, and `policies.review_skill` names which one.
+
+```yaml
+policies:
+  # <plugin directory>/skills/<skill name>, relative to the repository root.
+  review_skill: plugins/repo-review/skills/go-ddd-review
+```
+
+Write nothing and the review role reads the `semantic-review` skill ent ships with, exactly as
+before. Write this key and it reads yours instead. The points are what a repository actually differs
+on: a repository that wants its Go DDD conventions checked and one that wants React accessibility
+checked have no reason to share a single set. What does **not** change is the contract — the review
+role still appends `reviewed_sha:` and `verdict:` to the body, because those two lines are asked for
+by the controller's prompt rather than by the skill. Points belong to the skill, the contract belongs
+to the controller (design.md §4.2).
+
+**The path must be a Claude Code plugin**: `.claude-plugin/plugin.json` beside
+`skills/<name>/SKILL.md`. That layout is the only shape Claude Code loads a skill from, so ent
+checks both files are in the Actor's worktree before it starts the review role, and fails the run
+when either is missing. `references/` next to `SKILL.md` is optional; a skill without one is inlined
+as its `SKILL.md` alone.
+
+**Give the plugin its own directory, and spell the path plainly.** `skills/<name>` on its own is
+rejected, because a plugin at the repository root leaves nothing between "protect the review skill"
+and "protect the whole worktree". So are `.`, `..` and empty segments (`./skills/x`,
+`plugins/./rev/skills/x`, `a//skills/x`): the protected-path glob is derived from the declared
+string while the directory is opened through `path.join`, which folds those away, and a folded
+segment would leave the two pointing at different places — the declaration would work, the review
+would run, and only the protection would be quietly absent.
+
+**The named plugin directory becomes a protected path.** ent's own skill lives outside the Actor's
+worktree, but yours lives in the repository, where the implement role could otherwise rewrite the
+points it is about to be reviewed against — the very thing §4.2 avoids by never handing the points to
+the implement role. Protecting the whole plugin directory rather than the skill directory alone keeps
+the manifest out of reach too, since renaming the plugin there is enough to make the skill vanish.
+
+`policies` is repository-scoped, so this normally goes in `.goals/config.yaml`; a Goal that names a
+different skill overrides it. Unlike `protected_paths`, the two are not added together — the review
+role reads one skill, so the Goal's name replaces the repository's rather than joining it.
+
 ### Credentials never handed to the Agent
 
 The credentials the controller holds (`GITHUB_TOKEN` / `GH_TOKEN`, and the token read from
@@ -406,7 +448,7 @@ wrong, and it is meant to be changed once a few ticks have been run.
 | `DECIDE` | `sonnet` | `low` | Called every tick. The output is one Zod-validated choice, and a bad one is re-chosen on the next tick |
 | `PLAN` | `opus` | `high` | Writes the declaration a human reads. Placing the criteria badly means rewriting the whole Goal |
 | `IMPLEMENT` | `opus` | `high` | The most expensive to redo. The guard at the end of the tick stops commit and push, but does not look at what was written |
-| `REVIEW` | `opus` | `xhigh` | Whatever it misses passes through as broken implementation. It is also the role that matches the declaration against the implementation with `semantic-review`'s points |
+| `REVIEW` | `opus` | `xhigh` | Whatever it misses passes through as broken implementation. It is also the role that matches the declaration against the implementation with the review skill's points (`semantic-review` unless `policies.review_skill` names another) |
 | `INVESTIGATE` | `sonnet` | `medium` | Mostly reads, and holds no edit tools |
 
 **`ENT_PLAN_*` on `ent run` does nothing.** PLAN runs outside the tick, so only `ent plan` reads it
@@ -433,9 +475,10 @@ since DECIDE and INVESTIGATE run on opus too.
 model that wrote the implementation is not the one reviewing its own work. Codex's permission
 controls are not identical to Claude Code's, however, which is why it is never selected
 automatically (see "Using Codex" below). This is written as an option, not a recommendation.
-`semantic-review`'s points reach both providers all the same: Claude Code is made to read the skill
-with the Skill tool, and Codex has the body of its SKILL.md and `references/` placed into its
-prompt. Only the delivery differs; what the review looks at does not.
+The review points reach both providers all the same: Claude Code is made to read the skill with the
+Skill tool, and Codex has the body of its SKILL.md and `references/` placed into its prompt. Only the
+delivery differs; what the review looks at does not — including when `policies.review_skill` names a
+skill of your own instead of `semantic-review`.
 
 #### The per-tick override (`ACT.agent`)
 
