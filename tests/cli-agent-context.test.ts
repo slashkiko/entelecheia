@@ -102,10 +102,13 @@ describe("agentContextPayload", () => {
 
   it("JSON にできて、コンテキストを食い潰さない大きさに収まる", () => {
     // 説明文のトークン予算（gist 2.5）。読ませる前提のものが長すぎると本末転倒になる。
+    //
+    // 上限は測定値ではなく予算で、サブコマンドが増えれば上げる。据え置くと、
+    // 増えたぶんを既にある説明文を削って吸収することになる。
     const json = JSON.stringify(agentContextPayload());
 
     expect(json.length).toBeGreaterThan(0);
-    expect(json.length).toBeLessThan(8000);
+    expect(json.length).toBeLessThan(8500);
   });
 });
 

@@ -1,6 +1,6 @@
 ---
 name: ent
-description: Procedure for converging a Goal with the ent CLI. Covers reading the structure with agent-context, first-time setup with init, splitting one prose objective into sub-Goal declarations with plan, checking prerequisites with doctor, one round of start / run / get / list, calculating raw-log usage with cost, looking ahead with --dry-run, ending a Goal that is no longer pursued with abandon, sending progress to stdout or a file instead of posting it to the PR with --report, narrowing output with --limit, reading exit codes, and where WAITING_HUMAN and ESCALATE wait for human approval or intervention, and the window in which a Goal's history may be rewritten.
+description: Procedure for converging a Goal with the ent CLI. Covers reading the structure with agent-context, first-time setup with init, splitting one prose objective into sub-Goal declarations with plan, checking prerequisites with doctor, one round of start / run / get / list, reading the whole decision history with decisions, calculating raw-log usage with cost, looking ahead with --dry-run, ending a Goal that is no longer pursued with abandon, sending progress to stdout or a file instead of posting it to the PR with --report, narrowing output with --limit, reading exit codes, and where WAITING_HUMAN and ESCALATE wait for human approval or intervention, and the window in which a Goal's history may be rewritten.
 ---
 
 # Running ent
@@ -253,6 +253,31 @@ If the state cannot be dropped, it stops with exit code 1 and writes nothing.
 
 Only a forgotten `--reason` gives 2. Retyping argv makes it pass, so it falls the other way from 1.
 
+## Reading the decision history
+
+```
+ent decisions <slug>
+```
+
+Prints every decision the Goal has made, oldest first: `decidedAt`, `action`, `rationale` and
+`decidedBy`. `ent get` and `ent list` show only the **latest** one — `decision` and `stopped` answer
+"whose turn is it now", not "how many times has this happened". Counting how often a Goal escalated,
+or splitting elapsed time into machine time and time spent waiting for a human, needs this command.
+
+It reads the state store only and never opens `.goals/<slug>.yaml`, so a Goal whose declaration file
+was deleted still prints its history (`ent get` exits 1 for that Goal). Before the first `ent start` in
+a checkout there is no state store yet, and it prints `[]` without creating one.
+
+Counting is left to the caller. Group by reason on the reading side:
+
+```
+ent decisions <slug> | jq -c 'group_by(.action.type + "(" + (.action.reason // "") + ")")
+  | map({ key: (.[0].action.type + "(" + (.[0].action.reason // "") + ")"), count: length })'
+```
+
+`WAIT(review_pending)` is the old name of `WAIT(human_review_pending)`. Goals that ran before the
+rename still carry it, so count the two together.
+
 ## Calculating metered cost from raw logs
 
 ```
@@ -364,19 +389,24 @@ nowhere to write, and the criteria results are on the `observed.verifications` s
 
 ## Narrowing the output
 
-`run` / `get` / `list` emit JSON by default. `init`, `start` and `abandon` emit JSON only when `--json`
-is passed.
+`run` / `get` / `decisions` / `list` emit JSON by default. `init`, `start` and `abandon` emit JSON only
+when `--json` is passed.
 `doctor` and `agent-context` are always JSON and accept neither `--json` nor `--limit`.
 Passing them gives exit code 2.
 
 ```
 ent list --limit 10
-ent get <slug> --limit 5    # the number of runs. The oldest are dropped first
+ent get <slug> --limit 5          # the number of runs. The oldest are dropped first
+ent decisions <slug> --limit 200  # the number of decisions. The oldest are dropped first
 ```
 
 `--limit` defaults to 50. Only when something was truncated does the way to narrow it appear on **stderr**.
-stdout of `run` / `get` / `list` (and of `init` / `start` / `abandon` with `--json`) is JSON only, so it
-can be piped straight into `jq`.
+stdout of `run` / `get` / `decisions` / `list` (and of `init` / `start` / `abandon` with `--json`) is
+JSON only, so it can be piped straight into `jq`.
+
+**Counting a truncated list under-counts.** `ent decisions` drops the oldest, same as `runs`, so raise
+`--limit` past the total before grouping by reason. Truncation is never silent; the hint on stderr says
+how many of how many were printed.
 
 ## Where it stops for human approval
 

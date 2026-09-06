@@ -37,7 +37,7 @@ export interface ShowPayload {
   snapshot: Snapshot | null;
   /** criteria 単位の検証結果。§9 の完了判定が読む索引 */
   verifications: Verification[];
-  /** 直近の判断。過去の分は listDecisions で引ける */
+  /** 直近の判断。生涯の履歴は `ent decisions <slug>` が出す */
   decision: Decision | null;
   runs: Run[];
   /** DECIDE が使ったトークン。Run には出てこない分（design.md §7） */
@@ -69,6 +69,41 @@ export function showPayload(goal: Goal, store: Store, options: LimitOptions = {}
       tokens: calls.reduce((total, call) => total + call.tokens, 0),
     },
   };
+}
+
+/**
+ * `ent decisions` が出すもの。その Goal の判断を古い順に並べた履歴になる。
+ *
+ * **`ent get` の `decision` とは別の口にする。** あちらは直近1件で、`ent list` の
+ * `stopped` と同じく「いま誰の番か」を答える（`stoppedReason`）。生涯に何回
+ * 人間を呼んだかは、そこからは数えられない（docs/metrics.md M6）。
+ *
+ * 集計はしない。理由ごとの回数を ent が出すと、`mise run metrics` が読むのは
+ * ent の出力だけという境界の内側で、数え方まで ent が決めることになる。出すのは
+ * 判断の列で、数えるのは読む側にする。
+ *
+ * 型は `Store.listDecisions` の返り値をそのまま使う。CLI 用に畳み直すと、
+ * `rationale` を落とすか残すかという選択がここに増える。
+ */
+export type DecisionsPayload = Decision[];
+
+/**
+ * 判断の履歴を古い順に返す。上限を超えたぶんは**古い方から**落とす。
+ *
+ * 落とす向きを `runs` と揃える（`showPayload`）。読むのは直近の停止理由を追う
+ * ためのことが多く、そこで新しい方が消えると、切れていることにすら気づけない。
+ *
+ * 数えるために全件が要るときは `--limit` を上げる。切れたときは絞り込み方が
+ * stderr に出るので、足りないまま数えたことは後から分かる。
+ */
+export function decisionsPayload(
+  goalId: string,
+  store: Store,
+  options: LimitOptions = {},
+): DecisionsPayload {
+  const decisions = store.listDecisions(goalId);
+  const limit = options.limit ?? DEFAULT_LIMIT;
+  return decisions.length <= limit ? decisions : decisions.slice(-limit);
 }
 
 /**

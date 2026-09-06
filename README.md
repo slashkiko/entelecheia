@@ -349,6 +349,7 @@ ent run <slug> --issue <n>         # name the Issue to observe
 ent run <slug> --dry-run           # write nothing; just look at what the next tick would contain
 ent run <slug> --report stdout     # send progress to your hands instead of posting it to the PR
 ent get <slug>                     # show the declaration and the runtime state together
+ent decisions <slug>               # list every decision it has made, oldest first
 ent cost <slug> --prices <path>    # price Run and DECIDE raw-log token categories
 ent abandon <slug> --reason "…"    # declare it no longer pursued and terminate it (reason required)
 ent list                           # list registered Goals
@@ -358,9 +359,10 @@ ent agent-context                  # emit the CLI's structure as machine-readabl
 
 ### Common options
 
-`--json` makes the output JSON (`run` / `get` / `cost` / `list` are JSON by default; `start`, `abandon`, and
-`init` produce JSON only with `--json`). `doctor` and `agent-context` are always JSON and do not
-accept `--json`. `--limit <n>` narrows the number of entries for `get` / `list`. There is a cap by
+`--json` makes the output JSON (`run` / `get` / `decisions` / `cost` / `list` are JSON by default;
+`start`, `abandon`, and `init` produce JSON only with `--json`). `doctor` and `agent-context` are
+always JSON and do not accept `--json`. `--limit <n>` narrows the number of entries for `get` /
+`decisions` / `list`. There is a cap by
 default too, and the way to narrow further is printed to stderr only when entries were cut. The
 procedure aimed at agents is in `.claude/skills/ent/SKILL.md`.
 
@@ -1137,7 +1139,7 @@ src/wiring/index.ts       The composition root. The single place deciding which 
                           decided here too
 src/usecase/init.ts       ent init. Places .goals/, the gitignore line, config.yaml, and a Goal template
 src/usecase/doctor.ts     ent doctor. Inspects the prerequisites for running, writing nothing
-src/usecase/inspect.ts    The payload ent get / ent list emit. Read-only
+src/usecase/inspect.ts    The payload ent get / ent decisions / ent list emit. Read-only
 src/usecase/cost.ts       Reads Run / LlmCall raw logs and applies caller-supplied category prices
 src/cli/parse.ts          Argument interpretation. Executes nothing
 src/cli/present.ts        Output formatting. stdout is JSON only; diagnostics go to stderr
