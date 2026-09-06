@@ -59,8 +59,8 @@ Codex CLI の2つがある。その走っている実体を指すときは **Age
 
 ### guard と LLM の境界
 
-完了判定と暴走の停止条件は LLM に決めさせない。LLM が選べるのは `ACT` / `VERIFY` / `WAIT` /
-`REPLAN` の4つだけになる。`COMPLETE` と `ESCALATE` は純ロジック（guard）が決める。この境界は
+完了判定と暴走の停止条件は LLM に決めさせない。LLM が選べるのは `ACT` / `VERIFY` / `WAIT` の
+3つだけになる。`COMPLETE` と `ESCALATE` は純ロジック（guard）が決める。この境界は
 `src/decide/` にある。
 
 ### 保護パスの関門

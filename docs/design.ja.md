@@ -74,8 +74,8 @@ N 本の Goal に割ること——はいまも人間が行う（順序の宣言
   └────────┴──────────┴────────┘
 ```
 
-図は DECIDE の主要な分岐だけを示す。REPLAN も分岐先の一つで、`PLAN → ACT → VERIFY` を
-固定の Workflow にはしない。Plan の更新は DECIDE が選べる行動の一つにすぎない。
+図は DECIDE の分岐をすべて示す。`PLAN → ACT → VERIFY` を固定の Workflow にはしない。
+次に何をするかは段の順番ではなく、毎ティックの DECIDE が観測から決める。
 
 ---
 
@@ -222,8 +222,8 @@ Gap が残る場合の `WAIT`（レビュー待ちなど）は LLM も選べる�
 既定はClaude Agent SDKで、Claude Codeの保存済み認証を使う。2026-08-11にCodex CLI
 Adapterを追加した。共通の`ENT_ACTOR` / `ENT_MODEL` / `ENT_EFFORT`に加えて、
 `DECIDE`、`PLAN`、`IMPLEMENT`、`REVIEW`、`INVESTIGATE`ごとの同名上書きを受け取る。
-**ここでの`PLAN`は`ent plan`のplanner（§10-12）を指す。** §5が並べるティック内の
-`PLAN / REPLAN`の段ではない。
+**ここでの`PLAN`は`ent plan`のplanner（§10-12）を指す。** ティックの中にPlanを作る段は
+無い（§5）。
 たとえば`ENT_DECIDE_ACTOR=codex`と`ENT_REVIEW_MODEL=<model>`を同時に指定できる。
 同じphaseのprovider・model・effortは1組として選び、ACTのRunには実際に使ったproviderを残す。
 effortの語彙はproviderごとに検証する。いまはどちらも
@@ -769,8 +769,7 @@ Event         未作成。webhook を入れる Goal で足す
 
 `Plan / Task` だけは「まだ作っていない」ではなく**作らないと決めた**もので、
 `Criteria` や `Event` とは意味が違う。分解した1本ごとに Goal を立てる方針を採ったので
-（§10-12）、Plan にあたるものはサブ Goal の宣言そのものになる。DECIDE が選ぶ行動としての
-`REPLAN`（§1 / §5）は残るが、その結果を DB の別の層には持たない。
+（§10-12）、Plan にあたるものはサブ Goal の宣言そのものになる。
 
 `LlmCall` は当初この一覧に無かった。DECIDE を Actor 層経由に寄せた（§3.5）結果、
 Run を作らない LLM 呼び出しが生まれ、そのトークンを §7 のとおり残す場所が要るようになった。
@@ -900,7 +899,7 @@ PRAGMA foreign_keys = ON;
 
 - Goal の登録と永続化。Desired State と Acceptance Criteria は `.goals/*.yaml` に手書き
 - OBSERVE（GitHub Issue / PR / CI、ローカル repo）
-- ASSESS（ギャップ算出）、PLAN / REPLAN、DECIDE
+- ASSESS（ギャップ算出）、DECIDE
 - ACT（選択した Actor の非対話実行、git worktree 隔離）
 - VERIFY（`command` = 検証コマンド、`fact` = CI ステータスなど観測値との照合、`human` = 人間承認）
 - 状態機械、ポーリング、write-ahead 永続化、予算とループ上限、使用量上限での自動待機
@@ -2133,8 +2132,8 @@ controller 自身のリポジトリに落ちたままになり、人間の編集
 **逆向きの誤検知を2つ避ける。** 実装の途中で作業ツリーが汚れているのは正常なので、
 Gap が残っているティックは進む。ただし理由は「Gap があれば関門を通らない」では
 **ない**。Gap があるティックは LLM に渡り、LLM は `WAIT` を返せて、その `WAIT` は
-ここで止まる。関門を通らないのは `ACT` / `REPLAN` に落ちたティックで、
-どれも「機械側にやることが残っている」と言っているティックになる。
+ここで止まる。関門を通らないのは `ACT` に落ちたティックで、
+「機械側にやることが残っている」と言っているティックになる。
 もう1つは、Actor がまだ1度も走っていない Goal をそもそも見ないこと。1ティック目は
 worktree が無く `local.*` は controller 自身のリポジトリを観測するので（§10-9）、
 自己ホストでは人間の編集で汚れているのが普通になる。
@@ -2274,10 +2273,11 @@ GitHub の 404 としてしか表面化しない）。関門を持つ2つは `en
 検証するので、落ちた集合は `.goals/` を半分書き換えた状態ではなく、そのままの状態を残す。
 
 **まだ入っていないのは、ループを回している最中に planner が YAML を書き換える側になる。**
-計画を直す必要が出るのは回している最中なので、それが無いと `REPLAN` は「もう一度考える」だけで
-終わる。repoRoot 側の関門は ACT の前後の差だけを数える（§10-6）ので、DECIDE で書く分が
-違反にならない読みになるが、**そこは経路を作るときに確かめる。** `ent plan` はその読みを
-確かめていない。ティックの外で完結するので、見ている関門がそもそも無い。
+計画を直す必要が出るのは回している最中なのに、いま計画を直せるのは人間が `ent plan` を
+叩くときだけになる。回し始めたあとは、人が YAML を書き換えるまで計画が変わらない。
+repoRoot 側の関門は ACT の前後の差だけを数える（§10-6）ので、
+DECIDE で書く分が違反にならない読みになるが、**そこは経路を作るときに確かめる。** `ent plan` は
+その読みを確かめていない。ティックの外で完結するので、見ている関門がそもそも無い。
 
 **`ent plan` が使ったトークンは DB に持たない。** `llm_calls.goal_id` は
 `NOT NULL REFERENCES goals(id)` で、plan の時点では Goal の行がまだ1つも無い。入れるために

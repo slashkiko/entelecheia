@@ -271,11 +271,13 @@ describe("外した WAIT は受け取り側でも採用しない", () => {
     expect(decision.decidedBy).toBe("llm");
   });
 
-  it("VERIFY と REPLAN は残る。WAIT だけを外す", async () => {
-    for (const action of [{ type: "VERIFY" }, { type: "REPLAN" }]) {
-      const decision = await decide(target(CHANGES_REQUESTED), deps(llmReturning(action)));
-      expect(decision.action).toEqual(action);
-    }
+  it("VERIFY は残る。WAIT だけを外す", async () => {
+    const decision = await decide(
+      target(CHANGES_REQUESTED),
+      deps(llmReturning({ type: "VERIFY" })),
+    );
+
+    expect(decision.action).toEqual({ type: "VERIFY" });
   });
 
   it("WAIT を外していないティックでは、これまでどおり WAIT を採用する", async () => {

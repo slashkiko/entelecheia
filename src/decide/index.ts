@@ -372,7 +372,7 @@ function describeUnresolvedForPrompt(
  * `ESCALATE(loop_detected)` を返し、ループしていないのに採用された。
  * `budget_exhausted` も同じ口から入る。どちらも guard が持つべき判断になる。
  *
- * guard 側から `loop_detected` を出す実装は下の `unchangedReconciles()` にある。
+ * guard 側から `loop_detected` を出す実装は上の `unchangedReconciles()` にある。
  * ここで閉じるのは LLM 側の口で、実際に停止させるのは guard になる（design.md §10-2）。
  */
 /**
@@ -396,7 +396,13 @@ const LLM_MAY_CHOOSE: Record<Action["type"], boolean> = {
   ACT: true,
   VERIFY: true,
   WAIT: true,
-  REPLAN: true,
+  // controller に受け手が無い。Actor を起動するのは `ACT` だけなので、選ばれた
+  // ティックは何も書かずに終わり、次のティックが同じ材料で決め直す。更新する
+  // Plan を実装していない以上（design.md §10-12）、これは空振りする選択肢に
+  // なる。「いまのやり方では埋まらない」という判断そのものは、上の
+  // `unchangedReconciles()` が観測から出す `ESCALATE(loop_detected)` が持つ。
+  // 停止条件を LLM の判断に依存させない（design.md §7）ぶん、そちらが強い。
+  REPLAN: false,
 };
 
 const LLM_ACTIONS = Object.entries(LLM_MAY_CHOOSE)
@@ -765,7 +771,6 @@ function buildPrompt(
       ...agentOptionLines(availableActors),
       '- {"type":"VERIFY"} - confirm criteria that have not been verified. Use it for Gaps whose kind is unknown',
       ...waitActionLines(changesRequestedHead),
-      '- {"type":"REPLAN"} - the current approach will not fill the Gap',
       "",
       "COMPLETE and ESCALATE cannot be chosen. Completion and the stop conditions are decided by the controller.",
       ...waitClosingLines(changesRequestedHead),

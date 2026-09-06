@@ -4,8 +4,13 @@ import { actorRoleSchema, launchableActorKindSchema } from "./run.js";
 /**
  * DECIDE が選ぶ行動。design.md §1 の図の分岐にあたる。
  *
- * PLAN → ACT → VERIFY を固定の workflow にしない。REPLAN も分岐先の一つで、
- * Plan の更新は DECIDE が選べる行動にすぎない。
+ * PLAN → ACT → VERIFY を固定の workflow にしない。次に何をするかは段の順番では
+ * なく、毎ティックの DECIDE が観測から決める。
+ *
+ * ただし**作り直せる Plan は持たない。** 分解した1本ごとに Goal を立てる方針を
+ * 採ったので、Plan にあたるものはサブ Goal の宣言そのものになる
+ * （design.md §4.5 / §10-12）。作り直す相手が無いぶん、`REPLAN` は下に書いた
+ * とおり DECIDE の選択肢から外してある。
  */
 
 /** 待ちの理由。いずれも reconcile は即 return し、次のティックを待つ */
@@ -193,7 +198,15 @@ export const actionSchema = z.discriminatedUnion("type", [
     resumeAfter: z.string().datetime().nullable().default(null),
   }),
   z.object({ type: z.literal("ESCALATE"), reason: escalateReasonSchema }),
-  /** Plan を作り直す。今の Plan では Gap が埋まらないと判断したとき */
+  /**
+   * Plan を作り直す。DECIDE の選択肢からは外してあるので、新しい Decision が
+   * この行動になることはない。外した理由は `LLM_MAY_CHOOSE` にある。
+   *
+   * **消さない。** decisions テーブルは読むたびに `actionSchema.parse` を通る
+   * （`listDecisions`）ので、union から落とすと既に `REPLAN` を選んだことのある
+   * Goal の行がそこで落ち、履歴を読み直せなくなる。`waitReasonSchema` の
+   * `review_pending` と同じ扱いになる。
+   */
   z.object({ type: z.literal("REPLAN") }),
 ]);
 export type Action = z.infer<typeof actionSchema>;

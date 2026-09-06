@@ -81,9 +81,9 @@ from among the providers the human already selected (§3.5 / §4.2).
   └────────┴──────────┴────────┘
 ```
 
-The figure shows only DECIDE's main branches. REPLAN is one of the branch targets too, and
-`PLAN → ACT → VERIFY` is not made into a fixed Workflow. Updating the Plan is no more than one of
-the actions DECIDE can choose.
+The figure shows every one of DECIDE's branches. `PLAN → ACT → VERIFY` is not made into a fixed
+Workflow: what comes next is decided from the observation by DECIDE on each tick, not by the order
+of the stages.
 
 ---
 
@@ -245,8 +245,8 @@ What is entrusted to the LLM is only how to close the Gap.
 The default is the Claude Agent SDK, using Claude Code's saved credentials. The Codex CLI Adapter
 was added on 2026-08-11. In addition to the common `ENT_ACTOR` / `ENT_MODEL` / `ENT_EFFORT`, it
 accepts same-named overrides per `DECIDE`, `PLAN`, `IMPLEMENT`, `REVIEW`, and `INVESTIGATE`.
-**`PLAN` here means the planner behind `ent plan` (§10-12)**, not the `PLAN / REPLAN` stage §5 lists
-inside the tick. For example `ENT_DECIDE_ACTOR=codex` and `ENT_REVIEW_MODEL=<model>` can be
+**`PLAN` here means the planner behind `ent plan` (§10-12)**; the tick itself has no stage that
+builds a Plan (§5). For example `ENT_DECIDE_ACTOR=codex` and `ENT_REVIEW_MODEL=<model>` can be
 specified at the same time.
 The provider, model, and effort for the same phase are chosen as one set, and the ACT Run keeps the
 provider actually used. The effort vocabulary is validated per provider. Both currently take
@@ -832,8 +832,7 @@ dependency needs no more than reading the `status` of the depended-on Goal. §10
 
 Only `Plan / Task` is not "not created yet" but **something decided against creating**, which differs
 in meaning from `Criteria` and `Event`. Since the policy adopted is to stand up one Goal per
-decomposed unit (§10-12), what corresponds to the Plan is the sub-Goal declaration itself. `REPLAN`
-(§1 / §5) remains as an action DECIDE chooses, but its result is not held in a separate DB layer.
+decomposed unit (§10-12), what corresponds to the Plan is the sub-Goal declaration itself.
 
 `LlmCall` was not in this list at first. As a result of moving DECIDE through the Actor layer (§3.5),
 LLM calls that create no Run appeared, and a place was needed to keep their tokens as §7 requires.
@@ -972,7 +971,7 @@ the Slack workspace) does not yet exist, the dependencies were narrowed down to 
 
 - Goal registration and persistence. Desired State and Acceptance Criteria are hand-written in `.goals/*.yaml`
 - OBSERVE (GitHub Issue / PR / CI, local repo)
-- ASSESS (Gap computation), PLAN / REPLAN, DECIDE
+- ASSESS (Gap computation), DECIDE
 - ACT (non-interactive execution of the selected Actor, git worktree isolation)
 - VERIFY (`command` = verification command, `fact` = matching against observed values such as CI status, `human` = human approval)
 - State machine, polling, write-ahead persistence, budget and loop limits, automatic waiting on usage limits
@@ -2272,8 +2271,8 @@ own repository, and human edits get read as the Actor's leftover writes.
 of implementation is normal, so ticks with a remaining Gap proceed. But the reason is **not** "if
 there is a Gap it does not go through the gate". A tick with a Gap goes to the LLM, the LLM can
 return `WAIT`, and that `WAIT` is stopped here. What does not go through the gate are ticks that
-landed on `ACT` / `REPLAN`, all of which are ticks saying "work remains on the machine side". The
-other is not looking at all at a Goal whose Actor has never once run. On the first tick there is no
+landed on `ACT`, the ticks saying "work remains on the machine side". The other is not looking at
+all at a Goal whose Actor has never once run. On the first tick there is no
 worktree and `local.*` observes the controller's own repository (§10-9), so in self-hosting it is
 normal for it to be dirty from human edits.
 
@@ -2414,10 +2413,12 @@ nowhere, cycles across the set and what is already declared — **before a singl
 a rejected set leaves `.goals/` exactly as it was rather than half-written.
 
 **What is still not built is the planner rewriting YAML while the loop is running.** Since the need
-to fix the plan arises mid-run, without it `REPLAN` ends up as just "think again". The repoRoot-side
-gate counts only the difference before and after ACT (§10-6), so the reading is that what is written
-in DECIDE is not a violation, but **that gets verified when the path is built.** `ent plan` does not
-test that reading: it runs outside the tick entirely, so no gate is positioned to see it.
+to fix the plan arises mid-run, yet the only occasion on which it can be fixed is a human typing
+`ent plan`. Once a Goal is running, the plan does not change until a person rewrites the YAML.
+The repoRoot-side gate counts only the difference before and after ACT (§10-6), so the reading is
+that what is written in DECIDE is not a violation, but **that gets verified when the path is built.**
+`ent plan` does not test that reading: it runs outside the tick entirely, so no gate is positioned to
+see it.
 
 **The tokens `ent plan` spends are not held in the DB.** `llm_calls.goal_id` is
 `NOT NULL REFERENCES goals(id)`, and at plan time no Goal row exists yet; inventing one would put a

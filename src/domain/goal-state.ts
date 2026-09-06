@@ -74,6 +74,11 @@ export function nextStatus(current: GoalStatus, action: Action): GoalStatus {
       return action.reason === "budget_exhausted" ? "BLOCKED" : "WAITING_HUMAN";
 
     // 待機や BLOCKED からでも動き出せる（design.md §4.4 の ⇅）
+    //
+    // `REPLAN` は DECIDE の選択肢から外してあるので、新しい Decision には現れない
+    // （`LLM_MAY_CHOOSE`）。それでも case を残すのは、`actionSchema` の union が
+    // 過去の行を読むために `REPLAN` を持ち続けるため。落とすと `default` の
+    // `assertNever` に落ちて、この switch が網羅でなくなる。
     case "ACT":
     case "VERIFY":
     case "REPLAN":

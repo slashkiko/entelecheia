@@ -127,10 +127,20 @@ describe("LLM が選べる行動", () => {
 
   it("ESCALATE(budget_exhausted) も受け取らない", async () => {
     // 予算判定は guard が持つ。推論で停止条件を作らせない。
-    const llm = spyLlm([{ type: "ESCALATE", reason: "budget_exhausted" }, { type: "REPLAN" }]);
+    const llm = spyLlm([{ type: "ESCALATE", reason: "budget_exhausted" }, { type: "VERIFY" }]);
     const decision = await decide(target(), { llm, now: () => NOW });
 
-    expect(decision.action).toEqual({ type: "REPLAN" });
+    expect(decision.action).toEqual({ type: "VERIFY" });
+  });
+
+  it("REPLAN も受け取らない", async () => {
+    // controller に受け手が無く、選ばれたティックは何も書かずに終わる。
+    // 「いまのやり方では埋まらない」は ESCALATE(loop_detected) が観測から出す。
+    const llm = spyLlm([{ type: "REPLAN" }, { type: "VERIFY" }]);
+    const decision = await decide(target(), { llm, now: () => NOW });
+
+    expect(decision.action).toEqual({ type: "VERIFY" });
+    expect(llm.calls).toBe(2);
   });
 
   it("ESCALATE しか返さなければ ESCALATE(invalid_decision) になる", async () => {
@@ -146,12 +156,11 @@ describe("LLM が選べる行動", () => {
     expect(decision.decidedBy).toBe("guard");
   });
 
-  it("ACT / VERIFY / WAIT / REPLAN は受け取る", async () => {
+  it("ACT / VERIFY / WAIT は受け取る", async () => {
     const actions = [
       { type: "ACT", intent: "テストの失敗を直す" },
       { type: "VERIFY" },
       { type: "WAIT", reason: "review_pending", resumeAfter: null },
-      { type: "REPLAN" },
     ];
 
     for (const action of actions) {
@@ -186,6 +195,22 @@ describe("LLM が選べる行動", () => {
     expect(prompt).toContain("ESCALATE cannot be chosen");
     // 人間を待ちたいときの逃げ道は残す。
     expect(prompt).toContain("review_pending");
+  });
+
+  it("プロンプトに REPLAN を出さない。外した理由も書かない", async () => {
+    let prompt = "";
+    const llm: LlmPort = {
+      chooseAction: async (given: string) => {
+        prompt = given;
+        return { type: "VERIFY" };
+      },
+    };
+    await decide(target(), { llm, now: () => NOW });
+
+    // ESCALATE と違って「選べない」とも書かない。あちらは guard が代わりに
+    // 決めるので、境界を伝える意味がある。こちらは行動そのものが無いので、
+    // 名前を出せば「いつかは選べる」と読めてしまう。
+    expect(prompt).not.toContain("REPLAN");
   });
 });
 

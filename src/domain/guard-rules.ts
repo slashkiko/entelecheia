@@ -173,9 +173,10 @@ export function usageLimitResumeAfter(resumeAfter: string | null, since: string)
  * 答えは COMPLETE / WAIT と同じになる。
  *
  * ACT は足さない。実装の途中で作業ツリーが汚れているのは正常で、ここまで止めると
- * Actor は1ティックも実装を進められない。REPLAN と ESCALATE も足さない。前者は
- * 進め方を組み直す判断で、後者は既に別の理由で止まっている。より重い理由を
- * 未 commit で塗り替えると、なぜ止まったのかが読めなくなる。
+ * Actor は1ティックも実装を進められない。ESCALATE も足さない。既に別の理由で
+ * 止まっているところを、より重い理由から未 commit へ塗り替えると、なぜ止まった
+ * のかが読めなくなる。REPLAN は DECIDE の選択肢から外したので、そもそもここへ
+ * 新しい Decision として来ない（`LLM_MAY_CHOOSE`）。
  */
 export function leavesWorkUncommitted(decision: Decision): boolean {
   return decision.action.type === "VERIFY" || claimsNothingLeft(decision);
