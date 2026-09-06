@@ -1,6 +1,6 @@
 ---
 name: ent
-description: Procedure for converging a Goal with the ent CLI. Covers reading the structure with agent-context, first-time setup with init, splitting one prose objective into sub-Goal declarations with plan, checking prerequisites with doctor, one round of start / run / get / list, calculating raw-log usage with cost, looking ahead with --dry-run, ending a Goal that is no longer pursued with abandon, sending progress to stdout or a file instead of posting it to the PR with --report, narrowing output with --limit, reading exit codes, and where WAITING_HUMAN and ESCALATE wait for human approval or intervention.
+description: Procedure for converging a Goal with the ent CLI. Covers reading the structure with agent-context, first-time setup with init, splitting one prose objective into sub-Goal declarations with plan, checking prerequisites with doctor, one round of start / run / get / list, calculating raw-log usage with cost, looking ahead with --dry-run, ending a Goal that is no longer pursued with abandon, sending progress to stdout or a file instead of posting it to the PR with --report, narrowing output with --limit, reading exit codes, and where WAITING_HUMAN and ESCALATE wait for human approval or intervention, and the window in which a Goal's history may be rewritten.
 ---
 
 # Running ent
@@ -199,6 +199,25 @@ mid-tick as well. It is picked up as a before/after difference on the main repos
 When HEAD could not be read, and for Goals started before this record existed, `default_branch` is the
 baseline. In that case what the human wrote is listed as the Actor's edits too. For what to do once it
 has stopped, read "Where it stops for human approval" below.
+
+**Rewriting that history is safe only once the Goal is terminal** (`COMPLETED` / `FAILED` /
+`ABANDONED`). Nothing else settles: the other things that skip a round — `resumeAfter`, dependency
+waiting, a lease another worker holds — all lift by themselves, so a round can start on top of the
+rewrite. `WAITING_HUMAN` is the one that catches people out, because it does not skip a round at all.
+Rewrite there and `review.reviewed_sha` no longer matches HEAD, which costs another review round, and
+under cron that round starts on its own.
+
+A Goal with `policies.publish.open_pull_request: manual` does not reach a terminal state until the PR
+exists, because that gate overwrites COMPLETE with `WAITING_HUMAN` ("When the controller did not push
+or open the PR" below). The order there is: open the PR, watch it go terminal, then rewrite.
+
+**What may be rewritten is `state.guardBaseSha`..HEAD**, and `state.guardBaseSha` is in the output of
+`ent get <slug>`. It is the lower bound, so the baseline commit itself stays as it is. A Goal that
+shows `null` there is one of the `default_branch` cases above: the range cannot be derived from the
+output, so ask the human instead of guessing it.
+
+How far to squash inside that range, what the messages carry and what to show before the force push
+are in the `ent-bookend` skill's Part 2.
 
 There is one more subcommand, used only when stepping away from a Goal that is no longer pursued.
 

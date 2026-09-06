@@ -89,37 +89,29 @@ controller が commit するのは「`type: command` の criteria が全部通�
 （design.md §10-11）。**1ティック1コミット**なので、履歴は作業の意味ではなくティックの区切りで
 割れている。意味単位に直すのはここでやる。
 
+**いつ触ってよくて、どこまで触ってよいかは `ent` skill の「One round」が持つ。** ここに書くのは
+手順だけになる。
+
 ### 1. terminal になっているか確かめる
 
 ```bash
 ent get <slug> --json
 ```
 
-`state.status` が `COMPLETED` / `FAILED` / `ABANDONED` のときだけ進む。ティックが止まるのは
-この3つと `resumeAfter`、依存待ちだけで（`src/controller/index.ts:232-236`）、**`WAITING_HUMAN` は
-ティックを止めない。**
-
-`WAITING_HUMAN` で整理すると2つ払う。
-
-- `review.reviewed_sha` が整理後の HEAD と一致しなくなり、レビューをもう1周する
-- cron が回っていれば、その1周が勝手に始まる
-
-`policies.publish.open_pull_request: manual` の Goal は、PR を作るまで terminal に落ちない
-（あの関門は COMPLETE を `WAITING_HUMAN` で上書きする）。**PR を作る → COMPLETED を見届ける →
-整理**、の順にする。
+`state.status` が `COMPLETED` / `FAILED` / `ABANDONED` のときだけ進む。`WAITING_HUMAN` はティックを
+止めないので、ここには含めない。`policies.publish.open_pull_request: manual` の Goal は、
+**PR を作る → terminal を見届ける → 整理**、の順になる。
 
 ### 2. 整理してよい範囲を出す
 
-同じ `ent get --json` の `state.guardBaseSha` が、`ent start` 時点の HEAD にあたる。
-`<guardBaseSha>..HEAD` が Actor の書いた範囲になる。
+同じ出力の `state.guardBaseSha` から HEAD までが、Actor の書いた範囲になる。
 
-**`guardBaseSha` が `null` なら止める。** その列より前に start した Goal で、関門の基準は
-`default_branch` に落ちている。範囲を推測しない。人間に聞く。
+**`guardBaseSha` が `null` なら止める。** 範囲を推測しない。人間に聞く。
 
 ### 3. 整理する
 
 `<guardBaseSha>..HEAD` の中だけを squash / reword する。**baseline commit 自体は触らない。**
-消すと分岐点が取れず、Goal を再開したときに `ESCALATE(guard_unavailable)` になる。
+消したときに何が起きるかも、`ent` skill の同じ節にある。
 
 コミットメッセージは、初見のコントリビューターが差分とそれだけで読める状態にする。
 ティックの都合（「2周目のレビューで出た指摘」「N ティック目で直した」など）は執筆の経緯なので
