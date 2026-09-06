@@ -37,10 +37,10 @@ repository:
 setup: []
 acceptance_criteria:
   - id: ac-1
-    description: 何もしなくても通る検証
+    description: 目印のファイルが置かれたら通る検証
     verification:
       type: command
-      run: exit 0
+      run: test -f work-done
 context:
   background: |
     宛先の検証用。
@@ -98,6 +98,23 @@ afterEach(() => {
   process.chdir(cwd);
   rmSync(repoRoot, { recursive: true, force: true });
 });
+
+/** criterion を通す目印。start の後に置く（`startGoal`） */
+const WORK_DONE = "work-done";
+
+/**
+ * start してから、criterion を通す目印を置く。
+ *
+ * `ent start` は、着手した時点で落ちる `type: command` の criterion が1本も無い Goal を
+ * ACTIVE にしない（`src/usecase/start.ts`）。無変更で通るだけの criterion を書くと
+ * そこで断られるので、目印のファイルが現れたら通る形にして、置くのは start の後にする。
+ * ティックの時点では criteria が全部通るので、LLM も Actor も GitHub も呼ばれない。
+ */
+async function startGoal(): Promise<number> {
+  const exitCode = await main(["start", "report-goal"]);
+  writeFileSync(join(repoRoot, WORK_DONE), "");
+  return exitCode;
+}
 
 describe("引数の解釈", () => {
   it("--report stdout を受け取る", () => {
@@ -189,7 +206,7 @@ describe("宛先そのもの", () => {
 
 describe("ティックを回して出す", () => {
   it("--report stdout なら JSON の report.body に criteria の表が入る", async () => {
-    await main(["start", "report-goal"]);
+    await startGoal();
 
     expect(await main(["run", "report-goal", "--report", "stdout"])).toBe(0);
 
@@ -206,7 +223,7 @@ describe("ティックを回して出す", () => {
 
   it("--report <path> ならファイルに出て、JSON には本文を混ぜない", async () => {
     const path = join(repoRoot, "progress.md");
-    await main(["start", "report-goal"]);
+    await startGoal();
 
     expect(await main(["run", "report-goal", "--report", path])).toBe(0);
 
@@ -219,7 +236,7 @@ describe("ティックを回して出す", () => {
   });
 
   it("--report を付けなければ JSON の形を変えない", async () => {
-    await main(["start", "report-goal"]);
+    await startGoal();
     await main(["run", "report-goal"]);
 
     expect(lastJson().report).toBeUndefined();
@@ -227,7 +244,7 @@ describe("ティックを回して出す", () => {
 
   it("トークンが無くても出る", async () => {
     // PR も作れないしコメントもできない環境。この口を使う動機の中心にあたる。
-    await main(["start", "report-goal"]);
+    await startGoal();
     await main(["run", "report-goal", "--report", "stdout"]);
 
     const report = lastJson().report as { written: boolean };
@@ -237,7 +254,7 @@ describe("ティックを回して出す", () => {
   it("書けなかったら終了コードは変えず、書けなかったことを出す", async () => {
     // 通知の失敗でティック全体を落とさない（design.md §9）。ただし黙らない。
     const path = join(repoRoot, "no-such-dir", "progress.md");
-    await main(["start", "report-goal"]);
+    await startGoal();
 
     expect(await main(["run", "report-goal", "--report", path])).toBe(0);
 
@@ -251,7 +268,7 @@ describe("ティックを回して出す", () => {
     // 終端の Goal は publish を通らない。何も起きていないのに進捗が出ると、
     // ファイルを読む側が「回った」と読む。
     const path = join(repoRoot, "progress.md");
-    await main(["start", "report-goal"]);
+    await startGoal();
     await main(["run", "report-goal"]);
 
     expect(await main(["run", "report-goal", "--report", path])).toBe(0);

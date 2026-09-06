@@ -40,10 +40,10 @@ goal:
     Goal 固有のことだけを書いた YAML が回る。
 acceptance_criteria:
   - id: ac-1
-    description: 何もしなくても通る検証
+    description: 目印のファイルが置かれたら通る検証
     verification:
       type: command
-      run: exit 0
+      run: test -f work-done
 context:
   background: |
     config の検証用。
@@ -296,6 +296,20 @@ describe("回してみる", () => {
     rmSync(repoRoot, { recursive: true, force: true });
   });
 
+  /**
+   * start してから、criterion を通す目印を置く。
+   *
+   * `ent start` は、着手した時点で落ちる `type: command` の criterion が1本も無い Goal を
+   * ACTIVE にしない（`src/usecase/start.ts`）。無変更で通るだけの criterion を書くと
+   * そこで断られるので、目印のファイルが現れたら通る形にして、置くのは start の後にする。
+   * ティックの時点では criteria が全部通る。
+   */
+  async function startGoal(): Promise<number> {
+    const exitCode = await main(["start", "lean-goal"]);
+    writeFileSync(join(repoRoot, "work-done"), "");
+    return exitCode;
+  }
+
   function writeConfig(body: string): void {
     writeFileSync(join(repoRoot, ".goals", CONFIG_FILENAME), body);
   }
@@ -303,7 +317,7 @@ describe("回してみる", () => {
   it("config が repository を配れば、Goal は repository を書かずに start できる", async () => {
     writeConfig(CONFIG);
 
-    expect(await main(["start", "lean-goal"])).toBe(0);
+    expect(await startGoal()).toBe(0);
   });
 
   it("config が壊れていたら、そのファイルを名指しして落ちる", async () => {
@@ -316,7 +330,7 @@ describe("回してみる", () => {
       return true;
     });
 
-    expect(await main(["start", "lean-goal"])).not.toBe(0);
+    expect(await startGoal()).not.toBe(0);
     expect(stderr.join("")).toContain(CONFIG_FILENAME);
   });
 
@@ -334,7 +348,7 @@ describe("回してみる", () => {
 
   it("config に report: stdout を書けば、フラグ無しでも PR に投稿しない", async () => {
     writeConfig(`${CONFIG}  progress:\n    report: stdout\n`);
-    await main(["start", "lean-goal"]);
+    await startGoal();
 
     expect(await main(["run", "lean-goal"])).toBe(0);
 
@@ -347,7 +361,7 @@ describe("回してみる", () => {
     // 宣言は毎周に効き、フラグはその1周にしか効かない。逆向きにすると、
     // 宣言で stdout に倒してある Goal の進捗を手元のファイルに出せなくなる。
     writeConfig(`${CONFIG}  progress:\n    report: stdout\n`);
-    await main(["start", "lean-goal"]);
+    await startGoal();
 
     expect(await main(["run", "lean-goal", "--report", join(repoRoot, "out.md")])).toBe(0);
 
@@ -358,7 +372,7 @@ describe("回してみる", () => {
   it("宣言も指定も無ければ、report の枝ごと出ない", async () => {
     // 宣言を書いていない既存の `.goals/*.yaml` を回している jq を壊さない。
     writeConfig(CONFIG);
-    await main(["start", "lean-goal"]);
+    await startGoal();
 
     expect(await main(["run", "lean-goal"])).toBe(0);
     expect(lastJson()).not.toHaveProperty("report");

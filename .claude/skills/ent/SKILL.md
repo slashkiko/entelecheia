@@ -186,6 +186,17 @@ ent get <slug>              # read the declaration and the runtime state togethe
 ent list                    # list the registered Goals
 ```
 
+`ent start` runs the Goal's `type: command` criteria before it registers anything, and refuses the
+Goal when every one of them already passes. It writes the criterion ids to stderr and exits 1, and no
+state is written, so `ent run <slug>` still reports the Goal as not registered. A Goal with nothing left
+to fail reaches `COMPLETE` on the first tick without changing anything, and `COMPLETED` is terminal, so
+`ent start` cannot take it back afterwards. Expect the wait: it takes as long as those commands do, and a
+verification suite is often around 20 seconds. It stops at the first criterion that fails, because one
+failure already settles the question, and there is no flag to skip the check.
+
+What cannot be run decides nothing. `type: fact` and `type: human` are not counted as passing, neither is
+a command that fails to launch, and a Goal declaring no `type: command` criterion at all starts as before.
+
 `ent start` records the HEAD of the directory it was invoked in as the gate's baseline. The Actor's
 worktree is cut from that commit, and the commit the gate diffs the worktree against is the same one.
 **Commit the Goal's declaration and spec before `ent start`.** Then what the human wrote lands on the

@@ -27,6 +27,7 @@ import {
   showPayload,
 } from "./usecase/inspect.js";
 import { DEFAULT_MAX_GOALS, planGoals } from "./usecase/plan.js";
+import { nothingToDo } from "./usecase/start.js";
 import {
   doctorProbes,
   initProbes,
@@ -34,6 +35,7 @@ import {
   openStore,
   planProbes,
   repoHeadSha,
+  startProbes,
   tickPorts,
 } from "./wiring/index.js";
 
@@ -236,6 +238,30 @@ async function runCommand(argv: readonly string[]): Promise<number> {
     // 「一度も動いていないのに放棄済み」という読めない記録を作れてしまう。
     if (command.kind === "abandon") {
       return abandonGoal(command, goal, store);
+    }
+
+    // 着手検査は upsert より先に置く。**断ったのに行が残る形にしない。**
+    // upsert は未登録の Goal に DRAFT の行を作り、`ent run` の「登録されていない」は
+    // その行の有無だけを見ている（この上の run の分岐）。断ったあとに行が残ると、
+    // start が拒んだ Goal を run が拾って走らせられる——唯一の承認ゲートを
+    // 飛ばせるという、同じ分岐が塞いだはずの形になる。
+    //
+    // **通すのは DRAFT から ACTIVE への1回だけ。** 既に行がある Goal では検査しない。
+    // 走り出したあとに `type: command` が全部通っているのは収束の途中経過で
+    // （Actor が実装し、controller が commit し、次のティックで COMPLETE になる）、
+    // そこで断ると、正しく進んでいる Goal ほど start し直せなくなる。
+    if (command.kind === "start" && store.getState(goal.goal.id) === null) {
+      const refusal = await nothingToDo(
+        goal.goal.id,
+        goal.acceptance_criteria,
+        startProbes(repoRoot),
+      );
+      if (refusal !== null) {
+        process.stderr.write(`${refusal}\n`);
+        // 終端の Goal への start と同じ 1 を返す。argv は妥当で、打ち直しても
+        // 変わらない（`--force` は用意しない。`ent plan` の同じ判定にも無い）。
+        return 1;
+      }
     }
 
     store.upsertGoal(goal);

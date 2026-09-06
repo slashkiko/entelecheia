@@ -394,7 +394,7 @@ async function accept(
  * 「もう通っている」に化け、まだ何もしていない Goal が書かれずに消える（design.md 3.1
  * が Fact でやっている「観測できなかったものは Fact にしない」と同じ分け方になる）。
  */
-type CommandOutcome = "passed" | "failed" | "unknown";
+export type CommandOutcome = "passed" | "failed" | "unknown";
 
 /**
  * 提案のうち、**宣言時点で既にやることが無い** Goal の id を返す。
@@ -417,8 +417,13 @@ type CommandOutcome = "passed" | "failed" | "unknown";
  * 実行できなかったコマンドも同じ扱いにする。落とす側の誤りより落とさない側の誤りの
  * ほうが害が小さい: 余分に書かれた Goal は人間が消せるが、書かれなかった Goal は
  * 消えたことにすら気づけない。
+ *
+ * **`ent start` の着手検査（`src/usecase/start.ts`）も、ここを呼ぶ。** 問いが同じ
+ * ——「宣言時点で落ちる `type: command` の criterion が1本でもあるか」——なので、
+ * 判定を2箇所に書かない。空集合と `unknown` の扱いがどちらか片方だけ変わると、
+ * `ent plan` を通した Goal と手で書いた Goal で入口の厳しさが食い違う。
  */
-async function alreadyDone(
+export async function alreadyDone(
   goals: readonly { id: string; acceptance_criteria: readonly AcceptanceCriterion[] }[],
   probe: CommandRunnerPort,
   probed: Map<string, CommandOutcome>,

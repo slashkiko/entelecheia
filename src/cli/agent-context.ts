@@ -120,7 +120,8 @@ export function agentContextPayload(): AgentContext {
       },
       {
         name: "start",
-        summary: "register a Goal and make it ACTIVE",
+        summary:
+          "register a Goal and make it ACTIVE. Runs its type: command criteria first and refuses the Goal, writing nothing, when every one of them already passes",
         args: [slug],
         flags: [JSON_FLAG],
       },
