@@ -18,3 +18,11 @@ in parallel from the same directory. Read it before starting work on ent itself.
 
 The human-facing introduction is in `README.md` (English; the Japanese is `README.ja.md`, same content),
 and the design background is in `docs/design.md` (English; the Japanese is `docs/design.ja.md`, same content).
+
+**What goes into this repository is decided by the owner, whose procedure is written in
+`.claude/skills/owner/SKILL.md`.** Claude Code reaches it through `.claude/agents/owner.md`;
+Codex picks up the same canonical copy through the `.agents/skills/owner` symlink, the same way
+it reaches `ent`. The procedure judges a proposal against the core design decisions in
+`docs/design.md` — take it, reject it, or change its shape — and holds nothing about the design
+itself. Each judgement is recorded under `docs/decisions/`, one file per decision, rejected
+proposals included. The design stays in `docs/design.md` alone.
