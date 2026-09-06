@@ -1,7 +1,7 @@
 #!/usr/bin/env node
-import { existsSync, mkdirSync, readdirSync, readFileSync } from "node:fs";
-import { join } from "node:path";
-import { pathToFileURL } from "node:url";
+import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync } from "node:fs";
+import { basename, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { agentContextPayload } from "./cli/agent-context.js";
 import { type Command, parseCommand, type ReportTarget, USAGE } from "./cli/parse.js";
 import {
@@ -538,10 +538,82 @@ async function previewOnly(
   }
 }
 
-if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href) {
+/**
+ * このモジュールが `node <path>` で直に叩かれたのかを表す。
+ *
+ * `imported` は他所から import されただけの意味で、何もしないのが正しい。
+ * `unresolved` は「叩かれたはずなのに突き合わせられなかった」で、黙って
+ * 終わってはいけない側になる。
+ */
+export type EntrypointVerdict =
+  | { kind: "main" }
+  | { kind: "imported" }
+  | { kind: "unresolved"; reason: string };
+
+/**
+ * `process.argv[1]` と `import.meta.url` を突き合わせて、直に叩かれたのかを決める。
+ *
+ * 両側を realpath に通したパスで比べる。Node は ESM のメインモジュールを realpath へ
+ * 解決するので `import.meta.url` は実体のパスになるが、`process.argv[1]` は渡された
+ * パスのまま残る。URL 同士で比べると、パス上のどこかがシンボリックリンクなだけで
+ * 食い違う。
+ *
+ * 突き合わせに失敗したとき、それが import なのか壊れた起動なのかはファイル名で
+ * 分ける。argv[1] の名前がこのモジュールと同じなら、叩こうとして失敗したと読む。
+ * 取り違えても増えるのは stderr の1行だけで、main() を呼ぶかどうかは動かない。
+ */
+export function classifyEntrypoint(
+  argv1: string | undefined,
+  moduleUrl: string,
+): EntrypointVerdict {
+  if (argv1 === undefined) return { kind: "imported" };
+  const modulePath = resolveReal(fileURLToPath(moduleUrl));
+
+  let argvPath: string;
+  try {
+    argvPath = realpathSync(argv1);
+  } catch (error) {
+    return sameName(argv1, modulePath)
+      ? {
+          kind: "unresolved",
+          reason: `argv[1] (${argv1}) の実体を辿れない: ${errorMessage(error)}`,
+        }
+      : { kind: "imported" };
+  }
+
+  if (argvPath === modulePath) return { kind: "main" };
+  return sameName(argvPath, modulePath)
+    ? {
+        kind: "unresolved",
+        reason: `argv[1] の実体 (${argvPath}) がこのモジュール (${modulePath}) と一致しない`,
+      }
+    : { kind: "imported" };
+}
+
+/** 辿れないパスは渡されたまま返す。比較の相手が無いだけで、判定は続けられる */
+function resolveReal(path: string): string {
+  try {
+    return realpathSync(path);
+  } catch {
+    return path;
+  }
+}
+
+function sameName(a: string, b: string): boolean {
+  return basename(a) === basename(b);
+}
+
+const verdict = classifyEntrypoint(process.argv[1], import.meta.url);
+if (verdict.kind === "main") {
   // main() が終了コードの契約を閉じているので、ここでは受け取るだけにする。
   // reject しないことは main() 側の try/catch が保証している。
   void main(process.argv.slice(2)).then((code) => {
     process.exitCode = code;
   });
+} else if (verdict.kind === "unresolved") {
+  // stdout は JSON の契約なので、診断は stderr へ出す。0 のまま出力を空にすると、
+  // 呼び出し側には「Goal が0件」と同じ形で届く。1 は「実行できない状態。詳細は
+  // stderr」で、終了コードの表（SKILL.md / agent-context）にある値になる。
+  process.stderr.write(`ent: エントリポイントを判定できず、実行していない。${verdict.reason}\n`);
+  process.exitCode = 1;
 }
