@@ -32,7 +32,7 @@ description: entelecheia（ent）のオーナー。中核の設計判断・未�
 引っかかったか（あるいは全部通ったか）を、問いごとに書く。
 
 1. **完了判定と停止条件を LLM に渡していないか。** `COMPLETE` と `ESCALATE` は純ロジック
-   （guard）が決める。LLM が選べるのは `ACT` / `VERIFY` / `WAIT` / `REPLAN` の4つだけになる。
+   （guard）が決める。LLM が選べるのは `ACT` / `VERIFY` / `WAIT` の3つだけになる。
    この境界を動かす案は、それ自体が設計の変更になる（§3.1、§7）
 2. **検証に還元できるか。** Acceptance Criteria をコマンド・Fact 参照・人間の承認のどれかに
    落とせない案は、Goal にできない（§3.2）

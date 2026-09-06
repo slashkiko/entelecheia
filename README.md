@@ -63,8 +63,8 @@ reflects the current state, including the post-MVP review.
 ### The boundary between guard and LLM
 
 Completion and the stopping conditions for runaway behavior are not left to the LLM. The LLM may
-choose only among four actions: `ACT` / `VERIFY` / `WAIT` / `REPLAN`. `COMPLETE` and `ESCALATE` are
-decided by pure logic (the guard). That boundary lives in `src/decide/`.
+choose only among three actions: `ACT` / `VERIFY` / `WAIT`. `COMPLETE` and `ESCALATE` are decided by
+pure logic (the guard). That boundary lives in `src/decide/`.
 
 ### The protected-path gate
 

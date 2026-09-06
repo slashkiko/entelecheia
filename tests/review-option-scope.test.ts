@@ -159,7 +159,6 @@ describe("レビュー役を出すかどうかは criteria が決める", () => 
 
     expect(prompt).toContain('{"type":"ACT","intent"');
     expect(prompt).toContain('{"type":"VERIFY"}');
-    expect(prompt).toContain('{"type":"REPLAN"}');
   });
 
   it("`type: human` の criterion を review.verdict と読み違えない", async () => {

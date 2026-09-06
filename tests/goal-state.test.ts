@@ -58,6 +58,8 @@ describe("goal-state", () => {
       }
     });
 
+    // REPLAN は DECIDE の選択肢から外してあるので、新しい Decision には現れない。
+    // `actionSchema` の union には過去の行のために残っているので、遷移も残す。
     it("ACT / VERIFY / REPLAN は ACTIVE のまま", () => {
       const actions: Action[] = [
         { type: "ACT", intent: "直す" },

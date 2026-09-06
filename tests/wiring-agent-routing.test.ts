@@ -117,7 +117,7 @@ describe("phase ごとの Agent 選択", () => {
     const factories: AgentFactories = {
       claudeActor: vi.fn(() => actor("claude-code")),
       codexActor: vi.fn(() => actor("codex")),
-      claudeLlm: vi.fn(() => ({ chooseAction: async () => ({ type: "REPLAN" }) })),
+      claudeLlm: vi.fn(() => ({ chooseAction: async () => ({ type: "VERIFY" }) })),
       codexLlm: vi.fn((options) => ({
         chooseAction: async () => {
           options.onCall?.({
@@ -194,8 +194,8 @@ describe("phase ごとの Agent 選択", () => {
     const factories: AgentFactories = {
       claudeActor: vi.fn((options) => actor("claude-code", options)),
       codexActor: vi.fn((options) => actor("codex", options)),
-      claudeLlm: vi.fn(() => ({ chooseAction: async () => ({ type: "REPLAN" }) })),
-      codexLlm: vi.fn(() => ({ chooseAction: async () => ({ type: "REPLAN" }) })),
+      claudeLlm: vi.fn(() => ({ chooseAction: async () => ({ type: "VERIFY" }) })),
+      codexLlm: vi.fn(() => ({ chooseAction: async () => ({ type: "VERIFY" }) })),
     };
 
     try {
