@@ -47,6 +47,21 @@ export const escalateReasonSchema = z.enum([
   "budget_exhausted",
   /** 同じ Gap が解消されないまま繰り返している */
   "loop_detected",
+  /**
+   * 走り切った実装の試行が、同じ結果を出し続けている。
+   *
+   * `loop_detected` と**材料が違う**。あちらは観測ダイジェスト
+   * （`Decision.observed_digest`）が動かないことを見るので、`github.ci.*` や
+   * `local.dirty` が揺れるだけで数え直す。こちらは試行の結果——Gap 集合と
+   * criteria 結果と失敗 detail——だけを見るので、無関係な観測の揺れでは
+   * 数え直さない（`attemptSignature`）。
+   *
+   * **理由を分けたのは、測り方を後から変えないため。** `docs/metrics.md` の M6 は
+   * 停止の理由ごとに数えると決めてあり、`loop_detected` の基準線は 0 になる。
+   * 同じ名前で出すと、あちらの基準線が新しい検知の発火で埋まり、
+   * 「既存の検知が誤って鳴るようになった」と読めなくなる。
+   */
+  "repeated_attempt",
   /** LLM の出力が Zod を通らなかった */
   "invalid_decision",
   /**

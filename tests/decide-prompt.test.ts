@@ -130,6 +130,8 @@ function target(over: Partial<DecideTarget> = {}): DecideTarget {
     assessment: assessment(GAPS),
     unresolved: [HUMAN_UNRESOLVED, PORT_UNRESOLVED],
     observedDigest: "digest-1",
+    // 試行台帳を読む口が無い fixture。もう1系統のループ検知は働かない。
+    repeatedAttempts: { signature: null, count: 0 },
     budget: BUDGET,
     usage: FRESH,
     ...over,

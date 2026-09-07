@@ -626,6 +626,9 @@ const GUARD_REASONS = new Set<string>([
   ...UNPUSHABLE_REASONS,
   "uncommitted_changes",
   "loop_detected",
+  // `repeated_attempt` も同じ理由でここに入れる。試行の結果が動かないことが
+  // 発火条件そのものなので、観測が動いていないティックで必ず飛ばされる側になる。
+  "repeated_attempt",
 ]);
 
 /** 関門が止めたティックか。通知の必須化が読む */
@@ -651,6 +654,7 @@ function stoppedByGuard(decision: Decision): boolean {
  */
 const DEDUP_WHEN_REPEATED = new Set<string>([
   "loop_detected",
+  "repeated_attempt",
   "protected_path_touched",
   "guard_unavailable",
   "uncommitted_changes",

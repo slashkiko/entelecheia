@@ -105,6 +105,27 @@ export interface DecideTarget {
   unresolved: readonly Unresolved[];
   /** 今ティックの観測ダイジェスト。ループ検知が `usage.trailingDigest` と突き合わせる */
   observedDigest: string;
+  /**
+   * 末尾から数えて、同じ結果の実装の試行が何回続いているか（`attemptSignature`）。
+   *
+   * **`observedDigest` と対になる、もう1系統のループ検知の材料になる。**
+   * あちらの材料は Fact をすべて含むダイジェストで、`github.ci.*` や
+   * `local.dirty` が揺れるだけで数え直す。こちらの材料は試行の結果だけで、
+   * Fact は1つも入らない。両方が同時に外れる形を減らすために2系統に分ける。
+   *
+   * **数えるのは永続化された行だけになる。** 台帳は「前ティックの実装 Run を、
+   * 次ティックの VERIFY 結果で閉じる」形で組み立てるので（`buildAttempts`）、
+   * 今ティックの ACT はまだ閉じていない。結果として1ティック遅れて数え上がる。
+   * 遅れる側に倒したのは、途中まで持ち上げた比較——一部は永続化された検証結果、
+   * 一部はメモリ上の今ティックの検証結果——を作らないため。
+   * `pendingReviewCriteria` は実装役が走ったティックの検証結果だけを書き換える
+   * ので、混ぜると指紋が毎ティック違い、検知が黙って死ぬ。
+   *
+   * 台帳を読む口が無ければ `{ signature: null, count: 0 }` になる。数えられない
+   * ことは停滞していないことではないので、その場合はこの系統が働かないだけで、
+   * hard budget（`max_unchanged_reconciles` と `max_reconciles`）は変わらず効く。
+   */
+  repeatedAttempts: { signature: string | null; count: number };
   budget: Budget;
   usage: BudgetUsage;
 }
@@ -121,18 +142,21 @@ export { MAX_LLM_RETRIES };
  * 次に取る行動を1つ選ぶ。
  *
  * 満たすべき性質:
- * - 次の5つは LLM を呼ばずに決める（decidedBy: "guard"）
+ * - 次の6つは LLM を呼ばずに決める（decidedBy: "guard"）
  *     予算・回数・時間の上限に到達         → ESCALATE(budget_exhausted)
  *     読めなかった観測が1件でもある         → ESCALATE(shape_mismatch)
  *     Gap が無く unresolved も無い         → COMPLETE
  *     Gap は無いが unresolved がある       → WAIT
  *     観測が変わらないまま N 回続いた       → ESCALATE(loop_detected)
+ *     同じ結果の試行が N 回続いた           → ESCALATE(repeated_attempt)
  *   COMPLETE を LLM に決めさせないのは、§3.1「完了判定は VERIFIED のみ」を
  *   推論で迂回させないため。予算超過とループ検知も、暴走の停止条件を LLM に依存させない
  * - guard の判定順は上のとおり。予算超過は他のどの状態よりも優先する。
  *   shape_mismatch は Gap の有無より先に置く。形が読めていないあいだの観測を
  *   根拠に Actor を起動すると、根拠の無い intent に予算を使う。
- *   ループ検知は Gap が無い場合より後に置く。空回りしていても、満たしているなら完了でよい
+ *   ループ検知は Gap が無い場合より後に置く。空回りしていても、満たしているなら完了でよい。
+ *   試行の反復（repeated_attempt）は観測のループ検知の直後に置く。どちらも同じ
+ *   「進んでいない」の別の見方で、先に置いた方が先に鳴るというだけになる
  * - WAIT の reason は unresolved と criteria から決める
  *     port_failed が1件でもある                  → observation_failed
  *     pending だけで、対応する criterion が human → human_review_pending
@@ -234,7 +258,29 @@ export async function decide(target: DecideTarget, deps: DecideDeps): Promise<De
     );
   }
 
-  // 5. Gap がある。どう埋めるかは状況依存なので LlmPort に委ねる。
+  // 5. 同じ結果の試行が続いている（もう1系統のループ検知）。
+  //    4番目と材料が違う。あちらは Fact をすべて含む観測ダイジェストなので、
+  //    `github.ci.*` や `local.dirty` が揺れるだけで数え直す。こちらは試行の
+  //    結果——Gap 集合と criteria 結果と失敗 detail——だけを見るので、
+  //    無関係な観測の揺れでは数え直さない（`attemptSignature`）。
+  //
+  //    **上限は `max_unchanged_reconciles` を共有する。** 単位はティックではなく
+  //    試行になるが、宣言に足せる場所が無い——`budget` のスキーマは
+  //    `src/domain/goal.ts` にあり、`PROTECTED_PATH_FLOOR` の中になる。
+  //    コード側に既定値を置くと、YAML を読んだだけでは停止条件が分からなくなる
+  //    （`budgetSchema` が5項目すべてを必須にしている理由）。同じ「何回まで
+  //    進まなくてよいか」を問う値なので、宣言済みのこの1本に相乗りする。
+  //
+  //    停止条件なので LLM には決めさせない。判断するのは guard だけになる。
+  const repeated = target.repeatedAttempts;
+  if (repeated.signature !== null && repeated.count >= target.budget.max_unchanged_reconciles) {
+    return guard(
+      { type: "ESCALATE", reason: "repeated_attempt" },
+      `stopping: the last ${repeated.count}/${target.budget.max_unchanged_reconciles} completed implement attempts closed with exactly the same result, yet these Gaps remain: ${describeGaps(target.assessment.gaps)}`,
+    );
+  }
+
+  // 6. Gap がある。どう埋めるかは状況依存なので LlmPort に委ねる。
   return await askLlm(target, deps, decidedAt);
 }
 
