@@ -19,7 +19,7 @@ import {
   runSchema,
   runStatusSchema,
 } from "../domain/run.js";
-import { verificationResultSchema } from "../domain/verification.js";
+import { type Verification, verificationResultSchema } from "../domain/verification.js";
 import type { Store } from "./port.js";
 
 /**
@@ -262,6 +262,38 @@ export function openStore(path: string): Store {
       };
     },
 
+    listSnapshots(goalId) {
+      // 試行台帳が「試行の前後で HEAD が動いたか」を引く（`buildAttempts`）。
+      // 1件ずつ facts を引くので、件数は `max_reconciles` に頭打ちされることを
+      // 前提にしている。ティックごとの判断からは呼ばない。
+      const heads = parseRows(
+        snapshotHeadSchema,
+        db
+          .prepare("SELECT id, observed_at FROM snapshots WHERE goal_id = ? ORDER BY id")
+          .all(goalId),
+        "listSnapshots",
+      );
+
+      const facts = db.prepare("SELECT * FROM facts WHERE snapshot_id = ? ORDER BY seq");
+      const unresolvedOf = db.prepare(
+        "SELECT * FROM unresolved WHERE snapshot_id = ? ORDER BY seq",
+      );
+
+      return heads.map((head) => ({
+        observedAt: head.observed_at,
+        facts: parseRows(factRowSchema, facts.all(head.id), "listSnapshots.facts").map(toFact),
+        unresolved: parseRows(
+          unresolvedRowSchema,
+          unresolvedOf.all(head.id),
+          "listSnapshots.unresolved",
+        ).map((u) => ({
+          key: u.key,
+          reason: unresolvedSchema.shape.reason.parse(u.reason),
+          detail: u.detail,
+        })),
+      }));
+    },
+
     saveVerifications(goalId, verifications) {
       // 1ティック分をまとめて1つの reconcile_seq に載せる。criteria をまたいで
       // 時点がずれると、「このティックの検証結果」を引けなくなる。
@@ -303,17 +335,30 @@ export function openStore(path: string): Store {
           .all(goalId, goalId),
         "latestVerifications",
       );
-      return rows.map((row) => ({
-        criterionId: row.criterion_id,
-        result: verificationResultSchema.parse(row.result),
-        reason: row.reason,
-        evidence:
-          row.evidence_source === null
-            ? null
-            : { source: row.evidence_source, detail: row.evidence_detail ?? "" },
-        detail: row.detail,
-        verifiedAt: row.verified_at,
-      }));
+      return rows.map(toVerification);
+    },
+
+    listVerificationRounds(goalId) {
+      // ティックごとにまとめて返す。行のまま返すと、読む側が reconcile_seq で
+      // 畳み直すことになり、「1ティック分」の切り方が呼び出しごとに分かれる。
+      const rows = parseRows(
+        verificationRowSchema,
+        db
+          .prepare("SELECT * FROM verifications WHERE goal_id = ? ORDER BY reconcile_seq, id")
+          .all(goalId),
+        "listVerificationRounds",
+      );
+
+      const rounds = new Map<number, Verification[]>();
+      for (const row of rows) {
+        const round = rounds.get(row.reconcile_seq) ?? [];
+        round.push(toVerification(row));
+        rounds.set(row.reconcile_seq, round);
+      }
+
+      return [...rounds.entries()]
+        .sort(([a], [b]) => a - b)
+        .map(([reconcileSeq, verifications]) => ({ reconcileSeq, verifications }));
     },
 
     saveDecision(goalId, observedDigest, decision) {
@@ -913,6 +958,27 @@ function enableWal(db: DatabaseSync): void {
 }
 
 /**
+ * Verification の再構成。行の形を知る場所を1つに保つ。
+ *
+ * 直近1ティックを読む口（`latestVerifications`）と履歴を読む口
+ * （`listVerificationRounds`）の両方から呼ぶ。片方だけで組み立てていると、
+ * `evidence` を持たない行の畳み方が2通りに分かれる。
+ */
+function toVerification(row: VerificationRow): Verification {
+  return {
+    criterionId: row.criterion_id,
+    result: verificationResultSchema.parse(row.result),
+    reason: row.reason,
+    evidence:
+      row.evidence_source === null
+        ? null
+        : { source: row.evidence_source, detail: row.evidence_detail ?? "" },
+    detail: row.detail,
+    verifiedAt: row.verified_at,
+  };
+}
+
+/**
  * Fact の再構成。
  *
  * INFERRED で evidence が無い場合はキーごと落とす。null を入れると
@@ -1072,6 +1138,7 @@ const decisionRowSchema = z.object({
 });
 
 const verificationRowSchema = z.object({
+  reconcile_seq: z.number(),
   criterion_id: z.string(),
   result: z.string(),
   reason: z.string().nullable(),
@@ -1080,6 +1147,7 @@ const verificationRowSchema = z.object({
   detail: z.string(),
   verified_at: z.string(),
 });
+type VerificationRow = z.infer<typeof verificationRowSchema>;
 
 const llmCallRowSchema = z.object({
   purpose: z.string(),

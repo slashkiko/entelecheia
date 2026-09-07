@@ -152,6 +152,8 @@ describe("shape_mismatch の倒し方", () => {
           { key: "github.pr", reason: "shape_mismatch", detail: "応答の形が想定と違う" },
         ],
         observedDigest: "digest",
+        // 試行台帳を読む口が無い fixture。もう1系統のループ検知は働かない。
+        repeatedAttempts: { signature: null, count: 0 },
         budget: {
           max_actor_runs: 10,
           max_reconciles: 20,

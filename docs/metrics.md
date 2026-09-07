@@ -395,7 +395,71 @@ worktree ごとに `.goals/.state/goals.db` が分かれるため、どこで叩
 
 出力例が §1 の表と §4 の4列になる。`--prices` を省くと USD の列は `-` になる。
 
-## 8. なぜ `docs/decisions/` ではなくここに置くか
+## 8. 測った結果
+
+**この節だけが増える。** §2 から §7 の測り方は動かさない。ここに積むのは、その測り方で
+実際に測った値になる。
+
+### 2026-09-07 — 試行台帳とループ検知の二系統化
+
+M5（同一失敗シグネチャの反復回数）の観測が入った。基準線7本に対して、入った検知を
+そのまま当てた結果が次になる。
+
+**`ent` の出力ではなく状態ストアの行から数えている。** この指標は §5 で「観測が無い」に
+分類したもので、CLI に出す口はまだ無い。数え直すには、基準線の `goals.db` を開いて
+`buildAttempts` と `trailingRepeatedAttempts`（`src/domain/attempt.ts`）を Goal ごとに
+呼ぶ。`Store` は `listRuns` / `listVerificationRounds` / `listSnapshots` の3本を返すので、
+それを渡すだけになる。
+
+| Goal | 実装の試行 | 閉じた試行 | 同じ結果の連続 |
+| --- | --- | --- | --- |
+| `calculate-metered-cost-from-raw-logs` | 2 | 2 | 1 |
+| `harden-what-plan-writes` | 2 | 1 | 1 |
+| `plan-refuses-goals-with-nothing-to-do` | 1 | 1 | 1 |
+| `plan-writes-declarations-that-hold` | 1 | 0 | 0 |
+| `plan-writes-yaml-that-holds` | 1 | 1 | 1 |
+| `surface-unregistered-declarations` | 1 | 1 | 1 |
+| `zz-driver-boundary-probe` | 0 | 0 | 0 |
+
+**最大でも1で、`max_unchanged_reconciles`（既定4）に届いた Goal は1本も無い。**
+基準線に遡って当てても、新しい検知は一度も発火しない。M6 の読み方は
+「新たに人間を呼ぶようになったら悪化」だったので、**その意味での悪化は基準線には無い。**
+
+### 偽陰性の2本は、どちらも拾えない
+
+§6 は「人間が手で畳んだ Goal のうち、空回りしていたのに検知が出なかったもの」を
+`harden-what-plan-writes` と `surface-unregistered-declarations` の2本としていた。
+**入った検知は、この2本のどちらも拾わない。** 行を読んだ結果は次になる。
+
+**`harden-what-plan-writes` — 反復と呼べる材料が無い。** 実装の試行は2件で、2件目
+（run 4）は閉じていない。次のティックが走る前に人間が畳んだので、結果を書いた
+VERIFY が存在しない。閉じた1件目と比べるにしても、reconcile 1 と 2 のあいだで
+`ac-2` は failed から passed へ動いている。**空回りではなく、進んだうえで畳まれている。**
+`abandon_reason` の要旨（「ベースが古く、修正が重複していた」）とも一致する。
+
+**`surface-unregistered-declarations` — DECIDE がループ検知に到達していない。**
+reconcile 3 と 4 の検証結果は完全に一致する（`ac-1` / `ac-2` / `ac-3` がすべて passed、
+evidence も同じ）。つまり **Gap は空**で、DECIDE は3番目の guard で COMPLETE を返して
+いる。ループ検知はその後ろに置かれている（満たしているなら完了でよい）ので、
+どちらの系統も呼ばれない。実際に記録されている `ESCALATE(protected_path_touched)` は、
+そのあとに controller の関門が差し替えたものになる。**空回りしていたのは DECIDE の外**で、
+繰り返していたのは関門の誤発火（issue #62 で塞いだ）だった。実装の試行も1件しかない。
+
+**§6 の分類はここで更新しない。** 測り方を後から変えないためにこの文書がある。
+記録するのは「その分類に対して、入った検知は 0/2 だった」という結果と、その理由になる。
+2本のうち1本は分類そのものが行と合っておらず、もう1本は台帳が数える単位に届いていない。
+
+### 読み方
+
+- **M5 は空欄でなくなった。** 値は上の表になる。基準線では全 Goal が1以下で、
+  前向きに回すアームで初めて意味のある分布になる
+- **M6 に `ESCALATE(repeated_attempt)` の行が増える。** 基準線は 0 になる。理由ごとに
+  数えると決めてある（§2 の M6）ので、`loop_detected` の基準線 0 は 0 のまま残る。
+  同じ理由名で出していたら、あちらの「増えたかどうか」が読めなくなっていた
+- **偽陰性の側は、いまも測れていない。** 基準線の2本が種にならないことが分かった以上、
+  この観点は前向きのアームで積み直すしかない
+
+## 9. なぜ `docs/decisions/` ではなくここに置くか
 
 `docs/decisions/` は「持ち込まれた案を判定した記録」で、判定が終われば動かない
 （`docs/decisions/README.md`）。**この文書は動く。** 観測が足されれば §5 の指標は §3 へ移り、

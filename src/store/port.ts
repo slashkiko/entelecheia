@@ -1,4 +1,5 @@
 import type { Decision } from "../domain/action.js";
+import type { VerificationRound } from "../domain/attempt.js";
 import type { Snapshot } from "../domain/fact.js";
 import type { Goal } from "../domain/goal.js";
 import type { GoalListItem, GoalState, GoalStatus } from "../domain/goal-state.js";
@@ -79,6 +80,13 @@ export interface Store {
   saveSnapshot(goalId: string, snapshot: Snapshot): void;
   /** 直近のスナップショット。facts は次ティックの carriedFacts になる */
   latestSnapshot(goalId: string): Snapshot | null;
+  /**
+   * 全スナップショットを古い順に返す。試行台帳が試行の前後の HEAD を引く。
+   *
+   * 件数は `max_reconciles`（既定 20）で頭打ちになる。Goal 1本ぶんの観測を
+   * まるごと読む口なので、ティックごとの判断には使わず、台帳を組み立てるときだけ呼ぶ。
+   */
+  listSnapshots(goalId: string): Snapshot[];
 
   /**
    * design.md §4.5 の Verification テーブル。criteria 単位の索引になる。
@@ -87,6 +95,14 @@ export interface Store {
   saveVerifications(goalId: string, verifications: readonly Verification[]): void;
   /** 直近のティックの検証結果。§9 の完了判定はこれを読む */
   latestVerifications(goalId: string): Verification[];
+  /**
+   * 全ティックの検証結果を reconcile_seq の昇順でまとめる。試行台帳が読む。
+   *
+   * `latestVerifications` と分けてあるのは、読む目的が逆だから。あちらは
+   * 「いまどこまで通っているか」で、直近1ティックだけが答えになる。こちらは
+   * 「前の試行が何で閉じたか」で、履歴そのものが答えになる（`buildAttempts`）。
+   */
+  listVerificationRounds(goalId: string): VerificationRound[];
 
   /** design.md §4.5 の Decision テーブル。L5 に食わせる履歴なので必ず残す */
   saveDecision(goalId: string, observedDigest: string, decision: Decision): void;

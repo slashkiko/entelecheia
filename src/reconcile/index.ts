@@ -1,14 +1,51 @@
 import { type AssessDeps, assess } from "../assess/index.js";
 import { type BudgetUsage, type DecideDeps, decide } from "../decide/index.js";
 import type { Decision } from "../domain/action.js";
+import {
+  type Attempt,
+  buildAttempts,
+  trailingRepeatedAttempts,
+  type VerificationRound,
+} from "../domain/attempt.js";
 import { digestOf } from "../domain/digest.js";
-import type { Fact, Unresolved } from "../domain/fact.js";
+import type { Fact, Snapshot, Unresolved } from "../domain/fact.js";
 import type { Assessment } from "../domain/gap.js";
 import type { Goal } from "../domain/goal.js";
+import type { Run } from "../domain/run.js";
 import { type ObserveDeps, type ObserveTarget, observe } from "../observe/index.js";
 import { type VerifyDeps, verify } from "../verify/index.js";
 
-export interface ReconcileDeps extends ObserveDeps, AssessDeps, DecideDeps, VerifyDeps {}
+/**
+ * 試行台帳を組み立てるために読む行。**Store の部分集合として書く。**
+ *
+ * ここを `Store` そのものにしないのは、reconcile が要るのが読みの3本だけだから
+ * になる。使う側が要る分だけを口として持つ（design.md §4.1）。
+ *
+ * **合成ルートも controller も1文字も触らずに繋がる。** `ControllerDeps` は
+ * `ReconcileDeps` を継承したうえで `store: Store` を持ち、controller は
+ * `reconcile(..., deps)` にその `deps` をそのまま渡している。`Store` がこの3本を
+ * 備えていれば、`ControllerDeps extends ReconcileDeps` の時点で型検査が通り、
+ * 実行時にも同じオブジェクトが届く。`PublishDeps.review` が同じ手を採っている
+ * （`.goals/show-the-review-body.yaml` の「材料はもう届いている」）。
+ */
+export interface AttemptLedgerSource {
+  listRuns(goalId: string): Run[];
+  listVerificationRounds(goalId: string): VerificationRound[];
+  listSnapshots(goalId: string): Snapshot[];
+}
+
+export interface ReconcileDeps extends ObserveDeps, AssessDeps, DecideDeps, VerifyDeps {
+  /**
+   * 試行台帳の材料を読む口。渡されなければ台帳を作らない。
+   *
+   * 任意にしてあるのは、この口を持たないテストの差し替えを全部書き換えずに
+   * 済ませるため。実運用では必ず届く（`ControllerDeps.store`）。**省略を
+   * 「停滞していない」と読まない。** 台帳が無いティックでは
+   * `repeated_attempt` の系統が働かないだけで、観測ダイジェスト側のループ検知も
+   * hard budget も変わらず効く。
+   */
+  store?: AttemptLedgerSource | undefined;
+}
 
 export interface ReconcileTarget {
   goal: Goal;
@@ -43,6 +80,13 @@ export interface ReconcileResult {
    * DECIDE がループ検知に使うので、呼び出し側ではなくここで作る。
    */
   observedDigest: string;
+  /**
+   * この Goal の試行台帳。台帳を読む口が無いティックでは空になる。
+   *
+   * **今ティックの ACT はまだ入らない。** 材料は永続化された行だけで、
+   * この時点ではまだ何も書かれていない（`buildAttempts`）。
+   */
+  attempts: Attempt[];
   decision: Decision;
 }
 
@@ -97,6 +141,9 @@ export async function reconcile(
   // ループ検知（§7 の max_unchanged_reconciles）が今ティックの観測と
   // 直近の連続を突き合わせる。DECIDE に渡す値なのでここで作る。
   const observedDigest = digestOf(facts);
+  // もう1系統のループ検知の材料。永続化された Run と検証結果を結んで台帳にし、
+  // 同じ結果の実装の試行が何回続いたかを数える（`attemptSignature`）。
+  const attempts = attemptsOf(target.goal.goal.id, deps.store);
   const decision = await decide(
     {
       criteria,
@@ -113,6 +160,7 @@ export async function reconcile(
       assessment,
       unresolved,
       observedDigest,
+      repeatedAttempts: trailingRepeatedAttempts(attempts),
       budget: target.goal.budget,
       usage: target.usage,
     },
@@ -126,8 +174,32 @@ export async function reconcile(
     unresolved,
     assessment,
     observedDigest,
+    attempts,
     decision,
   };
+}
+
+/**
+ * 試行台帳を組み立てる。読む口が無ければ空を返す。
+ *
+ * **読めなかったティックでも throw しない。** どの段が落ちてもティック全体を
+ * 失敗させないのが reconcile の性質で（design.md §3.6）、台帳は観測でも判定でも
+ * なく履歴の読み直しになる。読めなければこの系統のループ検知が働かないだけで、
+ * hard budget は変わらず効く。
+ */
+function attemptsOf(goalId: string, store: AttemptLedgerSource | undefined): Attempt[] {
+  if (store === undefined) {
+    return [];
+  }
+  try {
+    return buildAttempts({
+      runs: store.listRuns(goalId),
+      rounds: store.listVerificationRounds(goalId),
+      snapshots: store.listSnapshots(goalId),
+    });
+  } catch {
+    return [];
+  }
 }
 
 /** PR の head sha。CI の Fact がどのコミットのものかは、これでしか分からない */

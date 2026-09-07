@@ -104,6 +104,8 @@ function target(criteria: readonly AcceptanceCriterion[]): DecideTarget {
     assessment: ASSESSMENT,
     unresolved: [],
     observedDigest: "digest-1",
+    // 試行台帳を読む口が無い fixture。もう1系統のループ検知は働かない。
+    repeatedAttempts: { signature: null, count: 0 },
     budget: BUDGET,
     usage: FRESH,
   };

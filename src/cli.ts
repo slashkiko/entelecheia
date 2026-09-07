@@ -1,7 +1,16 @@
 #!/usr/bin/env node
-import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  writeFileSync,
+} from "node:fs";
+import { readFile } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { worktreeNameFor } from "./act/index.js";
 import { agentContextPayload } from "./cli/agent-context.js";
 import { type Command, parseCommand, type ReportTarget, USAGE } from "./cli/parse.js";
 import {
@@ -15,8 +24,10 @@ import { type TickResult, tick } from "./controller/index.js";
 import { errorMessage } from "./domain/error-message.js";
 import { type Goal, progressTargetOf } from "./domain/goal.js";
 import { isTerminal } from "./domain/goal-state.js";
+import { DEFAULT_ACTOR_ROLE } from "./domain/run.js";
 import type { Store } from "./store/port.js";
 import { costPayload, emptyCostPayload, parseCostPriceFile } from "./usecase/cost.js";
+import { type DeliverAttemptsProbes, deliverAttemptLedger } from "./usecase/deliver-attempts.js";
 import { doctorPayload } from "./usecase/doctor.js";
 import { initRepository } from "./usecase/init.js";
 import {
@@ -383,12 +394,29 @@ async function runCommand(argv: readonly string[]): Promise<number> {
     const record: ReportRecord = { body: null, error: null };
     const report = target === undefined ? undefined : reportSink(target, record);
 
-    const result = await tick(goal, {
+    const deps = {
       ...tickPorts(goal, store, repoRoot, stateDir),
       store,
       signal: aborter.signal,
       report,
-    });
+    };
+
+    // 前の試行の台帳を、Actor の作業ツリーへ置き直す。**ティックを回す前に置く。**
+    // ACT はティックの途中で起きるので、あとから置いても今回の Actor には届かない。
+    // 置けなかったティックは黙って進む（`deliverAttemptLedger` は throw しない）。
+    // 参考情報の配布が制御ループの停止条件になってはいけない。
+    if (command.dryRun !== true && deps.worktreeRoot !== undefined) {
+      await deliverAttemptLedger(
+        {
+          goalId: goal.goal.id,
+          worktreePath: join(deps.worktreeRoot, worktreeNameFor(goal.goal.id, DEFAULT_ACTOR_ROLE)),
+        },
+        store,
+        attemptViewProbes(),
+      );
+    }
+
+    const result = await tick(goal, deps);
 
     process.stdout.write(
       `${JSON.stringify(
@@ -443,6 +471,30 @@ function declaredReportTarget(goal: Goal): ReportTarget | undefined {
     return undefined;
   }
   return target.kind === "stdout" ? { kind: "stdout" } : { kind: "file", path: target.path };
+}
+
+/**
+ * 試行台帳のビューを配るときに使う、ファイルシステムへの口。
+ *
+ * **合成ルートには置かない。** `src/wiring/index.ts` は `PROTECTED_PATH_FLOOR` の
+ * 中にあり、Actor には書けない。ここが挿すのは `node:fs` の関数そのもので、
+ * Adapter は1つも増えない（`src/adapters/**` を import してよいのは合成ルートだけ、
+ * `tests/architecture.test.ts`）。
+ *
+ * 読み書きの実体を引数で受け取る形は usecase 側に残してある。テストは
+ * メモリ上の関数を挿して、ファイルを1本も作らずに配布を確かめられる。
+ */
+function attemptViewProbes(): DeliverAttemptsProbes {
+  return {
+    exists: (path) => existsSync(path),
+    ensureDir: (path) => {
+      mkdirSync(path, { recursive: true });
+    },
+    writeFile: (path, contents) => {
+      writeFileSync(path, contents);
+    },
+    readLog: (path) => readFile(path, "utf8"),
+  };
 }
 
 /**

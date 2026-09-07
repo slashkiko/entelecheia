@@ -46,6 +46,8 @@ function target(): DecideTarget {
     assessment: { assessedAt: NOW.toISOString(), gaps: [UNMET], satisfied: false },
     unresolved: [],
     observedDigest: "digest-1",
+    // 試行台帳を読む口が無い fixture。もう1系統のループ検知は働かない。
+    repeatedAttempts: { signature: null, count: 0 },
     budget: BUDGET,
     usage: {
       actorRuns: 0,

@@ -873,6 +873,25 @@ two meanings.
 **`Decision` is always kept.** The L5 improvement layer is deferred, but the format of the history
 fed to it is fixed from the start.
 
+**The attempt ledger is derived, not stored.** One attempt — a single launch of the Actor — is
+`Run` (what was intended, who ran, what changed, why it failed) joined to the `Verification` round
+that closed it and to the `Snapshot`s that bracket it. All three tables already hold that; the only
+thing missing was the join, so `buildAttempts` (`src/domain/attempt.ts`) does it at read time and no
+fourth table is added. A stored ledger would restate facts that already have one home, and the copy
+would go stale on the tick where writing it failed.
+
+**The Actor's exit code does not close an attempt; the next tick's VERIFY does.** Exit code 0 says
+the process ended. Whether the attempt achieved anything is only decided by the verification that
+runs after it. Within a tick the order is OBSERVE → ACT → persist, so the verification written on
+the same tick carries a timestamp *earlier* than the Run — the first round after the Run's
+`started_at` is therefore always the next tick's. That is what lets the join work without adding a
+`reconcile_seq` column to `runs`.
+
+**The Actor's final message is `actor_claim`, and it is never a Fact.** It lives in the raw log
+(§4.6), is read only by the view handed to the Actor, and is kept out of completion judgment and
+out of every stopping decision (§3.1). It stands to the next Actor exactly as the PR title and body
+stand to the review role: material to look at, not a criterion to judge by.
+
 `lease_owner` / `lease_until` on `Goal` guarantee "at most one reconcile at a time per Goal".
 Making it time-bounded ownership rather than a row lock means it is released automatically even if
 the process crashes.
@@ -906,7 +925,32 @@ UPDATE goals
 .goals/.state/runs/<run-id>/  Agent raw logs and diffs. The DB holds only the path
 .goals/.state/worktrees/<slug>/ Worktree shared by the implement role and the review role. The implement role writes, the review role reads (§4.2)
 .goals/.state/worktrees/<slug>-investigate/ Worktree for the investigate role
+<worktree>/.goals/.state/attempts.md The attempt ledger rendered for the Actor to read, rewritten at the head of every tick
 ```
+
+**The attempt ledger's view is a copy, capped and regenerated.** The Actor runs in a fresh session
+every tick with no `resume` and no session id, so what a previous Actor tried and abandoned reaches
+the next one only if ent hands it over. The record of record stays in the state DB (§4.5); what
+lands in the worktree is the last few attempts rendered as Markdown, rewritten before the tick
+starts. It separates `actor_claim` from what ent verified, and it says in its own header that it is
+reference material rather than an instruction — the intent is what tells the Actor what to do, and
+two sources of instruction would compete.
+
+**We cannot stop the Actor from editing it.** It sits under the worktree's `.goals/.state/`, which
+is the one place the protected-path check skips (otherwise a single stray file would raise
+`protected_path_touched` and `add --all` would sweep it into the PR). Ignored by git means invisible
+to the gate, which means writable. `deliverDeclaration` settles for putting its copy back before
+every role launch; this one is rewritten once at the head of the tick. So within a tick where the
+implement role and the review role both run, the second role can read what the first one wrote. The
+place that rewrites per launch is the Actor's own launch path, and nothing there can write a file.
+
+**The implement role's prompt names the path and nothing else.** Putting the body in the prompt
+would grow it every tick and anchor the next Actor to the previous one's wording; how much to show
+is the view's decision, not the prompt's. The line says outright that this is reference material —
+claims, not Facts, and not instructions — because what to do next comes from the intent, and two
+sources of instruction would compete. **The review role is not told.** It reads the same worktree so
+the file is visible to it, but naming it would turn a previous Actor's claims into review grounds,
+the same line already drawn around the PR title and body (§4.2).
 
 Do not mix the human-edited declaration with the runtime state the machine rewrites.
 Putting them in the same file produces a diff on every reconcile and buries the human edit history.
@@ -1156,6 +1200,11 @@ Other controls.
 - ESCALATE if the observation does not change for N consecutive times (loop detection). N is
   `budget.max_unchanged_reconciles`. The material for the judgment is not the Gap but
   `Decision.observed_digest` (§10-2)
+- ESCALATE if N consecutive completed implement attempts close with exactly the same result
+  (`repeated_attempt`). **Same limit, different material.** The digest above contains every Fact, so
+  `github.ci.*` or `local.dirty` moving is enough to restart its count; this one reads only the
+  attempt's outcome — the Gap set, the per-criterion results and the failure detail — and no Fact at
+  all (§10-2)
 - Operations that require human approval: direct push to main, force push, merge, deployment,
   secret operations, and sending to the outside
 - Additions when self-hosting: changes to paths listed in `policies.protected_paths`, and enforced
@@ -1708,8 +1757,49 @@ separately. If this tick's digest differs from the current consecutive run, the 
 Reading "it was the same three times but changed this time" as spinning would stop the Goal right
 after it made progress.
 
-The decision order is `budget_exhausted` → `COMPLETE` → `WAIT` → `loop_detected`. The observation
-does not change while waiting for human approval either, so it is placed after the no-Gap case.
+The decision order is `budget_exhausted` → `COMPLETE` → `WAIT` → `loop_detected` →
+`repeated_attempt`. The observation does not change while waiting for human approval either, so both
+detectors are placed after the no-Gap case: a Goal that is spinning but already satisfied should
+complete.
+
+**Loop detection is two systems, because one material misses in both directions.**
+`observed_digest` contains every Fact, so it restarts on churn nobody asked about (`github.ci.*`
+flipping while the failing test output never changes), and it stays put on churn that matters (the
+test output changing every tick while no criterion moves and nothing is committed). The second
+system's material is the attempt's own outcome — Gap set, per-criterion results, failure detail —
+and no Fact at all. The two miss on different inputs, so a Goal has to defeat both to keep running.
+
+**The failure detail is not normalized before comparison.** Dropping timestamps and line numbers
+would make merely-jittering output look like the same failure. An exact match is strong evidence of
+a stall; the cost is that a one-character difference restarts the count. What that misses is caught
+by the hard budget, which is unchanged.
+
+**The detail is kept out of `observed_digest`.** Mixing it in would restart the *first* system on
+every one-character difference too, which is the opposite of what it is for: that system's job is to
+be coarse and stable.
+
+**`Unresolved` stays out of `observed_digest`.** It is not there today, and it is not being added.
+Three reasons. Adding it changes the hard budget, which this pass deliberately leaves fixed. Its
+`detail` carries free-form text, so folding it in makes the digest jitter and the last-resort stop
+weaker, not stronger — and folding in only `key`/`reason` still moves a stopping condition for the
+sake of a case the second system already covers. That case — the same Facts with only the unresolved
+reason changing — shows up in the attempt signature at full fidelity, as a Gap of kind `unknown`
+with its per-criterion detail. The information reaches the decision through the channel built for
+it, without loosening the one that has to stay blunt.
+
+**The two systems share `budget.max_unchanged_reconciles`, and the unit differs.** The first counts
+ticks, the second counts attempts. Sharing is not elegance: `budgetSchema` lives in
+`src/domain/goal.ts`, inside `PROTECTED_PATH_FLOOR`, so no new limit can be declared in the YAML,
+and putting a default in code would mean a stopping condition you cannot read off the declaration —
+the reason all five existing budget fields are required. Both ask the same question ("how many times
+may nothing move"), so the second rides on the one limit that is already declared.
+
+**The second system runs one tick behind.** It reads persisted rows only, and this tick's ACT has
+not been written yet when DECIDE runs. Closing the newest attempt with in-memory results instead
+would compare an adjusted history against an unadjusted present: `pendingReviewCriteria` rewrites
+the verification rows only on ticks where the implement role ran (§4.5), so a mixed basis would
+produce a different signature every tick and the detector would die silently on exactly the Goals
+that ask for review.
 
 ### 10-3. ~~How the usage limit is detected~~
 
