@@ -114,6 +114,45 @@ Goal を途中から `manual` にした場合だけになる。最初から `man
 するなら、そこを定期的に読む形を先に用意する。名前を `require_human_approval` と分けた
 理由は design.md §7 にある。
 
+### レビュー役が何と突き合わせるかを選ぶ
+
+レビュー役が読む観点は skill で、どれを読ませるかは `policies.review_skill` で名指しする。
+
+```yaml
+policies:
+  # リポジトリルートからの <plugin ディレクトリ>/skills/<skill 名>。
+  review_skill: plugins/repo-review/skills/go-ddd-review
+```
+
+書かなければ、これまでどおり ent 同梱の `semantic-review` を読む。書いたときだけ、そちらに
+差し替わる。観点はリポジトリごとに違うもので、Go の DDD 規約を見たいリポジトリと React の
+アクセシビリティを見たいリポジトリに同じ1件を配る理由が無い。**変わらないのは契約になる。**
+レビュー役は本文の後ろに `reviewed_sha:` と `verdict:` を足したままで、この2行を求めているのは
+skill ではなく controller のプロンプトだからになる。観点は skill が持ち、契約は controller が
+持つ（design.md §4.2）。
+
+**指す先は Claude Code の plugin にする。** `.claude-plugin/plugin.json` と
+`skills/<名前>/SKILL.md` が並ぶ形になる。Claude Code が skill を読む口はこの形しか無いので、
+ent はレビュー役を起動する前にこの2つが作業ツリーにあることを確かめ、片方でも欠けていれば
+その Run を失敗させる。`references/` は任意で、持たない skill は SKILL.md だけが差し込まれる。
+
+**plugin には自分のディレクトリを持たせ、パスは畳まれない形で書く。** `skills/<名前>` だけは
+受け付けない。リポジトリ直下の plugin では「レビュー用 skill を守る」と「作業ツリーを丸ごと
+守る」の間に置き場が無いためになる。`.` と `..` と空のセグメント（`./skills/x` /
+`plugins/./rev/skills/x` / `a//skills/x`）も同じく受け付けない。保護パスの glob は宣言した
+文字列から作るのに対し、ディレクトリを開くのは `path.join` で、あちらはこれらを畳む。畳まれる
+形を通すと2つが別の場所を指し、**宣言は通り、レビューも回り、保護だけが黙って外れる。**
+
+**名指しした plugin ディレクトリは保護パスに入る。** ent 同梱のものは Actor の作業ツリーの
+外にあるが、リポジトリの中に置いたものはそうではない。放っておくと、実装役がこれから
+突き合わされる観点を自分で書き換えられる——design.md §4.2 が「実装役に観点を渡さない」で
+避けた構図が、ファイルシステム経由で戻ってくる。skill のディレクトリだけでなく plugin
+ディレクトリごと守るのは、manifest の名前を書き換えれば skill を丸ごと消せるためになる。
+
+`policies` は repo スコープなので、通常は `.goals/config.yaml` に置く。Goal 側が別の skill を
+書けばそちらが勝つ。`protected_paths` と違って足し合わせない——レビュー役が読む skill は1件で、
+足せる形になっていない。
+
 ### Agent に渡さない資格情報
 
 controller が持つ資格情報（`GITHUB_TOKEN` / `GH_TOKEN` と、`gh auth token` から読んだ token）は
@@ -386,7 +425,7 @@ ent run <slug>
 | `DECIDE` | `sonnet` | `low` | 毎ティック呼ばれる。出力はZodで検証する選択1つぶんで、外れても次のティックで選び直せる |
 | `PLAN` | `opus` | `high` | 人間が読む宣言を書く。criteriaの置き方を外すとGoalごと書き直しになる |
 | `IMPLEMENT` | `opus` | `high` | 手戻りが一番重い。ティック末尾の関門はcommitとpushを止めるが、書かれた中身までは見ない |
-| `REVIEW` | `opus` | `xhigh` | 見落としたぶんだけ壊れた実装が通る。`semantic-review`の観点で宣言と実装を突き合わせる役でもある |
+| `REVIEW` | `opus` | `xhigh` | 見落としたぶんだけ壊れた実装が通る。レビュー用 skill の観点（`policies.review_skill` を書かなければ`semantic-review`）で宣言と実装を突き合わせる役でもある |
 | `INVESTIGATE` | `sonnet` | `medium` | 読むのが主で、編集ツールを持たない |
 
 **`ENT_PLAN_*`を`ent run`に付けても効かない。** PLANはティックの外で動くので、読むのは
@@ -412,9 +451,10 @@ ent plan --desire "…"
 **REVIEWだけproviderを分ける手もある。** `ENT_REVIEW_ACTOR=codex`にすると、実装したのと
 同じモデルが自分の書いたものを見る形を避けられる。ただしCodexの権限制御はClaude Codeと
 完全に同じではないので、自動では選ばれない（後述の「Codex を使うとき」）。推奨ではなく、
-選択肢として書いておく。`semantic-review`の観点はどちらのproviderでも同じものが渡る。
+選択肢として書いておく。レビューの観点はどちらのproviderでも同じものが渡る。
 Claude Codeにはこの skill を Skill ツールで読ませ、Codex にはその SKILL.md と
 `references/` の本文をプロンプトへ差し込む。渡し方が違うだけで、レビューが見るものは変えない。
+`policies.review_skill` で自前の skill を名指ししたときも同じになる。
 
 #### ティックごとの上書き（`ACT.agent`）
 
@@ -1072,7 +1112,9 @@ src/adapters/claude.ts    ActorPort と LlmPort。Claude Agent SDK
 src/adapters/codex.ts     ActorPort と LlmPort。Codex CLI の非対話JSONLを変換する
 src/adapters/agent-prompt.ts role別プロンプトと出力契約。providerによらず1組で、
                           semantic-review の渡し方（Skillツール／本文の差し込み）だけが分かれる
-plugins/ent-review/       レビュー役に読ませる semantic-review skill の正本
+plugins/ent-review/       レビュー役に読ませる semantic-review skill の正本。
+                          `policies.review_skill` を書けば、対象リポジトリの中の
+                          plugin に差し替わる
 src/wiring/index.ts       合成ルート。どの Port にどの Adapter を挿すかを決める唯一の場所。
                           関門への入力（Adapter の注入と verifyRoot）もここで決まる
 src/usecase/init.ts       ent init。.goals/ と gitignore の行と config.yaml と Goal の雛形を置く

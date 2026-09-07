@@ -6,6 +6,7 @@ import {
   progressPolicySchema,
   publishPolicySchema,
   pullRequestOptionsSchema,
+  reviewSkillSchema,
   setupSchema,
 } from "./goal.js";
 
@@ -69,6 +70,7 @@ const configPoliciesSchema = z.strictObject({
   protected_paths: z.array(z.string().min(1)).optional(),
   publish: publishPolicySchema.optional(),
   progress: progressPolicySchema.optional(),
+  review_skill: reviewSkillSchema.optional(),
 });
 
 /**
@@ -109,6 +111,7 @@ export function parseGoalConfig(source: string): GoalConfig {
  *   Goal が自分の1行を書いた瞬間に repo 全体の保護が消える。この2つは既に
  *   `transform(withFloor)` で「宣言 + 下限」の形なので、下限をもう1つ増やすだけになる
  * - `setup` は置き換える。足すと `pnpm install` が2回走る
+ * - `review_skill` も置き換える。レビュー役が読む skill は1件なので、足せない
  * - Goal 側の値が期待した形でなければ、混ぜずにそのまま残す。ここで直すと、
  *   `goalSchema` が出すはずだった型の文句が消える
  */
@@ -119,11 +122,7 @@ export function mergeGoalConfig(raw: unknown, config: GoalConfig | null): unknow
 
   const merged: Record<string, unknown> = { ...raw };
   assign(merged, "repository", filledIn(raw.repository, config.repository));
-  // `??` にしない。YAML に `setup:` とだけ書くと null になり、`??` はそれを
-  // 「書いていない」と読んで config の setup を敷いてしまう。書いた側は空にした
-  // つもりなのに、別のコマンドが黙って走ることになる。書いていないかどうかは
-  // キーの有無で見て、null は書いたものとして `goalSchema` に渡す。
-  assign(merged, "setup", raw.setup === undefined ? config.setup : raw.setup);
+  assign(merged, "setup", replaced(raw.setup, config.setup));
   assign(merged, "policies", mergedPolicies(raw.policies, config.policies));
   return merged;
 }
@@ -153,7 +152,26 @@ function mergedPolicies(rawValue: unknown, config: GoalConfig["policies"]): unkn
   assign(merged, "protected_paths", added(raw.protected_paths, config.protected_paths));
   assign(merged, "publish", filledIn(raw.publish, config.publish));
   assign(merged, "progress", filledIn(raw.progress, config.progress));
+  assign(merged, "review_skill", replaced(raw.review_skill, config.review_skill));
   return merged;
+}
+
+/**
+ * Goal が書いていなければ config の値を置く。書いていれば Goal の値をそのまま残す。
+ *
+ * **判定はキーの有無だけで、値の中身は見ない。** `??` にすると、YAML に `setup:` と
+ * だけ書いて null になったものを「書いていない」と読み、config の setup を敷いて
+ * しまう。書いた側は空にしたつもりなのに、別のコマンドが黙って走ることになる。
+ * null は書いたものとして `goalSchema` に渡す。
+ *
+ * **`filledIn` でも `added` でもない3つ目の規則になる。** `filledIn` は Record を
+ * 前提にしていて（`{ ...config }`）、文字列を渡すと1文字ずつのオブジェクトになる。
+ * `added` は下限を足す2つ（`protected_paths` / `require_human_approval`）のためで、
+ * こちらが受け持つのは**1つを選ぶ宣言**——`setup` のコマンド列と `review_skill` の
+ * 観点——なので、足し合わせると意味が壊れる（`pnpm install` が2回走る、観点が2つ）。
+ */
+function replaced(rawValue: unknown, config: unknown): unknown {
+  return rawValue === undefined ? config : rawValue;
 }
 
 /**
@@ -288,5 +306,16 @@ policies:
   # over this for the tick it is passed on.
   # progress:
   #   report: pr
+
+  # Which skill the review role reads, as <plugin dir>/skills/<skill name>
+  # relative to the repository root. Omit it and the review role reads the
+  # semantic-review skill ent ships with. The directory must be a Claude
+  # Code plugin: .claude-plugin/plugin.json beside skills/<name>/SKILL.md,
+  # both of which must be in the worktree before the review role starts.
+  # The plugin needs its own directory, and . .. and empty segments are
+  # rejected. The whole plugin directory becomes a protected path, so the
+  # Agent cannot rewrite the points it is reviewed against. A Goal may name
+  # a different skill by writing this key itself.
+  # review_skill: plugins/my-review/skills/go-ddd-review
 `;
 }

@@ -202,6 +202,19 @@ export interface ActorInvocation {
    * （`PROMPT_FOR`）。ここは観測した世界を渡す口で、何に使うかは受け取る側が決める。
    */
   pullRequest?: PullRequestText | null | undefined;
+  /**
+   * レビュー役に読ませる skill の置き場所（`policies.review_skill`）。
+   * 宣言されていなければ null で、その場合は ent 同梱の `semantic-review` が渡る。
+   *
+   * **リポジトリ相対のまま渡す。** 解決するのは Adapter の側になる。基点は
+   * `worktree.path` で、そこに何が置かれているかを知っているのは Actor を起動する
+   * 層だけになる。ここで絶対パスに畳むと、既定（ent のインストール先）と
+   * 宣言（作業ツリーの中）という基点の違う2つが同じ型に混ざる。
+   *
+   * どの役割にも渡すが、使うのはレビュー役だけになる（`PROMPT_FOR`）。
+   * `pullRequest` と同じで、ここは観測した宣言を渡す口にとどめる。
+   */
+  reviewSkill?: string | null | undefined;
   /** 隔離された作業ツリー。controller 本体のコードとは物理的に分ける（design.md §7） */
   worktree: Worktree;
   /** 人間の承認が要る操作。Actor に実行させてはいけない */
@@ -454,6 +467,8 @@ async function runActor(
       agent,
       // controller が観測した PR の本文。資格情報は渡さないまま、読んだ結果だけを渡す。
       pullRequest,
+      // 宣言でレビュー観点を差し替える口（`policies.review_skill`）。
+      reviewSkill: goal.policies.review_skill ?? null,
       worktree,
       // merge や force push を Agent に実行させない（design.md §7）。
       deniedOperations: goal.policies.require_human_approval,

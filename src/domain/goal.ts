@@ -1,3 +1,4 @@
+import { isAbsolute } from "node:path";
 import { z } from "zod";
 import { observedFactKeySchema } from "./fact-keys.js";
 
@@ -523,6 +524,112 @@ export function withProtectedPathFloor(declared: readonly string[]): string[] {
   return [...new Set([...declared, ...PROTECTED_PATH_FLOOR])];
 }
 
+/**
+ * レビュー役に読ませる skill の置き場所。**リポジトリ相対の1本のパスで書く。**
+ *
+ * 形は `<plugin ディレクトリ>/skills/<skill 名>` に固定する。Claude Agent SDK が
+ * skill を読む口は plugin（`{ type: "local", path }`）しか無く、その plugin は
+ * `.claude-plugin/plugin.json` と `skills/<名前>/SKILL.md` という並びを要求する。
+ * 好きなパスを書ける形にしても、その並びでなければ Claude 側には届かない。
+ * 書ける形を実際に届く形に揃えておく。
+ *
+ * **plugin ディレクトリと skill 名を別のキーに分けない。** 分けると、
+ * `.goals/config.yaml` の継承がキー単位（`filledIn`）なので、config の書いた
+ * 名前と Goal の書いた plugin が混ざった組み合わせが作れてしまう。1本の文字列に
+ * しておけば、Goal が書いた時点で丸ごと Goal のものになる。
+ *
+ * 絶対パスと `..` を禁じるのは、Actor の作業ツリーの中に収めるため。外を指せると、
+ * 保護パスに足しても（`withReviewSkillProtected`）守れない場所の本文がレビュー役に
+ * 渡ることになる。
+ *
+ * **`.` と空のセグメントも禁じる。ここは見た目の綺麗さではなく関門の話になる。**
+ * 保護パスの glob は宣言文字列をそのまま切って作る（`reviewSkillPluginDir`）が、
+ * 実際に読みに行く側は `path.join` で解決する（`reviewSkillOf`）。`path.join` は
+ * `.` と連続する `/` を畳むので、畳まれる形を通すと**2つの導出がずれる。**
+ * `plugins/./rev/skills/x` は glob が `plugins/./rev/**`、読む先が
+ * `<worktree>/plugins/rev/skills/x` になり、編集しても glob に一致しない。
+ * 宣言は通り、skill は届き、レビューも回るので、**保護が効いていないことだけが
+ * どこにも出ない。** 畳まれる形を入口で断てば、2つの導出は必ず同じ文字列になる。
+ *
+ * **リポジトリ直下を plugin にはできない。** `skills/<名前>` だけを書くと plugin
+ * ディレクトリが空になり、glob は作業ツリー全体を指すか（実装役が1行も書けない）、
+ * `/**` のように何にも一致しないかのどちらかになる。plugin は自分のディレクトリを
+ * 持たせる。
+ */
+export const reviewSkillSchema = z
+  .string()
+  .min(1)
+  .refine((path) => !path.includes("\\"), {
+    message: "review_skill must use / as the separator",
+  })
+  // `isAbsolute` は先頭の `/` も含めて見る（posix でも win32 でも true）ので、
+  // `startsWith("/")` を併記しても弾ける入力は1つも増えない。
+  .refine((path) => !isAbsolute(path), {
+    message: "review_skill must be relative to the repository root",
+  })
+  .refine((path) => path.split("/").every((segment) => VALID_SEGMENT.test(segment)), {
+    message: "review_skill must not contain an empty, . or .. segment",
+  })
+  .refine((path) => REVIEW_SKILL_LAYOUT.test(path), {
+    message: "review_skill must be <plugin directory>/skills/<skill name>",
+  });
+
+/**
+ * `path.join` が畳まないセグメント。空文字・`.`・`..` 以外の1つ以上の文字。
+ *
+ * 空文字は `a//b` の真ん中、`.` は `a/./b`、`..` は作業ツリーからの脱出になる。
+ * 3つとも `path.join` が消すか動かすので、glob 側の導出と食い違う。
+ */
+const VALID_SEGMENT = /^(?!\.\.?$).+$/;
+
+/** `<plugin>/skills/<name>`。plugin 側も名前も空にできない */
+const REVIEW_SKILL_LAYOUT = /^[^/].*\/skills\/[^/]+$/;
+
+/**
+ * 宣言されたパスから plugin ディレクトリを取り出す。`skills/<名前>` を落とすだけ。
+ *
+ * **`reviewSkillSchema` を通ったパスにだけ使う。** 通していない文字列を渡すと、
+ * 落とす対象が足りずに空文字が返る（`a/b` も `x` も `""` になる）。返り値をそのまま
+ * glob にする側（`withReviewSkillProtected`）から見ると、何にも一致しない
+ * `/**` が保護パスとして並ぶことになる。
+ */
+export function reviewSkillPluginDir(declared: string): string {
+  return declared.split("/").slice(0, -2).join("/");
+}
+
+/** 宣言されたパスから skill 名を取り出す。SKILL.md の `name` と一致させる側になる */
+export function reviewSkillName(declared: string): string {
+  return declared.split("/").at(-1) ?? declared;
+}
+
+/**
+ * 名指しした skill の plugin ディレクトリを、保護パスに足す。
+ *
+ * **足さないと、レビューの観点を実装役が書き換えられる。** いまの
+ * `plugins/ent-review` は ent 自身のインストール先にあって Actor の作業ツリーの
+ * 外にあるが、宣言でリポジトリの中を指せるようにすると、そこは実装役が編集できる
+ * 場所になる。宣言（`.goals/**`）だけを守っても、観点の本文はファイルシステム経由で
+ * 書き換えられる——design.md §4.2 が「実装役に観点を渡さない」で避けた構図が、
+ * 別の道から戻ってくる。
+ *
+ * **skill のディレクトリではなく plugin ディレクトリごと守る。** `.claude-plugin/`
+ * の manifest は skill の解決に参加しているので、そこを書き換えれば skill を
+ * 名前ごと消せる。要求より少し広いが、狭くして素通りするより安全側になる。
+ *
+ * 置き場所を `goal.ts`（`PROTECTED_PATH_FLOOR` と同じファイル）にするのは、
+ * この導出そのものが関門の一部だから。下限の外に出すと、ent 自身を回している
+ * Actor が導出を消せる（`guard-rules.ts` の移設で踏んだのと同じ形）。
+ */
+export function withReviewSkillProtected<
+  T extends { review_skill?: string | undefined; protected_paths: string[] },
+>(policies: T): T {
+  if (policies.review_skill === undefined) {
+    return policies;
+  }
+  const plugin = `${reviewSkillPluginDir(policies.review_skill)}/**`;
+  return { ...policies, protected_paths: [...new Set([...policies.protected_paths, plugin])] };
+}
+
 export const goalSchema = z.strictObject({
   version: z.literal(1),
   goal: z
@@ -572,51 +679,72 @@ export const goalSchema = z.strictObject({
   setup: setupSchema.default([]),
   acceptance_criteria: z.array(acceptanceCriterionSchema).min(1),
   context: goalContextSchema,
-  policies: z.strictObject({
-    /**
-     * 人間の承認を必須にする操作。ここに書いたゲートだけが Agent の拒否ルールになる。
-     *
-     * `protected_paths` と同じく、`APPROVAL_GATE_FLOOR` をここで必ず混ぜる。
-     * 書き忘れたゲートは「許可」として効くので、既定が空のまま出てくることは無い。
-     */
-    require_human_approval: z
-      .array(approvalGateSchema)
-      .default([])
-      .transform(withApprovalGateFloor),
-    /**
-     * Agent に書き換えさせないパス。glob で書く（design.md §7 の自己ホスト用）。
-     *
-     * `require_human_approval` の enum には載せない。あちらは「操作の種類」で、
-     * ここは「対象」にあたる。軸が違うものを1つの enum に混ぜると、
-     * controller 側の照合が分岐だらけになる。§10-8 の未決はこの形で埋めた。
-     *
-     * 既定は空だが、空のまま出てくることは無い。`PROTECTED_PATH_FLOOR` を
-     * ここで必ず混ぜるので、Goal がキーごと省いても関門は下限まで働く。
-     * 「保護を外したい Goal が外せる」状態を作らないため、除去はできない。
-     */
-    protected_paths: z.array(z.string().min(1)).default([]).transform(withProtectedPathFloor),
-    /**
-     * controller 自身の publish を、どの段まで自動で進めるか（`publishPolicySchema`）。
-     *
-     * `require_human_approval` とは主体が違う。あちらは Agent に許さない操作、
-     * ここは controller が行わない段になる。
-     *
-     * **任意にしてある。** 上の2つと違って `.default()` を置かないのは、
-     * 「書いていない」と「既定を書いた」を型の上でも区別したいためではなく、
-     * 既存の Goal と `Goal` 型を組み立てている側（テストの fixture を含む）に
-     * 1行も足させずに済ませるため。読むときは `publishPolicyOf(goal)` を通す。
-     */
-    publish: publishPolicySchema.optional(),
-    /**
-     * 進捗をどこへ書くか（`progressPolicySchema`）。
-     *
-     * `publish` と同じく任意にしてある。書いていない既存の `.goals/*.yaml` は
-     * これまでどおり PR コメントに出る。`ent run --report` を渡したティックは
-     * そちらが勝つ——打った側の指定を宣言が上書きすると、手元に出したい1回が
-     * 出せなくなる。
-     */
-    progress: progressPolicySchema.optional(),
-  }),
+  policies: z
+    .strictObject({
+      /**
+       * 人間の承認を必須にする操作。ここに書いたゲートだけが Agent の拒否ルールになる。
+       *
+       * `protected_paths` と同じく、`APPROVAL_GATE_FLOOR` をここで必ず混ぜる。
+       * 書き忘れたゲートは「許可」として効くので、既定が空のまま出てくることは無い。
+       */
+      require_human_approval: z
+        .array(approvalGateSchema)
+        .default([])
+        .transform(withApprovalGateFloor),
+      /**
+       * Agent に書き換えさせないパス。glob で書く（design.md §7 の自己ホスト用）。
+       *
+       * `require_human_approval` の enum には載せない。あちらは「操作の種類」で、
+       * ここは「対象」にあたる。軸が違うものを1つの enum に混ぜると、
+       * controller 側の照合が分岐だらけになる。§10-8 の未決はこの形で埋めた。
+       *
+       * 既定は空だが、空のまま出てくることは無い。`PROTECTED_PATH_FLOOR` を
+       * ここで必ず混ぜるので、Goal がキーごと省いても関門は下限まで働く。
+       * 「保護を外したい Goal が外せる」状態を作らないため、除去はできない。
+       */
+      protected_paths: z.array(z.string().min(1)).default([]).transform(withProtectedPathFloor),
+      /**
+       * controller 自身の publish を、どの段まで自動で進めるか（`publishPolicySchema`）。
+       *
+       * `require_human_approval` とは主体が違う。あちらは Agent に許さない操作、
+       * ここは controller が行わない段になる。
+       *
+       * **任意にしてある。** 上の2つと違って `.default()` を置かないのは、
+       * 「書いていない」と「既定を書いた」を型の上でも区別したいためではなく、
+       * 既存の Goal と `Goal` 型を組み立てている側（テストの fixture を含む）に
+       * 1行も足させずに済ませるため。読むときは `publishPolicyOf(goal)` を通す。
+       */
+      publish: publishPolicySchema.optional(),
+      /**
+       * 進捗をどこへ書くか（`progressPolicySchema`）。
+       *
+       * `publish` と同じく任意にしてある。書いていない既存の `.goals/*.yaml` は
+       * これまでどおり PR コメントに出る。`ent run --report` を渡したティックは
+       * そちらが勝つ——打った側の指定を宣言が上書きすると、手元に出したい1回が
+       * 出せなくなる。
+       */
+      progress: progressPolicySchema.optional(),
+      /**
+       * レビュー役に読ませる skill（`reviewSkillSchema`）。
+       *
+       * **書かなければ、ent に同梱の `ent-review:semantic-review` が渡る。**
+       * 既存の宣言は1文字も書き換えずに済み、書いたときだけそのリポジトリの観点に
+       * 差し替わる。観点はリポジトリの性質で決まるもので、Go の DDD 規約を見たい
+       * リポジトリと React のアクセシビリティを見たいリポジトリに同じ1件を配る
+       * 理由が無い。
+       *
+       * **契約はここでは動かない。** 本文の後ろに `reviewed_sha:` と `verdict:` の
+       * 2行を足させるのは `REVIEW_PROMPT` の側なので、skill を差し替えても
+       * 観測境界は同じ位置に残る（design.md §4.2）。
+       *
+       * 任意にしてあるのは `publish` / `progress` と同じ理由になる。「書いていない」が
+       * キーの有無として残るので、`.goals/config.yaml` の継承がそれを見て下に敷ける。
+       */
+      review_skill: reviewSkillSchema.optional(),
+    })
+    // 名指しした skill を実装役から守る。キー単位の transform からは隣の
+    // `protected_paths` が見えないので、`policies` の object ごとに掛ける。
+    .transform(withReviewSkillProtected),
   budget: budgetSchema,
 });
 export type Goal = z.infer<typeof goalSchema>;

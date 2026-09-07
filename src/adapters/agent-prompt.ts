@@ -1,4 +1,4 @@
-import { readdirSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -7,6 +7,7 @@ import {
   PULL_REQUEST_SECTION,
   renderPullRequestText,
 } from "../act/index.js";
+import { reviewSkillName, reviewSkillPluginDir } from "../domain/goal.js";
 import { CONFIG_FILENAME } from "../domain/goal-config.js";
 import type { ActorRole } from "../domain/run.js";
 
@@ -42,6 +43,68 @@ export const REVIEW_SKILL_NAME = "semantic-review";
 const REVIEW_SKILL_DIR = join(REVIEW_PLUGIN_DIR, "skills", REVIEW_SKILL_NAME);
 
 /**
+ * このティックのレビュー役が読む skill。**宣言があればそれ、無ければ同梱のもの。**
+ *
+ * 観点はリポジトリの性質で決まるので、`policies.review_skill` で名指しできる
+ * （`src/domain/goal.ts`）。差し替わるのは**観点だけ**で、本文の後ろに
+ * `reviewed_sha:` と `verdict:` を足させる契約は `REVIEW_PROMPT` に残る
+ * （design.md §4.2）。
+ *
+ * 名指しされたパスは作業ツリーからの相対で、基点は `invocation.worktree.path` に
+ * なる。既定は ent 自身のインストール先（`REVIEW_PLUGIN_DIR`）で、そちらは
+ * 作業ツリーの外にある。
+ */
+export interface ReviewSkill {
+  /** plugin の置き場所。Claude 側はこれを `{ type: "local", path }` に渡す */
+  pluginDir: string;
+  /** skill のディレクトリ。Codex 側はこの下の本文を読む */
+  dir: string;
+  /** skill 名。SKILL.md の `name` と一致する */
+  name: string;
+}
+
+/**
+ * 宣言を解決する。**名指しした plugin が Claude に届く形で揃っていなければ throw する。**
+ *
+ * 黙って既定へ倒さない。契約（`verdict:` / `reviewed_sha:`）を持っているのは
+ * skill ではなくプロンプトなので、skill が届かなくても**観点を1つも読まないまま
+ * 契約どおりの approved が返りうる。** 外からは通常のレビューと見分けが付かない。
+ * plugin が読めなかったときに SDK が何を返すかは確かめていないので、そちらの
+ * 失敗の仕方には頼らず、起動する前に落として Run の失敗として人間に見せる。
+ *
+ * **見るのは2つ。`SKILL.md` と `.claude-plugin/plugin.json` になる。** 前者は
+ * 観点の本文、後者は Claude が plugin として読み込む入口で、片方でも欠ければ
+ * 観点は届かない。README と SKILL.md は「この並びでなければ Claude 側には届かない」
+ * と書いているので、書いてある必須条件をここで実際に確かめる。確かめずに書くと、
+ * 文書が約束した条件と ent が通す条件が別物になる。
+ */
+export function reviewSkillOf(invocation: ActorInvocation): ReviewSkill {
+  const declared = invocation.reviewSkill ?? null;
+  if (declared === null) {
+    return { pluginDir: REVIEW_PLUGIN_DIR, dir: REVIEW_SKILL_DIR, name: REVIEW_SKILL_NAME };
+  }
+  const pluginPath = reviewSkillPluginDir(declared);
+  for (const [relative, what] of [
+    [`${declared}/SKILL.md`, "the skill body"],
+    [`${pluginPath}/${PLUGIN_MANIFEST}`, "the plugin manifest Claude Code loads it through"],
+  ] as const) {
+    if (!existsSync(join(invocation.worktree.path, relative))) {
+      throw new Error(
+        `policies.review_skill points at ${declared}, but ${relative} (${what}) is not in the worktree`,
+      );
+    }
+  }
+  return {
+    pluginDir: join(invocation.worktree.path, pluginPath),
+    dir: join(invocation.worktree.path, declared),
+    name: reviewSkillName(declared),
+  };
+}
+
+/** plugin ディレクトリからの、Claude Code が plugin を認識する manifest の位置 */
+const PLUGIN_MANIFEST = ".claude-plugin/plugin.json";
+
+/**
  * レビュー役へ `semantic-review` をどう届けるか。
  *
  * - `tool`: skill として渡し、Agent 自身に読ませる。Claude Code は SDK にも
@@ -64,29 +127,49 @@ export type SkillDelivery = "tool" | "inline";
  * 定義と偽陽性の規則が丸ごと落ちる。ファイルを足したときに黙って落ちないよう、
  * 名前を書き並べずディレクトリを読む。
  */
-function reviewSkillDocuments(): { path: string; body: string }[] {
-  const references = readdirSync(join(REVIEW_SKILL_DIR, "references"))
-    .filter((name) => name.endsWith(".md"))
-    .sort();
+function reviewSkillDocuments(skill: ReviewSkill): { path: string; body: string }[] {
   return [
-    { path: "SKILL.md", body: readFileSync(join(REVIEW_SKILL_DIR, "SKILL.md"), "utf8") },
-    ...references.map((name) => ({
+    { path: "SKILL.md", body: readFileSync(join(skill.dir, "SKILL.md"), "utf8") },
+    ...referenceNames(skill).map((name) => ({
       path: `references/${name}`,
-      body: readFileSync(join(REVIEW_SKILL_DIR, "references", name), "utf8"),
+      body: readFileSync(join(skill.dir, "references", name), "utf8"),
     })),
   ];
 }
 
+/**
+ * `references/` の中身。**ディレクトリが無ければ空**で、SKILL.md だけを差し込む。
+ *
+ * `references/` は skill の書き手が置くかどうかを決めるもので、同梱の
+ * `semantic-review` は置いているが、宣言で名指しできるようになった以上、
+ * 置いていない skill も渡ってくる。素の `readdirSync` は ENOENT で throw するので、
+ * 本文を差し込む側（Codex）では、その skill を宣言した Goal がレビュー役を
+ * 起動できないまま毎ティック落ちる。
+ *
+ * **SKILL.md が無いときは throw させたままにする。** あちらは本文そのものなので、
+ * 読めないなら観点が1つも渡らない。`reviewSkillOf` が先に落とすが、
+ * 読む側でも既定に倒さない。
+ */
+function referenceNames(skill: ReviewSkill): string[] {
+  const dir = join(skill.dir, "references");
+  if (!existsSync(dir)) {
+    return [];
+  }
+  return readdirSync(dir)
+    .filter((name) => name.endsWith(".md"))
+    .sort();
+}
+
 /** skill をどう与えるかを述べる節。読み替えの表はこの後ろに続く */
-function skillSection(delivery: SkillDelivery): string {
+function skillSection(delivery: SkillDelivery, skill: ReviewSkill): string {
   if (delivery === "tool") {
-    return `Invoke the \`${REVIEW_SKILL_NAME}\` skill with the Skill tool and follow its points and output
+    return `Invoke the \`${skill.name}\` skill with the Skill tool and follow its points and output
 format.`;
   }
-  const documents = reviewSkillDocuments()
+  const documents = reviewSkillDocuments(skill)
     .map((document) => `<document path="${document.path}">\n${document.body}\n</document>`)
     .join("\n\n");
-  return `The \`${REVIEW_SKILL_NAME}\` skill is inlined below, because this run has no way to load it as a
+  return `The \`${skill.name}\` skill is inlined below, because this run has no way to load it as a
 skill. Read it as if you had opened those files; the links between them point at the same
 texts. Follow its points and output format.
 
@@ -147,11 +230,10 @@ ${COMMON_TAIL}`;
  * その場合は保護パス違反か budget の枯渇で人間が呼ばれる——**黙って
  * 回り続けはしない。** 宣言部を `ent start` より前に commit しておけば起きない。
  */
-const REVIEW_PROMPT = (
-  { intent, goalId, pullRequest }: ActorInvocation,
-  delivery: SkillDelivery,
-): string =>
-  `${intent}
+const REVIEW_PROMPT = (invocation: ActorInvocation, delivery: SkillDelivery): string => {
+  const { intent, goalId, pullRequest } = invocation;
+  const skill = reviewSkillOf(invocation);
+  return `${intent}
 
 You are running as the review role. **Do not modify files.**
 Editing is not available to you, so any attempt is refused. Only read, and run commands
@@ -161,7 +243,7 @@ Work only inside the current directory.
 
 ## What to use
 
-${skillSection(delivery)}
+${skillSection(delivery, skill)}
 
 The skill is written on the assumption that it reads a GitHub Pull Request, but **here you do
 not fetch the PR yourself.** The substitutions below take precedence over what the skill says.
@@ -190,7 +272,7 @@ What can be confirmed about the PR is limited to what the section below carries.
    constraints in the declaration are reflected in the body. If it was not passed down,
    do not evaluate that point and write "${NOT_OBTAINED}"
 4. Read the diff, and the places that diff can break. Run tests to confirm when needed
-5. Write the review body with ${REVIEW_SKILL_NAME}'s points and output format
+5. Write the review body with ${skill.name}'s points and output format
 6. Append exactly these two lines to the end of the body
 
 reviewed_sha: <the 40-hex sha confirmed in step 1>
@@ -204,6 +286,10 @@ The assessments map to verdicts as follows.
 | MISALIGNED | changes_requested |
 | INSUFFICIENT_CONTEXT | changes_requested |
 
+If the skill you read states its conclusion in a different vocabulary, map only "everything
+lines up, nothing left to fix" to approved. Everything else, including anything you could not
+confirm, is changes_requested.
+
 Do not write a line beginning with \`verdict:\` anywhere else in the body. Unless there is
 **exactly one in the whole body**, it is not read as the conclusion. \`reviewed_sha:\` is
 held to one for the same reason.
@@ -213,6 +299,7 @@ Do not write "no problem" about anything you could not confirm.
 ${renderPullRequestText(pullRequest ?? null)}
 
 ${COMMON_TAIL}`;
+};
 
 /**
  * 調べる役の指示。ツールはレビュー役と同じだが、結論の形が違う。

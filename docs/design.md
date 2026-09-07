@@ -395,13 +395,19 @@ write-ahead Run. role passes through the following five places.
   not make merge or force push permissible). The prompts are split per role as well. If only the
   permissions are split and the wording stays the same, the review role keeps attempting edits,
   keeps getting denied, and burns its turns there
-- **role determines which points (skills) the Agent is handed** (`SKILLS_FOR` in
-  `src/adapters/claude.ts`, and `SkillDelivery` in `src/adapters/agent-prompt.ts`). `semantic-review` is handed only to the review role. Handing
+- **role determines which points (skills) the Agent is handed** (`GETS_REVIEW_SKILL` in
+  `src/adapters/claude.ts`, and `SkillDelivery` in `src/adapters/agent-prompt.ts`). The review skill is handed only to the review role. Handing
   it to the implement role would open room to "write so as to satisfy the review points," and the
   structure §3.1 avoids with criteria would recur on the review side. **`settingSources: []` is not
   relaxed.** The decision not to let it read the host's `~/.claude` or the repository's `.claude`
-  stands, and only the plugin the controller named (`plugins/ent-review/`) is visible to the Agent.
-  That one entry is what appears in the skill list. **Codex gets the same points inlined into its
+  stands, and only the plugin the controller named is visible to the Agent.
+  That one entry is what appears in the skill list. **Which skill that is comes from the
+  declaration** (`policies.review_skill`, `reviewSkillOf` in `src/adapters/agent-prompt.ts`):
+  `plugins/ent-review/` unless a repository names a plugin of its own, since the points a repository
+  wants checked differ while the contract below does not. A named plugin sits inside the Actor's
+  worktree, so its directory is added to the protected paths — otherwise the implement role could
+  rewrite the points it is about to be reviewed against, which is the same structure this bullet
+  avoids by not handing it the skill. **Codex gets the same points inlined into its
   prompt** (`SkillDelivery` in `src/adapters/agent-prompt.ts`). `codex exec` has no way to hand a
   skill inside the repository to a single invocation; the discovery paths left are
   `$CODEX_HOME/skills` and a marketplace plugin, both of which put state on the host. Only the
@@ -1177,7 +1183,7 @@ the actual gate. The approval gate has a floor of the same shape, and `APPROVAL_
 - The gate itself (`src/domain/protected-paths.ts`), and the file that decides the Agent's allowed
   and denied tools (`src/adapters/claude.ts`). If this is open, making the comparison always return
   false, or simply emptying the deny list, removes everything else. The same file also holds the
-  skills shown per role (`SKILLS_FOR`), while the contract for the review conclusion (the two lines
+  skills shown per role (`GETS_REVIEW_SKILL`), while the contract for the review conclusion (the two lines
   `verdict:` and `reviewed_sha:` that `REVIEW_PROMPT` requires; §4.3) sits in
   `src/adapters/agent-prompt.ts`; both are inside the floor. Otherwise that would let **the Actor
   rewrite both the perspective handed to it and how its own conclusion gets read**, so it cannot be
