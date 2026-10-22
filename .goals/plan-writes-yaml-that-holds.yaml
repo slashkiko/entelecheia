@@ -119,7 +119,7 @@ context:
     - 既存の宣言を書き換えない。.goals/config.yaml も書き換えない
   references:
     - title: "config を Goal の下へ敷く規則（キーの有無で判断している箇所）"
-      path: src/domain/goal-config.ts
+      path: packages/ent/src/domain/goal-config.ts
     - title: "設計: 頼んでも確認できる遵守は得られない（10-11）"
       path: docs/design.md
 

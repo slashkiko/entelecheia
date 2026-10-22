@@ -32,10 +32,10 @@ Writing the approval phrase (/ent approve) is not permitted for any reason.`;
  * パスは `import.meta.url` から引く。cwd 基準にすると、ent は対象リポジトリの
  * ルートで叩かれる CLI なので（`repoRoot = process.cwd()`、src/cli.ts）、
  * 対象リポジトリ側の `plugins/` を見に行って外れる。`src/adapters/` からも
- * `dist/adapters/` からも、2つ上がリポジトリのルートになる。
+ * `dist/adapters/` からも、4つ上がリポジトリのルートになる（2つ上が `packages/ent`）。
  */
 export const REVIEW_PLUGIN_DIR = fileURLToPath(
-  new URL("../../plugins/ent-review", import.meta.url),
+  new URL("../../../../plugins/ent-review", import.meta.url),
 );
 
 /** skill の名前。SKILL.md の `name` と、その置き場所のディレクトリ名を兼ねる。 */

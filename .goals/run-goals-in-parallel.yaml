@@ -135,7 +135,7 @@ acceptance_criteria:
 
         1. 実際に2本同時に回す
 
-           先に `mise run build` を流してください。`ent` は dist/cli.js を指すので、
+           先に `mise run build` を流してください。`ent` は packages/ent/dist/cli.js を指すので、
            ビルドし直さないと直す前の実装を確かめることになります
            （`mise run verify` はビルドしません）。
 
@@ -267,17 +267,17 @@ context:
 
   references:
     - title: PRAGMA の並びと lease の実装
-      path: src/store/sqlite.ts
+      path: packages/ent/src/store/sqlite.ts
     - title: heartbeat が戻り値を捨てている場所
-      path: src/controller/index.ts
+      path: packages/ent/src/controller/index.ts
     - title: worktree の名前が goal.id 固定であること
-      path: src/act/index.ts
+      path: packages/ent/src/act/index.ts
     - title: 仕様（同時 open）
-      path: tests/store-parallel-open.test.ts
+      path: packages/ent/tests/store-parallel-open.test.ts
     - title: 仕様（lease の喪失）
-      path: tests/controller-lease-lost.test.ts
+      path: packages/ent/tests/controller-lease-lost.test.ts
     - title: ロックを握る側の fixture
-      path: tests/fixtures/hold-db-lock.mjs
+      path: packages/ent/tests/fixtures/hold-db-lock.mjs
     - title: 設計ドキュメント（§4.5 lease、§4.7 WAL、§5 スコープ）
       path: docs/design.md
     - title: 人間向けの実行手順
@@ -304,8 +304,8 @@ policies:
     - .goals/**
     # 関門そのものと、Agent の許可・拒否ツールを決めるファイル。
     # DECIDE のログパスを直したくなっても、ここは外さない（background を参照）。
-    - src/domain/protected-paths.ts
-    - src/adapters/claude.ts
+    - packages/ent/src/domain/protected-paths.ts
+    - packages/ent/src/adapters/claude.ts
     # 仕様として置いてあるテスト。constraints に「触らない」と書いたものを、
     # 機械の側にも置く。tests/** ごと凍らせない理由は guard-the-controller.yaml に
     # 書いたとおりで、ここは「新しいテストを足せなくする」ではなく
@@ -315,25 +315,28 @@ policies:
     # 凍らせておかないと、落ちている 46 件を消すのが緑への最短経路になり、
     # 「宣言した仕様を消して criteria を通した」が静かに成立してしまう。
     # 本 Goal 自身の仕様2本も同じ理由で並べる。
-    - tests/decide-llm-actions.test.ts
-    - tests/store-row-schema.test.ts
-    - tests/port-contract.test.ts
-    - tests/github-approval-permission.test.ts
-    - tests/worktree-roles.test.ts
-    - tests/review-actor.test.ts
-    - tests/store-parallel-open.test.ts
-    - tests/controller-lease-lost.test.ts
-    - tests/fixtures/hold-db-lock.mjs
+    - packages/ent/tests/decide-llm-actions.test.ts
+    - packages/ent/tests/store-row-schema.test.ts
+    - packages/ent/tests/port-contract.test.ts
+    - packages/ent/tests/github-approval-permission.test.ts
+    - packages/ent/tests/worktree-roles.test.ts
+    - packages/ent/tests/review-actor.test.ts
+    - packages/ent/tests/store-parallel-open.test.ts
+    - packages/ent/tests/controller-lease-lost.test.ts
+    - packages/ent/tests/fixtures/hold-db-lock.mjs
     # 検証系。ここを書き換えられると Agent が自分の criteria を通せる。
     # tests/** は入れない（理由は guard-the-controller.yaml に書いた）。
     - mise.toml
     - mise-tasks/**
     - vitest.config.ts
+    - packages/*/vitest.config.ts
     - biome.json
     - tsconfig*.json
+    - packages/*/tsconfig*.json
     - .github/**
     # 依存の追加は人間が通す。constraints にも「依存パッケージを増やさない」と書いてある。
     - package.json
+    - packages/*/package.json
     - pnpm-lock.yaml
 
 budget:

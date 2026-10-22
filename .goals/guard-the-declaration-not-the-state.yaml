@@ -196,13 +196,13 @@ context:
 
   references:
     - title: 直す対象。glob の照合と違反の判定
-      path: src/domain/protected-paths.ts
+      path: packages/ent/src/domain/protected-paths.ts
     - title: 仕様
-      path: tests/protected-paths-state-dir.test.ts
+      path: packages/ent/tests/protected-paths-state-dir.test.ts
     - title: 弱めてはいけない既存の性質
-      path: tests/protected-paths.test.ts
+      path: packages/ent/tests/protected-paths.test.ts
     - title: 関門の入力を集めている場所（触らない）
-      path: src/controller/index.ts
+      path: packages/ent/src/controller/index.ts
     - title: 実際に止まった Goal
       path: .goals/validate-what-crosses-the-boundary.yaml
     - title: 設計ドキュメント
@@ -220,19 +220,22 @@ policies:
     # 本 Goal は関門そのものを直すので、src/domain/protected-paths.ts を
     # 外してある。外したのは適用対象であって、検査の仕組みではない
     # （constraints と ac-6 を参照）。
-    - src/controller/**
+    - packages/ent/src/controller/**
     - .goals/**
     # Agent の許可・拒否ツールを決めるファイル。
-    - src/adapters/claude.ts
+    - packages/ent/src/adapters/claude.ts
     # 検証系。ここを書き換えられると Agent が自分の criteria を通せる。
     - mise.toml
     - mise-tasks/**
     - vitest.config.ts
+    - packages/*/vitest.config.ts
     - biome.json
     - tsconfig*.json
+    - packages/*/tsconfig*.json
     - .github/**
     # 依存の追加は人間が通す。
     - package.json
+    - packages/*/package.json
     - pnpm-lock.yaml
 
 budget:

@@ -199,21 +199,21 @@ context:
 
   references:
     - title: shape_mismatch が WAIT に落ちる場所
-      path: src/decide/index.ts
+      path: packages/ent/src/decide/index.ts
     - title: 承認 Port の失敗を port_failed に畳む場所
-      path: src/verify/index.ts
+      path: packages/ent/src/verify/index.ts
     - title: artifacts の JSON が検査されない場所
-      path: src/store/sqlite.ts
+      path: packages/ent/src/store/sqlite.ts
     - title: ESCALATE の理由
-      path: src/domain/action.ts
+      path: packages/ent/src/domain/action.ts
     - title: 例外の種類から reason を決める側（既に作り分けている）
-      path: src/observe/index.ts
+      path: packages/ent/src/observe/index.ts
     - title: 仕様（guard と verify）
-      path: tests/shape-mismatch-stops.test.ts
+      path: packages/ent/tests/shape-mismatch-stops.test.ts
     - title: 仕様（artifacts）
-      path: tests/store-run-artifacts.test.ts
+      path: packages/ent/tests/store-run-artifacts.test.ts
     - title: 弱めてはいけない既存の仕様
-      path: tests/shape-mismatch.test.ts
+      path: packages/ent/tests/shape-mismatch.test.ts
     - title: 設計ドキュメント
       path: docs/design.md
 
@@ -231,11 +231,14 @@ policies:
     - mise.toml
     - mise-tasks/**
     - vitest.config.ts
+    - packages/*/vitest.config.ts
     - biome.json
     - tsconfig*.json
+    - packages/*/tsconfig*.json
     - .github/**
     # 依存の追加は人間が通す。
     - package.json
+    - packages/*/package.json
     - pnpm-lock.yaml
 
 budget:

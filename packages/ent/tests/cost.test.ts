@@ -13,7 +13,7 @@ import {
 } from "../src/usecase/cost.js";
 
 const AT = "2026-08-25T01:02:03.000Z";
-const REPO_ROOT = join(import.meta.dirname, "..");
+const REPO_ROOT = join(import.meta.dirname, "..", "..", "..");
 
 const GOAL: Goal = {
   version: 1,

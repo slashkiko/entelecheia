@@ -125,13 +125,13 @@ context:
 
   references:
     - title: 仕様。着手時点では落ちている
-      path: tests/readme-setup.test.ts
+      path: packages/ent/tests/readme-setup.test.ts
     - title: 直す対象。「作る側のセットアップ」の節
       path: README.md
     - title: trust を要求している当のもの
       path: mise.toml
     - title: README / SKILL.md とサブコマンドの網羅集合の突き合わせ
-      path: tests/docs-contract.test.ts
+      path: packages/ent/tests/docs-contract.test.ts
 
 policies:
   require_human_approval:
@@ -145,14 +145,17 @@ policies:
   # **README.md はここに書かない。** この Goal はそこを直すのが仕事になる。
   protected_paths:
     - docs/**
-    - src/**
+    - packages/ent/src/**
     - mise.toml
     - mise-tasks/**
     - vitest.config.ts
+    - packages/*/vitest.config.ts
     - biome.json
     - tsconfig*.json
+    - packages/*/tsconfig*.json
     - .github/**
     - package.json
+    - packages/*/package.json
     - pnpm-lock.yaml
 
 budget:

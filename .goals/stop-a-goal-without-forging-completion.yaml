@@ -187,11 +187,11 @@ context:
     - title: 完了判定は VERIFIED のみ（§3.1）、状態遷移図と終端から戻さない理由（§4.4）
       path: docs/design.md
     - title: isTerminal と nextStatus。ABANDONED は既にある
-      path: src/domain/goal-state.ts
+      path: packages/ent/src/domain/goal-state.ts
     - title: SUBCOMMANDS と引数の解釈
-      path: src/cli.ts
+      path: packages/ent/src/cli.ts
     - title: README / SKILL.md とサブコマンドの突き合わせ
-      path: tests/docs-contract.test.ts
+      path: packages/ent/tests/docs-contract.test.ts
 
 policies:
   require_human_approval:
@@ -207,11 +207,14 @@ policies:
     - mise.toml
     - mise-tasks/**
     - vitest.config.ts
+    - packages/*/vitest.config.ts
     - biome.json
     - tsconfig*.json
+    - packages/*/tsconfig*.json
     - .github/**
     # 依存の追加は人間が通す。
     - package.json
+    - packages/*/package.json
     - pnpm-lock.yaml
 
 budget:

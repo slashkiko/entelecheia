@@ -64,7 +64,7 @@ reflects the current state, including the post-MVP review.
 
 Completion and the stopping conditions for runaway behavior are not left to the LLM. The LLM may
 choose only among three actions: `ACT` / `VERIFY` / `WAIT`. `COMPLETE` and `ESCALATE` are decided by
-pure logic (the guard). That boundary lives in `src/decide/`.
+pure logic (the guard). That boundary lives in `packages/ent/src/decide/`.
 
 ### The protected-path gate
 
@@ -75,7 +75,7 @@ observed, so writes made through Bash are visible too. Writes that escape the wo
 git on the main repository side, not just inside the worktree. Only changes inside the repository
 are visible, though; the scope and the remaining holes are written up in design.md §10-6.
 
-What is protected is the control loop itself (`src/controller/**`) and the Goal declarations
+What is protected is the control loop itself (`packages/ent/src/controller/**`) and the Goal declarations
 (`.goals/**`), plus **the gate itself (including the files that decide the Agent's deny list) and
 the verification machinery**. The criteria for choosing them are in design.md §7.
 
@@ -195,8 +195,8 @@ connected", "The controller does the committing", "Everything green does not mea
 broken", "The more central the design, the less it reduces to a verification command", and
 "Scope per phase".
 
-The Goal YAML schema is in `src/domain/goal.ts`, the repository-scoped half in
-`src/domain/goal-config.ts`; the registry of observation keys is in `src/domain/fact-keys.ts`.
+The Goal YAML schema is in `packages/ent/src/domain/goal.ts`, the repository-scoped half in
+`packages/ent/src/domain/goal-config.ts`; the registry of observation keys is in `packages/ent/src/domain/fact-keys.ts`.
 
 ### Inside Phase 3
 
@@ -251,7 +251,7 @@ surfaced both in `ent get` and in the PR comments.
 ### Everything green does not mean nothing is broken
 
 The post-MVP review found the same shape of hole still open. Tests that inject Ports never touched a
-single line of `src/adapters/local.ts` (real git and shell) or of `main()` in `src/cli.ts`, and
+single line of `packages/ent/src/adapters/local.ts` (real git and shell) or of `main()` in `packages/ent/src/cli.ts`, and
 those two had no tests at all. **Five mutations kept the whole suite green** (letting the LLM choose
 `COMPLETE`; emptying the Agent's deny list; removing `sort` from digest normalization; turning an
 approval-Port failure into "verified as failed"; moving lease release out of `finally`).
@@ -303,29 +303,29 @@ They need different things, so the entry points are separate.
 ### Setup for using ent
 
 **Running ent requires neither mise nor pnpm nor tsc.** There is not a single reference to mise in
-`src/`, and none in what `ent doctor` inspects. What remains is three things: Node 24 or later,
+`packages/ent/src/`, and none in what `ent doctor` inspects. What remains is three things: Node 24 or later,
 [gh](https://cli.github.com/), and a logged-in Actor (Claude Code / Codex).
 
-If you have one checkout with a built `dist/cli.js`, you can link `ent` onto your PATH from it.
+If you have one checkout with a built `packages/ent/dist/cli.js`, you can link `ent` onto your PATH from it.
 
 ```sh
-cd /path/to/entelecheia
+cd /path/to/entelecheia/packages/ent   # the package that owns the ent bin
 pnpm link --global    # links package.json's bin (dist/cli.js) into the global bin
 ```
 
-`dist/cli.js` has a shebang, so the symlink can be invoked directly. It works with `"private": true`
+`packages/ent/dist/cli.js` has a shebang, so the symlink can be invoked directly. It works with `"private": true`
 left as is (that is a separate matter from publishing to npm). To remove it, run
 `pnpm uninstall --global entelecheia`.
 
-**What you link to is the `dist/cli.js` inside the checkout, not a copy.** Rebuild ent itself and
-what `ent` points at is replaced too. Conversely, linking from a checkout that has no `dist/` yet
+**What you link to is the `packages/ent/dist/cli.js` inside the checkout, not a copy.** Rebuild ent itself and
+what `ent` points at is replaced too. Conversely, linking from a checkout that has no `packages/ent/dist/` yet
 leaves the symlink pointing at nothing, so run "Setup for working on ent" below once in that
 checkout.
 
 Which Node starts is chosen by the shebang's `/usr/bin/env node`. Invoked from a shell where mise or
 nvm is in effect, the target repository's Node gets used, and anything below 24 dies on the
 `node:sqlite` import. Which Node you are on is reported by `node` in `ent doctor`. You may also skip
-the symlink and call `dist/cli.js` directly with an absolute Node path pinned (there is an example
+the symlink and call `packages/ent/dist/cli.js` directly with an absolute Node path pinned (there is an example
 under "Running ent").
 
 ### Setup for working on ent
@@ -338,12 +338,41 @@ separately.
 mise trust        # once, right after cloning. Without it the next line stops with a trust error
 mise install --locked
 pnpm install --frozen-lockfile
-mise run build    # produces dist/cli.js — this artifact is what you hand to users
+mise run build    # produces packages/ent/dist/cli.js — this artifact is what you hand to users
 ```
 
 **The first line, `mise trust`, is part of the procedure, not a defect in your environment.** mise
 will not read a `mise.toml` it does not trust, so skipping it makes `mise install --locked` stop with
 `Config files ... are not trusted.`
+
+### Upgrading a checkout from before the move to `packages/`
+
+The build used to write `<checkout>/dist/cli.js`; it now writes `packages/ent/dist/cli.js`. **A pull
+alone does not move what you already set up.** `dist/` is gitignored, so the old root
+`dist/cli.js` stays on disk, and an alias, a cron line, or a global link that names it keeps running
+the pre-move controller without any error. Do the following once in each such checkout.
+
+```sh
+git pull
+pnpm install --frozen-lockfile   # the workspace needs its links; until then every build fails
+mise run build                   # writes packages/ent/dist/cli.js
+rm -rf dist                      # so anything still pointing at the old path fails loudly
+pnpm uninstall --global entelecheia   # only if you linked the old checkout globally
+(cd packages/ent && pnpm link --global)
+```
+
+Then rewrite every alias and cron line from `<checkout>/dist/cli.js` to
+`<checkout>/packages/ent/dist/cli.js`.
+
+**Upgrade only while no Goal that works on ent itself is in flight.** Check `ent list` before the
+`git pull` above. A Goal keeps the worktree and branch it started on, because ent reuses both on every
+tick, and `ent abandon` is final, so a stopped Goal cannot be started again on a fresh worktree. In a
+worktree cut before the move the diff still reads `src/...`, while the Goal's own `protected_paths`
+in `.goals/` now name `packages/...` and protect nothing there. The protected-path floor keeps the
+pre-move paths of the gate files for this transition, but it does not cover what each Goal declared.
+So let those Goals finish first. If one cannot wait, abandon it and declare a new Goal under a new
+`id`, which gets a new worktree. Drop the pre-move part of the floor only after `git worktree list`
+shows no worktree cut before the move.
 
 ## Verification
 
@@ -352,9 +381,9 @@ mise run verify   # runs typecheck / lint / build / test together
 mise run check    # supply-chain and workflow checks (from the baseline)
 ```
 
-`build` is part of `verify` because "the types pass" and "`dist/cli.js` gets produced" are two
-different things. `tsconfig.json` is `noEmit` and includes `tests/**`. What actually produces the
-`bin` artifact is `tsconfig.build.json`.
+`build` is part of `verify` because "the types pass" and "`packages/ent/dist/cli.js` gets produced" are two
+different things. The root `tsconfig.json` is `noEmit` and includes every package's `tests/**`. What actually produces the
+`bin` artifact is `packages/ent/tsconfig.build.json`.
 
 **Right after starting a Goal, `typecheck` and `test` fail.** That is an expected state arising from
 writing the Acceptance Criteria first, not a defect in your environment. Down to the number of
@@ -362,7 +391,7 @@ failures, the Goal's `desired_state` declares it as the measured state at the mo
 main's CI (`.github/workflows/verify.yml`) stays red for that period too.
 
 When only specification tests are failing, `lint`, `build`, and `check` still pass (`build` does not
-look at `tests/**`). Which Goal is in progress is read from `ent list`. **It is not written in this
+look at `packages/ent/tests/**`). Which Goal is in progress is read from `ent list`. **It is not written in this
 README**: writing it would add one more place to update every time a Goal is started, and forgetting
 to update it would leave the README claiming things fail.
 
@@ -377,9 +406,9 @@ it on a repository outside this repo", "Excluding permanently failing workflows 
 "Splitting a coarse task across several Goals", and "Running several Goals at once".
 
 ```sh
-mise run build                     # produce dist/cli.js
+mise run build                     # produce packages/ent/dist/cli.js
 ENT_NODE="$(mise which node)"       # pin an absolute path to Node 24+ first
-alias ent="$ENT_NODE $(pwd)/dist/cli.js"
+alias ent="$ENT_NODE $(pwd)/packages/ent/dist/cli.js"
 
 ent init                           # make the current repository runnable (idempotent)
 ent plan --desire "…"              # split one prose objective into sub-Goal declarations
@@ -585,9 +614,9 @@ as the Actor's edits too).
 
 ### How to launch it, and the exception when working on ent itself
 
-`ent` is registered as `bin` in `package.json`, but it is not published to npm. To get it on your
+`ent` is registered as `bin` in `packages/ent/package.json`, but it is not published to npm. To get it on your
 PATH, `pnpm link --global` is enough (see "Installing"). From here on, examples use an alias with an
-absolute path to Node 24+ or call `dist/cli.js` with that same Node. Because you decide which Node
+absolute path to Node 24+ or call `packages/ent/dist/cli.js` with that same Node. Because you decide which Node
 starts, there is no mix-up even in a shell where mise or nvm is in effect (only those Goals that
 work on ent itself go through the task below).
 
@@ -597,7 +626,7 @@ appears only in `skipped` in `ent run` output (design.md §10-12). To keep it go
 cron.
 
 **When running a Goal that works on ent itself, use `mise run ent -- run <slug>`.** Until `tsc` runs,
-the implementation at HEAD is not in `dist/cli.js`, so invoking it directly keeps an old controller
+the implementation at HEAD is not in `packages/ent/dist/cli.js`, so invoking it directly keeps an old controller
 running. The reason and the exceptions are in `CLAUDE.md`.
 
 ### Using it on a repository outside this repo
@@ -610,7 +639,7 @@ neither ent installed nor any dependency added.
 ```sh
 cd /path/to/entelecheia && mise run build
 ENT_NODE="$(mise which node)"       # pin an absolute path to Node 24+ at this point
-alias ent="$ENT_NODE /path/to/entelecheia/dist/cli.js"
+alias ent="$ENT_NODE /path/to/entelecheia/packages/ent/dist/cli.js"
 
 cd /path/to/your-repo
 ent init            # place .goals/, the .gitignore line, config.yaml, and a Goal template
@@ -673,10 +702,11 @@ Three constraints remain.
 - The lease lives in `.goals/.state/goals.db`, which is gitignored, so **mutual exclusion does not
   work across machines** (two machines running the same Goal will both open a PR)
 - `PROTECTED_PATH_FLOOR` contains paths specific to entelecheia, so if the target repository has
-  paths by the same names (`src/controller/**`, for instance), the Agent touching them becomes a
-  violation **by mistake**
+  paths by the same names (`packages/ent/src/controller/**`, for instance), the Agent touching them becomes a
+  violation **by mistake**. During the move to `packages/`, the floor also keeps the pre-move paths
+  (`src/controller/**` and the rest), so those collide too until they are removed
 - **Conversely, the floor's protected paths do not reach ent's own code.** ent itself sits outside
-  the target repository, so a line like `src/controller/**` does not point at ent's sources. Where
+  the target repository, so a line like `packages/ent/src/controller/**` does not point at ent's sources. Where
   the previous item is about false positives from same-named paths on the target side, this one is
   about the floor being unusable for protecting ent itself. **What the gate protects is the inside of
   the target repository, not ent's own code** (only under self-hosting do the two coincide). What
@@ -1077,7 +1107,7 @@ to Node 24+ obtained by running `mise which node` in an interactive shell. On Li
 scheduler's no-overlap setting or an equivalent lock.
 
 ```cron
-*/10 * * * * cd /path/to/your-repo && /usr/bin/lockf -n /tmp/ent-your-repo.lock /absolute/path/to/node-24 /path/to/entelecheia/dist/cli.js run goal-a
+*/10 * * * * cd /path/to/your-repo && /usr/bin/lockf -n /tmp/ent-your-repo.lock /absolute/path/to/node-24 /path/to/entelecheia/packages/ent/dist/cli.js run goal-a
 ```
 
 When running several Goals from the same directory, staggering start times does not guarantee
@@ -1137,57 +1167,60 @@ verification commands are still not given `ANTHROPIC_*` / `CLAUDE_CODE_*` / `OPE
                           Only the investigate role is split out as
                           <slug>-investigate (design.md §4.2)
 .goals/.state/runs/<run-id>/  The Agent's raw logs. The DB holds only the path
-src/domain/fact.ts        The Fact type (separating VERIFIED / INFERRED) and Unresolved
-src/domain/fact-keys.ts   Registry of observation keys. fact verification in Goal YAML refers here
-src/domain/goal.ts        The Zod schema for Goal YAML
-src/domain/goal-parse.ts  Goal YAML validation and the slug/goal.id match. Reads no files
-src/domain/goal-config.ts The .goals/config.yaml schema and how it merges under a Goal
-src/domain/gap.ts         The Gap and Assessment types ASSESS produces
-src/domain/action.ts      The Action and Decision types DECIDE chooses
-src/domain/run.ts         The Actor's execution-record type and ActorRole (implement and review
+packages/ent/             The ent CLI package. The entries indented below are inside it
+  src/domain/fact.ts      The Fact type (separating VERIFIED / INFERRED) and Unresolved
+  src/domain/fact-keys.ts Registry of observation keys. fact verification in Goal YAML refers here
+  src/domain/goal.ts      The Zod schema for Goal YAML
+  src/domain/goal-parse.ts Goal YAML validation and the slug/goal.id match. Reads no files
+  src/domain/goal-config.ts The .goals/config.yaml schema and how it merges under a Goal
+  src/domain/gap.ts       The Gap and Assessment types ASSESS produces
+  src/domain/action.ts    The Action and Decision types DECIDE chooses
+  src/domain/run.ts       The Actor's execution-record type and ActorRole (implement and review
                           share a worktree; only investigate is separate — design.md §4.2)
-src/domain/goal-state.ts  The Goal lifecycle, and the transition from Action to next state
-src/domain/port-error.ts  Kinds of Port failure (usage_limit / unavailable)
-src/domain/verification.ts Per-criterion verification results. The index that §9's completion check reads
-src/domain/digest.ts      Digest of observed values. Material for loop detection
-src/domain/protected-paths.ts Protected-path inspection. Stops edits to the control loop itself
-src/domain/guard-rules.ts The decision rules the guard (pure logic) reads. Gate baseline and
+  src/domain/goal-state.ts The Goal lifecycle, and the transition from Action to next state
+  src/domain/port-error.ts Kinds of Port failure (usage_limit / unavailable)
+  src/domain/verification.ts Per-criterion verification results. The index that §9's completion check reads
+  src/domain/digest.ts    Digest of observed values. Material for loop detection
+  src/domain/protected-paths.ts Protected-path inspection. Stops edits to the control loop itself
+  src/domain/guard-rules.ts The decision rules the guard (pure logic) reads. Gate baseline and
                           stopping conditions
-src/domain/withheld-env.ts The removal list of credentials dropped from the Agent's and the
+  src/domain/withheld-env.ts The removal list of credentials dropped from the Agent's and the
                           verification commands' environments
-src/domain/error-message.ts Extracts one human-readable line from an exception
-src/domain/llm-call.ts    A record of one LlmPort call. Tokens that do not create a Run
-src/observe/              Observe, and the definitions of the Ports it depends on
-src/verify/               Verify, and the definitions of the Ports it depends on
-src/assess/               Assess. Matches Acceptance Criteria against Facts to produce Gaps
-src/decide/               Decide and the LlmPort definition. The guard/LLM boundary is here
-src/act/                  Act. Runs the Actor on a worktree. Write-ahead is here
-src/reconcile/            Bundles OBSERVE → VERIFY → ASSESS → DECIDE into one tick
-src/publish/              Securing the PR and the progress comment. CodeWriterPort and BranchPort
-src/store/port.ts         The Port for runtime state. Owned by the consumer; holds no implementation
-src/store/sqlite.ts       Its SQLite implementation (node:sqlite). Only the composition root plugs it in
-src/controller/           Outside one tick. lease → recovery → reconcile → ACT → persist → transition
-src/adapters/local.ts     Ports writable with node:child_process (command execution, git, worktree)
-src/adapters/goal-file.ts Reads .goals/<slug>.yaml, and lays config.yaml from the same directory under it
-src/adapters/github.ts    CodeProviderPort. @octokit/rest + ETag
-src/adapters/claude.ts    ActorPort and LlmPort. Claude Agent SDK.
+  src/domain/error-message.ts Extracts one human-readable line from an exception
+  src/domain/llm-call.ts  A record of one LlmPort call. Tokens that do not create a Run
+  src/observe/            Observe, and the definitions of the Ports it depends on
+  src/verify/             Verify, and the definitions of the Ports it depends on
+  src/assess/             Assess. Matches Acceptance Criteria against Facts to produce Gaps
+  src/decide/             Decide and the LlmPort definition. The guard/LLM boundary is here
+  src/act/                Act. Runs the Actor on a worktree. Write-ahead is here
+  src/reconcile/          Bundles OBSERVE → VERIFY → ASSESS → DECIDE into one tick
+  src/publish/            Securing the PR and the progress comment. CodeWriterPort and BranchPort
+  src/store/port.ts       The Port for runtime state. Owned by the consumer; holds no implementation
+  src/store/sqlite.ts     Its SQLite implementation (node:sqlite). Only the composition root plugs it in
+  src/controller/         Outside one tick. lease → recovery → reconcile → ACT → persist → transition
+  src/adapters/local.ts   Ports writable with node:child_process (command execution, git, worktree)
+  src/adapters/goal-file.ts Reads .goals/<slug>.yaml, and lays config.yaml from the same directory under it
+  src/adapters/github.ts  CodeProviderPort. @octokit/rest + ETag
+  src/adapters/claude.ts  ActorPort and LlmPort. Claude Agent SDK.
                           Per-role allowed/denied tools are here. Only the
                           implement role holds editing tools (design.md §4.2)
-src/adapters/codex.ts     ActorPort and LlmPort. Converts Codex CLI's non-interactive JSONL
-src/adapters/agent-prompt.ts Per-role prompts and output contract. One set for every provider;
+  src/adapters/codex.ts   ActorPort and LlmPort. Converts Codex CLI's non-interactive JSONL
+  src/adapters/agent-prompt.ts Per-role prompts and output contract. One set for every provider;
                           only how semantic-review is delivered (Skill tool / inlined body) differs
-plugins/ent-review/       The canonical copy of the semantic-review skill the review role reads
-src/wiring/index.ts       The composition root. The single place deciding which Adapter goes into
+  src/wiring/index.ts     The composition root. The single place deciding which Adapter goes into
                           which Port. The gate's inputs (Adapter injection and verifyRoot) are
                           decided here too
-src/usecase/init.ts       ent init. Places .goals/, the gitignore line, config.yaml, and a Goal template
-src/usecase/doctor.ts     ent doctor. Inspects the prerequisites for running, writing nothing
-src/usecase/inspect.ts    The payload ent get / ent decisions / ent list emit. Read-only
-src/usecase/cost.ts       Reads Run / LlmCall raw logs and applies caller-supplied category prices
-src/cli/parse.ts          Argument interpretation. Executes nothing
-src/cli/present.ts        Output formatting. stdout is JSON only; diagnostics go to stderr
-src/cli/agent-context.ts  The CLI structure ent agent-context emits
-src/cli.ts                Entry point of the ent command. Per-subcommand steps and the exit-code contract
+  src/usecase/init.ts     ent init. Places .goals/, the gitignore line, config.yaml, and a Goal template
+  src/usecase/doctor.ts   ent doctor. Inspects the prerequisites for running, writing nothing
+  src/usecase/inspect.ts  The payload ent get / ent decisions / ent list emit. Read-only
+  src/usecase/cost.ts     Reads Run / LlmCall raw logs and applies caller-supplied category prices
+  src/cli/parse.ts        Argument interpretation. Executes nothing
+  src/cli/present.ts      Output formatting. stdout is JSON only; diagnostics go to stderr
+  src/cli/agent-context.ts The CLI structure ent agent-context emits
+  src/cli.ts              Entry point of the ent command. Per-subcommand steps and the exit-code contract
+  tests/                  The substance of the Acceptance Criteria, and integration tests that hit
+                          real git / real SQLite
+plugins/ent-review/       The canonical copy of the semantic-review skill the review role reads
 .claude/skills/ent/SKILL.md  What agents read as procedure. Invocation order, and where it stops for
                           human approval
 .claude/skills/ent-bookend/SKILL.md
@@ -1199,8 +1232,6 @@ src/cli.ts                Entry point of the ent command. Per-subcommand steps a
                           The same for the bookend skill
 AGENTS.md                 An entry point that merely points at the two SKILL.md above. Procedures
                           are never written twice
-tests/                    The substance of the Acceptance Criteria, and integration tests that hit
-                          real git / real SQLite
 ```
 
 `.goals/.state/` is created the first time `ent start` is invoked.

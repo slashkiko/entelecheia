@@ -61,7 +61,7 @@ Codex CLI の2つがある。その走っている実体を指すときは **Age
 
 完了判定と暴走の停止条件は LLM に決めさせない。LLM が選べるのは `ACT` / `VERIFY` / `WAIT` の
 3つだけになる。`COMPLETE` と `ESCALATE` は純ロジック（guard）が決める。この境界は
-`src/decide/` にある。
+`packages/ent/src/decide/` にある。
 
 ### 保護パスの関門
 
@@ -72,7 +72,7 @@ controller が ACT の外側で検知して止める。Agent 側の拒否ルー�
 git で見る。ただし見えるのはリポジトリの中の変更だけで、範囲と残る穴は design.md §10-6 に
 書いてある。
 
-守るのは、制御ループ本体（`src/controller/**`）と Goal の宣言部（`.goals/**`）に加えて、
+守るのは、制御ループ本体（`packages/ent/src/controller/**`）と Goal の宣言部（`.goals/**`）に加えて、
 **関門そのもの（Agent の拒否リストを決めるファイルを含む）と検証系**になる。選び方の基準は
 design.md §7 にある。
 
@@ -182,8 +182,8 @@ Goal の状態（ACTIVE / COMPLETED など）は `.goals/.state/goals.db` が持
 打つ」「全件が緑でも壊れていることがある」「設計の中核ほど検証コマンドに落ちない」
 「Phase ごとの担当範囲」を順に示す。
 
-Goal YAML のスキーマは `src/domain/goal.ts`、repo スコープの側は `src/domain/goal-config.ts`、
-観測キーのレジストリは `src/domain/fact-keys.ts` にある。
+Goal YAML のスキーマは `packages/ent/src/domain/goal.ts`、repo スコープの側は `packages/ent/src/domain/goal-config.ts`、
+観測キーのレジストリは `packages/ent/src/domain/fact-keys.ts` にある。
 
 ### Phase 3 の内訳
 
@@ -234,7 +234,7 @@ controller が Actor の書いたものを commit する。Actor に commit を�
 ### 全件が緑でも壊れていることがある
 
 MVP 完了後のレビューでも、同じ形の穴が残っていた。Port を注入するテストは
-`src/adapters/local.ts`（実際の git とシェル）と `src/cli.ts` の `main()` を1行も通らず、
+`packages/ent/src/adapters/local.ts`（実際の git とシェル）と `packages/ent/src/cli.ts` の `main()` を1行も通らず、
 その2つにはテストが1本も無かった。**壊しても全件が緑のまま通る変更が5件あった**（LLM に
 `COMPLETE` を許す、Agent の拒否リストを空にする、ダイジェストの正規化から `sort` を消す、
 承認 Port の失敗を「検証済み不合格」にする、lease の解放を `finally` から外す）。
@@ -282,29 +282,29 @@ Approve を押すこと）の2つになる。
 
 ### 使う側のセットアップ
 
-**ent の実行に mise も pnpm も tsc も要らない。** `src/` に mise への参照は1つも無く、
+**ent の実行に mise も pnpm も tsc も要らない。** `packages/ent/src/` に mise への参照は1つも無く、
 `ent doctor` が見るものにも入っていない。残るのは Node 24 以上と
 [gh](https://cli.github.com/) と Actor（Claude Code / Codex）のログインの3つになる。
 
-ビルド済みの `dist/cli.js` を持つ checkout が1つあれば、そこから PATH に `ent` を張れる。
+ビルド済みの `packages/ent/dist/cli.js` を持つ checkout が1つあれば、そこから PATH に `ent` を張れる。
 
 ```sh
-cd /path/to/entelecheia
+cd /path/to/entelecheia/packages/ent   # ent の bin を持つ package
 pnpm link --global    # package.json の bin（dist/cli.js）を global の bin に張る
 ```
 
-`dist/cli.js` には shebang があるので、張った symlink をそのまま叩ける。
+`packages/ent/dist/cli.js` には shebang があるので、張った symlink をそのまま叩ける。
 `"private": true` のままで効く（npm への公開とは別の話になる）。剥がすときは
 `pnpm uninstall --global entelecheia` を叩く。
 
-**張る先は checkout の中の `dist/cli.js` で、コピーではない。** ent 本体を作り直せば
-`ent` が指す実体も入れ替わる。逆に、`dist/` がまだ無い checkout に張ると symlink の先に
+**張る先は checkout の中の `packages/ent/dist/cli.js` で、コピーではない。** ent 本体を作り直せば
+`ent` が指す実体も入れ替わる。逆に、`packages/ent/dist/` がまだ無い checkout に張ると symlink の先に
 何も無い状態になるので、その checkout では下の「作る側のセットアップ」を1度だけ通す。
 
 起動する Node は shebang の `/usr/bin/env node` が選ぶ。mise や nvm を効かせた shell から
 叩くと対象リポジトリ側の Node が使われるので、24 未満だと `node:sqlite` の import で落ちる。
 どの Node で動いているかは `ent doctor` の `node` が出す。symlink を経由せず、Node の絶対
-パスを固定して `dist/cli.js` を直に呼ぶ形でもよい（「ent を動かす」の節にその例がある）。
+パスを固定して `packages/ent/dist/cli.js` を直に呼ぶ形でもよい（「ent を動かす」の節にその例がある）。
 
 ### 作る側のセットアップ
 
@@ -316,12 +316,40 @@ ent 自身を直すなら、[mise](https://mise.jdx.dev/) と [gh](https://cli.g
 mise trust        # clone 直後の1回だけ。これが無いと次の行が trust エラーで止まる
 mise install --locked
 pnpm install --frozen-lockfile
-mise run build    # dist/cli.js を作る。使う側に渡すのはこの成果物になる
+mise run build    # packages/ent/dist/cli.js を作る。使う側に渡すのはこの成果物になる
 ```
 
 **1行目の `mise trust` は環境の不備ではなく手順の一部になる。** mise は信頼していない
 `mise.toml` を読まないので、飛ばすと `mise install --locked` が
 `Config files ... are not trusted.` で止まる。
+
+### `packages/` へ移す前の checkout を更新する
+
+ent の成果物は、`<checkout>/dist/cli.js` から `packages/ent/dist/cli.js` に移った。**pull しただけでは、
+すでに組んだ入口は付いてこない。** `dist/` は gitignore 済みなので、ルートの古い `dist/cli.js` は
+消えずに残る。それを指す alias・cron の行・グローバルのリンクは、移す前の controller をエラーなしで
+動かし続ける。そうした checkout では、次を1度だけ通す。
+
+```sh
+git pull
+pnpm install --frozen-lockfile   # workspace のリンクを張る。これが無いと build が毎回落ちる
+mise run build                   # packages/ent/dist/cli.js を作る
+rm -rf dist                      # 古いパスを指したままの入口を、黙って動かさずに落とす
+pnpm uninstall --global entelecheia   # 古い checkout をグローバルにリンクしていた場合だけ
+(cd packages/ent && pnpm link --global)
+```
+
+そのあと、alias と cron の行の `<checkout>/dist/cli.js` を `<checkout>/packages/ent/dist/cli.js` に
+書き換える。
+
+**ent 自身を直す Goal が動いている間は、更新しない。** 上の `git pull` の前に `ent list` で確かめる。
+Goal は start したときの worktree と branch を使い続ける。ent は毎ティックそれを使い回し、`ent abandon` は
+終端なので、止めた Goal を新しい worktree で start し直すことはできない。移す前に切った worktree では
+差分が `src/...` で出るが、`.goals/` にある Goal 自身の `protected_paths` はもう `packages/...` を指して
+いて、そこでは何も守らない。保護パスの下限は移行の間だけ関門のファイルの移す前のパスも持っているが、
+Goal ごとの宣言までは覆わない。だから、そうした Goal を先に終わらせる。待てない Goal は abandon し、
+新しい `id` で Goal を宣言し直す。新しい `id` には新しい worktree ができる。下限から移す前のパスを外すのは、
+`git worktree list` に移す前に切った worktree が無くなってからにする。
 
 ## 検証
 
@@ -330,16 +358,16 @@ mise run verify   # typecheck / lint / build / test をまとめて実行
 mise run check    # サプライチェーンと workflow のチェック（baseline 由来）
 ```
 
-`verify` に `build` が入っているのは、型が通ることと `dist/cli.js` が出来ることが
-別だからになる。`tsconfig.json` は `noEmit` で `tests/**` を含む。`bin` の実体を作るのは
-`tsconfig.build.json` の側になる。
+`verify` に `build` が入っているのは、型が通ることと `packages/ent/dist/cli.js` が出来ることが
+別だからになる。ルートの `tsconfig.json` は `noEmit` で各 package の `tests/**` を含む。`bin` の実体を作るのは
+`packages/ent/tsconfig.build.json` の側になる。
 
 **Goal に着手した直後は `typecheck` と `test` が落ちる。** Acceptance Criteria を先に書く
 進め方に由来する想定内の状態であって、環境の不備ではない。落ちる件数まで含めて、その Goal の
 `desired_state` が着手時点の実測として宣言する。main の CI（`.github/workflows/verify.yml`）も、
 そのあいだは赤いままになる。
 
-落ちるのが仕様テストだけなら、`lint` と `build` と `check` は通る（`build` は `tests/**` を
+落ちるのが仕様テストだけなら、`lint` と `build` と `check` は通る（`build` は `packages/ent/tests/**` を
 見ないため）。どの Goal に着手しているかは `ent list` で読む。**この README には
 書かない。** 書くと、着手のたびに直す場所が1つ増え、直し忘れると「落ちる」と言い続ける。
 
@@ -353,9 +381,9 @@ mise run check    # サプライチェーンと workflow のチェック（basel
 「粗いタスクを複数の Goal に割る」「複数の Goal を同時に回す」の7つが続く。
 
 ```sh
-mise run build                     # dist/cli.js を作る
+mise run build                     # packages/ent/dist/cli.js を作る
 ENT_NODE="$(mise which node)"       # Node 24以上の絶対パスを先に固定する
-alias ent="$ENT_NODE $(pwd)/dist/cli.js"
+alias ent="$ENT_NODE $(pwd)/packages/ent/dist/cli.js"
 
 ent init                           # いまのリポジトリを回せる状態にする（冪等）
 ent plan --desire "…"              # 散文のゴールをサブ Goal の宣言に分解する
@@ -553,9 +581,9 @@ Actor の編集として並ぶ）。
 
 ### 起動の仕方と、ent 自身を直すときの例外
 
-`package.json` の `bin` に `ent` を登録してあるが、npm へ公開していない。
+`packages/ent/package.json` の `bin` に `ent` を登録してあるが、npm へ公開していない。
 PATH に通すだけなら `pnpm link --global` で足りる（「入れる」の節）。
-ここから先はNode 24以上の絶対パスを使うaliasか、同じNodeで`dist/cli.js`を呼ぶ形で書く。
+ここから先はNode 24以上の絶対パスを使うaliasか、同じNodeで`packages/ent/dist/cli.js`を呼ぶ形で書く。
 起動するNodeを自分で決められるので、mise や nvm が効く shell でも取り違えが起きない
 （ent 自身を直す Goal だけは下の task を通す）。
 
@@ -565,7 +593,7 @@ PATH に通すだけなら `pnpm link --global` で足りる（「入れる」�
 継続して回すなら cron から `run` を叩く。
 
 **ent 自身を直す Goal を回すときは `mise run ent -- run <slug>` を使う。**
-`tsc` を通すまで HEAD の実装は `dist/cli.js` に入らないので、直に叩くと古い
+`tsc` を通すまで HEAD の実装は `packages/ent/dist/cli.js` に入らないので、直に叩くと古い
 controller が回り続ける。理由と例外は `CLAUDE.md` にある。
 
 ### この repo の外のリポジトリで使う
@@ -578,7 +606,7 @@ ent はどこかに1つビルドしておき、対象リポジトリのルート
 ```sh
 cd /path/to/entelecheia && mise run build
 ENT_NODE="$(mise which node)"       # この時点でNode 24以上の絶対パスを固定する
-alias ent="$ENT_NODE /path/to/entelecheia/dist/cli.js"
+alias ent="$ENT_NODE /path/to/entelecheia/packages/ent/dist/cli.js"
 
 cd /path/to/your-repo
 ent init            # .goals/ と .gitignore の行と config.yaml と Goal の雛形を置く
@@ -634,10 +662,11 @@ ent 本体がマシンに1つ入るからになる。対象リポジトリの中
 - lease は `.goals/.state/goals.db` にあり gitignore 済みなので、**端末をまたいだ
   排他は効かない**（2台が同じ Goal を回すと両方が PR を立てる）
 - `PROTECTED_PATH_FLOOR` は entelecheia 固有のパスを含むので、対象リポジトリに
-  同じ名前のパス（`src/controller/**` など）があると、Agent がそこを触った時点で
-  **誤って**違反になる
+  同じ名前のパス（`packages/ent/src/controller/**` など）があると、Agent がそこを触った時点で
+  **誤って**違反になる。`packages/` へ移す間は、移す前のパス（`src/controller/**` など）も
+  下限に残しているので、外すまではそちらも同じように当たる
 - **逆に、下限の保護パスは ent 自身のコードには届かない。** ent 本体は対象
-  リポジトリの外にあるので、`src/controller/**` のような行は ent のソースを
+  リポジトリの外にあるので、`packages/ent/src/controller/**` のような行は ent のソースを
   指さない。上の項目が「対象リポジトリ側に同名のパスがあると誤検知する」話なのに
   対し、こちらは「ent 本体を守る用途には使えない」話になる。**関門が守るのは
   対象リポジトリの中であって、ent 自身のコードではない**（自己ホストのときだけ
@@ -1018,7 +1047,7 @@ cron から回す場合も、対象repoへ移動してからNode 24以上とent�
 パスへ置き換える。Linuxではschedulerの重複起動禁止設定か同等のロックを使う。
 
 ```cron
-*/10 * * * * cd /path/to/your-repo && /usr/bin/lockf -n /tmp/ent-your-repo.lock /absolute/path/to/node-24 /path/to/entelecheia/dist/cli.js run goal-a
+*/10 * * * * cd /path/to/your-repo && /usr/bin/lockf -n /tmp/ent-your-repo.lock /absolute/path/to/node-24 /path/to/entelecheia/packages/ent/dist/cli.js run goal-a
 ```
 
 同じディレクトリのGoalを複数回す場合も、開始時刻をずらすだけでは直列性を保証できない。
@@ -1075,60 +1104,61 @@ gh のトークンが黙って使われないようにするためになる。**
                           調べる役（investigate）だけ
                           <slug>-investigate に分かれる（design.md §4.2）
 .goals/.state/runs/<run-id>/  Agent の生ログ。DB にはパスだけ持つ
-src/domain/fact.ts        Fact の型（VERIFIED / INFERRED の分離）と Unresolved
-src/domain/fact-keys.ts   観測キーのレジストリ。Goal YAML の fact 検証はここを参照する
-src/domain/goal.ts        Goal YAML の Zod スキーマ
-src/domain/goal-parse.ts  Goal YAML の検証と、slug と goal.id の突き合わせ。ファイルは読まない
-src/domain/goal-config.ts .goals/config.yaml のスキーマと、Goal の下への敷き方
-src/domain/gap.ts         ASSESS が出す Gap と Assessment の型
-src/domain/action.ts      DECIDE が選ぶ Action と Decision の型
-src/domain/run.ts         Actor の実行記録の型と ActorRole（実装役とレビュー役は同じ
+packages/ent/             ent の CLI の package。下の字下げした項目はこの中にある
+  src/domain/fact.ts      Fact の型（VERIFIED / INFERRED の分離）と Unresolved
+  src/domain/fact-keys.ts 観測キーのレジストリ。Goal YAML の fact 検証はここを参照する
+  src/domain/goal.ts      Goal YAML の Zod スキーマ
+  src/domain/goal-parse.ts Goal YAML の検証と、slug と goal.id の突き合わせ。ファイルは読まない
+  src/domain/goal-config.ts .goals/config.yaml のスキーマと、Goal の下への敷き方
+  src/domain/gap.ts       ASSESS が出す Gap と Assessment の型
+  src/domain/action.ts    DECIDE が選ぶ Action と Decision の型
+  src/domain/run.ts       Actor の実行記録の型と ActorRole（実装役とレビュー役は同じ
                           worktree、investigate だけが分かれる。design.md §4.2）
-src/domain/goal-state.ts  Goal のライフサイクルと、Action から次の状態を決める遷移
-src/domain/port-error.ts  Port の失敗の種別（usage_limit / unavailable）
-src/domain/verification.ts criteria 単位の検証結果。§9 の完了判定が読む索引
-src/domain/digest.ts      観測値のダイジェスト。ループ検知の材料になる
-src/domain/protected-paths.ts 保護パスの検査。制御ループ自体への編集を止める
-src/domain/guard-rules.ts guard（純ロジック）が読む判断規則。関門の基準と停止条件
-src/domain/withheld-env.ts Agent と検証コマンドの環境から落とす資格情報の除去リスト
-src/domain/error-message.ts 例外から人間が読める1行を取り出す
-src/domain/llm-call.ts    LlmPort を1回呼んだ記録。Run を作らない分のトークン
-src/observe/              Observe と、依存する Port の定義
-src/verify/               Verify と、依存する Port の定義
-src/assess/               Assess。Acceptance Criteria と Fact を突き合わせて Gap を出す
-src/decide/               Decide と LlmPort の定義。guard と LLM の境界はここにある
-src/act/                  Act。Actor を worktree 上で走らせる。write-ahead はここ
-src/reconcile/            OBSERVE → VERIFY → ASSESS → DECIDE を1ティックにまとめる
-src/publish/              PR の確保と進捗コメント。CodeWriterPort と BranchPort の定義
-src/store/port.ts         実行時状態の Port。使う側が所有する口で、実装は持たない
-src/store/sqlite.ts       その SQLite 実装（node:sqlite）。挿すのは合成ルートだけ
-src/controller/           1ティックの外側。lease → 回収 → reconcile → ACT → 永続化 → 遷移
-src/adapters/local.ts     node:child_process で書ける Port（コマンド実行、git、worktree）
-src/adapters/goal-file.ts .goals/<slug>.yaml を読み、同じディレクトリの config.yaml を下に敷く
-src/adapters/github.ts    CodeProviderPort。@octokit/rest + ETag
-src/adapters/claude.ts    ActorPort と LlmPort。Claude Agent SDK
+  src/domain/goal-state.ts Goal のライフサイクルと、Action から次の状態を決める遷移
+  src/domain/port-error.ts Port の失敗の種別（usage_limit / unavailable）
+  src/domain/verification.ts criteria 単位の検証結果。§9 の完了判定が読む索引
+  src/domain/digest.ts    観測値のダイジェスト。ループ検知の材料になる
+  src/domain/protected-paths.ts 保護パスの検査。制御ループ自体への編集を止める
+  src/domain/guard-rules.ts guard（純ロジック）が読む判断規則。関門の基準と停止条件
+  src/domain/withheld-env.ts Agent と検証コマンドの環境から落とす資格情報の除去リスト
+  src/domain/error-message.ts 例外から人間が読める1行を取り出す
+  src/domain/llm-call.ts  LlmPort を1回呼んだ記録。Run を作らない分のトークン
+  src/observe/            Observe と、依存する Port の定義
+  src/verify/             Verify と、依存する Port の定義
+  src/assess/             Assess。Acceptance Criteria と Fact を突き合わせて Gap を出す
+  src/decide/             Decide と LlmPort の定義。guard と LLM の境界はここにある
+  src/act/                Act。Actor を worktree 上で走らせる。write-ahead はここ
+  src/reconcile/          OBSERVE → VERIFY → ASSESS → DECIDE を1ティックにまとめる
+  src/publish/            PR の確保と進捗コメント。CodeWriterPort と BranchPort の定義
+  src/store/port.ts       実行時状態の Port。使う側が所有する口で、実装は持たない
+  src/store/sqlite.ts     その SQLite 実装（node:sqlite）。挿すのは合成ルートだけ
+  src/controller/         1ティックの外側。lease → 回収 → reconcile → ACT → 永続化 → 遷移
+  src/adapters/local.ts   node:child_process で書ける Port（コマンド実行、git、worktree）
+  src/adapters/goal-file.ts .goals/<slug>.yaml を読み、同じディレクトリの config.yaml を下に敷く
+  src/adapters/github.ts  CodeProviderPort。@octokit/rest + ETag
+  src/adapters/claude.ts  ActorPort と LlmPort。Claude Agent SDK
                           role ごとの許可・拒否ツールはここ。編集の
                           ツールを持つのは実装役だけ（design.md §4.2）
-src/adapters/codex.ts     ActorPort と LlmPort。Codex CLI の非対話JSONLを変換する
-src/adapters/agent-prompt.ts role別プロンプトと出力契約。providerによらず1組で、
+  src/adapters/codex.ts   ActorPort と LlmPort。Codex CLI の非対話JSONLを変換する
+  src/adapters/agent-prompt.ts role別プロンプトと出力契約。providerによらず1組で、
                           semantic-review の渡し方（Skillツール／本文の差し込み）だけが分かれる
+  src/wiring/index.ts     合成ルート。どの Port にどの Adapter を挿すかを決める唯一の場所。
+                          関門への入力（Adapter の注入と verifyRoot）もここで決まる
+  src/usecase/init.ts     ent init。.goals/ と gitignore の行と config.yaml と Goal の雛形を置く
+  src/usecase/doctor.ts   ent doctor。回す前の前提を、書かずに調べる
+  src/usecase/inspect.ts  ent get / ent decisions / ent list が出す payload。読むだけ
+  src/usecase/cost.ts     Run / LlmCall の生ログを読み、caller が渡した分類別価格を適用する
+  src/cli/parse.ts        引数の解釈。実行はしない
+  src/cli/present.ts      出力の整形。stdout は JSON 専用、診断は stderr
+  src/cli/agent-context.ts ent agent-context が出す CLI の構造
+  src/cli.ts              ent コマンドの入口。サブコマンドごとの手順と終了コードの契約
+  tests/                  Acceptance Criteria の実体と、実 git / 実 SQLite を叩く統合テスト
 plugins/ent-review/       レビュー役に読ませる semantic-review skill の正本。
                           `policies.review_skill` を書けば、対象リポジトリの中の
                           plugin に差し替わる
-src/wiring/index.ts       合成ルート。どの Port にどの Adapter を挿すかを決める唯一の場所。
-                          関門への入力（Adapter の注入と verifyRoot）もここで決まる
-src/usecase/init.ts       ent init。.goals/ と gitignore の行と config.yaml と Goal の雛形を置く
-src/usecase/doctor.ts     ent doctor。回す前の前提を、書かずに調べる
-src/usecase/inspect.ts    ent get / ent decisions / ent list が出す payload。読むだけ
-src/usecase/cost.ts       Run / LlmCall の生ログを読み、caller が渡した分類別価格を適用する
-src/cli/parse.ts          引数の解釈。実行はしない
-src/cli/present.ts        出力の整形。stdout は JSON 専用、診断は stderr
-src/cli/agent-context.ts  ent agent-context が出す CLI の構造
-src/cli.ts                ent コマンドの入口。サブコマンドごとの手順と終了コードの契約
 .claude/skills/ent/SKILL.md  エージェントが手順として読むもの。叩く順と、人の承認で止まる場所
 .agents/skills/ent          Codex の探索先。上の正本を指す symlink
 AGENTS.md                 上の SKILL.md を指すだけの入口。手順は二重に書かない
-tests/                    Acceptance Criteria の実体と、実 git / 実 SQLite を叩く統合テスト
 ```
 
 `.goals/.state/` は `ent start` を最初に叩いたときに作られる。

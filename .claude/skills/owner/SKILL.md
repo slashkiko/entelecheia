@@ -61,7 +61,7 @@ description: entelecheia（ent）のオーナー。中核の設計判断・未�
 
 - `docs/design.ja.md` の節番号と該当行（引用する）
 - `docs/decisions/NNNN` の過去の判断（番号で指す）
-- コードの実態（`file:line` を添える）。特に guard の境界は `src/decide/` にある
+- コードの実態（`file:line` を添える）。特に guard の境界は `packages/ent/src/decide/` にある
 
 **推測は推測と書く。** 「たぶんこうしたかったはず」は、根拠ではなく確認事項として出す。
 

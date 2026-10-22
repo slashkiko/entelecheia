@@ -498,7 +498,7 @@ With `repository.pull_request.draft: true`, pass `--draft`. It is the value the 
 opens the PR, so forgetting it means **only the PR opened on its behalf notifies the reviewers**.
 That notification is exactly what `open_pull_request: manual` is trying to stop.
 
-Make the body the same shape the controller opens with (`pullRequestBody`, `src/publish/index.ts`).
+Make the body the same shape the controller opens with (`pullRequestBody`, `packages/ent/src/publish/index.ts`).
 
 ````markdown
 Changes for the entelecheia Goal `<goal.id>`.

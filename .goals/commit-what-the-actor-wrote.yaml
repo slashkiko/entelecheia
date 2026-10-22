@@ -242,17 +242,17 @@ context:
 
   references:
     - title: 仕様（未 commit を残したまま終わらない）
-      path: tests/controller-uncommitted.test.ts
+      path: packages/ent/tests/controller-uncommitted.test.ts
     - title: 1ティックの外側。検知を足す場所
-      path: src/controller/index.ts
+      path: packages/ent/src/controller/index.ts
     - title: push と PR の確保。誤った前提を書いたコメントがある
-      path: src/publish/index.ts
+      path: packages/ent/src/publish/index.ts
     - title: push と git worktree の実装
-      path: src/adapters/local.ts
+      path: packages/ent/src/adapters/local.ts
     - title: local.* の観測先を決めている verifyRoot
-      path: src/cli.ts
+      path: packages/ent/src/cli.ts
     - title: 完了判定と停止条件の境界
-      path: src/decide/index.ts
+      path: packages/ent/src/decide/index.ts
     - title: 設計ドキュメント
       path: docs/design.md
     - title: 人間向けの導入
@@ -272,18 +272,21 @@ policies:
     # 検査の仕組みではない（constraints を参照）。
     - .goals/**
     # 関門そのものと、Agent の許可・拒否ツールを決めるファイル。
-    - src/domain/protected-paths.ts
-    - src/adapters/claude.ts
+    - packages/ent/src/domain/protected-paths.ts
+    - packages/ent/src/adapters/claude.ts
     # 検証系。ここを書き換えられると Agent が自分の criteria を通せる。
     # tests/** は入れない（理由は guard-the-controller.yaml に書いた）。
     - mise.toml
     - mise-tasks/**
     - vitest.config.ts
+    - packages/*/vitest.config.ts
     - biome.json
     - tsconfig*.json
+    - packages/*/tsconfig*.json
     - .github/**
     # 依存の追加は人間が通す。constraints にも「依存パッケージを増やさない」と書いてある。
     - package.json
+    - packages/*/package.json
     - pnpm-lock.yaml
 
 budget:

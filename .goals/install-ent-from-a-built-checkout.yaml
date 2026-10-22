@@ -18,7 +18,7 @@ goal:
     `ent doctor` が見る項目にも mise は入っていない。mise がこのリポジトリで
     担っているのはツールチェーンの固定・セキュリティツールの固定・task runner の
     3つで、どれもビルドする側のものになる。pnpm と tsc も同じで、ビルド済みの
-    `dist/cli.js` があれば要らない。使う側に残るのは Node 24 以上と gh と Actor の
+    `packages/ent/dist/cli.js` があれば要らない。使う側に残るのは Node 24 以上と gh と Actor の
     ログインの3つだけになる。
 
     ## 何が満たされていればよいか
@@ -36,9 +36,9 @@ goal:
 
     2. 起動の仕方の説明が、alias の直書きを正としない
 
-      いまの README は `alias ent="$ENT_NODE $(pwd)/dist/cli.js"` を入口に置いて
+      いまの README は `alias ent="$ENT_NODE $(pwd)/packages/ent/dist/cli.js"` を入口に置いて
       いる。alias はそのシェルセッション限りなので cron からは効かず、cron の節
-      だけが `dist/cli.js` の絶対パスを直書きすることになっている。**PATH に
+      だけが `packages/ent/dist/cli.js` の絶対パスを直書きすることになっている。**PATH に
       `ent` が通っていれば、その分岐が要らなくなる。** cron の節もそれを正にする。
 
       Node 24 以上を固定する必要そのものは消えない。cron の PATH に何が入るかは
@@ -204,15 +204,15 @@ context:
 
   references:
     - title: 仕様。着手時点では落ちている
-      path: tests/package-contract.test.ts
+      path: packages/ent/tests/package-contract.test.ts
     - title: bin / engines / private の現状
       path: package.json
     - title: Node の下限の出どころ（node:sqlite）と doctor の detail
-      path: src/usecase/doctor.ts
+      path: packages/ent/src/usecase/doctor.ts
     - title: 使う側と作る側が混ざっている当のもの。alias と cron の節もここ
       path: README.md
     - title: README とサブコマンドの網羅集合の突き合わせ
-      path: tests/docs-contract.test.ts
+      path: packages/ent/tests/docs-contract.test.ts
 
 policies:
   require_human_approval:
@@ -233,14 +233,16 @@ policies:
     - mise.toml
     - mise-tasks/**
     - vitest.config.ts
+    - packages/*/vitest.config.ts
     - biome.json
     - tsconfig*.json
+    - packages/*/tsconfig*.json
     - .github/**
     # 依存の追加は人間が通す。
     - pnpm-lock.yaml
     # ブランチ名の規則と PR 本文。この Goal 自身が走っている足場になる。
-    - src/act/**
-    - src/publish/**
+    - packages/ent/src/act/**
+    - packages/ent/src/publish/**
 
 budget:
   max_actor_runs: 8

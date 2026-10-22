@@ -25,7 +25,7 @@ import { describe, expect, it } from "vitest";
  * ここで固定するのは順序と位置だけにする。**説明の文言は決めない。**
  */
 
-const README = readFileSync(fileURLToPath(new URL("../README.md", import.meta.url)), "utf8");
+const README = readFileSync(fileURLToPath(new URL("../../../README.md", import.meta.url)), "utf8");
 const LINES = README.split("\n").map((line) => line.trim());
 
 /** 行頭がそのコマンドで始まる最初の行。末尾のコメントは許す */

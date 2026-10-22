@@ -151,7 +151,7 @@ describe("ent plan", () => {
       "external_send",
     ]);
     // 下限は宣言が空でも必ず混ざる。
-    expect(alpha.policies.protected_paths).toContain("src/controller/**");
+    expect(alpha.policies.protected_paths).toContain("packages/ent/src/controller/**");
     expect(alpha.policies.protected_paths).toContain(".goals/**");
   });
 

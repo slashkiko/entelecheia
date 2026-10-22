@@ -96,7 +96,7 @@ describe("README が使う側と作る側を分けている", () => {
   // issue が挙げる直し方の1つ目にあたる。README は「この repo の外のリポジトリで
   // 使う」を正式な使い方として書いているのに、その「使うだけ」の人も contributor と
   // 同じ入口（mise / pnpm install / tsc）を通ることになっている。
-  const readme = readFileSync(fileURLToPath(new URL("README.md", ROOT)), "utf8");
+  const readme = readFileSync(fileURLToPath(new URL("../../README.md", ROOT)), "utf8");
 
   it("使う側が PATH に通す手順が載っている", () => {
     expect(readme).toContain("pnpm link --global");

@@ -19,7 +19,7 @@ import { agentContextPayload, parseCommand } from "../src/cli.js";
  * 片方だけ古くなったときにどちらが正か分からなくなる。
  */
 
-const REPO_ROOT = join(import.meta.dirname, "..");
+const REPO_ROOT = join(import.meta.dirname, "..", "..", "..");
 const SKILL_PATH = join(REPO_ROOT, ".claude", "skills", "ent", "SKILL.md");
 
 describe("agent-context サブコマンド", () => {

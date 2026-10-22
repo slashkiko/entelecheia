@@ -186,13 +186,13 @@ context:
     - title: 設計ドキュメント
       path: docs/design.md
     - title: いまの DECIDE
-      path: src/decide/index.ts
+      path: packages/ent/src/decide/index.ts
     - title: 行動と待ちの理由
-      path: src/domain/action.ts
+      path: packages/ent/src/domain/action.ts
     - title: 待ちの理由から次の状態を決めるところ
-      path: src/domain/goal-state.ts
+      path: packages/ent/src/domain/goal-state.ts
     - title: Decision を読み直すところ
-      path: src/store/sqlite.ts
+      path: packages/ent/src/store/sqlite.ts
 
 policies:
   require_human_approval:
@@ -209,12 +209,15 @@ policies:
     - mise.toml
     - mise-tasks/**
     - vitest.config.ts
+    - packages/*/vitest.config.ts
     - biome.json
     - tsconfig*.json
+    - packages/*/tsconfig*.json
     - .github/**
     # 依存の追加は人間が通す。この Goal の constraints にも
     # 「依存パッケージを増やさない」と書いてある。
     - package.json
+    - packages/*/package.json
     - pnpm-lock.yaml
 
 budget:

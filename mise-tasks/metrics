@@ -50,7 +50,7 @@ for tool in node jq; do
   fi
 done
 
-readonly cli="dist/cli.js"
+readonly cli="packages/ent/dist/cli.js"
 if [[ ! -f "$cli" ]]; then
   echo "$cli is missing; run mise run build first." >&2
   exit 1

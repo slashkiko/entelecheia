@@ -290,19 +290,19 @@ context:
 
   references:
     - title: 仕様（role ごとの worktree）
-      path: tests/worktree-roles.test.ts
+      path: packages/ent/tests/worktree-roles.test.ts
     - title: 仕様（レビュー役の権限と、結論の Fact 化）
-      path: tests/review-actor.test.ts
+      path: packages/ent/tests/review-actor.test.ts
     - title: worktree の名前とブランチの規則
-      path: src/act/index.ts
+      path: packages/ent/src/act/index.ts
     - title: Agent の許可・拒否ツールを決めている場所
-      path: src/adapters/claude.ts
+      path: packages/ent/src/adapters/claude.ts
     - title: 観測キーのレジストリ
-      path: src/domain/fact-keys.ts
+      path: packages/ent/src/domain/fact-keys.ts
     - title: 保護パスの検査と未 commit の関門
-      path: src/controller/index.ts
+      path: packages/ent/src/controller/index.ts
     - title: 検証と観測の実行先を決めている verifyRoot
-      path: src/cli.ts
+      path: packages/ent/src/cli.ts
     - title: 設計ドキュメント
       path: docs/design.md
 
@@ -320,18 +320,21 @@ policies:
     # 外したのは適用対象であって、検査の仕組みではない（constraints を参照）。
     - .goals/**
     # 関門そのもの。
-    - src/domain/protected-paths.ts
+    - packages/ent/src/domain/protected-paths.ts
     # レビューをいつ起動するかと、完了判定の境界。本 Goal の範囲外。
-    - src/decide/**
+    - packages/ent/src/decide/**
     # 検証系。ここを書き換えられると Agent が自分の criteria を通せる。
     - mise.toml
     - mise-tasks/**
     - vitest.config.ts
+    - packages/*/vitest.config.ts
     - biome.json
     - tsconfig*.json
+    - packages/*/tsconfig*.json
     - .github/**
     # 依存の追加は人間が通す。
     - package.json
+    - packages/*/package.json
     - pnpm-lock.yaml
 
 budget:

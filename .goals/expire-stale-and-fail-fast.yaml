@@ -212,13 +212,13 @@ context:
     - title: 設計ドキュメント
       path: docs/design.md
     - title: 引き継ぎの現状
-      path: src/reconcile/index.ts
+      path: packages/ent/src/reconcile/index.ts
     - title: LlmPort の現状
-      path: src/adapters/claude.ts
+      path: packages/ent/src/adapters/claude.ts
     - title: プロンプトの現状
-      path: src/decide/index.ts
+      path: packages/ent/src/decide/index.ts
     - title: CLI の現状
-      path: src/cli.ts
+      path: packages/ent/src/cli.ts
     - title: 直近の自己ホスト1周（進め方の見本）
       path: .goals/list-goals.yaml
 
@@ -251,18 +251,21 @@ policies:
     # そのもので、着手はその判断が main に入る前だった。回しているあいだは外し、
     # 代わりに ac-6 で人間の承認を取った。差分は `claudeLlm` のエラー判定だけで、
     # `disallowedTools` にも `ALWAYS_DENIED` にも触れていない。
-    - src/controller/**
+    - packages/ent/src/controller/**
     - .goals/**
     # 以下は PR #19（MVP レビューの指摘を反映する）が他の Goal YAML に入れた分に揃える。
-    - src/domain/protected-paths.ts
-    - src/adapters/claude.ts
+    - packages/ent/src/domain/protected-paths.ts
+    - packages/ent/src/adapters/claude.ts
     - mise.toml
     - mise-tasks/**
     - vitest.config.ts
+    - packages/*/vitest.config.ts
     - biome.json
     - tsconfig*.json
+    - packages/*/tsconfig*.json
     - .github/**
     - package.json
+    - packages/*/package.json
     - pnpm-lock.yaml
 
 budget:
