@@ -1,8 +1,8 @@
+import type { Decision } from "@entelecheia/core/domain/action.js";
+import type { Goal } from "@entelecheia/core/domain/goal.js";
+import type { LlmCall } from "@entelecheia/core/domain/llm-call.js";
+import type { Verification } from "@entelecheia/core/domain/verification.js";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import type { Decision } from "../src/domain/action.js";
-import type { Goal } from "../src/domain/goal.js";
-import type { LlmCall } from "../src/domain/llm-call.js";
-import type { Verification } from "../src/domain/verification.js";
 import type { Store } from "../src/store/port.js";
 import { openStore } from "../src/store/sqlite.js";
 

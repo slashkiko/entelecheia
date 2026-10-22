@@ -1,7 +1,7 @@
+import type { Fact } from "@entelecheia/core/domain/fact.js";
+import { observedFactKeySchema } from "@entelecheia/core/domain/fact-keys.js";
+import { verificationSchema } from "@entelecheia/core/domain/goal.js";
 import { describe, expect, it } from "vitest";
-import type { Fact } from "../src/domain/fact.js";
-import { observedFactKeySchema } from "../src/domain/fact-keys.js";
-import { verificationSchema } from "../src/domain/goal.js";
 import {
   type CodeProviderPort,
   type LocalRepoPort,
@@ -122,7 +122,7 @@ describe("未解決レビュースレッドの観測", () => {
 
     // `mergeable` の null と同じ扱いにする。ここで unresolved を積むと、
     // Gap がゼロの Goal は DECIDE が COMPLETE ではなく WAIT を返すようになり
-    // （src/decide/index.ts）、このキーを参照していない Goal まで
+    // （packages/core/src/decide/index.ts）、このキーを参照していない Goal まで
     // 完了できなくなる。件数を求めている Goal の側は、Fact が無ければ
     // criteria が Gap(unknown) を立てるので、待つ理由はそちらに残る。
     expect(result.unobserved.filter((u) => u.key.startsWith("github.pr"))).toEqual([]);
@@ -159,7 +159,7 @@ describe("未解決レビュースレッドの観測", () => {
 
   it("観測キーのレジストリに載っている", () => {
     // Goal YAML の `verification: { type: fact }` はここを参照するので、
-    // レジストリに無いキーは criteria に書けない（src/domain/fact-keys.ts）。
+    // レジストリに無いキーは criteria に書けない（packages/core/src/domain/fact-keys.ts）。
     expect(observedFactKeySchema.safeParse(KEY).success).toBe(true);
   });
 

@@ -1,5 +1,5 @@
+import type { Goal } from "@entelecheia/core/domain/goal.js";
 import { stringify } from "yaml";
-import type { Goal } from "./goal.js";
 
 /**
  * `Goal` を `.goals/<id>.yaml` の中身に落とす。**ファイルは書かない。**
@@ -16,7 +16,7 @@ import type { Goal } from "./goal.js";
  *
  * **省略できるキーは、値が無ければキーごと落とす。** `repository.ci` /
  * `repository.pull_request` / `policies.publish` は「書かなければ何も起きない」を
- * キーの有無で表している（`src/domain/goal.ts`）。`null` や `{}` を書き出すと、
+ * キーの有無で表している（`packages/core/src/domain/goal.ts`）。`null` や `{}` を書き出すと、
  * 書いていないはずの宣言が生えたように読める。
  */
 
@@ -30,7 +30,7 @@ export interface RenderGoalOptions {
    * `Goal.setup` は `setupSchema.default([])` を通った後なので、その時点では
    * 「宣言が `setup` を書かなかった」と「`setup: []` と書いた」の区別が消えている。
    * 一方 `mergeGoalConfig` はその区別を**キーの有無**で見て、無ければ
-   * `.goals/config.yaml` の `setup` を下に敷く（`src/domain/goal-config.ts`）。
+   * `.goals/config.yaml` の `setup` を下に敷く（`packages/core/src/domain/goal-config.ts`）。
    * 区別を持っているのは `Goal` を組み立てた側だけなので、落とすかどうかを
    * そこから渡してもらう。
    *

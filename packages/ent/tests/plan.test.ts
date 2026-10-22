@@ -1,7 +1,7 @@
+import { CONFIG_SLUG } from "@entelecheia/core/domain/goal-config.js";
+import { MAX_LLM_RETRIES } from "@entelecheia/core/domain/llm-call.js";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { CONFIG_SLUG } from "../src/domain/goal-config.js";
 import { parseGoal } from "../src/domain/goal-parse.js";
-import { MAX_LLM_RETRIES } from "../src/domain/llm-call.js";
 import {
   type ExistingGoal,
   type PlanProbes,

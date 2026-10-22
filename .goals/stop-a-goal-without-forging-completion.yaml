@@ -187,7 +187,7 @@ context:
     - title: 完了判定は VERIFIED のみ（§3.1）、状態遷移図と終端から戻さない理由（§4.4）
       path: docs/design.md
     - title: isTerminal と nextStatus。ABANDONED は既にある
-      path: packages/ent/src/domain/goal-state.ts
+      path: packages/core/src/domain/goal-state.ts
     - title: SUBCOMMANDS と引数の解釈
       path: packages/ent/src/cli.ts
     - title: README / SKILL.md とサブコマンドの突き合わせ

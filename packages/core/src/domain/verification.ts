@@ -39,7 +39,7 @@ export type Verification = z.infer<typeof verificationSchema>;
  * 1ティックの結果から criteria 単位の検証結果を組み立てる。
  *
  * VERIFY をもう一度回すのではなく、reconcile が返した Fact と unresolved から導く。
- * 検証そのものは `src/verify/` が持ち、ここは同じ結果を別の索引で並べ直すだけ。
+ * 検証そのものは `packages/ent/src/verify/` が持ち、ここは同じ結果を別の索引で並べ直すだけ。
  * 二重に検証すると、同じティックで結果が食い違う余地が生まれる。
  *
  * 満たすべき性質:
@@ -111,7 +111,7 @@ export function toVerifications(
  *
  * `review.verdict` は「どの commit を読んだ結論か」（`review.reviewed_sha`）と
  * 対でしか意味を持たないので、どちらのキーを見る criterion も同じ扱いにする
- * （`src/verify/index.ts` の `judgeReviewVerdict`）。
+ * （`packages/ent/src/verify/index.ts` の `judgeReviewVerdict`）。
  */
 function dependsOnReview(criterion: AcceptanceCriterion): boolean {
   const verification = criterion.verification;

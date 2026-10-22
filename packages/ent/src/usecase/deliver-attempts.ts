@@ -1,11 +1,11 @@
-import { type Attempt, buildAttempts } from "../domain/attempt.js";
+import { type Attempt, buildAttempts } from "@entelecheia/core/domain/attempt.js";
 import {
   ATTEMPT_VIEW_LIMIT,
   ATTEMPT_VIEW_PATH,
   type AttemptViewOptions,
   renderAttemptLedger,
-} from "../domain/attempt-view.js";
-import { finalMessageIn } from "../domain/run-log.js";
+} from "@entelecheia/core/domain/attempt-view.js";
+import { finalMessageIn } from "@entelecheia/core/domain/run-log.js";
 import type { Store } from "../store/port.js";
 
 /**

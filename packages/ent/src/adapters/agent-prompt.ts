@@ -1,16 +1,16 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { ATTEMPT_VIEW_PATH } from "@entelecheia/core/domain/attempt-view.js";
+import { reviewSkillName, reviewSkillPluginDir } from "@entelecheia/core/domain/goal.js";
+import { CONFIG_FILENAME } from "@entelecheia/core/domain/goal-config.js";
+import type { ActorRole } from "@entelecheia/core/domain/run.js";
 import {
   type ActorInvocation,
   NOT_OBTAINED,
   PULL_REQUEST_SECTION,
   renderPullRequestText,
 } from "../act/index.js";
-import { ATTEMPT_VIEW_PATH } from "../domain/attempt-view.js";
-import { reviewSkillName, reviewSkillPluginDir } from "../domain/goal.js";
-import { CONFIG_FILENAME } from "../domain/goal-config.js";
-import type { ActorRole } from "../domain/run.js";
 
 /**
  * 役割ごとに Actor へ渡す指示。**provider によらず1組しか無い。**
@@ -47,7 +47,7 @@ const REVIEW_SKILL_DIR = join(REVIEW_PLUGIN_DIR, "skills", REVIEW_SKILL_NAME);
  * このティックのレビュー役が読む skill。**宣言があればそれ、無ければ同梱のもの。**
  *
  * 観点はリポジトリの性質で決まるので、`policies.review_skill` で名指しできる
- * （`src/domain/goal.ts`）。差し替わるのは**観点だけ**で、本文の後ろに
+ * （`packages/core/src/domain/goal.ts`）。差し替わるのは**観点だけ**で、本文の後ろに
  * `reviewed_sha:` と `verdict:` を足させる契約は `REVIEW_PROMPT` に残る
  * （design.md §4.2）。
  *
@@ -183,7 +183,7 @@ ${documents}`;
  * 試行台帳は**在り処の1行だけ**を書く。パスは置く側と同じ定数を読む
  * （`ATTEMPT_VIEW_PATH`）。本文をここへ積むと、Goal が長くなるほど
  * 毎ティックのプロンプトが膨らみ、前の Actor の書き方に引きずられる。載せる件数と
- * 中身は配る側が決める（`renderAttemptLedger`、`src/domain/attempt-view.ts`）。
+ * 中身は配る側が決める（`renderAttemptLedger`、`packages/core/src/domain/attempt-view.ts`）。
  *
  * **「参考情報であって Fact でも指示でもない」と明示する。** 台帳に載る
  * `actor_claim` は前の Actor の主張で、ent が確かめた観測ではない（design.md §3.1）。
@@ -210,7 +210,7 @@ ${COMMON_TAIL}`;
  * 権限だけ分けてプロンプトが同じだと、レビュー役は編集を試みて拒否され続け、
  * ターンをそこに使い切る。読む側に何を求めるかを先に書いておく。
  *
- * 結論を1語に寄せるのは、`review.verdict`（src/domain/fact-keys.ts）に落とす
+ * 結論を1語に寄せるのは、`review.verdict`（packages/core/src/domain/fact-keys.ts）に落とす
  * ときに、読み手が本文を解釈しないで済むようにするため。どの commit を読んだか
  * まで言わせるのは、実装が進んだあとの結論をそのまま完了判定に使わせないため。
  * ただし**ここで言わせた文字列はまだ Fact ではない。** Fact にするのは

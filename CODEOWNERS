@@ -12,18 +12,19 @@
 # 要ることを含意しているので、制御ループ本体と関門・検証系をここでも押さえる。
 /packages/ent/src/controller/ @slashkiko
 # guard が読む判断規則。もとは制御ループ本体（上の行）の中にあって、この行に覆われていた。
-# 保護パスの下限（packages/ent/src/domain/goal.ts の PROTECTED_PATH_FLOOR）と同じで、
+# 保護パスの下限（packages/core/src/domain/goal.ts の PROTECTED_PATH_FLOOR）と同じで、
 # ここもパスのリテラルなので、リファクタで場所が動くとレビュー必須の範囲から外れる。
-/packages/ent/src/domain/guard-rules.ts @slashkiko
+/packages/core/src/domain/guard-rules.ts @slashkiko
 # 合成ルート。関門の入力を作る Adapter の注入と、未 commit の関門が見る観測先
 # （verifyRoot）が1箇所に集まる。規則を触らずに関門への入力を差し替えられる。
 /packages/ent/src/wiring/ @slashkiko
 /packages/ent/src/domain/protected-paths.ts @slashkiko
-/packages/ent/src/domain/goal.ts @slashkiko
+/packages/core/src/domain/path-glob.ts @slashkiko
+/packages/core/src/domain/goal.ts @slashkiko
 # repo スコープの宣言を Goal の下へ敷く規則。protected_paths と
 # require_human_approval を「足す」判断がここにあり、置き換えに変えるだけで
 # config が配っている repo 全体の保護が消える。goal.ts と同じ扱いにする。
-/packages/ent/src/domain/goal-config.ts @slashkiko
+/packages/core/src/domain/goal-config.ts @slashkiko
 /packages/ent/src/adapters/claude.ts @slashkiko
 /packages/ent/src/adapters/local.ts @slashkiko
 /.goals/ @slashkiko
@@ -33,11 +34,13 @@
 /package.json @slashkiko
 /pnpm-lock.yaml @slashkiko
 /pnpm-workspace.yaml @slashkiko
-# package ごとの設定。ルートの同名ファイルと同じ扱いにする
+# package ごとの設定。package.json と vitest.config.ts はルートの同名ファイルと同じ扱いにする。
+# tsconfig.build.json はルートに無く、package 側のこの行だけが覆う
 /packages/*/package.json @slashkiko
 /packages/*/tsconfig.build.json @slashkiko
 /packages/*/vitest.config.ts @slashkiko
-# 移す前のパス。移行の間だけ残す。移す前に切ったブランチの PR は、差分が src/... で出る。
+# 移す前のパス。移行の間だけ残す。移す前に切ったブランチの PR は、差分が古いパスで出る。
+# 古いパスは src/... と、core へ切り出す前の packages/ent/src/domain/... の2つになる。
 # 保護パスの下限（PROTECTED_PATH_FLOOR）の末尾と同じ理由で、移す前のブランチが
 # 残っていないことを確かめてから外す。
 /src/controller/ @slashkiko
@@ -48,3 +51,6 @@
 /src/domain/goal-config.ts @slashkiko
 /src/adapters/claude.ts @slashkiko
 /src/adapters/local.ts @slashkiko
+/packages/ent/src/domain/guard-rules.ts @slashkiko
+/packages/ent/src/domain/goal.ts @slashkiko
+/packages/ent/src/domain/goal-config.ts @slashkiko

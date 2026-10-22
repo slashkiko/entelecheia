@@ -1,11 +1,11 @@
+import { type DecideTarget, decide, type LlmPort } from "@entelecheia/core/decide/index.js";
+import type { Action } from "@entelecheia/core/domain/action.js";
+import type { Unresolved } from "@entelecheia/core/domain/fact.js";
+import type { Gap } from "@entelecheia/core/domain/gap.js";
+import type { AcceptanceCriterion, Budget } from "@entelecheia/core/domain/goal.js";
+import { nextStatus } from "@entelecheia/core/domain/goal-state.js";
+import { PortError } from "@entelecheia/core/domain/port-error.js";
 import { describe, expect, it } from "vitest";
-import { type DecideTarget, decide, type LlmPort } from "../src/decide/index.js";
-import type { Action } from "../src/domain/action.js";
-import type { Unresolved } from "../src/domain/fact.js";
-import type { Gap } from "../src/domain/gap.js";
-import type { AcceptanceCriterion, Budget } from "../src/domain/goal.js";
-import { nextStatus } from "../src/domain/goal-state.js";
-import { PortError } from "../src/domain/port-error.js";
 import { verify } from "../src/verify/index.js";
 
 /**
@@ -15,7 +15,7 @@ import { verify } from "../src/verify/index.js";
  * `Unresolved.reason` にもあり、observe は例外の種類から作り分けている
  * （tests/shape-mismatch.test.ts）。**分類はできたが、待ち方が変わっていない。**
  *
- * `src/decide/index.ts` の `waitReason` は `shape_mismatch` を `port_failed` と
+ * `packages/core/src/decide/index.ts` の `waitReason` は `shape_mismatch` を `port_failed` と
  * 同じ集合に入れ、`WAIT(observation_failed)` を返す。Gap が無いティックの WAIT は
  * ループ検知より手前で return するので、恒久的な不一致が予算に当たるまで
  * 毎ティック再試行される。tests/shape-mismatch.test.ts の冒頭が

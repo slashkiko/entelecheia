@@ -1,8 +1,8 @@
+import type { LlmPort } from "@entelecheia/core/decide/index.js";
+import type { Fact } from "@entelecheia/core/domain/fact.js";
+import { criterionFactKey } from "@entelecheia/core/domain/fact-keys.js";
+import type { Goal } from "@entelecheia/core/domain/goal.js";
 import { describe, expect, it } from "vitest";
-import type { LlmPort } from "../src/decide/index.js";
-import type { Fact } from "../src/domain/fact.js";
-import { criterionFactKey } from "../src/domain/fact-keys.js";
-import type { Goal } from "../src/domain/goal.js";
 import { type ReconcileDeps, type ReconcileTarget, reconcile } from "../src/reconcile/index.js";
 
 const NOW = new Date("2026-08-09T03:00:00.000Z");

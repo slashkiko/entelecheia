@@ -12,10 +12,10 @@ import {
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { promisify } from "node:util";
+import { CONFIG_FILENAME } from "@entelecheia/core/domain/goal-config.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { loadGoalFile } from "../src/adapters/goal-file.js";
 import { agentContextPayload, main, parseCommand } from "../src/cli.js";
-import { CONFIG_FILENAME } from "../src/domain/goal-config.js";
 
 /**
  * `ent init`。この repo の外のリポジトリで ent を回し始められるようにする。

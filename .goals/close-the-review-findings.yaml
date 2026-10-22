@@ -274,7 +274,7 @@ policies:
     - packages/ent/src/adapters/claude.ts
     # 関門の適用範囲を決めるスキーマ。既定が空なので、ここを書き換えれば
     # 関門そのものを外せる。過去の Goal には入っていない。
-    - packages/ent/src/domain/goal.ts
+    - packages/core/src/domain/goal.ts
     # シェルを実際に起動する唯一の場所。setup と verification.run は
     # controller の権限と環境変数で走る。過去の Goal には入っていない。
     - packages/ent/src/adapters/local.ts

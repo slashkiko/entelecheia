@@ -1,6 +1,6 @@
+import { PortError } from "@entelecheia/core/domain/port-error.js";
 import { describe, expect, it } from "vitest";
 import { githubApproval, githubCodeWriter } from "../src/adapters/github.js";
-import { PortError } from "../src/domain/port-error.js";
 import { PROGRESS_MARKER } from "../src/publish/index.js";
 
 /**

@@ -146,6 +146,7 @@ policies:
   protected_paths:
     - docs/**
     - packages/ent/src/**
+    - packages/core/src/**
     - mise.toml
     - mise-tasks/**
     - vitest.config.ts

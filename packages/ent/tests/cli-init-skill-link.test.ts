@@ -16,9 +16,9 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
+import { CONFIG_FILENAME } from "@entelecheia/core/domain/goal-config.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { main } from "../src/cli.js";
-import { CONFIG_FILENAME } from "../src/domain/goal-config.js";
 
 /**
  * `ent init` が、ent の手順書を Claude Code の skill として引けるようにする。

@@ -1,8 +1,8 @@
+import type { GoalConfig } from "@entelecheia/core/domain/goal-config.js";
+import { MAX_LLM_RETRIES } from "@entelecheia/core/domain/llm-call.js";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { parse } from "yaml";
-import type { GoalConfig } from "../src/domain/goal-config.js";
 import { parseGoal } from "../src/domain/goal-parse.js";
-import { MAX_LLM_RETRIES } from "../src/domain/llm-call.js";
 import { type PlanProbes, type PlanRequest, planGoals } from "../src/usecase/plan.js";
 
 /**

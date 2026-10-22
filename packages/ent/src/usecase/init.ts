@@ -11,8 +11,8 @@ import {
 import { homedir } from "node:os";
 import { basename, dirname, extname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { goalTemplate, TEMPLATE_SLUG } from "../domain/goal.js";
-import { CONFIG_FILENAME, configTemplate } from "../domain/goal-config.js";
+import { goalTemplate, TEMPLATE_SLUG } from "@entelecheia/core/domain/goal.js";
+import { CONFIG_FILENAME, configTemplate } from "@entelecheia/core/domain/goal-config.js";
 
 /**
  * `ent init` の本体。いまのリポジトリを ent で回せる状態にする。

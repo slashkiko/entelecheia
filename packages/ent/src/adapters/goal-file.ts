@@ -1,9 +1,9 @@
 import { existsSync, readFileSync } from "node:fs";
 import { basename, dirname, extname, join } from "node:path";
-import { errorMessage } from "../domain/error-message.js";
-import type { Goal } from "../domain/goal.js";
-import { CONFIG_FILENAME, type GoalConfig, parseGoalConfig } from "../domain/goal-config.js";
-import { parseGoal } from "../domain/goal-parse.js";
+import { errorMessage } from "@entelecheia/core/domain/error-message.js";
+import type { Goal } from "@entelecheia/core/domain/goal.js";
+import { CONFIG_FILENAME, type GoalConfig } from "@entelecheia/core/domain/goal-config.js";
+import { parseGoal, parseGoalConfig } from "../domain/goal-parse.js";
 
 /**
  * `.goals/<slug>.yaml` をファイルシステムから読む Adapter。

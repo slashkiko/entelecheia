@@ -1,7 +1,6 @@
-import { z } from "zod";
-import { describeCycles, findCycles } from "../domain/dependency-graph.js";
-import { errorMessage } from "../domain/error-message.js";
-import { observedFactKeySchema } from "../domain/fact-keys.js";
+import { describeCycles, findCycles } from "@entelecheia/core/domain/dependency-graph.js";
+import { errorMessage } from "@entelecheia/core/domain/error-message.js";
+import { observedFactKeySchema } from "@entelecheia/core/domain/fact-keys.js";
 import {
   type AcceptanceCriterion,
   acceptanceCriterionSchema,
@@ -11,11 +10,12 @@ import {
   goalContextSchema,
   goalSchema,
   SLUG,
-} from "../domain/goal.js";
-import { CONFIG_FILENAME, CONFIG_SLUG } from "../domain/goal-config.js";
+} from "@entelecheia/core/domain/goal.js";
+import { CONFIG_FILENAME, CONFIG_SLUG } from "@entelecheia/core/domain/goal-config.js";
+import { MAX_LLM_RETRIES } from "@entelecheia/core/domain/llm-call.js";
+import { z } from "zod";
 import { parseGoal } from "../domain/goal-parse.js";
 import { renderGoal } from "../domain/goal-render.js";
-import { MAX_LLM_RETRIES } from "../domain/llm-call.js";
 import type { CommandRunnerPort } from "../verify/index.js";
 
 /**
@@ -37,7 +37,7 @@ import type { CommandRunnerPort } from "../verify/index.js";
 /**
  * planner が LLM に1問投げる口。
  *
- * **`LlmPort`（`src/decide/index.ts`）を import しない。** Port は使う側が所有する
+ * **`LlmPort`（`packages/core/src/decide/index.ts`）を import しない。** Port は使う側が所有する
  * （`Store` と同じ扱い）。DECIDE のそれは「次の行動を1つ選ぶ」ための口で、
  * 名前も含めてあちらの語彙になっている。実装は合成ルートで同じ Adapter に繋ぐ。
  */
@@ -214,7 +214,7 @@ const proposalSchema = z.strictObject({
         /**
          * **`.default([])` を置かない。** 既定を入れると「planner が setup を
          * 提案しなかった」が消え、`setup: []` として書き出される。`mergeGoalConfig`
-         * はキーの有無で config を敷くかを決めるので（`src/domain/goal-config.ts`）、
+         * はキーの有無で config を敷くかを決めるので（`packages/core/src/domain/goal-config.ts`）、
          * その `[]` は `.goals/config.yaml` の setup を打ち消す——生成された Goal の
          * worktree でだけ `mise trust` も依存インストールも走らなくなる。
          * 提案されなかったことを `undefined` のまま持ち上げて、書き出す側で落とす。
@@ -308,7 +308,7 @@ async function accept(
   }
 
   // 誰も読まないまま COMPLETED になる提案を弾く。VERIFY は `type: human` を
-  // 判定せず pending を返す（`src/domain/goal.ts`）ので、その1本が無い Goal は
+  // 判定せず pending を返す（`packages/core/src/domain/goal.ts`）ので、その1本が無い Goal は
   // command と fact だけで最後まで抜けられる。実際に抜けた
   // （`calculate-metered-cost-from-raw-logs` / PR #7）。手書きの宣言は全部が
   // 持っているが、planner はプロンプトに書式があっても出さなかった。
@@ -401,7 +401,7 @@ export type CommandOutcome = "passed" | "failed" | "unknown";
  *
  * 2026-08-25 に生成された `calculate-metered-cost-from-raw-logs` の ac-1 は
  * `mise run verify` 1本で、無変更のチェックアウトで既に通っていた。DECIDE は Gap が
- * 無ければ COMPLETE を選ぶ（`src/decide/index.ts`）ので、`ent start` すると何もせず
+ * 無ければ COMPLETE を選ぶ（`packages/core/src/decide/index.ts`）ので、`ent start` すると何もせず
  * 1ティック目で完了扱いになる。**書く前に、その1本を実際に走らせて確かめる。**
  *
  * 数えるのは `type: command` だけになる。

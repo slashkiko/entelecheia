@@ -1,12 +1,12 @@
-import { describe, expect, it } from "vitest";
-import { commandRunner } from "../src/adapters/local.js";
 import {
   CLAUDE_ACTOR_WITHHELD_ENV,
   CODEX_ACTOR_WITHHELD_ENV,
   NEUTRALIZED_ENV,
   VERIFY_WITHHELD_ENV,
   withheldEnv,
-} from "../src/domain/withheld-env.js";
+} from "@entelecheia/core/domain/withheld-env.js";
+import { describe, expect, it } from "vitest";
+import { commandRunner } from "../src/adapters/local.js";
 
 /**
  * VERIFY が流すコマンドに、controller の資格情報を渡さないことを固定する。

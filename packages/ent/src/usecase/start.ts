@@ -1,4 +1,4 @@
-import type { AcceptanceCriterion } from "../domain/goal.js";
+import type { AcceptanceCriterion } from "@entelecheia/core/domain/goal.js";
 import type { CommandRunnerPort } from "../verify/index.js";
 import { alreadyDone } from "./plan.js";
 
@@ -7,7 +7,7 @@ import { alreadyDone } from "./plan.js";
  *
  * `ent plan` は「宣言時点で `type: command` の criteria が全部通る提案」を書かずに
  * 落とす（`alreadyDone`）。理由は、Gap が無ければ DECIDE は COMPLETE を選ぶので
- * （`src/decide/index.ts`）、そのまま `ent start` すると何もせず1ティック目で完了
+ * （`packages/core/src/decide/index.ts`）、そのまま `ent start` すると何もせず1ティック目で完了
  * 扱いになること。**ここが受け持つのは、その判定を通っていない Goal になる。**
  * 手で書いた Goal と、`ent plan` が書いたあとに人間が criteria を足した Goal が
  * それにあたる。
@@ -43,7 +43,7 @@ export interface StartProbes {
  *   fact と human だけで書かれた Goal が「全部通っている」と誤判定されて止まる
  * - **`type: command` が1本も無い Goal は通す。** 空集合を「全部通った」と読むのが
  *   その誤判定そのものになる。controller の commit も同じ読み方をしていて、
- *   `machineCriteriaSatisfied`（`src/domain/guard-rules.ts`）は空集合に false を
+ *   `machineCriteriaSatisfied`（`packages/core/src/domain/guard-rules.ts`）は空集合に false を
  *   返す。あちらが断るのは commit で、こちらが断るのは着手だが、**空集合を
  *   「満たされている」と読まない**点で揃う。そういう Goal が書き残しを抱えたまま
  *   進めば、未 commit の関門が `ESCALATE(uncommitted_changes)` で拾って人間を呼ぶ

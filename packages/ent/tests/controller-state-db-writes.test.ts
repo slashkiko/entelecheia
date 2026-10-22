@@ -2,11 +2,11 @@ import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { type Goal, goalSchema } from "@entelecheia/core/domain/goal.js";
+import { CONTROLLER_STATE_DB_KEY } from "@entelecheia/core/domain/guard-rules.js";
+import type { RunIntent, RunOutcome } from "@entelecheia/core/domain/run.js";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { type ControllerDeps, tick } from "../src/controller/index.js";
-import { type Goal, goalSchema } from "../src/domain/goal.js";
-import { CONTROLLER_STATE_DB_KEY } from "../src/domain/guard-rules.js";
-import type { RunIntent, RunOutcome } from "../src/domain/run.js";
 import type { Store } from "../src/store/port.js";
 import { openStore } from "../src/store/sqlite.js";
 

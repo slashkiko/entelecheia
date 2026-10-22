@@ -194,7 +194,7 @@ export type ApprovalGate = z.infer<typeof approvalGateSchema>;
 /**
  * どの Goal からも外せない承認ゲートの下限。
  *
- * `require_human_approval` に書いたゲートは `DENIED_TOOLS`（src/adapters/claude.ts）
+ * `require_human_approval` に書いたゲートは `DENIED_TOOLS`（packages/ent/src/adapters/claude.ts）
  * の対応行だけを拒否パターンに変える。**書かなければ、その操作は Agent に許可
  * されたまま残る。** 既存の Goal YAML は全部が6ゲートを列挙しているので誰も
  * 気づかなかったが、`ent init` の雛形が `merge` だけを書いた時点で成立した。
@@ -318,7 +318,7 @@ export const PROGRESS_REPORT_STDOUT = "stdout";
  * 回す構成では、フラグを書き忘れた1周がそのまま PR に出る。
  *
  * **値は `--report` と同じ読み方にする。** 予約語だけを名前で受け、それ以外は
- * ファイルのパスとして読む（`src/cli/parse.ts` の `ReportTarget`）。予約語が
+ * ファイルのパスとして読む（`packages/ent/src/cli/parse.ts` の `ReportTarget`）。予約語が
  * `pr` と `stdout` の2つになるのは、宣言側には「PR に投稿する」を明示的に
  * 書き戻す必要があるため。`--report` にはその値が無い——フラグを付けないことが
  * 「PR に投稿する」にあたるので、名前を持つ理由が無かった。
@@ -467,13 +467,17 @@ export const SLUG = /^[a-z0-9]+(-[a-z0-9]+)*$/;
  * 関門を外したい Goal がいつでも外せる。
  *
  * ここに置くのは、書き換えられると**関門そのものが働かなくなる**ものだけ。
- * 検証系（mise.toml / biome.json など）や依存（package.json）は入れない。
+ * 検証系（mise.toml / biome.json など）や依存の宣言（ルートの package.json）は入れない。
  * あちらは「Agent が自分の criteria を通せる」問題で重要度は高いが、
  * Goal によっては正当に触る対象になりうる。下限は最小に保つ。
+ * `packages/core/package.json` だけは例外で入れる。依存の宣言としてではなく、`exports` が
+ * 関門の規則の解決先を決めるからで、理由は該当の行に書いた。
  *
- * パスは ent 自身のリポジトリのルートからの相対で書く。ent のコードは
- * `packages/ent/` の下にあるので、下限もそこを指す。**ファイルを別の package へ
- * 移すときは、ここも同じ PR で動かす。** パスのリテラルなので、移しただけでは
+ * パスは ent 自身のリポジトリのルートからの相対で書く。下限は ent が回るどのリポジトリの Goal にも
+ * 混ざるので、別のリポジトリに同じパスがあれば、そこでも Actor の編集が止まる（人を呼ぶ側に倒れる）。
+ * ent のコードは
+ * `packages/ent/` と、純粋な判断を切り出した `packages/core/` の下にあるので、
+ * 下限もそこを指す。**ファイルを別の package へ移すときは、ここも同じ PR で動かす。** パスのリテラルなので、移しただけでは
  * 保護が付いてこない（`packages/ent/tests/protected-floor.test.ts` が置き場をソースから確かめる）。
  */
 export const PROTECTED_PATH_FLOOR = [
@@ -481,21 +485,22 @@ export const PROTECTED_PATH_FLOOR = [
   "packages/ent/src/controller/**",
   // Goal の宣言部。ここを書けば自分の criteria も保護範囲も書き換えられる。
   ".goals/**",
-  // 関門のマッチャ本体。
+  // 関門のマッチャ本体。実パスの解決は ent に、glob の照合は core にある。
   "packages/ent/src/domain/protected-paths.ts",
+  "packages/core/src/domain/path-glob.ts",
   // 関門と予算の停止条件が読む判断規則。関門が差分を取る相手（`guardBaseOf`）、
   // 未 commit の関門が見る述語（`claimsNothingLeft` / `observedValue`）、
   // 経過時間と連続失敗の数え方がここにある。もとは制御ループ本体（`controller/**`）の中に
   // あって下限に覆われていた。**依存を持たない規則だからという理由でドメインへ
   // 出すと、出した先が下限の外になる。** 移設と一緒に下限も動かす。
-  "packages/ent/src/domain/guard-rules.ts",
+  "packages/core/src/domain/guard-rules.ts",
   // 関門の適用範囲を決めるスキーマ。この定数もここにある。
-  "packages/ent/src/domain/goal.ts",
+  "packages/core/src/domain/goal.ts",
   // repo スコープの宣言を Goal の下へ敷く規則。`protected_paths` と
   // `require_human_approval` を**足す**のはここで、`added` を `return rawValue` に
   // 変えるだけで、config が配っている repo 全体の保護が全部消える。
   // 下限のファイルは1つも触らずに済むので、`goal.ts` と同じ扱いにする。
-  "packages/ent/src/domain/goal-config.ts",
+  "packages/core/src/domain/goal-config.ts",
   // Agent の許可・拒否ツールを決める場所。
   "packages/ent/src/adapters/claude.ts",
   "packages/ent/src/adapters/codex.ts",
@@ -504,13 +509,17 @@ export const PROTECTED_PATH_FLOOR = [
   // シェルを起動する唯一の場所。setup と verification.run が通る。
   "packages/ent/src/adapters/local.ts",
   // 資格情報の除去リスト。
-  "packages/ent/src/domain/withheld-env.ts",
+  "packages/core/src/domain/withheld-env.ts",
   // 合成ルート。どの Port にどの Adapter を挿すかを決める唯一の場所で、
   // 関門の入力を作る Adapter（`localRepo` / `commandRunner` / `gitWorktree`）の
   // 注入と、未 commit の関門が突き合わせる観測先（`verifyRoot`）がここに集まる。
   // 規則（`guard-rules.ts`）を1文字も触らずに、関門へ流れる観測そのものを
   // 差し替えられるので、規則と同じ扱いにする。
   "packages/ent/src/wiring/index.ts",
+  // core の入口。ent は core を相対パスではなく package 名で import するので、実行時に
+  // どのファイルが `@entelecheia/core/domain/guard-rules.js` になるかは、ここの `exports` が
+  // 決める。上の規則のファイルを1文字も触らずに、向け先だけを別のファイルへ替えられる。
+  "packages/core/package.json",
   // git が観測しないが、書き換えられると controller の権限でコードが走る場所。
   // `repoDirtyState` が指紋で見るので、ここに glob を置いて関門に繋ぐ。
   // hooks は linked worktree でも共通の .git を共有し、push のたびに走る。
@@ -518,9 +527,12 @@ export const PROTECTED_PATH_FLOOR = [
   // 状態 DB。gitignore 済みで git status には出ないが、直接書けば状態を偽造できる。
   ".goals/.state/**",
   // 移す前のパス。移行の間だけ残す。worktree は作り直さずに使い続けるので、移す前に
-  // 切った worktree では、関門が見る差分（`origin/<base>...HEAD`）が `src/...` で出る。
+  // 切った worktree では、関門が見る差分（`origin/<base>...HEAD`）が古いパスで出る。
   // ここが無いと、その Goal が終わるまで制御ループと関門のファイルを編集しても止まらない。
   // 移す前に作った worktree が残っていないことを確かめてから外す。
+  //
+  // 移す前の形は2つある。packages/ へ移す前の `src/...` と、ent を packages/ent へ移してから
+  // 一部を core へ切り出すまでの `packages/ent/src/domain/...` になる。
   "src/controller/**",
   "src/domain/protected-paths.ts",
   "src/domain/guard-rules.ts",
@@ -532,6 +544,10 @@ export const PROTECTED_PATH_FLOOR = [
   "src/adapters/local.ts",
   "src/domain/withheld-env.ts",
   "src/wiring/index.ts",
+  "packages/ent/src/domain/guard-rules.ts",
+  "packages/ent/src/domain/goal.ts",
+  "packages/ent/src/domain/goal-config.ts",
+  "packages/ent/src/domain/withheld-env.ts",
 ] as const;
 
 /**
@@ -823,7 +839,7 @@ export const DEFAULT_BUDGET = {
  * 決める（`DENIED_TOOLS`）ので、雛形が緩いゲートを配れば、そこから始めた
  * リポジトリはすべて緩いところから始まる。`PROTECTED_PATH_FLOOR` と
  * `APPROVAL_GATE_FLOOR` の隣に置いて、下限と同じ関門として扱う。
- * `src/usecase/init.ts` は文字列を受け取って書くだけにする。
+ * `packages/ent/src/usecase/init.ts` は文字列を受け取って書くだけにする。
  *
  * そのまま `ent start` に渡せる必要は無い（`desired_state` と criteria は人間が
  * 書くもの）が、**スキーマとしては妥当**にする。埋める前に「何が悪いのか」を

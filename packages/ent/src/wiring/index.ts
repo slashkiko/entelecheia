@@ -2,6 +2,14 @@ import { accessSync, constants, existsSync, readdirSync, writeFileSync } from "n
 import { hostname } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { type EffortLevel, query } from "@anthropic-ai/claude-agent-sdk";
+import type { LlmPort } from "@entelecheia/core/decide/index.js";
+import type { ActionAgent } from "@entelecheia/core/domain/action.js";
+import { errorMessage } from "@entelecheia/core/domain/error-message.js";
+import type { Goal } from "@entelecheia/core/domain/goal.js";
+import { CONFIG_FILENAME } from "@entelecheia/core/domain/goal-config.js";
+import type { LlmCall } from "@entelecheia/core/domain/llm-call.js";
+import { PortError } from "@entelecheia/core/domain/port-error.js";
+import { type ActorKind, type ActorRole, EFFORT_VOCABULARY } from "@entelecheia/core/domain/run.js";
 import { type ActorPort, worktreeNameFor } from "../act/index.js";
 import { type ClaudeOptions, claudeActor, claudeLlm } from "../adapters/claude.js";
 import { type CodexEffort, type CodexOptions, codexActor, codexLlm } from "../adapters/codex.js";
@@ -25,14 +33,6 @@ import {
 } from "../adapters/local.js";
 import { reviewRunLog } from "../adapters/review-run.js";
 import type { ControllerDeps } from "../controller/index.js";
-import type { LlmPort } from "../decide/index.js";
-import type { ActionAgent } from "../domain/action.js";
-import { errorMessage } from "../domain/error-message.js";
-import type { Goal } from "../domain/goal.js";
-import { CONFIG_FILENAME } from "../domain/goal-config.js";
-import type { LlmCall } from "../domain/llm-call.js";
-import { PortError } from "../domain/port-error.js";
-import { type ActorKind, type ActorRole, EFFORT_VOCABULARY } from "../domain/run.js";
 import type { CodeProviderPort } from "../observe/index.js";
 import type { CodeWriterPort } from "../publish/index.js";
 import type { Store } from "../store/port.js";
@@ -644,7 +644,7 @@ function routedActor(
  * DECIDE が返した組を、Adapter を選ぶ形に直す。
  *
  * effort の語彙は provider ごとに違うので、ここでも provider を見てから検証する。
- * 採用の時点（`askLlm`、`src/decide/index.ts`）で同じ検証を通しているが、
+ * 採用の時点（`askLlm`、`packages/core/src/decide/index.ts`）で同じ検証を通しているが、
  * **通した値しか来ないことを前提にしない。** Decision は DB から読み直されて
  * ここへ来ることがあり、そちらは採用時の検証を通っていない。
  *
@@ -723,7 +723,7 @@ function codexEffortFrom(value: string | undefined, key = "ENT_EFFORT"): CodexEf
 /**
  * SDK の `EffortLevel` の全値。
  *
- * **値そのものはドメインが持つ**（`EFFORT_VOCABULARY`、`src/domain/run.ts`）。
+ * **値そのものはドメインが持つ**（`EFFORT_VOCABULARY`、`packages/core/src/domain/run.ts`）。
  * 同じ語彙を DECIDE の受け取り側も見るようになったので、2箇所に書くと
  * 片方だけ直したときに「プロンプトは受け付けると言うのに採用されない」状態を
  * 作れる。ここに残すのは、その語彙が **SDK の型と一致しているかの検査**になる。

@@ -1,9 +1,9 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { Goal } from "@entelecheia/core/domain/goal.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { main } from "../src/cli.js";
-import type { Goal } from "../src/domain/goal.js";
 import { openStore } from "../src/store/sqlite.js";
 import {
   type CostPriceFile,

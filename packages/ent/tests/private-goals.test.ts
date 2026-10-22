@@ -11,10 +11,10 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
+import { CONFIG_FILENAME } from "@entelecheia/core/domain/goal-config.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { gitInfoExcludePath, gitWorktree } from "../src/adapters/local.js";
 import { agentContextPayload, main, parseCommand } from "../src/cli.js";
-import { CONFIG_FILENAME } from "../src/domain/goal-config.js";
 
 /**
  * 宣言部を git に載せずに ent を回す（`ent init --private-goals`）。

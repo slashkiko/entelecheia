@@ -1,8 +1,8 @@
+import { type Goal, goalSchema } from "@entelecheia/core/domain/goal.js";
+import type { GoalStatus } from "@entelecheia/core/domain/goal-state.js";
+import { dependencyGate, describeDependencyGate } from "@entelecheia/core/domain/guard-rules.js";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { type ControllerDeps, tick } from "../src/controller/index.js";
-import { type Goal, goalSchema } from "../src/domain/goal.js";
-import type { GoalStatus } from "../src/domain/goal-state.js";
-import { dependencyGate, describeDependencyGate } from "../src/domain/guard-rules.js";
 import type { Store } from "../src/store/port.js";
 import { openStore } from "../src/store/sqlite.js";
 

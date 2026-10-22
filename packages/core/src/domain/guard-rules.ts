@@ -11,7 +11,7 @@ import type { Verification } from "./verification.js";
  *
  * design.md §7 の境界は「完了判定と暴走の停止条件を LLM に決めさせない」で、
  * 決めるのは純ロジックの guard になる。その guard が実際に読む規則が
- * `src/controller/index.ts` の中に散らばっていた。Port も時計も DB も要らない
+ * `packages/ent/src/controller/index.ts` の中に散らばっていた。Port も時計も DB も要らない
  * 関数がオーケストレータに同居していると、規則を確かめるのにティック全体を
  * 組み立てることになり、規則そのものをテストで固定しづらい。
  *
@@ -38,7 +38,7 @@ const SHA = /^[0-9a-f]{40}$/;
  * `repo_root`）。関門はこのキーを `.goals/.state/**` と突き合わせるので、
  * ここを変えると保護が黙って外れる。
  *
- * **値を作るのは controller 側になる**（`src/controller/index.ts` の
+ * **値を作るのは controller 側になる**（`packages/ent/src/controller/index.ts` の
  * `observedRepoState`）。ファイルのバイト列ではなく、その Goal に属する行から
  * 作った論理ダイジェスト（`Store.guardDigest`）を入れる。DB は関門が見る保護
  * 対象でありながら controller 自身の書き込み先でもあり、バイト列で見ていると
@@ -125,8 +125,8 @@ export function actorUsageLimitDecision(decision: Decision, run: Run | null): De
  *
  * 1時間にしてある。Adapter が再開時刻を読めない経路が実際にある——Codex CLI は
  * 上限の文面の中に時刻を書くだけで、機械可読なフィールドを出さない
- * （`resetTimeIn`、src/adapters/codex.ts）。Claude 側にも、`rate_limit_event` を
- * 伴わない「assistant error」の経路がある（src/adapters/claude.ts）。
+ * （`resetTimeIn`、packages/ent/src/adapters/codex.ts）。Claude 側にも、`rate_limit_event` を
+ * 伴わない「assistant error」の経路がある（packages/ent/src/adapters/claude.ts）。
  *
  * **null をそのまま通すと空転する。** `sleepingUntil` は null を「起きてよい」と
  * 読むので、次のティックがそのまま走ってまた上限に当たる。その Run は failed

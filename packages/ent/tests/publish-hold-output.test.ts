@@ -1,10 +1,10 @@
+import type { Decision } from "@entelecheia/core/domain/action.js";
+import type { Goal, PublishPolicy } from "@entelecheia/core/domain/goal.js";
+import type { Verification } from "@entelecheia/core/domain/verification.js";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { agentContextPayload } from "../src/cli/agent-context.js";
 import { summarize } from "../src/cli/present.js";
 import { type ControllerDeps, tick } from "../src/controller/index.js";
-import type { Decision } from "../src/domain/action.js";
-import type { Goal, PublishPolicy } from "../src/domain/goal.js";
-import type { Verification } from "../src/domain/verification.js";
 import {
   type BranchPort,
   type CodeWriterPort,

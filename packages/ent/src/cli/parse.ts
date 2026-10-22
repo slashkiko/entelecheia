@@ -1,7 +1,7 @@
 import { parseArgs } from "node:util";
-import { errorMessage } from "../domain/error-message.js";
-import { SLUG } from "../domain/goal.js";
-import { CONFIG_FILENAME, CONFIG_SLUG } from "../domain/goal-config.js";
+import { errorMessage } from "@entelecheia/core/domain/error-message.js";
+import { SLUG } from "@entelecheia/core/domain/goal.js";
+import { CONFIG_FILENAME, CONFIG_SLUG } from "@entelecheia/core/domain/goal-config.js";
 import { DEFAULT_LIMIT } from "../usecase/inspect.js";
 import { DEFAULT_MAX_GOALS } from "../usecase/plan.js";
 

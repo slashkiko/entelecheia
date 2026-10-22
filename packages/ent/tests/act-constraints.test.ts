@@ -1,3 +1,6 @@
+import type { Action, Decision } from "@entelecheia/core/domain/action.js";
+import type { Goal } from "@entelecheia/core/domain/goal.js";
+import type { RunIntent, RunOutcome } from "@entelecheia/core/domain/run.js";
 import { describe, expect, it } from "vitest";
 import {
   type ActDeps,
@@ -8,14 +11,11 @@ import {
   type RunRecorderPort,
   type WorktreePort,
 } from "../src/act/index.js";
-import type { Action, Decision } from "../src/domain/action.js";
-import type { Goal } from "../src/domain/goal.js";
-import type { RunIntent, RunOutcome } from "../src/domain/run.js";
 
 /**
  * Goal の宣言部に書いた制約が、Actor に届いていることを固定する。
  *
- * `src/domain/goal.ts` の `constraints` には「ACT にそのまま渡る自由記述」と
+ * `packages/core/src/domain/goal.ts` の `constraints` には「ACT にそのまま渡る自由記述」と
  * 書いてあるが、`goal.context` を読むコードは `src/` のどこにも無い。
  * `ActorInvocation` が運ぶのは runId / intent / worktree / deniedOperations /
  * signal の5つだけで、`tests/act.test.ts` の「Actor への引き渡し」も

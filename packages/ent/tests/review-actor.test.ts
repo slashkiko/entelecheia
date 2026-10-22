@@ -1,8 +1,8 @@
+import { observedFactKeySchema } from "@entelecheia/core/domain/fact-keys.js";
+import { goalSchema } from "@entelecheia/core/domain/goal.js";
 import { describe, expect, it } from "vitest";
 import type { ActorInvocation } from "../src/act/index.js";
 import { type AgentQuery, claudeActor } from "../src/adapters/claude.js";
-import { observedFactKeySchema } from "../src/domain/fact-keys.js";
-import { goalSchema } from "../src/domain/goal.js";
 
 /**
  * レビュー役の Agent が、実際にレビューを行える状態にあること。
@@ -35,7 +35,7 @@ import { goalSchema } from "../src/domain/goal.js";
  * レビューを回していないティックで approved を作らない。確かめられなければ
  * Fact を作らず unobserved に残す（design.md §3.1）。
  *
- * `review.verdict` は `src/domain/fact-keys.ts` への追加になる。あのレジストリは
+ * `review.verdict` は `packages/core/src/domain/fact-keys.ts` への追加になる。あのレジストリは
  * 「変更が必要なら実装前に合意を取る」ものなので、追加そのものが本 Goal の
  * 合意事項にあたる。
  */

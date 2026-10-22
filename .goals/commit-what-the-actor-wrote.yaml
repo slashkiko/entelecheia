@@ -252,7 +252,7 @@ context:
     - title: local.* の観測先を決めている verifyRoot
       path: packages/ent/src/cli.ts
     - title: 完了判定と停止条件の境界
-      path: packages/ent/src/decide/index.ts
+      path: packages/core/src/decide/index.ts
     - title: 設計ドキュメント
       path: docs/design.md
     - title: 人間向けの導入

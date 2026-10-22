@@ -8,7 +8,7 @@ import { toVerifications } from "../src/domain/verification.js";
  * 「全 criteria の Verification.result が passed」と書かれているのに、
  * criteria 単位の索引が実装に無かった。
  *
- * 検証そのものは src/verify/ が持つ。ここは1ティックの結果を並べ直すだけで、
+ * 検証そのものは packages/ent/src/verify/ が持つ。ここは1ティックの結果を並べ直すだけで、
  * もう一度検証はしない。二重に検証すると、同じティックで結果が食い違う余地が出る。
  */
 

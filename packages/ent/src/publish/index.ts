@@ -1,9 +1,9 @@
+import type { Decision } from "@entelecheia/core/domain/action.js";
+import { errorMessage } from "@entelecheia/core/domain/error-message.js";
+import { type Goal, type PublishStep, publishPolicyOf } from "@entelecheia/core/domain/goal.js";
+import { DEFAULT_ACTOR_ROLE, type Run } from "@entelecheia/core/domain/run.js";
+import type { Verification } from "@entelecheia/core/domain/verification.js";
 import { worktreeBranchFor, worktreeNameFor } from "../act/index.js";
-import type { Decision } from "../domain/action.js";
-import { errorMessage } from "../domain/error-message.js";
-import { type Goal, type PublishStep, publishPolicyOf } from "../domain/goal.js";
-import { DEFAULT_ACTOR_ROLE, type Run } from "../domain/run.js";
-import type { Verification } from "../domain/verification.js";
 import type { ReviewPort } from "../observe/index.js";
 
 /**

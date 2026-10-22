@@ -1,14 +1,14 @@
 import { spawn } from "node:child_process";
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import type { LlmPort } from "@entelecheia/core/decide/index.js";
+import { errorMessage } from "@entelecheia/core/domain/error-message.js";
+import type { LlmCall } from "@entelecheia/core/domain/llm-call.js";
+import { PortError } from "@entelecheia/core/domain/port-error.js";
+import type { ActorRole } from "@entelecheia/core/domain/run.js";
+import { CODEX_ACTOR_WITHHELD_ENV, withheldEnv } from "@entelecheia/core/domain/withheld-env.js";
 import { z } from "zod";
 import type { ActorInvocation, ActorPort, ActorResult } from "../act/index.js";
-import type { LlmPort } from "../decide/index.js";
-import { errorMessage } from "../domain/error-message.js";
-import type { LlmCall } from "../domain/llm-call.js";
-import { PortError } from "../domain/port-error.js";
-import type { ActorRole } from "../domain/run.js";
-import { CODEX_ACTOR_WITHHELD_ENV, withheldEnv } from "../domain/withheld-env.js";
 import { JSON_ONLY, PROMPT_FOR, parseJson } from "./agent-prompt.js";
 
 /**
@@ -235,7 +235,7 @@ export function codexLlm(options: CodexOptions): LlmPort {
         const failure = outcome.failure ?? "The Codex CLI returned no final message";
         if (reset !== null) {
           // 上限のときは再開時刻を載せる。載せないと DECIDE の WAIT(usage_limit) が
-          // 毎ティック起き直すことになる（`resumeAfterOf`、src/domain/port-error.ts）。
+          // 毎ティック起き直すことになる（`resumeAfterOf`、packages/core/src/domain/port-error.ts）。
           throw new PortError(
             "usage_limit",
             reset.at === null ? `${failure} ${unreadableResetNote(reset)}` : failure,
@@ -426,7 +426,7 @@ interface ResetTime {
  * **読めなくても失敗にはしない。** Codex CLI はこの文面を JSON の1フィールドとして
  * 出さないので、形が変われば黙って読めなくなる。読めたら `resume_after` に入れ、
  * 読めなければ null を返して**既定の待ちは guard に決めさせる**
- * （`usageLimitResumeAfter`、src/domain/guard-rules.ts）。
+ * （`usageLimitResumeAfter`、packages/core/src/domain/guard-rules.ts）。
  *
  * 時刻はタイムゾーンを伴わないので、走っているマシンのローカル時刻として読む。
  * 数時間ずれても起きる時刻がずれるだけで、guard の既定が下限を持つ。

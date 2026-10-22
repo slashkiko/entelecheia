@@ -1,6 +1,7 @@
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { goalSchema } from "@entelecheia/core/domain/goal.js";
 import { beforeAll, describe, expect, it } from "vitest";
 import {
   type ActDeps,
@@ -12,9 +13,8 @@ import {
 } from "../src/act/index.js";
 import { PROMPT_FOR } from "../src/adapters/agent-prompt.js";
 import { type AgentQuery, claudeActor } from "../src/adapters/claude.js";
-import { goalSchema } from "../src/domain/goal.js";
-import { parseGoalConfig } from "../src/domain/goal-config.js";
-import { parseGoal } from "../src/domain/goal-parse.js";
+
+import { parseGoal, parseGoalConfig } from "../src/domain/goal-parse.js";
 import { renderGoal } from "../src/domain/goal-render.js";
 import { findViolations } from "../src/domain/protected-paths.js";
 

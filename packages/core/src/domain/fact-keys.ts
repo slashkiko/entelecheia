@@ -64,7 +64,7 @@ export const observedFactKeySchema = z.enum([
    * Port が null を返し、observe が Fact を作らないことで表す（§4.3）。
    *
    * 引き継ぎにも注意が要る。件数を読めなかったティックでは、前ティックの値が
-   * VERIFIED のまま残らないように `expireStaleFacts`（`src/reconcile/index.ts`）が
+   * VERIFIED のまま残らないように `expireStaleFacts`（`packages/ent/src/reconcile/index.ts`）が
    * 落とす。詳しくは design.md §4.3。
    *
    * **criteria に書く前に、誰がこのキーを 0 にするのかを決めること。**
@@ -148,7 +148,7 @@ export const observedFactKeySchema = z.enum([
   // そのものになる。`github.pr.review_decision` とは別物で、あちらは GitHub 上の
   // 人間（または bot）のレビュー、こちらは controller が回したレビュー役の結論。
   //
-  // 作る側は `ReviewPort`（`src/observe/index.ts`）になる。`role: review` で
+  // 作る側は `ReviewPort`（`packages/ent/src/observe/index.ts`）になる。`role: review` で
   // 走った Run の生ログから最終メッセージを読み、observe がそれを Fact にする。
   // **Actor が言った文字列はまだ Fact ではない。** 形が読めなければ Fact を
   // 作らず、理由を付けて unobserved に残す（design.md §3.1）。レビューを
@@ -197,7 +197,7 @@ export const GITHUB_PR_BODY_KEY = "github.pr.body" satisfies ObservedFactKey;
 /**
  * レビュー役が返してよい結論。ここに無い語は Fact にしない。
  *
- * `src/adapters/claude.ts` のレビュー役のプロンプトが求める2値と同じもの。
+ * `packages/ent/src/adapters/claude.ts` のレビュー役のプロンプトが求める2値と同じもの。
  * あちらは Agent への指示で、こちらは観測側の受け入れ条件になる。指示に
  * 従わなかった出力を「だいたい approved」と読むと、捏造した承認ができる。
  */

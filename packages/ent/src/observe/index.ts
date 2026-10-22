@@ -1,13 +1,18 @@
-import { errorMessage } from "../domain/error-message.js";
-import type { Fact, ObserveResult, Unresolved, VerifiedFact } from "../domain/fact.js";
+import { errorMessage } from "@entelecheia/core/domain/error-message.js";
+import type {
+  Fact,
+  ObserveResult,
+  Unresolved,
+  VerifiedFact,
+} from "@entelecheia/core/domain/fact.js";
 import {
   GITHUB_PR_BODY_KEY,
   GITHUB_PR_TITLE_KEY,
   REVIEW_REVIEWED_SHA_KEY,
   REVIEW_VERDICT_KEY,
   REVIEW_VERDICTS,
-} from "../domain/fact-keys.js";
-import { isShapeMismatch } from "../domain/port-error.js";
+} from "@entelecheia/core/domain/fact-keys.js";
+import { isShapeMismatch } from "@entelecheia/core/domain/port-error.js";
 
 /**
  * Observe が依存する外部世界。実装ではなくインターフェースとして切っておく。
@@ -363,7 +368,7 @@ export async function observe(target: ObserveTarget, deps: ObserveDeps): Promise
       // null は mergeable と同じ扱いにする。Fact も unobserved も作らない。
       // 「いくつあるか確かめられなかった」ことと「未解決が 0 件」は別で、
       // かつ、ここで unresolved を積むと Gap がゼロの Goal で DECIDE が
-      // COMPLETE ではなく WAIT を返すようになり（src/decide/index.ts）、
+      // COMPLETE ではなく WAIT を返すようになり（packages/core/src/decide/index.ts）、
       // このキーを1文字も参照していない Goal まで完了できなくなる。件数を
       // 求めている Goal の側は、Fact が無ければ criteria が Gap(unknown) を
       // 立てるので、待つ理由はそちらに残る。

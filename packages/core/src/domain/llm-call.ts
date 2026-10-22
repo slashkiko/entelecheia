@@ -28,7 +28,7 @@ export const llmCallSchema = z.object({
    *
    * `decide` はティックの中の判断、`plan` は `ent plan` の分解になる。
    * `ent get` が読む列は TEXT なので、値を増やしても migration は要らない
-   * （`src/store/sqlite.ts` の `llmCallRowSchema` の注記）。
+   * （`packages/ent/src/store/sqlite.ts` の `llmCallRowSchema` の注記）。
    */
   purpose: z.enum(["decide", "plan"]),
   /** 入力と出力の合計。単価をかければ「従量課金だったらいくらだったか」が出る */

@@ -1,4 +1,3 @@
-import { parse } from "yaml";
 import { z } from "zod";
 import {
   approvalGateSchema,
@@ -90,14 +89,10 @@ export const goalConfigSchema = z.strictObject({
 });
 export type GoalConfig = z.infer<typeof goalConfigSchema>;
 
-/**
- * `.goals/config.yaml` の中身を検証する。**ファイルは読まない。**
- *
- * 読む側は `src/adapters/goal-file.ts` にある。`parseGoal` と同じ分け方になる。
+/*
+ * YAML の文字列から読む `parseGoalConfig` は ent の `domain/goal-parse.ts` にある。
+ * core は YAML を読まない（依存は zod だけ）。スキーマと敷き方だけをここに置く。
  */
-export function parseGoalConfig(source: string): GoalConfig {
-  return goalConfigSchema.parse(parse(source));
-}
 
 /**
  * config を Goal の生オブジェクトの**下**に敷く。Goal が書いた値は必ず残る。
@@ -242,7 +237,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
  * **中身が関門の一部になるのは `goalTemplate` と同じ。** ここに書いた
  * `require_human_approval` と `protected_paths` は、この repo で立てる Goal 全部の
  * 下限として効く。緩いものを配れば、そこから始めたリポジトリはすべて緩いところから
- * 始まる。だから `src/usecase/init.ts` ではなくドメイン側に置く。
+ * 始まる。だから `packages/ent/src/usecase/init.ts` ではなくドメイン側に置く。
  *
  * `repository` は git から引ける分を埋めて渡す。引けなければ雛形と同じ
  * `your-org/your-repo` を書く。埋め忘れても `ent start` は通り、最初のティックで

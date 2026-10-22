@@ -20,7 +20,13 @@
     "verbatimModuleSyntax": true,
     "isolatedModules": true,
     "skipLibCheck": true,
-    "noEmit": true
+    "noEmit": true,
+
+    // 型検査はビルドの前に回すので、package 間の import は src を直に見る。
+    // ビルド（各 package の tsconfig.build.json）は paths を空にして dist を引く。
+    "paths": {
+      "@entelecheia/core/*": ["./packages/core/src/*"]
+    }
   },
   "include": [
     "packages/*/src/**/*.ts",

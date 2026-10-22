@@ -6,11 +6,14 @@
 *[English](design.md) | 日本語*
 
 > [!NOTE]
-> **本文中のコードのパス（`src/…`・`tests/…`・`dist/…`）は `packages/ent/` からの相対で読む。**
-> この文書の大半を書いたあとで、リポジトリを pnpm workspace にし、ent の CLI をそのまま
-> `packages/ent/` へ移した。本文は短い形のままにしてある。完全なパスが意味を持つのは
-> `PROTECTED_PATH_FLOOR`（§7）だけで、こちらはリポジトリのルートからの相対なので、コードでは
-> `packages/ent/src/controller/**` のように書いてある。
+> **本文中のコードのパス（`src/…`・`tests/…`・`dist/…`）は package からの相対で読む。**
+> この文書の大半を書いたあとで、リポジトリを pnpm workspace にした。`src/decide/` と、
+> `src/domain/` のうち I/O を持たない部分は `packages/core/` へ移し、残り
+> （`src/domain/goal-parse.ts`・`goal-render.ts`・`protected-paths.ts` を含む）は `packages/ent/` にある。
+> `protected-paths.ts` が持っていた glob の照合は `packages/core/src/domain/path-glob.ts` にある。
+> 本文は短い形のままにしてある。完全なパスが意味を持つのは `PROTECTED_PATH_FLOOR`（§7）だけで、
+> こちらはリポジトリのルートからの相対なので、コードでは `packages/ent/src/controller/**` や
+> `packages/core/src/domain/guard-rules.ts` のように書いてある。
 
 > [!NOTE]
 > **本文中の issue と PR の番号は、移行前のリポジトリを指す。** 履歴を書き換えてここへ移して

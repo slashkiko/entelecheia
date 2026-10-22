@@ -1,8 +1,8 @@
+import type { Fact } from "@entelecheia/core/domain/fact.js";
+import { criterionFactKey } from "@entelecheia/core/domain/fact-keys.js";
+import type { AcceptanceCriterion } from "@entelecheia/core/domain/goal.js";
 import { describe, expect, it } from "vitest";
 import { assess } from "../src/assess/index.js";
-import type { Fact } from "../src/domain/fact.js";
-import { criterionFactKey } from "../src/domain/fact-keys.js";
-import type { AcceptanceCriterion } from "../src/domain/goal.js";
 import { type VerifyDeps, verify } from "../src/verify/index.js";
 
 /**
@@ -10,7 +10,7 @@ import { type VerifyDeps, verify } from "../src/verify/index.js";
  * （.goals/start-the-review-we-wired.yaml の 5）。
  *
  * `review.verdict` と `review.reviewed_sha` を対にしているのは、実装が進んだ
- * あとの結論をそのまま完了判定に使わせないため（src/domain/fact-keys.ts）。
+ * あとの結論をそのまま完了判定に使わせないため（packages/core/src/domain/fact-keys.ts）。
  * verdict が approved でも、それが3コミット前のコードに対する結論なら、
  * いまの実装は誰も読んでいない。
  *

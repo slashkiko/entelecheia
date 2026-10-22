@@ -1,9 +1,9 @@
+import type { Fact, Unresolved } from "@entelecheia/core/domain/fact.js";
+import { criterionFactKey } from "@entelecheia/core/domain/fact-keys.js";
+import { assessmentSchema, type Gap } from "@entelecheia/core/domain/gap.js";
+import type { AcceptanceCriterion } from "@entelecheia/core/domain/goal.js";
 import { describe, expect, it } from "vitest";
 import { assess } from "../src/assess/index.js";
-import type { Fact, Unresolved } from "../src/domain/fact.js";
-import { criterionFactKey } from "../src/domain/fact-keys.js";
-import { assessmentSchema, type Gap } from "../src/domain/gap.js";
-import type { AcceptanceCriterion } from "../src/domain/goal.js";
 
 const NOW = new Date("2026-08-09T03:00:00.000Z");
 const deps = { now: () => NOW };

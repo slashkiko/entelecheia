@@ -149,7 +149,7 @@ export type EscalateReason = z.infer<typeof escalateReasonSchema>;
  *
  * DECIDE が次のティックで何をさせるかを決める場所なので、**誰にやらせるか**も
  * ここで決められるようにする。書かなければ従来どおり環境変数から選ぶ
- * （`ENT_<PHASE>_ACTOR` など、`src/wiring/index.ts` の `agentSelectionFrom`）。
+ * （`ENT_<PHASE>_ACTOR` など、`packages/ent/src/wiring/index.ts` の `agentSelectionFrom`）。
  *
  * **`actor` は、このキーを書くなら必須にする。** `effort` の語彙は provider ごとに
  * 検証し（いまはどちらも `low / medium / high / xhigh / max`。`EFFORT_VOCABULARY`、

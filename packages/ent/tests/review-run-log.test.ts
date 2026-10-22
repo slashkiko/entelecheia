@@ -1,6 +1,6 @@
+import type { Run } from "@entelecheia/core/domain/run.js";
 import { describe, expect, it } from "vitest";
 import { reviewRunLog } from "../src/adapters/review-run.js";
-import type { Run } from "../src/domain/run.js";
 
 /**
  * レビュー役の結論の材料を、どの Run から取るか。

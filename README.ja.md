@@ -61,7 +61,7 @@ Codex CLI の2つがある。その走っている実体を指すときは **Age
 
 完了判定と暴走の停止条件は LLM に決めさせない。LLM が選べるのは `ACT` / `VERIFY` / `WAIT` の
 3つだけになる。`COMPLETE` と `ESCALATE` は純ロジック（guard）が決める。この境界は
-`packages/ent/src/decide/` にある。
+`packages/core/src/decide/` にある。
 
 ### 保護パスの関門
 
@@ -182,8 +182,8 @@ Goal の状態（ACTIVE / COMPLETED など）は `.goals/.state/goals.db` が持
 打つ」「全件が緑でも壊れていることがある」「設計の中核ほど検証コマンドに落ちない」
 「Phase ごとの担当範囲」を順に示す。
 
-Goal YAML のスキーマは `packages/ent/src/domain/goal.ts`、repo スコープの側は `packages/ent/src/domain/goal-config.ts`、
-観測キーのレジストリは `packages/ent/src/domain/fact-keys.ts` にある。
+Goal YAML のスキーマは `packages/core/src/domain/goal.ts`、repo スコープの側は `packages/core/src/domain/goal-config.ts`、
+観測キーのレジストリは `packages/core/src/domain/fact-keys.ts` にある。
 
 ### Phase 3 の内訳
 
@@ -300,6 +300,8 @@ pnpm link --global    # package.json の bin（dist/cli.js）を global の bin 
 **張る先は checkout の中の `packages/ent/dist/cli.js` で、コピーではない。** ent 本体を作り直せば
 `ent` が指す実体も入れ替わる。逆に、`packages/ent/dist/` がまだ無い checkout に張ると symlink の先に
 何も無い状態になるので、その checkout では下の「作る側のセットアップ」を1度だけ通す。
+`packages/ent/dist/` を別の場所へコピーしたり `pnpm pack` で固めたりしても動かない。
+`@entelecheia/core` を import しており、core は公開していないので workspace の中でしか解決できない。
 
 起動する Node は shebang の `/usr/bin/env node` が選ぶ。mise や nvm を効かせた shell から
 叩くと対象リポジトリ側の Node が使われるので、24 未満だと `node:sqlite` の import で落ちる。
@@ -663,7 +665,8 @@ ent 本体がマシンに1つ入るからになる。対象リポジトリの中
   排他は効かない**（2台が同じ Goal を回すと両方が PR を立てる）
 - `PROTECTED_PATH_FLOOR` は entelecheia 固有のパスを含むので、対象リポジトリに
   同じ名前のパス（`packages/ent/src/controller/**` など）があると、Agent がそこを触った時点で
-  **誤って**違反になる。`packages/` へ移す間は、移す前のパス（`src/controller/**` など）も
+  **誤って**違反になる。workspace でよく使う名前の manifest `packages/core/package.json` も入るので、
+  そこへ依存を足す Goal も同じように止まる。`packages/` へ移す間は、移す前のパス（`src/controller/**` など）も
   下限に残しているので、外すまではそちらも同じように当たる
 - **逆に、下限の保護パスは ent 自身のコードには届かない。** ent 本体は対象
   リポジトリの外にあるので、`packages/ent/src/controller/**` のような行は ent のソースを
@@ -1104,11 +1107,10 @@ gh のトークンが黙って使われないようにするためになる。**
                           調べる役（investigate）だけ
                           <slug>-investigate に分かれる（design.md §4.2）
 .goals/.state/runs/<run-id>/  Agent の生ログ。DB にはパスだけ持つ
-packages/ent/             ent の CLI の package。下の字下げした項目はこの中にある
+packages/core/            package 間で共有する純粋な判断。依存は zod だけで、I/O を持たない
   src/domain/fact.ts      Fact の型（VERIFIED / INFERRED の分離）と Unresolved
   src/domain/fact-keys.ts 観測キーのレジストリ。Goal YAML の fact 検証はここを参照する
   src/domain/goal.ts      Goal YAML の Zod スキーマ
-  src/domain/goal-parse.ts Goal YAML の検証と、slug と goal.id の突き合わせ。ファイルは読まない
   src/domain/goal-config.ts .goals/config.yaml のスキーマと、Goal の下への敷き方
   src/domain/gap.ts       ASSESS が出す Gap と Assessment の型
   src/domain/action.ts    DECIDE が選ぶ Action と Decision の型
@@ -1118,15 +1120,19 @@ packages/ent/             ent の CLI の package。下の字下げした項目�
   src/domain/port-error.ts Port の失敗の種別（usage_limit / unavailable）
   src/domain/verification.ts criteria 単位の検証結果。§9 の完了判定が読む索引
   src/domain/digest.ts    観測値のダイジェスト。ループ検知の材料になる
-  src/domain/protected-paths.ts 保護パスの検査。制御ループ自体への編集を止める
   src/domain/guard-rules.ts guard（純ロジック）が読む判断規則。関門の基準と停止条件
   src/domain/withheld-env.ts Agent と検証コマンドの環境から落とす資格情報の除去リスト
   src/domain/error-message.ts 例外から人間が読める1行を取り出す
   src/domain/llm-call.ts  LlmPort を1回呼んだ記録。Run を作らない分のトークン
+  src/domain/path-glob.ts パスと glob の照合。保護パスと承認ルールが同じものを使う
+  src/decide/             Decide と LlmPort の定義。guard と LLM の境界はここにある
+packages/ent/             ent の CLI の package。下の字下げした項目はこの中にある
+  src/domain/goal-parse.ts Goal YAML と config.yaml の文字列を core のスキーマに通す。slug と
+                          goal.id の突き合わせもここ。ファイルは読まない
+  src/domain/protected-paths.ts 保護パスの検査。制御ループ自体への編集を止める
   src/observe/            Observe と、依存する Port の定義
   src/verify/             Verify と、依存する Port の定義
   src/assess/             Assess。Acceptance Criteria と Fact を突き合わせて Gap を出す
-  src/decide/             Decide と LlmPort の定義。guard と LLM の境界はここにある
   src/act/                Act。Actor を worktree 上で走らせる。write-ahead はここ
   src/reconcile/          OBSERVE → VERIFY → ASSESS → DECIDE を1ティックにまとめる
   src/publish/            PR の確保と進捗コメント。CodeWriterPort と BranchPort の定義

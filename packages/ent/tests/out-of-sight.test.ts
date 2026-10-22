@@ -3,9 +3,9 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
+import { PROTECTED_PATH_FLOOR } from "@entelecheia/core/domain/goal.js";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { gitWorktree } from "../src/adapters/local.js";
-import { PROTECTED_PATH_FLOOR } from "../src/domain/goal.js";
 
 /**
  * git の観測手段では原理的に見えない書き込みを、別の手段で捕まえる。

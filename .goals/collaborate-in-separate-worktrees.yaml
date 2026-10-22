@@ -298,7 +298,7 @@ context:
     - title: Agent の許可・拒否ツールを決めている場所
       path: packages/ent/src/adapters/claude.ts
     - title: 観測キーのレジストリ
-      path: packages/ent/src/domain/fact-keys.ts
+      path: packages/core/src/domain/fact-keys.ts
     - title: 保護パスの検査と未 commit の関門
       path: packages/ent/src/controller/index.ts
     - title: 検証と観測の実行先を決めている verifyRoot
@@ -322,7 +322,7 @@ policies:
     # 関門そのもの。
     - packages/ent/src/domain/protected-paths.ts
     # レビューをいつ起動するかと、完了判定の境界。本 Goal の範囲外。
-    - packages/ent/src/decide/**
+    - packages/core/src/decide/**
     # 検証系。ここを書き換えられると Agent が自分の criteria を通せる。
     - mise.toml
     - mise-tasks/**

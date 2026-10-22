@@ -216,7 +216,7 @@ policies:
     # 観測と判断はこの Goal の範囲外。本文を Fact にする道は選ばない。
     - packages/ent/src/observe/**
     - packages/ent/src/assess/**
-    - packages/ent/src/decide/**
+    - packages/core/src/decide/**
     - packages/ent/src/reconcile/**
     - packages/ent/src/verify/**
     # 生ログの形に依存する知識は Adapter に閉じている。呼ぶだけで足りる。

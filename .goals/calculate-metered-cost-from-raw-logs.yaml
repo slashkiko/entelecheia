@@ -58,14 +58,14 @@ policies:
     - packages/ent/src/controller/**
     - .goals/**
     - packages/ent/src/domain/protected-paths.ts
-    - packages/ent/src/domain/guard-rules.ts
-    - packages/ent/src/domain/goal.ts
-    - packages/ent/src/domain/goal-config.ts
+    - packages/core/src/domain/guard-rules.ts
+    - packages/core/src/domain/goal.ts
+    - packages/core/src/domain/goal-config.ts
     - packages/ent/src/adapters/claude.ts
     - packages/ent/src/adapters/codex.ts
     - packages/ent/src/adapters/agent-prompt.ts
     - packages/ent/src/adapters/local.ts
-    - packages/ent/src/domain/withheld-env.ts
+    - packages/core/src/domain/withheld-env.ts
     - packages/ent/src/wiring/index.ts
     - .git/**
     - .goals/.state/**

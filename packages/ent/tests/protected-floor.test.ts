@@ -1,6 +1,5 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { join, relative } from "node:path";
-import { describe, expect, it } from "vitest";
 import {
   APPROVAL_GATE_FLOOR,
   goalSchema,
@@ -9,9 +8,10 @@ import {
   TEMPLATE_SLUG,
   withApprovalGateFloor,
   withProtectedPathFloor,
-} from "../src/domain/goal.js";
-import { configTemplate, parseGoalConfig } from "../src/domain/goal-config.js";
-import { parseGoal } from "../src/domain/goal-parse.js";
+} from "@entelecheia/core/domain/goal.js";
+import { configTemplate } from "@entelecheia/core/domain/goal-config.js";
+import { describe, expect, it } from "vitest";
+import { parseGoal, parseGoalConfig } from "../src/domain/goal-parse.js";
 
 /**
  * 保護パスの下限が、どの Goal からも外せないことを固定する。
@@ -103,17 +103,61 @@ describe("保護パスの下限", () => {
     expect(PROTECTED_PATH_FLOOR).toContain("packages/ent/src/controller/**");
     expect(PROTECTED_PATH_FLOOR).toContain(".goals/**");
     expect(PROTECTED_PATH_FLOOR).toContain("packages/ent/src/domain/protected-paths.ts");
-    expect(PROTECTED_PATH_FLOOR).toContain("packages/ent/src/domain/goal.ts");
+    // 照合の本体は core にある。ent 側の関門はこれを呼ぶだけなので、こちらを緩めれば
+    // 関門の両方の経路（worktree 側と本体側）が同時に素通りする。
+    expect(PROTECTED_PATH_FLOOR).toContain("packages/core/src/domain/path-glob.ts");
+    expect(PROTECTED_PATH_FLOOR).toContain("packages/core/src/domain/goal.ts");
     // 保護パスを Goal の下へ敷く規則。ここを書き換えれば、config が配っている
     // repo 全体の保護を、下限のファイルを1つも触らずに消せる。
-    expect(PROTECTED_PATH_FLOOR).toContain("packages/ent/src/domain/goal-config.ts");
+    expect(PROTECTED_PATH_FLOOR).toContain("packages/core/src/domain/goal-config.ts");
     expect(PROTECTED_PATH_FLOOR).toContain("packages/ent/src/adapters/claude.ts");
     expect(PROTECTED_PATH_FLOOR).toContain("packages/ent/src/adapters/codex.ts");
     expect(PROTECTED_PATH_FLOOR).toContain("packages/ent/src/adapters/agent-prompt.ts");
     expect(PROTECTED_PATH_FLOOR).toContain("packages/ent/src/adapters/local.ts");
-    expect(PROTECTED_PATH_FLOOR).toContain("packages/ent/src/domain/withheld-env.ts");
-    expect(PROTECTED_PATH_FLOOR).toContain("packages/ent/src/domain/guard-rules.ts");
+    expect(PROTECTED_PATH_FLOOR).toContain("packages/core/src/domain/withheld-env.ts");
+    expect(PROTECTED_PATH_FLOOR).toContain("packages/core/src/domain/guard-rules.ts");
     expect(PROTECTED_PATH_FLOOR).toContain("packages/ent/src/wiring/index.ts");
+    // ent は core を package 名で import する。どのファイルがその名前になるかは
+    // core の exports が決めるので、規則のファイルを触らずに向け先だけを替えられる。
+    expect(PROTECTED_PATH_FLOOR).toContain("packages/core/package.json");
+  });
+
+  // 移行の間だけ残す、移す前のパス。移す前に切った worktree は作り直されないので、
+  // その差分はこのパスで出る。消すのは移行を終えるときで、そのときはこのテストも一緒に消す。
+  it.each([
+    "src/controller/**",
+    "src/domain/protected-paths.ts",
+    "src/domain/guard-rules.ts",
+    "src/domain/goal.ts",
+    "src/domain/goal-config.ts",
+    "src/adapters/claude.ts",
+    "src/adapters/codex.ts",
+    "src/adapters/agent-prompt.ts",
+    "src/adapters/local.ts",
+    "src/domain/withheld-env.ts",
+    "src/wiring/index.ts",
+    "packages/ent/src/domain/guard-rules.ts",
+    "packages/ent/src/domain/goal.ts",
+    "packages/ent/src/domain/goal-config.ts",
+    "packages/ent/src/domain/withheld-env.ts",
+  ])("移行の間は、移す前のパス %s も下限に入る", (path) => {
+    expect(PROTECTED_PATH_FLOOR).toContain(path);
+  });
+
+  it.each([
+    "src/controller/",
+    "src/domain/guard-rules.ts",
+    "src/wiring/",
+    "src/domain/protected-paths.ts",
+    "src/domain/goal.ts",
+    "src/domain/goal-config.ts",
+    "src/adapters/claude.ts",
+    "src/adapters/local.ts",
+    "packages/ent/src/domain/guard-rules.ts",
+    "packages/ent/src/domain/goal.ts",
+    "packages/ent/src/domain/goal-config.ts",
+  ])("移行の間は、移す前のパス %s も CODEOWNERS に入る", (path) => {
+    expect(codeownerPaths()).toContain(path);
   });
 
   it("guard が読む規則は、下限に入っているファイルの中に居る", () => {
@@ -209,6 +253,10 @@ const GUARD_RULES = [
   "elapsedSecondsSince",
   "waitedSeconds",
   "consecutiveFailuresOf",
+  // 保護パスの glob の照合。関門は ent に、照合は core に分かれたので、規則の名前で
+  // 置き場を引いておかないと、照合だけが下限と CODEOWNERS の外へ出ても気づかない。
+  "matchesGlob",
+  "normalizePath",
 ] as const;
 
 /**

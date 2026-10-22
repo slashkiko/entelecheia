@@ -1,9 +1,9 @@
+import { errorMessage } from "@entelecheia/core/domain/error-message.js";
+import { PortError } from "@entelecheia/core/domain/port-error.js";
 import { retry } from "@octokit/plugin-retry";
 import { throttling } from "@octokit/plugin-throttling";
 import { Octokit } from "@octokit/rest";
 import { z } from "zod";
-import { errorMessage } from "../domain/error-message.js";
-import { PortError } from "../domain/port-error.js";
 import type {
   CiRunSnapshot,
   CodeProviderPort,

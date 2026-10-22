@@ -57,7 +57,7 @@ export interface DecideDeps {
   /**
    * ACT の `agent` で名指してよい provider。**人間が既に opt-in したものだけ**を渡す。
    *
-   * 合成ルートが環境変数から作る（`selectedActorKinds`、`src/wiring/index.ts`）。
+   * 合成ルートが環境変数から作る（`selectedActorKinds`、`packages/ent/src/wiring/index.ts`）。
    * Codex は「Claude Agent SDK と同じ command 単位の allow/deny が無く、完全に同じ
    * 権限制御ではない」という理由で明示 opt-in にしてある（design.md §3.5）。
    * DECIDE が env に無い provider を名指せると、その opt-in が LLM の出力1つで
@@ -372,7 +372,7 @@ function describeUnresolved(unresolved: readonly Unresolved[]): string {
  * `buildPrompt` が LLM に見せる Gap の並び（`- <id> [<kind>] <detail>`）と同じ形を、
  * rationale の1行に畳んだもの。detail には assess の `unknownDetail` が入るので、
  * criterion が参照する観測を読めていないティックでは「<key> has no conclusion
- * (<reason>: <detail>)」まで届く（`src/assess/index.ts`）。
+ * (<reason>: <detail>)」まで届く（`packages/ent/src/assess/index.ts`）。
  */
 function describeGaps(gaps: readonly Gap[]): string {
   return gaps.map((g) => `${g.criterionId} [${g.kind}] ${g.detail}`).join(" / ");
@@ -432,7 +432,7 @@ function describeUnresolvedForPrompt(
  *
  * mapped type にすると、行動を足した時点で「LLM に選ばせるか」を書くまで
  * ビルドが通らない。判断を忘れる余地を型で消す。
- * `src/adapters/claude.ts` の `DENIED_TOOLS` が同じ形をしている。
+ * `packages/ent/src/adapters/claude.ts` の `DENIED_TOOLS` が同じ形をしている。
  */
 const LLM_MAY_CHOOSE: Record<Action["type"], boolean> = {
   // guard が決める。design.md §3.1 と §7。
@@ -782,7 +782,7 @@ function withoutLlmResumeAfter(action: Action): Action {
  * criteria の description も Gap の detail も宣言部（`.goals/*.yaml`）から来るので、
  * このリポジトリでは日本語になる。何も言わなければモデルはそれに引きずられて
  * 日本語の `intent` を返すが、その文字列は PR 進捗コメントの `###` 見出し
- * （`commentBody`、src/publish/index.ts）と `decidedBy: "llm"` の rationale
+ * （`commentBody`、packages/ent/src/publish/index.ts）と `decidedBy: "llm"` の rationale
  * （`describeAction`）にそのまま載る。**英語で読む人が最初に見る1行**になるので、
  * 宣言部の言語とは切り離す。
  */

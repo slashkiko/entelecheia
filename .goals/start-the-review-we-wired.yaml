@@ -319,13 +319,13 @@ context:
     - title: レビューをいつ起動するかを範囲外として残した Goal（11 が本 Goal の出発点）
       path: .goals/collaborate-in-separate-worktrees.yaml
     - title: 直す対象。guard と LLM の境界、プロンプト
-      path: packages/ent/src/decide/index.ts
+      path: packages/core/src/decide/index.ts
     - title: 直す対象。Fact を作る側
       path: packages/ent/src/observe/index.ts
     - title: 観測キーの登録と、「作る側はまだ居ない」の注記
-      path: packages/ent/src/domain/fact-keys.ts
+      path: packages/core/src/domain/fact-keys.ts
     - title: ACT の role と ESCALATE の理由
-      path: packages/ent/src/domain/action.ts
+      path: packages/core/src/domain/action.ts
     - title: ActorPort の戻り値（logRef はここにある）
       path: packages/ent/src/act/index.ts
     - title: Port を組み立てる場所（新しい Port の配線先）
@@ -333,7 +333,7 @@ context:
     - title: レビュー役のプロンプトと権限（広げない）
       path: packages/ent/src/adapters/claude.ts
     - title: 弱めてはいけない既存の性質
-      path: packages/ent/tests/decide-llm-boundary.test.ts
+      path: packages/core/tests/decide-llm-boundary.test.ts
     - title: 弱めてはいけない既存の性質
       path: packages/ent/tests/review-actor.test.ts
     - title: 設計ドキュメント

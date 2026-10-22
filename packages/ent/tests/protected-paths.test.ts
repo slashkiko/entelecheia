@@ -25,6 +25,16 @@ describe("findViolations", () => {
     ]);
   });
 
+  it("名前に改行類の文字を入れた新しいファイルも見つける", () => {
+    // git はファイル名に改行と U+2028 を許す。照合の正規表現がそれに当たらないと、
+    // `.goals/x<U+2028>.yaml` のような1文字で `**` の保護を全部すり抜けられる。
+    const path = `${ROOT}/.goals/x .yaml`;
+
+    expect(findViolations([path], ROOT, PROTECTED)).toEqual([
+      { kind: "protected_path", path, pattern: ".goals/**" },
+    ]);
+  });
+
   it("保護されていないパスは通す", () => {
     expect(findViolations([`${ROOT}/src/cli.ts`], ROOT, PROTECTED)).toEqual([]);
   });

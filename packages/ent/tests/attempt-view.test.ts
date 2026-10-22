@@ -1,9 +1,9 @@
+import { buildAttempts } from "@entelecheia/core/domain/attempt.js";
+import { ATTEMPT_VIEW_PATH, renderAttemptLedger } from "@entelecheia/core/domain/attempt-view.js";
+import type { Goal } from "@entelecheia/core/domain/goal.js";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { ActorInvocation } from "../src/act/index.js";
 import { PROMPT_FOR } from "../src/adapters/agent-prompt.js";
-import { buildAttempts } from "../src/domain/attempt.js";
-import { ATTEMPT_VIEW_PATH, renderAttemptLedger } from "../src/domain/attempt-view.js";
-import type { Goal } from "../src/domain/goal.js";
 import type { Store } from "../src/store/port.js";
 import { openStore } from "../src/store/sqlite.js";
 import {

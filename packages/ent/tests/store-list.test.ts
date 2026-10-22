@@ -1,5 +1,5 @@
+import type { Goal } from "@entelecheia/core/domain/goal.js";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import type { Goal } from "../src/domain/goal.js";
 import type { Store } from "../src/store/port.js";
 import { openStore } from "../src/store/sqlite.js";
 

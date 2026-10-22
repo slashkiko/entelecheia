@@ -216,7 +216,7 @@ context:
     - title: LlmPort の現状
       path: packages/ent/src/adapters/claude.ts
     - title: プロンプトの現状
-      path: packages/ent/src/decide/index.ts
+      path: packages/core/src/decide/index.ts
     - title: CLI の現状
       path: packages/ent/src/cli.ts
     - title: 直近の自己ホスト1周（進め方の見本）

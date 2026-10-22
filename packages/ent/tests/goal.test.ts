@@ -1,16 +1,16 @@
 import { readdirSync } from "node:fs";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
-import { loadGoalFile } from "../src/adapters/goal-file.js";
 import {
   DEFAULT_BUDGET,
   DEFAULT_DECLARED_POLICIES,
   goalSchema,
   goalTemplate,
   TEMPLATE_SLUG,
-} from "../src/domain/goal.js";
-import { CONFIG_FILENAME, configTemplate, parseGoalConfig } from "../src/domain/goal-config.js";
-import { parseGoal } from "../src/domain/goal-parse.js";
+} from "@entelecheia/core/domain/goal.js";
+import { CONFIG_FILENAME, configTemplate } from "@entelecheia/core/domain/goal-config.js";
+import { describe, expect, it } from "vitest";
+import { loadGoalFile } from "../src/adapters/goal-file.js";
+import { parseGoal, parseGoalConfig } from "../src/domain/goal-parse.js";
 
 const GOALS_DIR = join(import.meta.dirname, "..", "..", "..", ".goals");
 

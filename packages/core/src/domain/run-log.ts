@@ -4,7 +4,7 @@ import { z } from "zod";
  * Actor の生ログ（`.goals/.state/runs/<run-id>/log.jsonl`）から最終メッセージを読む。
  *
  * **ent 自身が書いた形を読み直すだけの純粋な文字列処理**で、I/O は持たない。
- * ファイルを開くのは Adapter（`src/adapters/review-run.ts`）と、台帳のビューを
+ * ファイルを開くのは Adapter（`packages/ent/src/adapters/review-run.ts`）と、台帳のビューを
  * 配る usecase の2つになる。**読み手が2つに分かれたのでここへ移した。**
  * 後者は合成ルートから Adapter を受け取れない層にあり、Adapter に置いたままでは
  * 同じ解析をもう1つ書くことになる。同じログを2通りに読む実装は、片方だけ

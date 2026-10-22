@@ -170,9 +170,9 @@ context:
     - title: いまの doctor
       path: packages/ent/src/usecase/doctor.ts
     - title: 実行時の依存の判定（触らない側）
-      path: packages/ent/src/domain/guard-rules.ts
+      path: packages/core/src/domain/guard-rules.ts
     - title: 依存の宣言
-      path: packages/ent/src/domain/goal.ts
+      path: packages/core/src/domain/goal.ts
 
 policies:
   require_human_approval:
@@ -201,7 +201,7 @@ policies:
     # 実行時の判定はこの Goal の範囲外。触るなら設計が変わったということなので
     # 人間を呼ぶ（guard-rules.ts は下限にあるので、こちらは controller の外側）。
     - packages/ent/src/reconcile/**
-    - packages/ent/src/decide/**
+    - packages/core/src/decide/**
 
 budget:
   max_actor_runs: 6

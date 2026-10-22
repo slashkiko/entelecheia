@@ -1,6 +1,6 @@
-import { describeCycles, findCycles } from "../domain/dependency-graph.js";
-import { errorMessage } from "../domain/error-message.js";
-import type { ActorKind } from "../domain/run.js";
+import { describeCycles, findCycles } from "@entelecheia/core/domain/dependency-graph.js";
+import { errorMessage } from "@entelecheia/core/domain/error-message.js";
+import type { ActorKind } from "@entelecheia/core/domain/run.js";
 
 /**
  * `ent doctor` の本体。回す前の前提が揃っているかを、**書かずに**調べる。
@@ -276,7 +276,7 @@ function goalsCheck(read: GoalsRead): DoctorCheck {
  * つまり depends_on の書き間違いは、どの停止条件にも掛からないまま永久に止まる。
  *
  * ここは読むだけで、実行時の判定は変えない。「先に進んでよいか」は停止条件なので
- * `dependencyGate`（src/domain/guard-rules.ts）が持ち続ける。こちらが答えるのは
+ * `dependencyGate`（packages/core/src/domain/guard-rules.ts）が持ち続ける。こちらが答えるのは
  * 「回す前の宣言が壊れていないか」で、層が違う。
  *
  * 見るのは2つ。

@@ -1,6 +1,6 @@
+import { PortError } from "@entelecheia/core/domain/port-error.js";
 import { describe, expect, it } from "vitest";
 import { githubCodeProvider } from "../src/adapters/github.js";
-import { PortError } from "../src/domain/port-error.js";
 
 /**
  * テストから実際の GitHub を叩かない。fetch を注入して octokit の下を差し替える。

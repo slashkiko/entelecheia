@@ -1,4 +1,4 @@
-import { errorMessage } from "../domain/error-message.js";
+import { errorMessage } from "@entelecheia/core/domain/error-message.js";
 import {
   type Evidence,
   type Fact,
@@ -6,15 +6,15 @@ import {
   type VerifiedFact,
   type VerifyResult,
   verifiedOnly,
-} from "../domain/fact.js";
+} from "@entelecheia/core/domain/fact.js";
 import {
   criterionFactKey,
   LOCAL_HEAD_SHA_KEY,
   REVIEW_REVIEWED_SHA_KEY,
   REVIEW_VERDICT_KEY,
-} from "../domain/fact-keys.js";
-import type { AcceptanceCriterion } from "../domain/goal.js";
-import { isShapeMismatch } from "../domain/port-error.js";
+} from "@entelecheia/core/domain/fact-keys.js";
+import type { AcceptanceCriterion } from "@entelecheia/core/domain/goal.js";
+import { isShapeMismatch } from "@entelecheia/core/domain/port-error.js";
 
 /**
  * Verify が依存する外部世界。observe と同じく、実装ではなくインターフェースとして切る。

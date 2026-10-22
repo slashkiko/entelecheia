@@ -1,7 +1,7 @@
+import { decide } from "@entelecheia/core/decide/index.js";
+import { isShapeMismatch, isUnavailable, PortError } from "@entelecheia/core/domain/port-error.js";
 import { describe, expect, it } from "vitest";
 import { githubCodeProvider } from "../src/adapters/github.js";
-import { decide } from "../src/decide/index.js";
-import { isShapeMismatch, isUnavailable, PortError } from "../src/domain/port-error.js";
 import { observe } from "../src/observe/index.js";
 
 /**

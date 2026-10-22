@@ -132,7 +132,7 @@ context:
     - title: "生成された宣言と、それが完了まで進んだ記録"
       path: .goals/calculate-metered-cost-from-raw-logs.yaml
     - title: "config を Goal の下へ敷く規則（キーの有無で判断している箇所）"
-      path: packages/ent/src/domain/goal-config.ts
+      path: packages/core/src/domain/goal-config.ts
     - title: "設計: 頼んでも確認できる遵守は得られない（10-11）"
       path: docs/design.md
 

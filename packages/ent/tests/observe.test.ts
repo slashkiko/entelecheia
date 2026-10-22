@@ -1,5 +1,5 @@
+import { type Fact, observeResultSchema, verifiedOnly } from "@entelecheia/core/domain/fact.js";
 import { describe, expect, it } from "vitest";
-import { type Fact, observeResultSchema, verifiedOnly } from "../src/domain/fact.js";
 import {
   type CodeProviderPort,
   type LocalRepoPort,

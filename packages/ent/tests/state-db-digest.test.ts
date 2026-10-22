@@ -2,10 +2,10 @@ import { mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import type { Fact } from "@entelecheia/core/domain/fact.js";
+import type { Goal } from "@entelecheia/core/domain/goal.js";
+import type { RunIntent, RunOutcome } from "@entelecheia/core/domain/run.js";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import type { Fact } from "../src/domain/fact.js";
-import type { Goal } from "../src/domain/goal.js";
-import type { RunIntent, RunOutcome } from "../src/domain/run.js";
 import type { Store } from "../src/store/port.js";
 import { encodeCell, encodeRow, openStore } from "../src/store/sqlite.js";
 

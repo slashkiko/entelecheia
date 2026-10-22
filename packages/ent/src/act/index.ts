@@ -1,9 +1,13 @@
-import type { ActionAgent, Decision } from "../domain/action.js";
-import { errorMessage } from "../domain/error-message.js";
-import type { Fact } from "../domain/fact.js";
-import { GITHUB_PR_BODY_KEY, GITHUB_PR_TITLE_KEY } from "../domain/fact-keys.js";
-import type { ApprovalGate, Goal } from "../domain/goal.js";
-import { type PortErrorKind, portErrorKindOf, resumeAfterOf } from "../domain/port-error.js";
+import type { ActionAgent, Decision } from "@entelecheia/core/domain/action.js";
+import { errorMessage } from "@entelecheia/core/domain/error-message.js";
+import type { Fact } from "@entelecheia/core/domain/fact.js";
+import { GITHUB_PR_BODY_KEY, GITHUB_PR_TITLE_KEY } from "@entelecheia/core/domain/fact-keys.js";
+import type { ApprovalGate, Goal } from "@entelecheia/core/domain/goal.js";
+import {
+  type PortErrorKind,
+  portErrorKindOf,
+  resumeAfterOf,
+} from "@entelecheia/core/domain/port-error.js";
 import {
   type ActorKind,
   type ActorRole,
@@ -11,7 +15,7 @@ import {
   type Run,
   type RunIntent,
   type RunOutcome,
-} from "../domain/run.js";
+} from "@entelecheia/core/domain/run.js";
 
 /**
  * ACT が依存する外部世界。observe / verify と同じく、実装ではなくインターフェースで切る。
@@ -101,7 +105,7 @@ export interface WorktreePort {
 /**
  * DECIDE が決めた intent に、Goal の宣言部の制約を足す。
  *
- * `src/domain/goal.ts` は `context.constraints` を「ACT にそのまま渡る自由記述」と
+ * `packages/core/src/domain/goal.ts` は `context.constraints` を「ACT にそのまま渡る自由記述」と
  * 宣言しているが、長らく `goal.context` を読むコードがどこにも無く、Actor には
  * 1行も届いていなかった。
  *

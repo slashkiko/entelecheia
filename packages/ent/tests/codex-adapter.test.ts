@@ -1,7 +1,7 @@
+import { PortError } from "@entelecheia/core/domain/port-error.js";
 import { describe, expect, it, vi } from "vitest";
 import type { ActorInvocation } from "../src/act/index.js";
 import { type CodexCommand, type CodexExec, codexActor, codexLlm } from "../src/adapters/codex.js";
-import { PortError } from "../src/domain/port-error.js";
 
 const NOW = new Date("2026-08-11T01:02:03.000Z");
 

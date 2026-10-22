@@ -1,5 +1,6 @@
 import { realpathSync } from "node:fs";
 import { isAbsolute, relative, resolve } from "node:path";
+import { matchesGlob, normalizePath } from "@entelecheia/core/domain/path-glob.js";
 
 /**
  * Agent が触ってはいけないものに触れたかを判定する（design.md §7 の自己ホスト用）。
@@ -98,7 +99,7 @@ export function findViolations(
       continue;
     }
 
-    const pattern = protectedPaths.find((glob) => matches(inside, glob));
+    const pattern = protectedPaths.find((glob) => matchesGlob(inside, glob));
     if (pattern !== undefined) {
       violations.push({ kind: "protected_path", path: artifact, pattern });
     }
@@ -170,7 +171,7 @@ function displayKeyPattern(
   artifact: string,
   protectedPaths: readonly string[],
 ): string | undefined {
-  return protectedPaths.find((glob) => matches(artifact, glob));
+  return protectedPaths.find((glob) => matchesGlob(artifact, glob));
 }
 
 /**
@@ -183,12 +184,12 @@ function displayKeyPattern(
  * 基点は worktree の直下だけになる。`src/controller/.goals/.state/x.ts` は
  * この形にならないので、他の保護パターンに一致したまま残る。
  *
- * 大文字小文字は matches と同じく区別しない。区別しない FS では
+ * 大文字小文字は matchesGlob と同じく区別しない。区別しない FS では
  * `.goals/.State/` も同じディレクトリに届くので、照合と揃えないと
  * 「保護は広いのに除外は狭い」という誤検知がそのまま残る。
  */
 function isRuntimeState(inside: string): boolean {
-  const normalized = normalize(inside);
+  const normalized = normalizePath(inside);
   return normalized === RUNTIME_STATE_DIR || normalized.startsWith(`${RUNTIME_STATE_DIR}/`);
 }
 
@@ -204,69 +205,4 @@ function realpath(path: string): string {
   } catch {
     return path;
   }
-}
-
-/**
- * glob の照合。依存を増やさないので自前で書く。
- *
- * 対応するのは `*`（区切りをまたがない）と `**`（区切りをまたぐ）と `?` の3つ。
- * `src/controller/**` や `tsconfig*.json` のような、§7 が並べる形を書ければ足りる。
- * `{a,b}` や `[]` は使わない。使いたくなったら、そのとき依存を足すか判断する。
- *
- * 末尾が `/**` のパターンは、そのディレクトリ自身にも一致させる。
- * `src/controller/**` が `src/controller` に一致しないと、
- * ディレクトリごと置き換えられたときに素通りする。
- *
- * 大文字小文字は区別しない。macOS の APFS も Windows も既定で区別しないので、
- * `src/Controller/index.ts` と書けば同じファイルに届くのに `src/controller/**`
- * には一致しない、という抜け道ができる。区別する FS では保護が少し広くなるが、
- * 広すぎて人間を呼ぶほうが、狭すぎて素通りするより安全側になる。
- */
-function matches(path: string, glob: string): boolean {
-  const normalized = normalize(path);
-  // glob 側は区切りの読み替えをしない。`\` はエスケープとして扱う文字になる。
-  const pattern = glob.normalize("NFC").toLowerCase();
-  if (pattern.endsWith("/**") && normalized === pattern.slice(0, -3)) {
-    return true;
-  }
-  return toRegExp(pattern).test(normalized);
-}
-
-/**
- * パスを照合できる形に揃える。区切りは `/`、Unicode は NFC、大文字小文字は畳む。
- *
- * 除外（isRuntimeState）と照合（matches）で同じ関数を使う。片方だけ揺れると、
- * 保護される形と除外される形がずれる。
- */
-function normalize(path: string): string {
-  return path.split("\\").join("/").normalize("NFC").toLowerCase();
-}
-
-function toRegExp(glob: string): RegExp {
-  let source = "";
-  for (let i = 0; i < glob.length; i += 1) {
-    const char = glob[i];
-    if (char === "*") {
-      if (glob[i + 1] === "*") {
-        // `**` は区切りをまたぐ。`**/` の形なら区切りごと飲み込む。
-        i += 1;
-        if (glob[i + 1] === "/") {
-          i += 1;
-          source += "(?:.*/)?";
-        } else {
-          source += ".*";
-        }
-      } else {
-        source += "[^/]*";
-      }
-      continue;
-    }
-    if (char === "?") {
-      source += "[^/]";
-      continue;
-    }
-    // それ以外は正規表現のメタ文字として解釈させない。
-    source += char?.replace(/[.+^${}()|[\]\\]/g, "\\$&") ?? "";
-  }
-  return new RegExp(`^${source}$`);
 }
