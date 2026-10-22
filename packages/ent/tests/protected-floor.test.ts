@@ -10,6 +10,8 @@ import {
   withProtectedPathFloor,
 } from "@entelecheia/core/domain/goal.js";
 import { configTemplate } from "@entelecheia/core/domain/goal-config.js";
+import { matchesGlob } from "@entelecheia/core/domain/path-glob.js";
+import { APPROVAL_RULE_FLOOR } from "@entelecheia/core/factory/approval-rules.js";
 import { describe, expect, it } from "vitest";
 import { parseGoal, parseGoalConfig } from "../src/domain/goal-parse.js";
 
@@ -228,6 +230,51 @@ describe("保護パスの下限", () => {
     }
   });
 });
+
+describe("factory の判断の置き場", () => {
+  it("自動マージを決める規則は、CODEOWNERS と承認ルールの下限の両方に居る", () => {
+    // factory の判断は関門の下限（PROTECTED_PATH_FLOOR）には入れない。Actor が書く PR の
+    // 中身なので、守るのは人のレビュー（CODEOWNERS）と、factory 自身の PR を自動マージに
+    // させない承認ルールの下限（factory-parts）になる。どちらもパスのリテラルなので、
+    // 規則の名前から置き場を引いて、移しても両方から外れていないことを見る。
+    const owners = codeownerPaths();
+    const factoryParts = APPROVAL_RULE_FLOOR.find((rule) => rule.id === "factory-parts");
+
+    for (const name of FACTORY_RULES) {
+      const homes = SOURCE_FILES.filter((file) =>
+        readFileSync(join(REPO_ROOT, file), "utf8").includes(`export function ${name}(`),
+      );
+
+      expect(homes, `${name} を export しているファイルが1つに定まらない`).toHaveLength(1);
+      const home = homes[0] ?? "";
+      expect(
+        owners.some((owned) => owned === home || (owned.endsWith("/") && home.startsWith(owned))),
+        `${name} の置き場 ${home} が CODEOWNERS に無い`,
+      ).toBe(true);
+      expect(
+        (factoryParts?.paths ?? []).some((glob) => matchesGlob(home, glob)),
+        `${name} の置き場 ${home} が承認ルールの factory-parts に無い`,
+      ).toBe(true);
+    }
+  });
+});
+
+/**
+ * factory の判断のうち、1行変えるだけで人がマージする範囲が狭まるもの。
+ *
+ * 自動マージの判定、依存更新の例外、承認ルールの当たりと下限の足し直し、ポリシーの
+ * 合成（下限を外せないことを守る）、トリアージ（自動マージの近道を決める）。
+ */
+const FACTORY_RULES = [
+  "decideAutoMerge",
+  "renovateException",
+  "approvalHits",
+  "effectiveApprovalHits",
+  "withApprovalRuleFloor",
+  "allowsAutoMerge",
+  "composePolicy",
+  "triage",
+] as const;
 
 /** CODEOWNERS が覆うパス。先頭の `/` を落として repoRoot 相対に揃える */
 function codeownerPaths(): string[] {
