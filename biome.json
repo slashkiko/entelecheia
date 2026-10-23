@@ -1,7 +1,14 @@
 {
   "$schema": "https://biomejs.dev/schemas/2.5.7/schema.json",
   "files": {
-    "includes": ["**", "!**/dist", "!**/node_modules", "!.goals/.state", "!.claude/worktrees"]
+    "includes": [
+      "**",
+      "!**/dist",
+      "!**/node_modules",
+      "!.goals/.state",
+      "!.claude/worktrees",
+      "!packages/core/schema"
+    ]
   },
   "formatter": {
     "enabled": true,

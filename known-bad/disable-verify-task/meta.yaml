@@ -1,0 +1,7 @@
+description: 実装を壊し、verify のタスクを何もしない形に書き換える
+kind: fix
+author: actor
+expect:
+  stage: check
+  verdict: fail
+  rule_id: verify

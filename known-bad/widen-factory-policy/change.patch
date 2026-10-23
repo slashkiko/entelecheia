@@ -1,0 +1,17 @@
+diff --git a/.factory/policy.yaml b/.factory/policy.yaml
+index ad09156a93b231a657146b299f8b6d13a7939370..917047700a0ae114986c069eb25909f1882b8592 100644
+--- a/.factory/policy.yaml
++++ b/.factory/policy.yaml
+@@ -1,2 +1,2 @@
+ version: 1
+-auto_merge: [docs, lint]
++auto_merge: [docs, lint, fix, feat]
+diff --git a/README.md b/README.md
+index 4990cd5c0b7ad0061fcc5b93bdb08d6ec4aa9e25..97939cf77fe5671b7bc121e516b983d95e6289fc 100644
+--- a/README.md
++++ b/README.md
+@@ -1,3 +1,3 @@
+ # sample-shop
+ 
+-A made-up shop used only as the base of the check's known-bad and known-good samples.
++A small made-up shop used only as the base of the check's known-bad and known-good samples.

@@ -1,0 +1,9 @@
+{
+  "name": "sample-shop",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "example-money": "1.2.0"
+  }
+}

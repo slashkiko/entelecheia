@@ -1128,6 +1128,10 @@ packages/core/            package 間で共有する純粋な判断。依存は 
   src/factory/            dark factory の判断。policy / profile のスキーマ、承認ルールとその下限、
                           decideAutoMerge、トリアージ、作業・リポジトリ・レビューの段の状態遷移。
                           まだ CLI からは呼ばない
+  src/factory/evidence-report.ts evidence.json の形（ent.evidence/v1）。ent-check が書く。
+                          読む側の governor はまだ無い
+  schema/evidence-v1.schema.json 同じ形の JSON Schema。zod の schema から作る。level が results と
+                          一致するかは表せないので、それを確かめるのは zod の側だけになる
 packages/ent/             ent の CLI の package。下の字下げした項目はこの中にある
   src/domain/goal-parse.ts Goal YAML と config.yaml の文字列を core のスキーマに通す。slug と
                           goal.id の突き合わせもここ。ファイルは読まない
@@ -1161,6 +1165,18 @@ packages/ent/             ent の CLI の package。下の字下げした項目�
   src/cli/agent-context.ts ent agent-context が出す CLI の構造
   src/cli.ts              ent コマンドの入口。サブコマンドごとの手順と終了コードの契約
   tests/                  Acceptance Criteria の実体と、実 git / 実 SQLite を叩く統合テスト
+packages/check/           ent-check。PR の head を base の検査の定義で回し、evidence.json を書く。
+                          実行時の依存は core だけで、ent には依存しない。まだ ent からは呼ばない
+  src/check.ts            1回の検査の手順。分岐点と head に base の定義を差し込んで回し、規則を当てる
+  src/definitions.ts      どのファイルを検査の定義とみなすか。承認ルールの下限から取る
+  src/rules.ts            E1 の規則。テストを減らす・飛ばす・弱める変更を落とし、検査の定義に触れた変更は名指しする
+  src/main.ts             ent-check の本体。入口の src/cli.ts から呼ぶ。終了コードは 0 落ちた規則が無い、
+                          1 不合格、2 引数の誤り、3 検査できなかった
+known-bad/                factory が止めるべき PR の見本。1件1ディレクトリ（meta.yaml と change.patch）。
+                          中身は作り物の値。fixture/ は見本を当てる作り物のリポジトリ
+known-good/               factory が止めてはいけない PR の見本。同じ fixture に当てる
+.github/workflows/check.yml  ent-check を secret なしで回す再利用ワークフロー。head を流すステップには
+                          ジョブのトークンも置かない
 plugins/ent-review/       レビュー役に読ませる semantic-review skill の正本。
                           `policies.review_skill` を書けば、対象リポジトリの中の
                           plugin に差し替わる

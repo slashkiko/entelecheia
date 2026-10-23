@@ -6,6 +6,18 @@
   "automerge": false,
   "platformAutomerge": false,
   "dependencyDashboard": true,
+  "ignorePaths": [
+    "**/node_modules/**",
+    "**/bower_components/**",
+    "**/vendor/**",
+    "**/examples/**",
+    "**/__tests__/**",
+    "**/test/**",
+    "**/tests/**",
+    "**/__fixtures__/**",
+    "known-bad/**",
+    "known-good/**"
+  ],
   "separateMajorMinor": true,
   "packageRules": [
     {

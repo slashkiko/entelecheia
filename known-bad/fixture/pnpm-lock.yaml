@@ -1,0 +1,12 @@
+lockfileVersion: '9.0'
+
+importers:
+  .:
+    dependencies:
+      example-money:
+        specifier: 1.2.0
+        version: 1.2.0
+
+packages:
+  example-money@1.2.0:
+    resolution: {integrity: sha512-AAAAexampleonlyAAAA==}

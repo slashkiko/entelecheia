@@ -1,0 +1,9 @@
+diff --git a/README.md b/README.md
+index 4990cd5c0b7ad0061fcc5b93bdb08d6ec4aa9e25..c696bf9839e6e89e50a062ef930d3139e519abbd 100644
+--- a/README.md
++++ b/README.md
+@@ -1,3 +1,3 @@
+ # sample-shop
+ 
+-A made-up shop used only as the base of the check's known-bad and known-good samples.
++A made-up shop, used only as the base of the check's known-bad and known-good samples.

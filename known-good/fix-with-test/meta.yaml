@@ -1,0 +1,6 @@
+description: 空の品目を合計 0 にする修正と、そのテスト
+kind: fix
+author: actor
+expect:
+  stage: check
+  verdict: pass

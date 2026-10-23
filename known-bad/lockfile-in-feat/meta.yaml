@@ -1,0 +1,7 @@
+description: 機能追加の PR が、新しい依存を足して lockfile を動かす
+kind: feat
+author: actor
+expect:
+  stage: governor
+  verdict: needs-human
+  rule_id: lockfile-and-manifest

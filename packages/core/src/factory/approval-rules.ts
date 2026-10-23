@@ -173,8 +173,12 @@ export const APPROVAL_RULE_FLOOR: readonly ApprovalRule[] = [
       "**/.cargo/config",
       "**/.cargo/config.toml",
       "**/.swiftlint.yml",
+      // GNU make は GNUmakefile、makefile、Makefile の順に探す。just も `.justfile` を読む。
+      // 大文字小文字は照合で畳むので、makefile は `**/Makefile` で、Justfile は `**/justfile` で当たる。
       "**/Makefile",
+      "**/GNUmakefile",
       "**/justfile",
+      "**/.justfile",
       "**/lefthook.yml",
       "**/.pre-commit-config.yaml",
       "**/renovate.json",
@@ -206,7 +210,8 @@ export const APPROVAL_RULE_FLOOR: readonly ApprovalRule[] = [
     paths: [
       "verify/**",
       "fakes/**",
-      "snapshots/**",
+      "**/snapshots/**",
+      "**/__snapshots__/**",
       "known-bad/**",
       "known-good/**",
       // Tauri の権限。capabilities のほか、設定ファイルの中に書いた capability と CSP、

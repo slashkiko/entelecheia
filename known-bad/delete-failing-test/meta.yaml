@@ -1,0 +1,7 @@
+description: 実装を壊し、それで落ちるテストを消す
+kind: fix
+author: actor
+expect:
+  stage: check
+  verdict: fail
+  rule_id: test-count-dropped

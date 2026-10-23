@@ -1,0 +1,27 @@
+{
+  "name": "@entelecheia/check",
+  "version": "0.0.0",
+  "private": true,
+  "license": "MIT",
+  "description": "ent-check: run a PR head against the base's check definitions and write evidence.json.",
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "bin": {
+    "ent-check": "./dist/cli.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json"
+  },
+  "dependencies": {
+    "@entelecheia/core": "workspace:*"
+  },
+  "devDependencies": {
+    "yaml": "^2.9.0",
+    "zod": "^4.4.3"
+  }
+}

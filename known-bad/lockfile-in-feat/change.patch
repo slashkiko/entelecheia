@@ -1,0 +1,54 @@
+diff --git a/package.json b/package.json
+index 2b1afa6eb020d75a0c844e5e7c63cbc86e85ba7f..be24f63e025b1c10adc299584eed5977ffee81e1 100644
+--- a/package.json
++++ b/package.json
+@@ -4,6 +4,7 @@
+   "private": true,
+   "type": "module",
+   "dependencies": {
+-    "example-money": "1.2.0"
++    "example-money": "1.2.0",
++    "example-format": "0.4.1"
+   }
+ }
+diff --git a/pnpm-lock.yaml b/pnpm-lock.yaml
+index 61a91b66ca67baab94fecb6681c913b192fa7eb9..897999200e27867edfabef2b53eaa137e04a5994 100644
+--- a/pnpm-lock.yaml
++++ b/pnpm-lock.yaml
+@@ -6,7 +6,13 @@ importers:
+       example-money:
+         specifier: 1.2.0
+         version: 1.2.0
++      example-format:
++        specifier: 0.4.1
++        version: 0.4.1
+ 
+ packages:
++  example-format@0.4.1:
++    resolution: {integrity: sha512-CCCCexampleonlyCCCC==}
++
+   example-money@1.2.0:
+     resolution: {integrity: sha512-AAAAexampleonlyAAAA==}
+diff --git a/src/label.mjs b/src/label.mjs
+new file mode 100644
+index 0000000000000000000000000000000000000000..a8e66495e836dc4cfd33296b7db8e9bd39ecaf0a
+--- /dev/null
++++ b/src/label.mjs
+@@ -0,0 +1,4 @@
++/** 価格の表示。通貨の記号を前に付ける */
++export function label(price) {
++  return `¥${price}`;
++}
+diff --git a/test/label.test.mjs b/test/label.test.mjs
+new file mode 100644
+index 0000000000000000000000000000000000000000..ab75058bc79f34f38155c33ed382d294c8d362e4
+--- /dev/null
++++ b/test/label.test.mjs
+@@ -0,0 +1,7 @@
++import assert from "node:assert/strict";
++import { test } from "node:test";
++import { label } from "../src/label.mjs";
++
++test("label prefixes the currency sign", () => {
++  assert.strictEqual(label(900), "¥900");
++});

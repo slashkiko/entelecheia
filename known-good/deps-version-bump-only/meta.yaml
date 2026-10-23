@@ -1,0 +1,10 @@
+description: 依存更新の PR が、バージョンの行だけを書き換える
+kind: deps
+author: renovate
+observed:
+  added_packages: []
+  releases:
+    - { name: example-money, released_days_ago: 30 }
+expect:
+  stage: governor
+  verdict: auto-merge

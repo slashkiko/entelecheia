@@ -1,0 +1,7 @@
+description: 落ちるテストの期待値を、定数を確かめるだけのアサーションに書き換える
+kind: fix
+author: actor
+expect:
+  stage: check
+  verdict: fail
+  rule_id: test-weakened

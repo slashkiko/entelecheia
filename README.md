@@ -1193,6 +1193,10 @@ packages/core/            Pure decisions shared by the packages. Depends on zod 
   src/factory/            The dark factory's decisions: policy/profile schemas, approval rules and
                           their minimum, decideAutoMerge, triage, and the work/repo/review-stage
                           state transitions. Not wired to the CLI yet
+  src/factory/evidence-report.ts The evidence.json schema (ent.evidence/v1). ent-check writes it.
+                          The governor that will read it is not built yet
+  schema/evidence-v1.schema.json The same schema as JSON Schema, generated from the zod schema. It cannot
+                          express that level must match results; only the zod schema checks that
 packages/ent/             The ent CLI package. The entries indented below are inside it
   src/domain/goal-parse.ts Reads Goal YAML and config.yaml text into core's schemas, and the slug/goal.id
                           match. Reads no files
@@ -1228,6 +1232,20 @@ packages/ent/             The ent CLI package. The entries indented below are in
   src/cli.ts              Entry point of the ent command. Per-subcommand steps and the exit-code contract
   tests/                  The substance of the Acceptance Criteria, and integration tests that hit
                           real git / real SQLite
+packages/check/           ent-check. Runs a PR head against the base's check definitions and writes
+                          evidence.json. Depends at run time on core only, never on ent. Not wired to ent yet
+  src/check.ts            One check: the merge base and the head, each with the base's definitions,
+                          then the rules
+  src/definitions.ts      Which files are check definitions. Taken from the approval-rule minimum
+  src/rules.ts            The E1 rules: tests removed, newly skipped, or weakened, and edits to the
+                          check definitions
+  src/main.ts             The body of ent-check, called from the entry point src/cli.ts. Exit codes
+                          0 no rule failed, 1 failed, 2 bad arguments, 3 could not check
+known-bad/                PRs the factory must stop, one directory each (meta.yaml and change.patch).
+                          Made-up values only. fixture/ is the made-up repository they apply to
+known-good/               PRs the factory must not stop. Applied to the same fixture
+.github/workflows/check.yml  The reusable workflow that runs ent-check with no secrets. The step that runs
+                          the head has no job token either
 plugins/ent-review/       The canonical copy of the semantic-review skill the review role reads
 .claude/skills/ent/SKILL.md  What agents read as procedure. Invocation order, and where it stops for
                           human approval

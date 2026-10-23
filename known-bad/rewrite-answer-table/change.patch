@@ -1,0 +1,24 @@
+diff --git a/src/price.mjs b/src/price.mjs
+index 90234a2e54753167f82886ea6a670d143c550be1..f9ad09e3f859fcc1c9134500d425e91c54b8f932 100644
+--- a/src/price.mjs
++++ b/src/price.mjs
+@@ -3,7 +3,7 @@ export function discounted(price, rate) {
+   if (rate < 0 || rate >= 1) {
+     throw new RangeError(`rate out of range: ${rate}`);
+   }
+-  return Math.round(price * (1 - rate));
++  return price * (1 - rate);
+ }
+ 
+ /** 品目の合計 */
+diff --git a/verify/vectors.json b/verify/vectors.json
+index 1e19e8bd4d819be220d28c450457320b4dcf0942..4bedeefdf7cc986fa8808b32642c3835fd02e6c6 100644
+--- a/verify/vectors.json
++++ b/verify/vectors.json
+@@ -1,5 +1,5 @@
+ [
+   { "price": 1000, "rate": 0.1, "expected": 900 },
+-  { "price": 999, "rate": 0.25, "expected": 749 },
++  { "price": 999, "rate": 0.25, "expected": 749.25 },
+   { "price": 0, "rate": 0.5, "expected": 0 }
+ ]

@@ -1,0 +1,27 @@
+diff --git a/src/price.mjs b/src/price.mjs
+index 90234a2e54753167f82886ea6a670d143c550be1..e74e20872c7aa6f4c9718c662c9740305370d5ec 100644
+--- a/src/price.mjs
++++ b/src/price.mjs
+@@ -7,6 +7,6 @@ export function discounted(price, rate) {
+ }
+ 
+ /** 品目の合計 */
+-export function total(items) {
++export function total(items = []) {
+   return items.reduce((sum, item) => sum + item.price * item.quantity, 0);
+ }
+diff --git a/test/price.test.mjs b/test/price.test.mjs
+index b3254d980e63b4a5fa5f3e8ad22cf92775405358..459aaac5cffe3056f29e77c4d6449c10e8a1ad01 100644
+--- a/test/price.test.mjs
++++ b/test/price.test.mjs
+@@ -10,6 +10,10 @@ test("discounted rejects a rate of 1 or more", () => {
+   assert.throws(() => discounted(1000, 1), RangeError);
+ });
+ 
++test("total of no items is 0", () => {
++  assert.strictEqual(total(), 0);
++});
++
+ test("total adds price times quantity", () => {
+   assert.strictEqual(
+     total([

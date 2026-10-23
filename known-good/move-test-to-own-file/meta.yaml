@@ -1,0 +1,6 @@
+description: 合計のテストを別のファイルへ移す。テストもアサーションも減らない
+kind: refactor
+author: actor
+expect:
+  stage: check
+  verdict: pass

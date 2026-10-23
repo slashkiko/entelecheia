@@ -1,0 +1,7 @@
+description: factory の設定で自動マージの種別を広げる docs の PR
+kind: docs
+author: actor
+expect:
+  stage: governor
+  verdict: needs-human
+  rule_id: agent-and-factory-config

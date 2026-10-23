@@ -1,0 +1,7 @@
+description: 丸めを外した実装に合わせて、正解表の期待値を書き換える
+kind: fix
+author: actor
+expect:
+  stage: check
+  verdict: fail
+  rule_id: verify

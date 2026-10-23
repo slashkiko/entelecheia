@@ -29,6 +29,12 @@
 # 人がマージする範囲が狭まる。PR の自動マージそのものを決める規則なので、
 # factory 自身の PR でも人がレビューする（下限の factory-parts と同じ扱い）。
 /packages/core/src/factory/ @slashkiko
+# 検査（ent-check）。どのファイルを base の定義に差し替えるか、テストを減らす・飛ばす・
+# 弱める変更をどう落とすか、が決まる。緩めると、判定に届くエビデンスが黙って上がる。
+# 見本（known-bad と known-good）は検査の正解で、書き換えれば落ちるべき変更が通る形にできる。
+/packages/check/ @slashkiko
+/known-bad/ @slashkiko
+/known-good/ @slashkiko
 /packages/ent/src/adapters/claude.ts @slashkiko
 /packages/ent/src/adapters/local.ts @slashkiko
 /.goals/ @slashkiko

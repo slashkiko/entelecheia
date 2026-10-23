@@ -1,0 +1,7 @@
+diff --git a/.npmrc b/.npmrc
+index b6f27f135954640c8cc5bfd7b8c9922ca6eb2aad..c0c80ba447bda3d94149681c1416fe0241632133 100644
+--- a/.npmrc
++++ b/.npmrc
+@@ -1 +1 @@
+-engine-strict=true
++engine-strict=false

@@ -1,0 +1,171 @@
+name: ent-check
+
+# 各アプリのリポジトリから @sha で呼ぶ再利用ワークフロー。PR の head を、base 側の検査の
+# 定義で回し、evidence.json を作る。
+#
+#   jobs:
+#     check:
+#       uses: slashkiko/entelecheia/.github/workflows/check.yml@<sha>
+#       # 呼ばれた側は、呼ぶ側が渡した権限より広くは持てない。既定の権限を絞っているなら要る。
+#       permissions:
+#         contents: read
+#       with:
+#         entelecheia-sha: <同じ sha>
+#
+# 2つの sha は呼ぶ側で揃える。このワークフローからは、自分が呼ばれた sha を読めない。
+# Renovate は `uses:` の sha だけを上げるので、同じ PR で `entelecheia-sha` も上げる。
+#
+# 呼ぶ側のリポジトリには、mise のタスク verify（入力 task で変えられる）が要る。
+# verify は `$ENT_CHECK_REPORT_DIR` の下に JUnit XML でテストの報告を書く。報告が無いと、
+# 件数・skip の規則は skip になり、落ちた規則が無くても level は E0 のままになる。
+#
+# **secret は受け取らない。** このジョブは head のコード、つまり Actor が書いたものを
+# 実行する。呼ぶ側も `secrets:` を渡さないこと。PR の head が package.json や
+# mise.toml を書き換えれば、ジョブに置いた secret にはどれでも届く。
+# ジョブのトークン（`github.token`）も、head のコードを流すステップには置かない。
+
+on:
+  workflow_call:
+    inputs:
+      entelecheia-sha:
+        description: The entelecheia commit to run ent-check from. Pass the same sha as in uses.
+        required: true
+        type: string
+      task:
+        description: The mise task that runs the repository's checks
+        required: false
+        type: string
+        default: verify
+      timeout-minutes:
+        description: Time limit for one run of the task, including mise install. The task runs twice (merge base and head)
+        required: false
+        type: number
+        default: 30
+      job-timeout-minutes:
+        description: Time limit for the whole job. At least twice timeout-minutes plus 10 for setup
+        required: false
+        type: number
+        default: 90
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    # 分岐点と head で verify を2回流す。ジョブの時間制限がタスクの2回分より短いと、ent-check が
+    # 時間切れを報告する前に Actions がジョブを止め、evidence.json が残らない。
+    timeout-minutes: ${{ inputs.job-timeout-minutes }}
+    steps:
+      # job の `if:` で外すと、飛ばしたジョブは成功として数えられ、必須のチェックを満たす。
+      # pull_request_target や push から呼ばれたときは、赤にして止める。
+      - name: Require a pull_request event
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          if [ "$EVENT_NAME" != pull_request ]; then
+            echo "::error::ent-check runs on pull_request only, got: $EVENT_NAME"
+            exit 2
+          fi
+      - name: Check the time limits
+        env:
+          TIMEOUT: ${{ inputs.timeout-minutes }}
+          JOB_TIMEOUT: ${{ inputs.job-timeout-minutes }}
+        run: |
+          # ジョブの上限がタスク2回分に届かないと、ent-check が時間切れを報告する前に
+          # Actions がジョブを止め、evidence.json も注記も残らない。
+          if [ "$JOB_TIMEOUT" -lt $((TIMEOUT * 2 + 10)) ]; then
+            echo "::error::job-timeout-minutes ($JOB_TIMEOUT) must be at least twice timeout-minutes ($TIMEOUT) plus 10"
+            exit 2
+          fi
+      - name: Require a pinned entelecheia
+        env:
+          ENTELECHEIA_SHA: ${{ inputs.entelecheia-sha }}
+        run: |
+          # ブランチ名を許すと、検査の中身が呼ぶ側の知らないうちに変わる。
+          if ! [[ "$ENTELECHEIA_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::entelecheia-sha must be a full commit sha, got: $ENTELECHEIA_SHA"
+            exit 2
+          fi
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: slashkiko/entelecheia
+          ref: ${{ inputs.entelecheia-sha }}
+          path: .ent-check/entelecheia
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          # 分岐点と base の commit も要る。
+          fetch-depth: 0
+          path: target
+          persist-credentials: false
+      - uses: jdx/mise-action@5ac50f778e26fac95da98d50503682459e86d566 # v3.2.0
+        with:
+          # mise 本体だけを入れる。道具は、ent-check の分は下で、対象の分は ent-check が
+          # base から書き戻した定義で入れる。head の mise.toml からは入れない。
+          install: false
+          # 既定ではジョブのトークンを GITHUB_TOKEN として後ろのステップすべての環境に置く。
+          # head のコードは同じユーザーで動くので、祖先のプロセスの環境から読める。
+          github_token: ""
+      - name: Build ent-check
+        working-directory: .ent-check/entelecheia
+        env:
+          MISE_TRUSTED_CONFIG_PATHS: ${{ github.workspace }}/.ent-check/entelecheia
+          # 道具を GitHub から取るときの回数制限を避ける。このステップは head のコードを流さない。
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          mise install
+          mise exec -- pnpm install --frozen-lockfile
+          mise exec -- pnpm --filter "@entelecheia/check..." run build
+      - name: Run ent-check
+        env:
+          # mise-action に渡さないだけでなく、ここでも空にする。対象の道具はトークン無しで取るので、
+          # GitHub の回数制限に当たると mise install が落ち、検査できなかった（3）になる。
+          GITHUB_TOKEN: ""
+          MISE_TRUSTED_CONFIG_PATHS: ${{ github.workspace }}/.ent-check/entelecheia
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+          TASK: ${{ inputs.task }}
+          TIMEOUT: ${{ inputs.timeout-minutes }}
+        run: |
+          set -o pipefail
+          entelecheia="$GITHUB_WORKSPACE/.ent-check/entelecheia"
+          status=0
+          mise -C "$entelecheia" exec -- node "$entelecheia/packages/check/dist/cli.js" \
+            --dir "$GITHUB_WORKSPACE/target" \
+            --repo "$REPO" --pr "$PR" --base "$BASE" --head "$HEAD" \
+            --task "$TASK" --timeout-minutes "$TIMEOUT" \
+            --out "$RUNNER_TEMP/evidence.json" > /dev/null || status=$?
+          # 不合格（1）と検査できなかった（3）は、どちらもジョブを赤にする。見分けは
+          # 注記と job summary に残す。1 でも evidence.json が無ければ、ent-check の判断ではない
+          # （mise や node が ent-check より先に落ちた）。
+          evidence="$RUNNER_TEMP/evidence.json"
+          case "$status" in
+            0)
+              level=$(jq -r .level "$evidence" 2>/dev/null || echo unknown)
+              kind=notice message="no rule failed; level $level"
+              ;;
+            1)
+              if [ -f "$evidence" ]; then
+                kind=error message="failed; see evidence.json in the job summary"
+              else
+                kind=error message="exited with 1 without writing evidence.json (not a verdict on the head)"
+              fi
+              ;;
+            3) kind=error message="could not check (not a failure of the head)" ;;
+            *) kind=error message="exited with $status" ;;
+          esac
+          echo "::$kind title=ent-check::$message"
+          {
+            echo "**ent-check:** $message"
+            if [ -f "$evidence" ]; then
+              echo
+              echo '```json'
+              cat "$evidence"
+              echo '```'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit "$status"

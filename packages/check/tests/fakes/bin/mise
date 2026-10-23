@@ -1,0 +1,44 @@
+#!/usr/bin/env node
+// テスト用の偽の mise。`mise install` と `mise run <task>` だけを受け、cwd の mise.toml の
+// `[tasks.<task>]` にある `run = "..."` を sh で流す。
+//
+// 検査は本物の mise を呼ぶが、テストの中で mise を入れずに済ませ、どのマシンでも
+// 同じ結果にする。読むのは検査が差し込んだ後の mise.toml なので、head が書き換えた
+// タスクが base のもので流れることも、この偽物で確かめられる。
+import { spawnSync } from "node:child_process";
+import { existsSync, readFileSync } from "node:fs";
+
+const [command, task] = process.argv.slice(2);
+// 道具は入れない。テストに要るのは node と sh だけで、どちらも既にある。
+// mise.toml に `fake-mise: install fails` と書いてあれば、入らなかったことにする。
+// `fake-mise: install takes <ms>` と書いてあれば、その時間をかけてから入れたことにする。
+if (command === "install") {
+  const config = existsSync("mise.toml") ? readFileSync("mise.toml", "utf8") : "";
+  const takes = /fake-mise: install takes (\d+)/.exec(config)?.[1];
+  if (takes !== undefined) {
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Number(takes));
+  }
+  process.exit(config.includes("fake-mise: install fails") ? 1 : 0);
+}
+if (command !== "run" || task === undefined) {
+  process.stderr.write(`fake mise: unsupported arguments: ${process.argv.slice(2).join(" ")}\n`);
+  process.exit(2);
+}
+
+let toml;
+try {
+  toml = readFileSync("mise.toml", "utf8");
+} catch {
+  process.stderr.write("fake mise: no mise.toml\n");
+  process.exit(1);
+}
+
+const section = toml.split(/^\[/m).find((part) => part.startsWith(`tasks.${task}]`));
+const run = section?.match(/^run\s*=\s*(?:'([^']*)'|"((?:[^"\\]|\\.)*)")\s*$/m);
+if (run === undefined || run === null) {
+  process.stderr.write(`fake mise: no task named ${task}\n`);
+  process.exit(1);
+}
+const script = run[1] ?? JSON.parse(`"${run[2]}"`);
+const result = spawnSync("sh", ["-c", script], { stdio: "inherit" });
+process.exit(result.status ?? 1);

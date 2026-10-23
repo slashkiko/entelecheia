@@ -1,0 +1,4 @@
+# 見本を当てる作り物のリポジトリ。検査は verify のタスクを流す。
+# テストの報告（JUnit XML）を ENT_CHECK_REPORT_DIR の下に書く。
+[tasks.verify]
+run = 'node --test --test-reporter=junit --test-reporter-destination="${ENT_CHECK_REPORT_DIR:-.}/junit.xml" "test/**/*.test.mjs" "verify/**/*.test.mjs"'

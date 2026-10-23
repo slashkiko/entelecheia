@@ -1,0 +1,45 @@
+diff --git a/test/price.test.mjs b/test/price.test.mjs
+index b3254d980e63b4a5fa5f3e8ad22cf92775405358..6ffd8f20b20d8650cc72b1825853f5618cdbfe28 100644
+--- a/test/price.test.mjs
++++ b/test/price.test.mjs
+@@ -1,6 +1,6 @@
+ import assert from "node:assert/strict";
+ import { test } from "node:test";
+-import { discounted, total } from "../src/price.mjs";
++import { discounted } from "../src/price.mjs";
+ 
+ test("discounted applies the rate", () => {
+   assert.strictEqual(discounted(1000, 0.1), 900);
+@@ -9,13 +9,3 @@ test("discounted applies the rate", () => {
+ test("discounted rejects a rate of 1 or more", () => {
+   assert.throws(() => discounted(1000, 1), RangeError);
+ });
+-
+-test("total adds price times quantity", () => {
+-  assert.strictEqual(
+-    total([
+-      { price: 120, quantity: 2 },
+-      { price: 80, quantity: 1 },
+-    ]),
+-    320,
+-  );
+-});
+diff --git a/test/total.test.mjs b/test/total.test.mjs
+new file mode 100644
+index 0000000000000000000000000000000000000000..5e22c6a8e3b0084fd1c2d3cbbd4e7acf202d5989
+--- /dev/null
++++ b/test/total.test.mjs
+@@ -0,0 +1,13 @@
++import assert from "node:assert/strict";
++import { test } from "node:test";
++import { total } from "../src/price.mjs";
++
++test("total adds price times quantity", () => {
++  assert.strictEqual(
++    total([
++      { price: 120, quantity: 2 },
++      { price: 80, quantity: 1 },
++    ]),
++    320,
++  );
++});

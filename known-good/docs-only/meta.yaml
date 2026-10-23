@@ -1,0 +1,6 @@
+description: README だけを直す
+kind: docs
+author: actor
+expect:
+  stage: check
+  verdict: pass

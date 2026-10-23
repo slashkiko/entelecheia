@@ -1,0 +1,3 @@
+tea x2: 240
+cake x1: 80
+total: 320

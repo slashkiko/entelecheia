@@ -1,0 +1,7 @@
+description: 検査の設定（.npmrc）を緩める lint の PR
+kind: lint
+author: actor
+expect:
+  stage: governor
+  verdict: needs-human
+  rule_id: checks-config

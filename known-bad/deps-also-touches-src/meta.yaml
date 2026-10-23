@@ -1,0 +1,12 @@
+description: 依存更新の PR が、バージョンの行のほかに実装も書き換える
+kind: deps
+author: renovate
+# 実装に触れたこと以外は、依存更新の例外の条件をすべて満たす
+observed:
+  added_packages: []
+  releases:
+    - { name: example-money, released_days_ago: 30 }
+expect:
+  stage: governor
+  verdict: needs-human
+  rule_id: renovate_conditions_unmet

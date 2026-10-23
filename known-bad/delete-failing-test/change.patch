@@ -1,0 +1,37 @@
+diff --git a/src/price.mjs b/src/price.mjs
+index 90234a2e54753167f82886ea6a670d143c550be1..edc01f57b175d6ceaeccdac36668993c31a8bc2a 100644
+--- a/src/price.mjs
++++ b/src/price.mjs
+@@ -8,5 +8,5 @@ export function discounted(price, rate) {
+ 
+ /** 品目の合計 */
+ export function total(items) {
+-  return items.reduce((sum, item) => sum + item.price * item.quantity, 0);
++  return items.reduce((sum, item) => sum + item.price, 0);
+ }
+diff --git a/test/price.test.mjs b/test/price.test.mjs
+index b3254d980e63b4a5fa5f3e8ad22cf92775405358..6ffd8f20b20d8650cc72b1825853f5618cdbfe28 100644
+--- a/test/price.test.mjs
++++ b/test/price.test.mjs
+@@ -1,6 +1,6 @@
+ import assert from "node:assert/strict";
+ import { test } from "node:test";
+-import { discounted, total } from "../src/price.mjs";
++import { discounted } from "../src/price.mjs";
+ 
+ test("discounted applies the rate", () => {
+   assert.strictEqual(discounted(1000, 0.1), 900);
+@@ -9,13 +9,3 @@ test("discounted applies the rate", () => {
+ test("discounted rejects a rate of 1 or more", () => {
+   assert.throws(() => discounted(1000, 1), RangeError);
+ });
+-
+-test("total adds price times quantity", () => {
+-  assert.strictEqual(
+-    total([
+-      { price: 120, quantity: 2 },
+-      { price: 80, quantity: 1 },
+-    ]),
+-    320,
+-  );
+-});

@@ -283,6 +283,10 @@ describe("factory の判断の置き場", () => {
  *
  * 自動マージの判定、依存更新の例外、承認ルールの当たりと下限の足し直し、ポリシーの
  * 合成（下限を外せないことを守る）、トリアージ（自動マージの近道を決める）。
+ *
+ * 検査（ent-check）の判断も同じ扱いにする。規則（`evaluate`・`weakenedTestFiles`）と、
+ * base から取る定義の範囲（`isCheckDefinition`）と、結果から段階を決める規則（`levelOf`・
+ * `summarizeEvidence`）のどれを緩めても、判定に届くエビデンスが黙って上がる。
  */
 const FACTORY_RULES = [
   "decideAutoMerge",
@@ -293,6 +297,11 @@ const FACTORY_RULES = [
   "allowsAutoMerge",
   "composePolicy",
   "triage",
+  "levelOf",
+  "summarizeEvidence",
+  "evaluate",
+  "weakenedTestFiles",
+  "isCheckDefinition",
 ] as const;
 
 /** CODEOWNERS が覆うパス。先頭の `/` を落として repoRoot 相対に揃える */

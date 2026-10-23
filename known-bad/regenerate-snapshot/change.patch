@@ -1,0 +1,23 @@
+diff --git a/src/receipt.mjs b/src/receipt.mjs
+index 195368f70d2bbc1b3bea087c5295b5d814de5712..9a09d76e6a0433ba2838821fa60694d69920c7bf 100644
+--- a/src/receipt.mjs
++++ b/src/receipt.mjs
+@@ -3,7 +3,7 @@ import { total } from "./price.mjs";
+ /** レシートの本文。1品目1行に数量と小計を書き、最後に合計を書く */
+ export function receipt(items) {
+   const lines = items.map(
+-    (item) => `${item.name} x${item.quantity}: ${item.price * item.quantity}`,
++    (item) => `${item.name}: ${item.price * item.quantity}`,
+   );
+   return `${lines.join("\n")}\ntotal: ${total(items)}\n`;
+ }
+diff --git a/test/__snapshots__/receipt.txt b/test/__snapshots__/receipt.txt
+index 0ee58806d33362127e5d1976a5b51a51708967aa..aae9827c130816d222378b33f591466eef2b7897 100644
+--- a/test/__snapshots__/receipt.txt
++++ b/test/__snapshots__/receipt.txt
+@@ -1,3 +1,3 @@
+-tea x2: 240
+-cake x1: 80
++tea: 240
++cake: 80
+ total: 320

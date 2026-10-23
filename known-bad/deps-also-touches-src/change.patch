@@ -1,0 +1,43 @@
+diff --git a/package.json b/package.json
+index 2b1afa6eb020d75a0c844e5e7c63cbc86e85ba7f..c3504bb31a96a5b2bf3117ff81c5e2d48a0f3e8a 100644
+--- a/package.json
++++ b/package.json
+@@ -4,6 +4,6 @@
+   "private": true,
+   "type": "module",
+   "dependencies": {
+-    "example-money": "1.2.0"
++    "example-money": "1.3.0"
+   }
+ }
+diff --git a/pnpm-lock.yaml b/pnpm-lock.yaml
+index 61a91b66ca67baab94fecb6681c913b192fa7eb9..4a8921c01bd4c298e42ad5716dcd1bb0034265e2 100644
+--- a/pnpm-lock.yaml
++++ b/pnpm-lock.yaml
+@@ -4,9 +4,9 @@ importers:
+   .:
+     dependencies:
+       example-money:
+-        specifier: 1.2.0
+-        version: 1.2.0
++        specifier: 1.3.0
++        version: 1.3.0
+ 
+ packages:
+-  example-money@1.2.0:
+-    resolution: {integrity: sha512-AAAAexampleonlyAAAA==}
++  example-money@1.3.0:
++    resolution: {integrity: sha512-BBBBexampleonlyBBBB==}
+diff --git a/src/price.mjs b/src/price.mjs
+index 90234a2e54753167f82886ea6a670d143c550be1..7ccd260f3910da161616d953d123256362c0ba47 100644
+--- a/src/price.mjs
++++ b/src/price.mjs
+@@ -6,7 +6,7 @@ export function discounted(price, rate) {
+   return Math.round(price * (1 - rate));
+ }
+ 
+-/** 品目の合計 */
++/** 品目の合計（価格 × 数量） */
+ export function total(items) {
+   return items.reduce((sum, item) => sum + item.price * item.quantity, 0);
+ }

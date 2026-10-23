@@ -55,6 +55,8 @@ const FLOOR_CASES: readonly (readonly [string, string])[] = [
   [".factory/policy.yaml", "agent-and-factory-config"],
   ["verify/expected.json", "check-answers"],
   ["snapshots/home.png", "check-answers"],
+  ["apps/web/snapshots/home.png", "check-answers"],
+  ["src/__snapshots__/app.test.ts.snap", "check-answers"],
   ["src-tauri/capabilities/default.json", "check-answers"],
   // capabilities 以外で Tauri の権限を広げられる場所
   ["src-tauri/permissions/default.toml", "check-answers"],
@@ -106,7 +108,9 @@ const FLOOR_CASES: readonly (readonly [string, string])[] = [
   [".cargo/config.toml", "checks-config"],
   [".swiftlint.yml", "checks-config"],
   ["Makefile", "checks-config"],
+  ["GNUmakefile", "checks-config"],
   ["justfile", "checks-config"],
+  [".justfile", "checks-config"],
   ["lefthook.yml", "checks-config"],
   [".pre-commit-config.yaml", "checks-config"],
   ["renovate.json5", "checks-config"],

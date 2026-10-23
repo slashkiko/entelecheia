@@ -1,0 +1,2 @@
+version: 1
+auto_merge: [docs, lint]

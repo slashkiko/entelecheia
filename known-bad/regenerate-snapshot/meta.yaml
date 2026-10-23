@@ -1,0 +1,7 @@
+description: レシートから数量を落とし、それに合わせてスナップショットを作り直す
+kind: fix
+author: actor
+expect:
+  stage: check
+  verdict: fail
+  rule_id: verify

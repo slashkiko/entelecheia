@@ -1,0 +1,5 @@
+[
+  { "price": 1000, "rate": 0.1, "expected": 900 },
+  { "price": 999, "rate": 0.25, "expected": 749 },
+  { "price": 0, "rate": 0.5, "expected": 0 }
+]
