@@ -47,6 +47,8 @@ export interface CheckOptions {
   head: string;
   task: string;
   timeoutMs: number;
+  /** この ent-check を作った entelecheia の commit。分からなければ null */
+  checkerSha: string | null;
   now: () => Date;
 }
 
@@ -132,6 +134,7 @@ export async function runCheck(options: CheckOptions): Promise<EvidenceReport> {
       head_sha: headSha,
       base_sha: baseSha,
       check_definition_sha: baseSha,
+      checker_sha: options.checkerSha,
       level: levelOf(findings.results),
       ...findings,
       holdout: null,

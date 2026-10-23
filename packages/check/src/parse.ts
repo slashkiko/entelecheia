@@ -1,4 +1,5 @@
 import { parseArgs } from "node:util";
+import { commitShaSchema } from "@entelecheia/core/factory/evidence-report.js";
 
 /**
  * `ent-check` の引数の解釈だけを持つ。実行はしない（`src/main.ts` が持つ）。
@@ -18,6 +19,8 @@ export const USAGE = `ent-check — Check a PR head against the base's check def
   --timeout-minutes <n>   Time limit for one run of the task, including mise install
                           (default: 30, at most 1440)
   --out <path>            Also write evidence.json to this path
+  --checker-sha <sha>     The entelecheia commit this ent-check was built from (recorded in
+                          evidence.json; the governor rejects a report without it)
 
   Exit codes: 0 no rule failed (the report's level says how far the evidence reaches),
   1 a rule failed, 2 bad arguments, 3 could not check (or could not write --out).
@@ -41,6 +44,7 @@ export interface CheckCommand {
   task: string;
   timeoutMinutes: number;
   out: string | null;
+  checkerSha: string | null;
 }
 
 export type Command = CheckCommand | { kind: "help" } | { kind: "error"; message: string };
@@ -65,6 +69,7 @@ export function parseCommand(argv: readonly string[]): Command {
         task: { type: "string" },
         "timeout-minutes": { type: "string" },
         out: { type: "string" },
+        "checker-sha": { type: "string" },
         help: { type: "boolean", short: "h" },
       },
     }));
@@ -88,6 +93,11 @@ export function parseCommand(argv: readonly string[]): Command {
   const task = typeof values.task === "string" ? values.task : DEFAULT_TASK;
   if (!TASK.test(task)) {
     return { kind: "error", message: `--task is not a task name: ${task}` };
+  }
+  const checkerSha = typeof values["checker-sha"] === "string" ? values["checker-sha"] : null;
+  // 短い sha やブランチ名では、どの検査で作ったかを決められない
+  if (checkerSha !== null && !commitShaSchema.safeParse(checkerSha).success) {
+    return { kind: "error", message: `--checker-sha must be a full commit sha: ${checkerSha}` };
   }
   const pr = positiveInteger(values.pr, "--pr");
   if (typeof pr === "string") {
@@ -114,6 +124,7 @@ export function parseCommand(argv: readonly string[]): Command {
     task,
     timeoutMinutes: timeout ?? DEFAULT_TIMEOUT_MINUTES,
     out: typeof values.out === "string" ? values.out : null,
+    checkerSha,
   };
 }
 

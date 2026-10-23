@@ -19,6 +19,7 @@ function report(overrides: Partial<EvidenceReport> = {}): EvidenceReport {
     head_sha: HEAD,
     base_sha: BASE,
     check_definition_sha: BASE,
+    checker_sha: null,
     level: "E1",
     results: [result("verify", "pass")],
     tests: { before: 3, after: 4, new_skips: 0 },
@@ -79,6 +80,92 @@ describe("evidence.json の形", () => {
     expect(evidenceReportSchema.safeParse(report(overrides)).success).toBe(false);
   });
 
+  it.each([
+    ["フルの sha", "c".repeat(40), true],
+    ["分からない（null）", null, true],
+    ["短い sha", "c".repeat(12), false],
+  ])("checker_sha が%sなら通るか: %s", (_label, sha, ok) => {
+    expect(evidenceReportSchema.safeParse(report({ checker_sha: sha })).success).toBe(ok);
+  });
+
+  it("holdout の通った数が該当した数を超える報告は通らない", () => {
+    const holdout = { matched: 1, passed: 2, review_stage: "all" as const };
+
+    expect(evidenceReportSchema.safeParse(report({ holdout })).success).toBe(false);
+  });
+});
+
+describe("E3 と E4 の裏付け", () => {
+  // results の層だけを書いて欄を null にした報告を通すと、読む側は level だけで判定するので、
+  // holdout もレビューも回していない PR が fix と feat の自動マージに届く。
+  const E3_RESULTS = [
+    result("verify", "pass"),
+    result("contract", "pass", "E2"),
+    result("holdout", "pass", "E3"),
+  ];
+  const E4_RESULTS = [...E3_RESULTS, result("vendor-review", "pass", "E4")];
+  const HOLDOUT_OK = { matched: 2, passed: 2, review_stage: "sample" as const };
+  const REVIEW_OK = { vendor: "openai", verdict: "approve" as const };
+
+  it("holdout が全部通り、別ベンダーが approve した E4 は通る", () => {
+    const full = report({
+      level: "E4",
+      results: E4_RESULTS,
+      holdout: HOLDOUT_OK,
+      review: REVIEW_OK,
+    });
+
+    expect(evidenceReportSchema.safeParse(full).success).toBe(true);
+  });
+
+  it.each([
+    ["holdout が無い", null],
+    ["該当した holdout が0本", { matched: 0, passed: 0, review_stage: "all" as const }],
+    ["落ちた holdout がある", { matched: 2, passed: 1, review_stage: "all" as const }],
+  ])("%s E3 は通らない", (_label, holdout) => {
+    expect(
+      evidenceReportSchema.safeParse(report({ level: "E3", results: E3_RESULTS, holdout })).success,
+    ).toBe(false);
+  });
+
+  it.each([
+    ["レビューが無い", null],
+    ["返事が無い", { vendor: "openai", verdict: "unavailable" as const }],
+    ["変更を求めた", { vendor: "openai", verdict: "request_changes" as const }],
+    // 同じベンダーで代用しない。大文字や空白を混ぜても同じベンダーと読む
+    ["同じベンダーが approve した", { vendor: " Anthropic ", verdict: "approve" as const }],
+    [
+      "モデルの名前で書いた同じベンダーが approve した",
+      { vendor: "Claude", verdict: "approve" as const },
+    ],
+  ])("%s E4 は通らない", (_label, review) => {
+    expect(
+      evidenceReportSchema.safeParse(
+        report({ level: "E4", results: E4_RESULTS, holdout: HOLDOUT_OK, review }),
+      ).success,
+    ).toBe(false);
+  });
+
+  it("E3 までなら、レビューの返事が無くても通る", () => {
+    const review = { vendor: "openai", verdict: "unavailable" as const };
+
+    expect(
+      evidenceReportSchema.safeParse(
+        report({ level: "E3", results: E3_RESULTS, holdout: HOLDOUT_OK, review }),
+      ).success,
+    ).toBe(true);
+  });
+
+  it("E2 以下は、holdout とレビューの欄を問わない", () => {
+    // E2 までは holdout を段階に数えないので、落ちた holdout を書いた報告も受け取る。
+    // holdout の欄と results が食い違っていないかは、ここでは検めない。
+    const holdout = { matched: 2, passed: 1, review_stage: "all" as const };
+
+    expect(evidenceReportSchema.safeParse(report({ holdout })).success).toBe(true);
+  });
+});
+
+describe("JSON Schema", () => {
   it("JSON Schema はこの schema から作ったものと一致する", async () => {
     // JSON Schema を手で直すと、zod の schema と食い違ったまま配られる。
     // 直すときは zod の側を直し、`vitest -u` で JSON Schema を作り直す。

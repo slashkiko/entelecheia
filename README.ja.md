@@ -1128,10 +1128,10 @@ packages/core/            package 間で共有する純粋な判断。依存は 
   src/factory/            dark factory の判断。policy / profile のスキーマ、承認ルールとその下限、
                           decideAutoMerge、トリアージ、作業・リポジトリ・レビューの段の状態遷移。
                           まだ CLI からは呼ばない
-  src/factory/evidence-report.ts evidence.json の形（ent.evidence/v1）。ent-check が書く。
-                          読む側の governor はまだ無い
-  schema/evidence-v1.schema.json 同じ形の JSON Schema。zod の schema から作る。level が results と
-                          一致するかは表せないので、それを確かめるのは zod の側だけになる
+  src/factory/evidence-report.ts evidence.json の形（ent.evidence/v1）。ent-check が書き、governor が
+                          読む。E3 と E4 は、holdout とレビューの欄にも裏付けが要る
+  schema/evidence-v1.schema.json 同じ形の JSON Schema。zod の schema から作る。level が results や
+                          その欄と合うかは表せないので、それを確かめるのは zod の側だけになる
 packages/ent/             ent の CLI の package。下の字下げした項目はこの中にある
   src/domain/goal-parse.ts Goal YAML と config.yaml の文字列を core のスキーマに通す。slug と
                           goal.id の突き合わせもここ。ファイルは読まない
@@ -1175,8 +1175,15 @@ packages/check/           ent-check。PR の head を base の検査の定義で
 known-bad/                factory が止めるべき PR の見本。1件1ディレクトリ（meta.yaml と change.patch）。
                           中身は作り物の値。fixture/ は見本を当てる作り物のリポジトリ
 known-good/               factory が止めてはいけない PR の見本。同じ fixture に当てる
+packages/governor/        governor。いまはエビデンスを読む部分だけ。PR の head に対する検査の run を
+                          探し、その artifact から evidence.json を取る。依存は core と zod だけで、
+                          ent には依存しない。まだコマンドからは呼ばない
+  src/evidence.ts         どの run と artifact を数えるか。報告を受け取るか、古い（base が進んだ）と
+                          言うか、受け取らないか。head と同じジョブで作った報告なので、段階は E1 に抑える
+  src/github-actions.ts   GitHub Actions から run と artifact を fetch で読む（Actions: read）
+  src/zip.ts              artifact の zip から、上限付きでファイルを1つ取り出す
 .github/workflows/check.yml  ent-check を secret なしで回す再利用ワークフロー。head を流すステップには
-                          ジョブのトークンも置かない
+                          ジョブのトークンも置かない。evidence.json を artifact（ent-evidence）に残す
 plugins/ent-review/       レビュー役に読ませる semantic-review skill の正本。
                           `policies.review_skill` を書けば、対象リポジトリの中の
                           plugin に差し替わる

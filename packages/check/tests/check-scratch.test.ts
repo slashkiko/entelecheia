@@ -65,6 +65,7 @@ describe("切り出しの後始末", () => {
       head: repo.head,
       task: "verify",
       timeoutMs: 60_000,
+      checkerSha: null,
       now: () => new Date("2000-01-31T00:00:00Z"),
     });
 

@@ -34,6 +34,17 @@
       "type": "string",
       "pattern": "^[0-9a-f]{40}(?:[0-9a-f]{24})?$"
     },
+    "checker_sha": {
+      "anyOf": [
+        {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}(?:[0-9a-f]{24})?$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
     "level": {
       "type": "string",
       "enum": [
@@ -259,6 +270,7 @@
     "head_sha",
     "base_sha",
     "check_definition_sha",
+    "checker_sha",
     "level",
     "results",
     "tests",

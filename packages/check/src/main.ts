@@ -38,6 +38,7 @@ export async function main(argv: readonly string[]): Promise<number> {
       head: command.head,
       task: command.task,
       timeoutMs: command.timeoutMinutes * 60_000,
+      checkerSha: command.checkerSha,
       now: () => new Date(),
     });
     const json = `${JSON.stringify(report, null, 2)}\n`;

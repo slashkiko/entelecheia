@@ -15,6 +15,7 @@ describe("ent-check の引数", () => {
       task: DEFAULT_TASK,
       timeoutMinutes: DEFAULT_TIMEOUT_MINUTES,
       out: null,
+      checkerSha: null,
     });
   });
 
@@ -32,6 +33,8 @@ describe("ent-check の引数", () => {
         "5",
         "--out",
         "evidence.json",
+        "--checker-sha",
+        "c".repeat(40),
       ]),
     ).toMatchObject({
       pr: 12,
@@ -39,6 +42,7 @@ describe("ent-check の引数", () => {
       task: "check:ci",
       timeoutMinutes: 5,
       out: "evidence.json",
+      checkerSha: "c".repeat(40),
     });
   });
 
@@ -50,6 +54,9 @@ describe("ent-check の引数", () => {
     [[...REQUIRED, "--timeout-minutes", "-1"], "--timeout-minutes"],
     [[...REQUIRED, "--timeout-minutes", "40000"], "--timeout-minutes must be at most 1440"],
     [[...REQUIRED, "--task=-x"], "--task is not a task name"],
+    // ブランチ名や短い sha は、どの検査で作った報告かを決められない
+    [[...REQUIRED, "--checker-sha", "main"], "--checker-sha must be a full commit sha"],
+    [[...REQUIRED, "--checker-sha", "c".repeat(12)], "--checker-sha must be a full commit sha"],
     [[...REQUIRED, "--unknown"], "Unknown option"],
     [[...REQUIRED, "extra"], "Unexpected argument"],
   ])("%o は引数の誤り", (argv, message) => {

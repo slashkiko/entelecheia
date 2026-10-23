@@ -1193,10 +1193,12 @@ packages/core/            Pure decisions shared by the packages. Depends on zod 
   src/factory/            The dark factory's decisions: policy/profile schemas, approval rules and
                           their minimum, decideAutoMerge, triage, and the work/repo/review-stage
                           state transitions. Not wired to the CLI yet
-  src/factory/evidence-report.ts The evidence.json schema (ent.evidence/v1). ent-check writes it.
-                          The governor that will read it is not built yet
+  src/factory/evidence-report.ts The evidence.json schema (ent.evidence/v1). ent-check writes it and
+                          the governor reads it. E3 and E4 also need the holdout and review fields
+                          to back them
   schema/evidence-v1.schema.json The same schema as JSON Schema, generated from the zod schema. It cannot
-                          express that level must match results; only the zod schema checks that
+                          express that level must match results and those fields; only the zod
+                          schema checks that
 packages/ent/             The ent CLI package. The entries indented below are inside it
   src/domain/goal-parse.ts Reads Goal YAML and config.yaml text into core's schemas, and the slug/goal.id
                           match. Reads no files
@@ -1244,8 +1246,16 @@ packages/check/           ent-check. Runs a PR head against the base's check def
 known-bad/                PRs the factory must stop, one directory each (meta.yaml and change.patch).
                           Made-up values only. fixture/ is the made-up repository they apply to
 known-good/               PRs the factory must not stop. Applied to the same fixture
+packages/governor/        The governor. So far only the part that reads evidence: it finds the check
+                          run for a PR head and takes evidence.json from its artifact. Depends on
+                          core and zod only, never on ent. Not wired to a command yet
+  src/evidence.ts         Which run and artifact count, and whether a report is taken, stale (the base
+                          moved) or rejected. Caps the level at E1, since the head ran in the same job
+  src/github-actions.ts   Reads runs and artifacts from GitHub Actions with fetch (Actions: read)
+  src/zip.ts              Takes the one file out of the artifact's zip, with a size limit
 .github/workflows/check.yml  The reusable workflow that runs ent-check with no secrets. The step that runs
-                          the head has no job token either
+                          the head has no job token either. Keeps evidence.json as the ent-evidence
+                          artifact
 plugins/ent-review/       The canonical copy of the semantic-review skill the review role reads
 .claude/skills/ent/SKILL.md  What agents read as procedure. Invocation order, and where it stops for
                           human approval

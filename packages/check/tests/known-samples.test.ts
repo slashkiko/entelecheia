@@ -110,6 +110,7 @@ async function check(repo: { dir: string; base: string; head: string }) {
     head: repo.head,
     task: "verify",
     timeoutMs: 60_000,
+    checkerSha: null,
     now: () => new Date(NOW),
   });
 }

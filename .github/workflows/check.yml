@@ -1,7 +1,8 @@
 name: ent-check
 
 # 各アプリのリポジトリから @sha で呼ぶ再利用ワークフロー。PR の head を、base 側の検査の
-# 定義で回し、evidence.json を作る。
+# 定義で回し、evidence.json を作って artifact（ent-evidence）に残す。governor はこの artifact を
+# 読み、PR の中のファイルは読まない。
 #
 #   jobs:
 #     check:
@@ -14,6 +15,15 @@ name: ent-check
 #
 # 2つの sha は呼ぶ側で揃える。このワークフローからは、自分が呼ばれた sha を読めない。
 # Renovate は `uses:` の sha だけを上げるので、同じ PR で `entelecheia-sha` も上げる。
+# 揃っていないと governor が報告を受け取らない。governor は、workflow run の記録にある
+# `uses:` の sha が自分の受け取る sha のどれかで、evidence.json に残した `entelecheia-sha`
+# （checker_sha）がそれと同じかを確かめる。
+#
+# `entelecheia-sha` が `--checker-sha` を持たない古い ent-check を指していると、ent-check は
+# 知らない引数で 2 を返し、evidence.json を書かない。ジョブは赤くなり、governor には報告が
+# 無いと見える。
+#
+# 1つの run から呼ぶのは1回にする。artifact の名前は決まっていて、後から上げた方が残る。
 #
 # 呼ぶ側のリポジトリには、mise のタスク verify（入力 task で変えられる）が要る。
 # verify は `$ENT_CHECK_REPORT_DIR` の下に JUnit XML でテストの報告を書く。報告が無いと、
@@ -130,6 +140,7 @@ jobs:
           HEAD: ${{ github.event.pull_request.head.sha }}
           TASK: ${{ inputs.task }}
           TIMEOUT: ${{ inputs.timeout-minutes }}
+          ENTELECHEIA_SHA: ${{ inputs.entelecheia-sha }}
         run: |
           set -o pipefail
           entelecheia="$GITHUB_WORKSPACE/.ent-check/entelecheia"
@@ -138,6 +149,7 @@ jobs:
             --dir "$GITHUB_WORKSPACE/target" \
             --repo "$REPO" --pr "$PR" --base "$BASE" --head "$HEAD" \
             --task "$TASK" --timeout-minutes "$TIMEOUT" \
+            --checker-sha "$ENTELECHEIA_SHA" \
             --out "$RUNNER_TEMP/evidence.json" > /dev/null || status=$?
           # 不合格（1）と検査できなかった（3）は、どちらもジョブを赤にする。見分けは
           # 注記と job summary に残す。1 でも evidence.json が無ければ、ent-check の判断ではない
@@ -150,12 +162,13 @@ jobs:
               ;;
             1)
               if [ -f "$evidence" ]; then
-                kind=error message="failed; see evidence.json in the job summary"
+                kind=error message="failed; see evidence.json in the job summary or the ent-evidence artifact"
               else
                 kind=error message="exited with 1 without writing evidence.json (not a verdict on the head)"
               fi
               ;;
             3) kind=error message="could not check (not a failure of the head)" ;;
+            2) kind=error message="exited with 2 (usage error; check that entelecheia-sha matches the sha in uses)" ;;
             *) kind=error message="exited with $status" ;;
           esac
           echo "::$kind title=ent-check::$message"
@@ -169,3 +182,22 @@ jobs:
             fi
           } >> "$GITHUB_STEP_SUMMARY"
           exit "$status"
+      # 不合格（1）でも残す。governor は不合格の理由も evidence.json から読む。検査できなかった（3）
+      # ときは ent-check が evidence.json を書かないので、artifact も無い。
+      #
+      # 回し直すと、同じ run に前の attempt の artifact が残っている。上書きしないと同じ名前で
+      # ぶつかり、このステップが落ちる。governor は、いまの attempt より前に作られた artifact を
+      # 読まない。
+      #
+      # このステップの環境には artifact を書くための ACTIONS_RUNTIME_TOKEN が入る。head のコードが
+      # 残したプロセスは同じユーザーで動くので、それを読んでこの run の artifact を差し替えられる。
+      # evidence.json を書き換えられるのと同じ穴で、governor はこのジョブの報告を E1 より上に
+      # 数えない。
+      - name: Keep evidence.json
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ent-evidence
+          path: ${{ runner.temp }}/evidence.json
+          if-no-files-found: ignore
+          overwrite: true

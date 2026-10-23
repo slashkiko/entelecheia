@@ -2,6 +2,10 @@ import { spawnSync } from "node:child_process";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import {
+  EVIDENCE_ARTIFACT_NAME,
+  EVIDENCE_FILE_NAME,
+} from "@entelecheia/core/factory/evidence-report.js";
 import { afterAll, describe, expect, it } from "vitest";
 import { parse } from "yaml";
 import { ROOT } from "./repo-fixture.js";
@@ -16,6 +20,10 @@ import { ROOT } from "./repo-fixture.js";
 interface Step {
   name?: string;
   run?: string;
+  uses?: string;
+  if?: string;
+  env?: Record<string, string>;
+  with?: Record<string, string | boolean>;
 }
 
 const workflow = parse(readFileSync(join(ROOT, ".github", "workflows", "check.yml"), "utf8")) as {
@@ -95,6 +103,7 @@ describe("check.yml のシェル", () => {
         [
           "#!/bin/sh",
           'out=""',
+          'printf "%s\\n" "$@" > "$FAKE_ARGS"',
           'while [ $# -gt 0 ]; do [ "$1" = --out ] && out="$2"; shift; done',
           'if [ -n "$FAKE_EVIDENCE" ]; then printf %s "$FAKE_EVIDENCE" > "$out"; fi',
           'exit "$FAKE_STATUS"',
@@ -108,6 +117,7 @@ describe("check.yml のシェル", () => {
     function runEntCheck(status: number, evidence: string | null) {
       const dir = mkdtempSync(join(scratch, "run-"));
       const summary = join(dir, "summary.md");
+      const args = join(dir, "args.txt");
       writeFileSync(summary, "");
       const result = runStep("Run ent-check", {
         PATH: `${fakeMise(dir)}:${process.env.PATH ?? ""}`,
@@ -116,15 +126,34 @@ describe("check.yml のシェル", () => {
         GITHUB_STEP_SUMMARY: summary,
         FAKE_STATUS: String(status),
         FAKE_EVIDENCE: evidence ?? "",
+        FAKE_ARGS: args,
         REPO: "example-owner/sample-shop",
         PR: "7",
         BASE: "b".repeat(40),
         HEAD: "c".repeat(40),
         TASK: "verify",
         TIMEOUT: "30",
+        ENTELECHEIA_SHA: "e".repeat(40),
       });
-      return { ...result, summary: readFileSync(summary, "utf8") };
+      return {
+        ...result,
+        summary: readFileSync(summary, "utf8"),
+        args: readFileSync(args, "utf8").split("\n"),
+      };
     }
+
+    it("ent-check に ENTELECHEIA_SHA を --checker-sha として渡す", () => {
+      // governor は、evidence.json に残ったこの値を、run が呼んだ検査の sha と比べる。
+      const { args } = runEntCheck(0, '{"level":"E1"}');
+
+      expect(args[args.indexOf("--checker-sha") + 1]).toBe("e".repeat(40));
+    });
+
+    it("ENTELECHEIA_SHA は、呼ぶ側が渡した entelecheia-sha の入力から取る", () => {
+      const step = workflow.jobs.check.steps.find((each) => each.name === "Run ent-check");
+
+      expect(step?.env?.ENTELECHEIA_SHA).toBe(`\${{ inputs.entelecheia-sha }}`);
+    });
 
     it("0 なら段階を注記し、evidence.json を job summary に載せる", () => {
       const run = runEntCheck(0, '{"level":"E1"}');
@@ -156,6 +185,49 @@ describe("check.yml のシェル", () => {
       expect(run.status).toBe(3);
       expect(run.stdout).toContain("::error title=ent-check::could not check");
       expect(run.summary).toContain("could not check");
+    });
+
+    it("2 なら、2つの sha が揃っているかを見るように言う", () => {
+      // entelecheia-sha が --checker-sha を持たない古い ent-check を指すと、知らない引数で 2 になる
+      const run = runEntCheck(2, null);
+
+      expect(run.status).toBe(2);
+      expect(run.stdout).toContain("check that entelecheia-sha matches the sha in uses");
+    });
+  });
+
+  describe("evidence.json を artifact に残すステップ", () => {
+    const keep = workflow.jobs.check.steps.find((step) =>
+      step.uses?.startsWith("actions/upload-artifact@"),
+    );
+    const run = script("Run ent-check");
+
+    it("governor が探す名前で残す", () => {
+      expect(keep?.with?.name).toBe(EVIDENCE_ARTIFACT_NAME);
+    });
+
+    it("ent-check が --out に書いたファイルを残す", () => {
+      // 名前がずれると artifact が作られないまま緑になり、governor は「報告が無い」と読む。
+      expect(run).toContain(`--out "$RUNNER_TEMP/${EVIDENCE_FILE_NAME}"`);
+      expect(keep?.with?.path).toBe(`\${{ runner.temp }}/${EVIDENCE_FILE_NAME}`);
+    });
+
+    it("ent-check が不合格（1）で赤にしても残す", () => {
+      // 既定の if（success()）では、前のステップが赤だと飛ばされる。
+      expect(keep?.if).toBe(`\${{ !cancelled() }}`);
+    });
+
+    it("回し直したときは、前の attempt の artifact を上書きする", () => {
+      // 上書きしないと同じ名前でぶつかり、回し直した attempt が赤になる
+      expect(keep?.with?.overwrite).toBe(true);
+    });
+
+    it("ent-check を流した後に置く", () => {
+      const steps = workflow.jobs.check.steps;
+
+      expect(steps.indexOf(keep as Step)).toBeGreaterThan(
+        steps.findIndex((step) => step.name === "Run ent-check"),
+      );
     });
   });
 });

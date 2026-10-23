@@ -1,14 +1,15 @@
 import { z } from "zod";
 import type { EvidenceSummary } from "./auto-merge.js";
-import { type EvidenceLevel, evidenceLevelSchema } from "./evidence.js";
+import { type EvidenceLevel, evidenceLevelSchema, reaches } from "./evidence.js";
 
 /**
- * `evidence.json` の形（`ent.evidence/v1`）。検査（`ent-check`）が書き、governor（まだ無い）が読む。
+ * `evidence.json` の形（`ent.evidence/v1`）。検査（`ent-check`）が書き、governor が読む。
  *
  * **governor は PR の中のファイルを読まない。** その sha に対する検査の実行が残した
- * ものだけを読む。Actor が書いた `evidence.json` を信じないため。ここで形を固定するのは、
- * 書く側と読む側が別の package・別のプロセスで、片方だけが形を変えると、読む側は
- * 「知らないキーを無視する」か「全部を不合格にする」のどちらかに黙って倒れるからになる。
+ * artifact（`EVIDENCE_ARTIFACT_NAME`）だけを読む。Actor が書いた `evidence.json` を信じない
+ * ため。ここで形を固定するのは、書く側と読む側が別の package・別のプロセスで、片方だけが
+ * 形を変えると、読む側は「知らないキーを無視する」か「全部を不合格にする」のどちらかに
+ * 黙って倒れるからになる。
  *
  * キーは JSON の慣習どおり snake_case で書く。JSON Schema は
  * `packages/core/schema/evidence-v1.schema.json` にあり、この schema から作る
@@ -16,6 +17,16 @@ import { type EvidenceLevel, evidenceLevelSchema } from "./evidence.js";
  */
 
 export const EVIDENCE_SCHEMA_ID = "ent.evidence/v1";
+
+/**
+ * 再利用ワークフロー（`.github/workflows/check.yml`）が `evidence.json` を残す artifact の名前。
+ * 書く側（ワークフロー）と読む側（governor）が同じ名前を使う。ワークフローは YAML に直に書くので、
+ * この値と一致することは `packages/check/tests/check-workflow.test.ts` が確かめる
+ */
+export const EVIDENCE_ARTIFACT_NAME = "ent-evidence";
+
+/** artifact の中のファイルの名前 */
+export const EVIDENCE_FILE_NAME = "evidence.json";
 
 /** 規則1つの結果。`quarantined` は flaky として隔離したもので、証拠に数えない */
 export const ruleStatusSchema = z.enum(["pass", "fail", "skip", "quarantined"]);
@@ -26,7 +37,7 @@ export const evidenceLayerSchema = evidenceLevelSchema.exclude(["E0"]);
 export type EvidenceLayer = z.infer<typeof evidenceLayerSchema>;
 
 /** git の commit の sha。SHA-1 の40桁と SHA-256 の64桁 */
-const commitShaSchema = z.string().regex(/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/);
+export const commitShaSchema = z.string().regex(/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/);
 
 const countSchema = z.number().int().nonnegative();
 
@@ -56,6 +67,13 @@ export const evidenceReportSchema = z
     base_sha: commitShaSchema,
     /** 検査の定義（`verify/**`・タスク定義など）を取り出した commit。いまは base と同じ */
     check_definition_sha: commitShaSchema,
+    /**
+     * 検査（`ent-check`）を作った entelecheia の commit。手元で回したときのように分からなければ
+     * null。governor は、workflow run の記録（`referenced_workflows`）にある、run が呼んだ検査の
+     * sha と一致しない報告を受け取らない。再利用ワークフローは自分が呼ばれた sha を読めないので、
+     * 呼ぶ側が `uses:` と違う sha を渡すと、ここに残る値と run の記録が食い違う
+     */
+    checker_sha: commitShaSchema.nullable(),
     level: evidenceLevelSchema,
     results: z.array(evidenceResultSchema),
     /**
@@ -105,6 +123,9 @@ export const evidenceReportSchema = z
         message: `level ${report.level} does not match the results, which reach ${expected}`,
       });
     }
+    for (const issue of backingIssues(report)) {
+      context.addIssue({ code: "custom", ...issue });
+    }
   });
 export type EvidenceReport = z.infer<typeof evidenceReportSchema>;
 
@@ -118,6 +139,58 @@ export function summarizeEvidence(report: EvidenceReport): EvidenceSummary {
     typesChanged: report.surface.types_changed ?? true,
     snapshotsChanged: report.surface.snapshots_changed ?? true,
   };
+}
+
+/**
+ * E3 と E4 は、results だけでなく holdout と別ベンダーのレビューの欄にも裏付けが要る。
+ * results の E3・E4 の層だけを書いて欄を null にした報告を通すと、読む側は level だけで
+ * 判定するので、holdout もレビューも回していない PR が fix と feat の自動マージに届く。
+ *
+ * - holdout は、通った数が該当した数を超えない
+ * - E3 以上は、holdout が1本以上該当し、全部通っている
+ * - E4 は、別ベンダー（Anthropic 以外）のレビューが approve している。返事が無い
+ *   （unavailable）なら E3 止まりにし、同じベンダーで代用しない
+ */
+function backingIssues(report: {
+  level: EvidenceLevel;
+  holdout: { matched: number; passed: number } | null;
+  review: { vendor: string; verdict: string } | null;
+}): { path: string[]; message: string }[] {
+  const issues: { path: string[]; message: string }[] = [];
+  const { holdout, review } = report;
+  if (holdout !== null && holdout.passed > holdout.matched) {
+    issues.push({
+      path: ["holdout", "passed"],
+      message: `holdout.passed (${holdout.passed}) exceeds holdout.matched (${holdout.matched})`,
+    });
+  }
+  if (
+    reaches(report.level, "E3") &&
+    (holdout === null || holdout.matched === 0 || holdout.passed !== holdout.matched)
+  ) {
+    issues.push({
+      path: ["holdout"],
+      message: `level ${report.level} needs at least one matched holdout, all of them passed`,
+    });
+  }
+  if (
+    reaches(report.level, "E4") &&
+    (review === null || review.verdict !== "approve" || isSameVendor(review.vendor))
+  ) {
+    issues.push({
+      path: ["review"],
+      message: `level ${report.level} needs an approving review from a vendor other than Anthropic`,
+    });
+  }
+  return issues;
+}
+
+/** Actor と同じベンダーの呼び名。会社の名前でもモデルの名前でも同じに数える */
+const SAME_VENDOR_NAMES: ReadonlySet<string> = new Set(["anthropic", "claude"]);
+
+/** Actor と同じベンダー。大文字と前後の空白は区別しない */
+function isSameVendor(vendor: string): boolean {
+  return SAME_VENDOR_NAMES.has(vendor.trim().toLowerCase());
 }
 
 /** 結果から届く段階。上の層は、下の層が全部通ってから数える */

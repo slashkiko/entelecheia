@@ -68,6 +68,15 @@ importers:
         specifier: ^4.4.3
         version: 4.4.3
 
+  packages/governor:
+    dependencies:
+      '@entelecheia/core':
+        specifier: workspace:*
+        version: link:../core
+      zod:
+        specifier: ^4.4.3
+        version: 4.4.3
+
 packages:
 
   '@anthropic-ai/claude-agent-sdk-darwin-arm64@0.3.226':

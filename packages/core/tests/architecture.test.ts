@@ -312,7 +312,6 @@ describe("package どうしの境界", () => {
   it("ent を import してよいのは ent だけ", () => {
     // check と governor は ent に依存しない（設計の「モジュールの境界」）。Actor の出力を
     // 扱う ent が壊れても、検査と merge の判断が巻き込まれないようにするため。
-    // まだ ent と core しか無いが、package を足した時点でこの規則が効く。
     const offenders = packageNames()
       .filter((name) => name !== "ent")
       .flatMap((name) =>
@@ -324,6 +323,39 @@ describe("package どうしの境界", () => {
             .map((specifier) => `${relative(PACKAGES, file)} -> ${specifier}`),
         ),
       );
+
+    expect(offenders).toEqual([]);
+  });
+
+  it("governor の依存は core と zod だけ", () => {
+    // governor は merge と push の書き込みトークンを持つ唯一の部品になる。Agent SDK を入れると、
+    // LLM の出力が merge の判断と同じプロセスに入る。依存を足すたびに、その供給網も
+    // 書き込みトークンに届く。足すときはここを直して理由を残す。
+    const pkg = JSON.parse(readFileSync(join(PACKAGES, "governor", "package.json"), "utf8")) as {
+      dependencies?: Record<string, string>;
+      peerDependencies?: Record<string, string>;
+      optionalDependencies?: Record<string, string>;
+    };
+
+    expect(Object.keys(pkg.dependencies ?? {}).sort()).toEqual(["@entelecheia/core", "zod"]);
+    expect(pkg.peerDependencies).toBeUndefined();
+    expect(pkg.optionalDependencies).toBeUndefined();
+  });
+
+  it("governor のコードが import するのは core と zod と Node 組み込みだけ", () => {
+    // package.json を見る規則だけだと、ルートの node_modules にある別の package（ent の
+    // Agent SDK など）を宣言せずに import する形が残る。
+    const offenders = tsFilesUnder(join(PACKAGES, "governor", "src")).flatMap((file) =>
+      importsOf(file)
+        .filter((specifier) => !specifier.startsWith("."))
+        .filter(
+          (specifier) =>
+            specifier !== "zod" &&
+            !specifier.startsWith("node:") &&
+            !specifier.startsWith("@entelecheia/core/"),
+        )
+        .map((specifier) => `${relative(PACKAGES, file)} -> ${specifier}`),
+    );
 
     expect(offenders).toEqual([]);
   });

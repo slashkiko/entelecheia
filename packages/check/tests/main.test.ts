@@ -62,6 +62,18 @@ describe("ent-check の終了コード", () => {
     expect(evidenceReportSchema.parse(JSON.parse(written)).head_sha).toBe(repo.head);
   });
 
+  it("--checker-sha を evidence.json の checker_sha に残す", async () => {
+    // governor はこの値を、run が呼んだ検査の sha と比べる。落とすと、どの報告も受け取られない
+    const repo = sampleRepo(() => undefined);
+    repos.push(repo);
+    capture();
+    const checker = "e".repeat(40);
+
+    await main([...args(repo, "checker.json"), "--checker-sha", checker]);
+    const written = JSON.parse(readFileSync(join(out, "checker.json"), "utf8"));
+    expect(evidenceReportSchema.parse(written).checker_sha).toBe(checker);
+  });
+
   it("規則が落ちれば 1", async () => {
     const repo = sampleRepo((dir) => {
       const price = join(dir, "src", "price.mjs");

@@ -33,6 +33,9 @@
 # 弱める変更をどう落とすか、が決まる。緩めると、判定に届くエビデンスが黙って上がる。
 # 見本（known-bad と known-good）は検査の正解で、書き換えれば落ちるべき変更が通る形にできる。
 /packages/check/ @slashkiko
+# governor。どの検査の実行の報告を受け取るか、段階をどこまで数えるかが決まる。緩めると、
+# 偽った報告や古い報告で自動マージに届く。書き込みトークンを持つ唯一の部品にもなる。
+/packages/governor/ @slashkiko
 /known-bad/ @slashkiko
 /known-good/ @slashkiko
 /packages/ent/src/adapters/claude.ts @slashkiko

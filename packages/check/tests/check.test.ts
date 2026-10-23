@@ -25,6 +25,7 @@ function options(repo: SampleRepo, overrides: Partial<CheckOptions> = {}): Check
     head: repo.head,
     task: "verify",
     timeoutMs: 60_000,
+    checkerSha: null,
     now: () => NOW,
     ...overrides,
   };
@@ -54,7 +55,7 @@ describe("runCheck", () => {
 
   it("変更の無い head は合格で、evidence.json の形を満たす", async () => {
     const repo = track(sampleRepo(() => undefined));
-    const report = await runCheck(options(repo));
+    const report = await runCheck(options(repo, { checkerSha: "c".repeat(40) }));
 
     expect(evidenceReportSchema.safeParse(report).success).toBe(true);
     expect(report).toMatchObject({
@@ -63,6 +64,7 @@ describe("runCheck", () => {
       head_sha: repo.head,
       base_sha: repo.base,
       check_definition_sha: repo.base,
+      checker_sha: "c".repeat(40),
       level: "E1",
       tests: { before: 7, after: 7, new_skips: 0 },
       generated_at: NOW.toISOString(),
