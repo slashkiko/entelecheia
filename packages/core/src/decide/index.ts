@@ -266,7 +266,7 @@ export async function decide(target: DecideTarget, deps: DecideDeps): Promise<De
   //
   //    **上限は `max_unchanged_reconciles` を共有する。** 単位はティックではなく
   //    試行になるが、宣言に足せる場所が無い——`budget` のスキーマは
-  //    `src/domain/goal.ts` にあり、`PROTECTED_PATH_FLOOR` の中になる。
+  //    `src/domain/goal.ts` にあり、ent のリポジトリの保護パス（`.goals/config.yaml`）の中になる。
   //    コード側に既定値を置くと、YAML を読んだだけでは停止条件が分からなくなる
   //    （`budgetSchema` が5項目すべてを必須にしている理由）。同じ「何回まで
   //    進まなくてよいか」を問う値なので、宣言済みのこの1本に相乗りする。

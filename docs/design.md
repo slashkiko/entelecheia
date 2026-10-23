@@ -11,8 +11,8 @@ you newly join (or when you open a new session).
 > I/O-free part of `src/domain/` moved to `packages/core/`; everything else, including
 > `src/domain/goal-parse.ts`, `goal-render.ts` and `protected-paths.ts`, is in `packages/ent/`. The
 > glob matching that `protected-paths.ts` used to hold is `packages/core/src/domain/path-glob.ts`. The
-> body keeps the shorter form. The one place where the full path matters is `PROTECTED_PATH_FLOOR`
-> (§7): its entries are relative to the repository root, so in the code they read
+> body keeps the shorter form. The one place where the full path matters is ent's own protected
+> paths (§7): their entries are relative to the repository root, so `.goals/config.yaml` reads
 > `packages/ent/src/controller/**`, `packages/core/src/domain/guard-rules.ts` and so on.
 
 > [!NOTE]
@@ -1238,6 +1238,15 @@ are representative examples meant to explain the criterion, not an exhaustive li
 the same list, then when only one of them went stale, a reader could no longer tell which one is
 the actual gate. The approval gate has a floor of the same shape, and `APPROVAL_GATE_FLOOR` mixes
 `secret_access` and `external_send` into every Goal.
+
+**The floor is kept in two places.** What stays in the code's `PROTECTED_PATH_FLOOR` is only the
+three entries every repository ent runs has: `.goals/**`, `.git/**` and `.goals/.state/**`. ent's
+own files, listed in the bullets below, go in `protected_paths` of `.goals/config.yaml` in ent's own
+repository. The code floor is mixed into the Goals of every repository, so ent's paths there would
+stop the Actor in another repository that merely has a path by the same name. The config is only
+ever added to a Goal's declaration, so no Goal can remove it, and the config itself sits under the
+code floor's `.goals/**`. Where the bullets below say "the floor" about ent's own files, they mean
+this list in the config.
 
 - The gate itself (`src/domain/protected-paths.ts`), and the file that decides the Agent's allowed
   and denied tools (`src/adapters/claude.ts`). If this is open, making the comparison always return

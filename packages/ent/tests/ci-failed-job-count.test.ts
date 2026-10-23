@@ -87,7 +87,7 @@ describe("落ちている job の数を criteria に書ける", () => {
 
   it("equals: 0 の criterion が Goal に書ける", () => {
     // `equals` は既に number を受けるので、スキーマ（packages/core/src/domain/goal.ts）は触らずに済む。
-    // あちらは PROTECTED_PATH_FLOOR の中にあり、触れば関門が鳴る。
+    // あちらはこのリポジトリの保護パス（`.goals/config.yaml`）の中にあり、触れば関門が鳴る。
     const parsed = verificationSchema.safeParse({
       type: "fact",
       key: FAILED_JOB_COUNT_KEY,

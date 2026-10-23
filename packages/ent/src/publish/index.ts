@@ -216,7 +216,7 @@ export async function publish(target: PublishTarget, deps: PublishDeps): Promise
   // 返る（`WAIT(review_pending)` が続く区間がこれにあたる）。**案3 を退けた理由は、
   // 採った案1のこの宛先でそのまま再現する。** 畳む口はまだ無い——前ティックに
   // どの Run を出したかを publish は持っておらず、渡すには `PublishTarget` を
-  // 足すことになる。作るのは controller で、そちらは PROTECTED_PATH_FLOOR の中になる。
+  // 足すことになる。作るのは controller で、そちらはこのリポジトリの保護パス（`.goals/config.yaml`）の中になる。
   //
   // 動かさないのは criteria の表の位置で、節は必ずこの本文の**後ろ**に足す
   // （`withReviewMessage`）。宛先が違っても、表は同じ位置で読める。
@@ -435,7 +435,7 @@ async function reviewSection(review: ReviewPort | undefined): Promise<string | n
   // Run だけを候補にするので、レビュー役が `interrupted`（SIGTERM）や `failed` でしか
   // 終わっていない Goal でも null になる。**その見た目は1度も起動していないときと
   // 完全に同じで、ここからは区別を作れない。** Port が返すのは snapshot か null かの
-  // 2値で、どちらの理由で null かは載っていない。Adapter は PROTECTED_PATH_FLOOR の
+  // 2値で、どちらの理由で null かは載っていない。Adapter はこのリポジトリの保護パス（`.goals/config.yaml`）の
   // 中なので、区別が要るなら向こう側の戻り値を足すところから始まる。
   if (snapshot === null) {
     return null;

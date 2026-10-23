@@ -476,7 +476,7 @@ function declaredReportTarget(goal: Goal): ReportTarget | undefined {
 /**
  * 試行台帳のビューを配るときに使う、ファイルシステムへの口。
  *
- * **合成ルートには置かない。** `src/wiring/index.ts` は `PROTECTED_PATH_FLOOR` の
+ * **合成ルートには置かない。** `src/wiring/index.ts` はこのリポジトリの保護パス（`.goals/config.yaml`）の
  * 中にあり、Actor には書けない。ここが挿すのは `node:fs` の関数そのもので、
  * Adapter は1つも増えない（`src/adapters/**` を import してよいのは合成ルートだけ、
  * `tests/architecture.test.ts`）。

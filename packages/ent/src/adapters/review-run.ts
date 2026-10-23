@@ -10,7 +10,7 @@ import type { ReviewPort, ReviewRunSnapshot } from "../observe/index.js";
  *
  * `ActorPort` が返すのは `exitCode` / `logRef` / `artifacts` だけで、Actor の
  * 最終メッセージは戻り値に載らない。載せるには `src/act/` と `src/adapters/claude.ts`
- * の両方に口が要るが、後者は `PROTECTED_PATH_FLOOR` の中にあって触れない。
+ * の両方に口が要るが、後者はこのリポジトリの保護パス（`.goals/config.yaml`）の中にあって触れない。
  *
  * 一方 Actor Adapter は実行イベントを1件ずつ
  * `.goals/.state/runs/<run-id>/log.jsonl` に書いており、レビュー役の最終メッセージも

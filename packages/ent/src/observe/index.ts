@@ -161,7 +161,7 @@ export interface ReviewRunSnapshot {
  * 直近のレビュー役の Run を読む口。
  *
  * `ObserveTarget` ではなく Port を1つ足す形にしてあるのは、`ObserveTarget` を
- * 組み立てる `observeTargetOf` が `src/controller/index.ts`（PROTECTED_PATH_FLOOR の
+ * 組み立てる `observeTargetOf` が `src/controller/index.ts`（このリポジトリの保護パス（`.goals/config.yaml`）の
  * 中）にあるため。「どの Run を読むか」は Port の側で解決する。
  */
 export interface ReviewPort {

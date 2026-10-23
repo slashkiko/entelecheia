@@ -74,7 +74,7 @@ async function git(cwd: string, args: readonly string[]): Promise<string> {
  * **`ent init` と `ent doctor` の判定はここ1箇所に置く。** どちらも「その場所で
  * ent を回せるか」を答えるもので、判定が2箇所にあると、init が作った場所を
  * doctor が別の基準で見ることになる。`src/adapters/local.ts` は
- * `PROTECTED_PATH_FLOOR` に入っているので、Agent が判定そのものを書き換えられない。
+ * このリポジトリの保護パス（`.goals/config.yaml`）に入っているので、Agent が判定そのものを書き換えられない。
  *
  * **真偽ではなくルートを返す。** 祖先を辿るので、リポジトリのサブディレクトリでも
  * 「中にいる」は真になる。一方 `repoRoot` は常に `process.cwd()` なので、
