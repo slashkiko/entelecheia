@@ -1126,6 +1126,9 @@ packages/core/            package 間で共有する純粋な判断。依存は 
   src/domain/llm-call.ts  LlmPort を1回呼んだ記録。Run を作らない分のトークン
   src/domain/path-glob.ts パスと glob の照合。保護パスと承認ルールが同じものを使う
   src/decide/             Decide と LlmPort の定義。guard と LLM の境界はここにある
+  src/factory/            dark factory の判断。policy / profile のスキーマ、承認ルールとその下限、
+                          decideAutoMerge、トリアージ、作業・リポジトリ・レビューの段の状態遷移。
+                          まだ CLI からは呼ばない
 packages/ent/             ent の CLI の package。下の字下げした項目はこの中にある
   src/domain/goal-parse.ts Goal YAML と config.yaml の文字列を core のスキーマに通す。slug と
                           goal.id の突き合わせもここ。ファイルは読まない

@@ -25,6 +25,10 @@
 # require_human_approval を「足す」判断がここにあり、置き換えに変えるだけで
 # config が配っている repo 全体の保護が消える。goal.ts と同じ扱いにする。
 /packages/core/src/domain/goal-config.ts @slashkiko
+# factory の判断。承認ルールの下限と自動マージの判定がここにあり、1行の変更で
+# 人がマージする範囲が狭まる。PR の自動マージそのものを決める規則なので、
+# factory 自身の PR でも人がレビューする（下限の factory-parts と同じ扱い）。
+/packages/core/src/factory/ @slashkiko
 /packages/ent/src/adapters/claude.ts @slashkiko
 /packages/ent/src/adapters/local.ts @slashkiko
 /.goals/ @slashkiko

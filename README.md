@@ -1191,6 +1191,9 @@ packages/core/            Pure decisions shared by the packages. Depends on zod 
   src/domain/llm-call.ts  A record of one LlmPort call. Tokens that do not create a Run
   src/domain/path-glob.ts Path-to-glob matching. Shared by protected paths and approval rules
   src/decide/             Decide and the LlmPort definition. The guard/LLM boundary is here
+  src/factory/            The dark factory's decisions: policy/profile schemas, approval rules and
+                          their minimum, decideAutoMerge, triage, and the work/repo/review-stage
+                          state transitions. Not wired to the CLI yet
 packages/ent/             The ent CLI package. The entries indented below are inside it
   src/domain/goal-parse.ts Reads Goal YAML and config.yaml text into core's schemas, and the slug/goal.id
                           match. Reads no files
