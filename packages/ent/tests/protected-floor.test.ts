@@ -85,32 +85,35 @@ describe("保護パスの下限", () => {
     const goal = goalSchema.parse(source(["docs/**"]));
 
     expect(goal.policies.protected_paths).toContain("docs/**");
-    expect(goal.policies.protected_paths).toContain("src/controller/**");
+    expect(goal.policies.protected_paths).toContain("packages/ent/src/controller/**");
   });
 
   it("同じパスを宣言しても重複しない", () => {
-    const merged = withProtectedPathFloor(["src/controller/**", "src/controller/**"]);
+    const merged = withProtectedPathFloor([
+      "packages/ent/src/controller/**",
+      "packages/ent/src/controller/**",
+    ]);
 
-    expect(merged.filter((path) => path === "src/controller/**")).toHaveLength(1);
+    expect(merged.filter((path) => path === "packages/ent/src/controller/**")).toHaveLength(1);
   });
 
   it("下限は関門そのものを覆う", () => {
     // ここが欠けると、関門を無効化する変更を関門が見逃す。
     // 「検証系（mise.toml など）」は下限に入れない側なので、ここでは見ない。
-    expect(PROTECTED_PATH_FLOOR).toContain("src/controller/**");
+    expect(PROTECTED_PATH_FLOOR).toContain("packages/ent/src/controller/**");
     expect(PROTECTED_PATH_FLOOR).toContain(".goals/**");
-    expect(PROTECTED_PATH_FLOOR).toContain("src/domain/protected-paths.ts");
-    expect(PROTECTED_PATH_FLOOR).toContain("src/domain/goal.ts");
+    expect(PROTECTED_PATH_FLOOR).toContain("packages/ent/src/domain/protected-paths.ts");
+    expect(PROTECTED_PATH_FLOOR).toContain("packages/ent/src/domain/goal.ts");
     // 保護パスを Goal の下へ敷く規則。ここを書き換えれば、config が配っている
     // repo 全体の保護を、下限のファイルを1つも触らずに消せる。
-    expect(PROTECTED_PATH_FLOOR).toContain("src/domain/goal-config.ts");
-    expect(PROTECTED_PATH_FLOOR).toContain("src/adapters/claude.ts");
-    expect(PROTECTED_PATH_FLOOR).toContain("src/adapters/codex.ts");
-    expect(PROTECTED_PATH_FLOOR).toContain("src/adapters/agent-prompt.ts");
-    expect(PROTECTED_PATH_FLOOR).toContain("src/adapters/local.ts");
-    expect(PROTECTED_PATH_FLOOR).toContain("src/domain/withheld-env.ts");
-    expect(PROTECTED_PATH_FLOOR).toContain("src/domain/guard-rules.ts");
-    expect(PROTECTED_PATH_FLOOR).toContain("src/wiring/index.ts");
+    expect(PROTECTED_PATH_FLOOR).toContain("packages/ent/src/domain/goal-config.ts");
+    expect(PROTECTED_PATH_FLOOR).toContain("packages/ent/src/adapters/claude.ts");
+    expect(PROTECTED_PATH_FLOOR).toContain("packages/ent/src/adapters/codex.ts");
+    expect(PROTECTED_PATH_FLOOR).toContain("packages/ent/src/adapters/agent-prompt.ts");
+    expect(PROTECTED_PATH_FLOOR).toContain("packages/ent/src/adapters/local.ts");
+    expect(PROTECTED_PATH_FLOOR).toContain("packages/ent/src/domain/withheld-env.ts");
+    expect(PROTECTED_PATH_FLOOR).toContain("packages/ent/src/domain/guard-rules.ts");
+    expect(PROTECTED_PATH_FLOOR).toContain("packages/ent/src/wiring/index.ts");
   });
 
   it("guard が読む規則は、下限に入っているファイルの中に居る", () => {
@@ -224,11 +227,23 @@ const GUARD_RULES = [
  */
 const WIRING_RULES = ["tickPorts", "verifyRoot", "deliverDeclaration"] as const;
 
-const REPO_ROOT = new URL("../", import.meta.url).pathname;
+/** 下限と CODEOWNERS が基点にする、ent 自身のリポジトリのルート（`packages/ent/tests/` から3つ上） */
+const REPO_ROOT = new URL("../../../", import.meta.url).pathname;
 
-/** repoRoot からの相対パスで、`src/**` の .ts を全部並べる */
+/**
+ * repoRoot からの相対パスで、全 package の `src/**` の .ts を全部並べる。
+ *
+ * ent の `src/` だけを見ると、規則を別の package へ移したときに「export している
+ * ファイルが0件」で落ちる。落ちはするが、理由が「下限の外へ出た」と読めない。
+ * 全 package を見て、置き場を1つに定めてから下限と突き合わせる。
+ */
 function sourceFiles(): string[] {
-  return readdirSync(join(REPO_ROOT, "src"), { withFileTypes: true, recursive: true })
+  const packages = join(REPO_ROOT, "packages");
+  return readdirSync(packages, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory())
+    .flatMap((entry) =>
+      readdirSync(join(packages, entry.name, "src"), { withFileTypes: true, recursive: true }),
+    )
     .filter((entry) => entry.isFile() && entry.name.endsWith(".ts"))
     .map((entry) => relative(REPO_ROOT, join(entry.parentPath, entry.name)));
 }

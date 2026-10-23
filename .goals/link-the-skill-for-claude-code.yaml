@@ -205,13 +205,13 @@ context:
 
   references:
     - title: ent init の本体。ここに手を入れることになる
-      path: src/usecase/init.ts
+      path: packages/ent/src/usecase/init.ts
     - title: 仕様。着手時点では落ちている
-      path: tests/cli-init-skill-link.test.ts
+      path: packages/ent/tests/cli-init-skill-link.test.ts
     - title: import.meta.url から ent 本体の側のパスを解決する前例（REVIEW_PLUGIN_DIR）
-      path: src/adapters/claude.ts
+      path: packages/ent/src/adapters/claude.ts
     - title: 下限として必ず混ざる保護パス（PROTECTED_PATH_FLOOR）
-      path: src/domain/goal.ts
+      path: packages/ent/src/domain/goal.ts
     - title: 指す先の実体
       path: .claude/skills/ent/SKILL.md
 
@@ -232,15 +232,18 @@ policies:
     - mise.toml
     - mise-tasks/**
     - vitest.config.ts
+    - packages/*/vitest.config.ts
     - biome.json
     - tsconfig*.json
+    - packages/*/tsconfig*.json
     - .github/**
     # 依存の追加は人間が通す。
     - package.json
+    - packages/*/package.json
     - pnpm-lock.yaml
     # ブランチ名の規則と PR 本文。この Goal 自身が走っている足場になる。
-    - src/act/**
-    - src/publish/**
+    - packages/ent/src/act/**
+    - packages/ent/src/publish/**
 
 budget:
   max_actor_runs: 8

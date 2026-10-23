@@ -181,11 +181,11 @@ context:
     - title: 設計ドキュメント（レビュー役の結論を Fact にするところ）
       path: docs/design.md
     - title: 進捗の宛先と本文の組み立て
-      path: src/publish/index.ts
+      path: packages/ent/src/publish/index.ts
     - title: レビュー役の生ログから最終メッセージを取り出す Adapter（触らない側）
-      path: src/adapters/review-run.ts
+      path: packages/ent/src/adapters/review-run.ts
     - title: ReviewPort の宣言（触らない側）
-      path: src/observe/index.ts
+      path: packages/ent/src/observe/index.ts
     - title: --report の使い方
       path: .claude/skills/ent/SKILL.md
 
@@ -204,22 +204,25 @@ policies:
     - mise.toml
     - mise-tasks/**
     - vitest.config.ts
+    - packages/*/vitest.config.ts
     - biome.json
     - tsconfig*.json
+    - packages/*/tsconfig*.json
     - .github/**
     # 依存の追加は人間が通す。
     - package.json
+    - packages/*/package.json
     - pnpm-lock.yaml
     # 観測と判断はこの Goal の範囲外。本文を Fact にする道は選ばない。
-    - src/observe/**
-    - src/assess/**
-    - src/decide/**
-    - src/reconcile/**
-    - src/verify/**
+    - packages/ent/src/observe/**
+    - packages/ent/src/assess/**
+    - packages/ent/src/decide/**
+    - packages/ent/src/reconcile/**
+    - packages/ent/src/verify/**
     # 生ログの形に依存する知識は Adapter に閉じている。呼ぶだけで足りる。
-    - src/adapters/**
+    - packages/ent/src/adapters/**
     # 状態の永続化も動かさない。
-    - src/store/**
+    - packages/ent/src/store/**
 
 budget:
   max_actor_runs: 10

@@ -58,10 +58,10 @@ const run = promisify(execFile);
 const IDENTITY = ["-c", "user.email=t@example.com", "-c", "user.name=t"];
 
 /** ent 本体の skill ディレクトリ。symlink の向け先そのもの */
-const SKILL_DIR = fileURLToPath(new URL("../.claude/skills/ent", import.meta.url));
+const SKILL_DIR = fileURLToPath(new URL("../../../.claude/skills/ent", import.meta.url));
 
 /** Goal の前後の作法。`ent` と違い、張れなくても init は止まらない */
-const BOOKEND_DIR = fileURLToPath(new URL("../.claude/skills/ent-bookend", import.meta.url));
+const BOOKEND_DIR = fileURLToPath(new URL("../../../.claude/skills/ent-bookend", import.meta.url));
 
 let repoRoot: string;
 let home: string;

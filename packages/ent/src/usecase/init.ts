@@ -230,11 +230,12 @@ function nextStep(template: InitEntry, config: InitEntry): string {
  * パスは `import.meta.url` から引く。cwd 基準にすると、ent は対象リポジトリの
  * ルートで叩かれる CLI なので（`repoRoot = process.cwd()`、src/cli.ts）、対象
  * リポジトリ側の `.claude/` を見に行って外れる。`src/usecase/` からも
- * `dist/usecase/` からも、2つ上が ent 本体のリポジトリのルートになる
- * （`src/adapters/claude.ts` の `REVIEW_PLUGIN_DIR` と同じ引き方）。
+ * `dist/usecase/` からも、4つ上が ent 本体のリポジトリのルートになる
+ * （2つ上が `packages/ent`、そこから2つ上。`src/adapters/agent-prompt.ts` の
+ * `REVIEW_PLUGIN_DIR` と同じ引き方）。
  */
 function skillSourceDir(name: string): string {
-  return fileURLToPath(new URL(`../../.claude/skills/${name}`, import.meta.url));
+  return fileURLToPath(new URL(`../../../../.claude/skills/${name}`, import.meta.url));
 }
 
 /** user scope に張る skill。`~/.claude/skills/<name>` になる */

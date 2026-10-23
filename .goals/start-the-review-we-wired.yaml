@@ -319,23 +319,23 @@ context:
     - title: レビューをいつ起動するかを範囲外として残した Goal（11 が本 Goal の出発点）
       path: .goals/collaborate-in-separate-worktrees.yaml
     - title: 直す対象。guard と LLM の境界、プロンプト
-      path: src/decide/index.ts
+      path: packages/ent/src/decide/index.ts
     - title: 直す対象。Fact を作る側
-      path: src/observe/index.ts
+      path: packages/ent/src/observe/index.ts
     - title: 観測キーの登録と、「作る側はまだ居ない」の注記
-      path: src/domain/fact-keys.ts
+      path: packages/ent/src/domain/fact-keys.ts
     - title: ACT の role と ESCALATE の理由
-      path: src/domain/action.ts
+      path: packages/ent/src/domain/action.ts
     - title: ActorPort の戻り値（logRef はここにある）
-      path: src/act/index.ts
+      path: packages/ent/src/act/index.ts
     - title: Port を組み立てる場所（新しい Port の配線先）
-      path: src/cli.ts
+      path: packages/ent/src/cli.ts
     - title: レビュー役のプロンプトと権限（広げない）
-      path: src/adapters/claude.ts
+      path: packages/ent/src/adapters/claude.ts
     - title: 弱めてはいけない既存の性質
-      path: tests/decide-llm-boundary.test.ts
+      path: packages/ent/tests/decide-llm-boundary.test.ts
     - title: 弱めてはいけない既存の性質
-      path: tests/review-actor.test.ts
+      path: packages/ent/tests/review-actor.test.ts
     - title: 設計ドキュメント
       path: docs/design.md
 
@@ -359,11 +359,14 @@ policies:
     - mise.toml
     - mise-tasks/**
     - vitest.config.ts
+    - packages/*/vitest.config.ts
     - biome.json
     - tsconfig*.json
+    - packages/*/tsconfig*.json
     - .github/**
     # 依存の追加は人間が通す。constraints にも書いてある。
     - package.json
+    - packages/*/package.json
     - pnpm-lock.yaml
 
 budget:

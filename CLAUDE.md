@@ -6,21 +6,21 @@
 ## ent 自身を直す Goal を回すときは、mise の task を通す
 
 ```sh
-mise run ent -- run <slug>         # dist/ を作り直してから1ティック回す
+mise run ent -- run <slug>         # packages/ent/dist/ を作り直してから1ティック回す
 mise run ent -- list               # 引数は `--` の後ろに置く。サブコマンドはどれでもよい
 ```
 
-`bin` が指すのは `dist/cli.js` で、`tsc` を通すまで HEAD の実装は1行も反映されない。
+`bin` が指すのは `packages/ent/dist/cli.js` で、`tsc` を通すまで HEAD の実装は1行も反映されない。
 Actor が新しい行動を実装し、controller がそれを commit しても、次のティックで動く
-`dist/cli.js` は古いままなので、その行動は選択肢に出ない。「実装したのに動かない」の
+`packages/ent/dist/cli.js` は古いままなので、その行動は選択肢に出ない。「実装したのに動かない」の
 原因が実装ではなくビルドにあるので、外からは区別が付かない。実際にこれで6ティック空転した。
 
-task の実体は `node dist/cli.js` に `build` への依存を足しただけで、出力も終了コードも
+task の実体は `node packages/ent/dist/cli.js` に `build` への依存を足しただけで、出力も終了コードも
 変わらない。mise の進捗は stderr に出るので、stdout は JSON だけのまま `jq` に渡せる。
 
 cron から回すときも、この task を通す。**先に `mise run build` を1回だけ実行して、あとは
 `ent run` を直に叩く形にはしない。** その形だと、controller が commit した実装が次の
-ティックの `dist/` に入らず、上と同じ空転が起きる。
+ティックの `packages/ent/dist/` に入らず、上と同じ空転が起きる。
 
 **cron から回すときは、repo 単位の外部ロックを Goal が1本でも必ず取る。** cron 行を複数
 並べると、毎回ビルドが走るぶん1ティックが長くなり、起動時刻が重なってビルド同士が
@@ -46,7 +46,7 @@ cron 行の書き方は README にある（`README.ja.md`「複数の Goal を�
 いくら増えても動かない。
 
 **ただし、実際に `ent run` を2本立てて回してはいない。** 確かめたのは
-`tests/controller-state-db-writes.test.ts` の中で、同じ `goals.db` を共有する2本の
+`packages/ent/tests/controller-state-db-writes.test.ts` の中で、同じ `goals.db` を共有する2本の
 ティックを同時に流して、どちらも `protected_path_touched` にならないところまでになる。
 テストの中の並列なので、プロセスを分けて初めて出るものは映らない。分かっている
 残りは2つある。

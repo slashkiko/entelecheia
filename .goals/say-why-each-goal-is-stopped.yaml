@@ -171,11 +171,11 @@ context:
     - title: 設計ドキュメント
       path: docs/design.md
     - title: いまの一覧の組み立て
-      path: src/usecase/inspect.ts
+      path: packages/ent/src/usecase/inspect.ts
     - title: 一覧が返す型
-      path: src/domain/goal-state.ts
+      path: packages/ent/src/domain/goal-state.ts
     - title: 読む先の口
-      path: src/store/port.ts
+      path: packages/ent/src/store/port.ts
 
 policies:
   require_human_approval:
@@ -192,15 +192,18 @@ policies:
     - mise.toml
     - mise-tasks/**
     - vitest.config.ts
+    - packages/*/vitest.config.ts
     - biome.json
     - tsconfig*.json
+    - packages/*/tsconfig*.json
     - .github/**
     # 依存の追加は人間が通す。constraints にも「増やさない」と書いてある。
     - package.json
+    - packages/*/package.json
     - pnpm-lock.yaml
     # この Goal は読むだけの層に閉じる。永続化の口と実装を触る必要は無い。
     # 触りたくなったら、それは設計が変わったということなので人間を呼ぶ。
-    - src/store/**
+    - packages/ent/src/store/**
 
 budget:
   max_actor_runs: 6

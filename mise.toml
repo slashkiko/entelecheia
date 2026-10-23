@@ -27,8 +27,9 @@ betterleaks git .
 """
 
 [tasks.build]
-description = "Build the ent CLI into dist/"
-run = "pnpm exec tsc -p tsconfig.build.json"
+description = "Build every package into its dist/ (the ent CLI is packages/ent/dist/cli.js)"
+# 依存の順に回す。後から足す package（core など）を ent より先に作るのは pnpm -r の仕事になる。
+run = "pnpm -r run build"
 
 [tasks.typecheck]
 description = "Type-check the TypeScript sources"
@@ -52,11 +53,11 @@ description = "Build to dist/ first, then run the ent CLI"
 #
 # 引数は `--` の後ろに置く（`mise run ent -- run <slug>`）。
 depends = ["build"]
-run = "node dist/cli.js"
+run = "node packages/ent/dist/cli.js"
 
 [tasks.verify]
 description = "Everything a Goal's Acceptance Criteria may depend on"
 # build を入れるのは、typecheck が通ることと dist/cli.js が出来ることが別だから。
-# tsconfig.json は noEmit で tests/** を含み、bin の実体を作るのは
-# tsconfig.build.json（rootDir: src）の側になる。
+# ルートの tsconfig.json は noEmit で各 package の tests/** を含み、bin の実体を作るのは
+# packages/ent/tsconfig.build.json（rootDir: src）の側になる。
 depends = ["typecheck", "lint", "build", "test"]

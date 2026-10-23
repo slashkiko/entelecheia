@@ -42,7 +42,7 @@ ent は宣言した end state に収束するところだけを見る。順序�
 
 **先に書かないと何が起きるか。** 着手時点で `type: command` の criteria が全部通る Goal を start
 すると、ent は Gap が無いので COMPLETE を選ぶ。1ティック目で、何も書かずに完了扱いになる。
-`ent plan` は宣言時点でこれを拒むが（`alreadyDone` / `src/usecase/plan.ts`）、手で書いた Goal は
+`ent plan` は宣言時点でこれを拒むが（`alreadyDone` / `packages/ent/src/usecase/plan.ts`）、手で書いた Goal は
 その検査を通らない。
 
 **実際に走らせて、落ちることを確かめる。** 「落ちるはず」と書かない。出力を残す。
@@ -60,7 +60,7 @@ CI 定義）も同じ理由で入れる。
   `verification: { type: fact, key: review.verdict, equals: approved }` を足す。承認が出るまで
   Gap が残るので COMPLETE に届かない
 - **`github.ci.*` と `policies.publish.open_pull_request: manual` は併用できない。** CI は PR を
-  観測できたティックでしか引かないので（`src/observe/index.ts:379-381`）、PR を最後に回すと
+  観測できたティックでしか引かないので（`packages/ent/src/observe/index.ts:379-381`）、PR を最後に回すと
   永久に unobserved のまま Gap が残る。PR を先に開く（`repository.pull_request.draft: true` で
   通知を抑えられる）か、CI を criteria から外すかを、ここで決める
 

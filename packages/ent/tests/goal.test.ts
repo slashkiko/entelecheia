@@ -12,7 +12,7 @@ import {
 import { CONFIG_FILENAME, configTemplate, parseGoalConfig } from "../src/domain/goal-config.js";
 import { parseGoal } from "../src/domain/goal-parse.js";
 
-const GOALS_DIR = join(import.meta.dirname, "..", ".goals");
+const GOALS_DIR = join(import.meta.dirname, "..", "..", "..", ".goals");
 
 /** `.goals/` にある Goal YAML。config.yaml は Goal ではないので外す */
 function goalFiles(): string[] {

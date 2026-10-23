@@ -13,9 +13,9 @@ import { agentContextPayload, main } from "../src/cli.js";
  * ここは網羅集合として比べる。片側にしか無いものがあれば落ちる。
  */
 
-const README = new URL("../README.md", import.meta.url).pathname;
-const README_JA = new URL("../README.ja.md", import.meta.url).pathname;
-const SKILL = new URL("../.claude/skills/ent/SKILL.md", import.meta.url).pathname;
+const README = new URL("../../../README.md", import.meta.url).pathname;
+const README_JA = new URL("../../../README.ja.md", import.meta.url).pathname;
+const SKILL = new URL("../../../.claude/skills/ent/SKILL.md", import.meta.url).pathname;
 
 /** 行頭が `ent <サブコマンド>` になっている箇所を拾う */
 const INVOCATION = /^ent\s+([a-z][a-z-]*)/gm;

@@ -168,11 +168,11 @@ context:
     - title: 設計ドキュメント
       path: docs/design.md
     - title: いまの doctor
-      path: src/usecase/doctor.ts
+      path: packages/ent/src/usecase/doctor.ts
     - title: 実行時の依存の判定（触らない側）
-      path: src/domain/guard-rules.ts
+      path: packages/ent/src/domain/guard-rules.ts
     - title: 依存の宣言
-      path: src/domain/goal.ts
+      path: packages/ent/src/domain/goal.ts
 
 policies:
   require_human_approval:
@@ -189,16 +189,19 @@ policies:
     - mise.toml
     - mise-tasks/**
     - vitest.config.ts
+    - packages/*/vitest.config.ts
     - biome.json
     - tsconfig*.json
+    - packages/*/tsconfig*.json
     - .github/**
     # 依存の追加は人間が通す。
     - package.json
+    - packages/*/package.json
     - pnpm-lock.yaml
     # 実行時の判定はこの Goal の範囲外。触るなら設計が変わったということなので
     # 人間を呼ぶ（guard-rules.ts は下限にあるので、こちらは controller の外側）。
-    - src/reconcile/**
-    - src/decide/**
+    - packages/ent/src/reconcile/**
+    - packages/ent/src/decide/**
 
 budget:
   max_actor_runs: 6

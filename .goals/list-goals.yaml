@@ -127,9 +127,9 @@ context:
     - title: 設計ドキュメント
       path: docs/design.md
     - title: CLI の現状
-      path: src/cli.ts
+      path: packages/ent/src/cli.ts
     - title: Store の現状
-      path: src/store/sqlite.ts
+      path: packages/ent/src/store/sqlite.ts
 
 policies:
   require_human_approval:
@@ -141,22 +141,25 @@ policies:
     - external_send
   protected_paths:
     # 制御ループ本体と、Goal の宣言部。
-    - src/controller/**
+    - packages/ent/src/controller/**
     - .goals/**
     # 関門そのものと、Agent の許可・拒否ツールを決めるファイル。
-    - src/domain/protected-paths.ts
-    - src/adapters/claude.ts
+    - packages/ent/src/domain/protected-paths.ts
+    - packages/ent/src/adapters/claude.ts
     # 検証系。ここを書き換えられると Agent が自分の criteria を通せる。
     # tests/** は入れない（理由は guard-the-controller.yaml に書いた）。
     - mise.toml
     - mise-tasks/**
     - vitest.config.ts
+    - packages/*/vitest.config.ts
     - biome.json
     - tsconfig*.json
+    - packages/*/tsconfig*.json
     - .github/**
     # 依存の追加は人間が通す。この Goal の constraints にも
     # 「依存パッケージを増やさない」と書いてある。
     - package.json
+    - packages/*/package.json
     - pnpm-lock.yaml
 
 budget:

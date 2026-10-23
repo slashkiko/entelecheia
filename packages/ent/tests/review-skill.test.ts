@@ -98,7 +98,7 @@ async function promptFor(over: Partial<ActorInvocation> = {}): Promise<string> {
   return sink.prompts[0] ?? "";
 }
 
-const PLUGIN_DIR = fileURLToPath(new URL("../plugins/ent-review", import.meta.url));
+const PLUGIN_DIR = fileURLToPath(new URL("../../../plugins/ent-review", import.meta.url));
 
 describe("skill をレビュー役にだけ渡す", () => {
   it("plugin の置き場所を渡す", async () => {

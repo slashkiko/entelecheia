@@ -113,7 +113,7 @@ Goal を ACTIVE にしてから COMPLETE 判断が出るまでの時計。基準
 ## 3. いまの出力で測れるもの
 
 **M1・M2・M3・M4 は、いま出ているものだけで測れる。** 以下は実データに対して実際に叩いた
-コマンドと出力になる。`ent` は `process.cwd()` を repoRoot にする（`src/cli.ts:117`）ので、
+コマンドと出力になる。`ent` は `process.cwd()` を repoRoot にする（`packages/ent/src/cli.ts:117`）ので、
 測る対象のディレクトリで叩く。
 
 ### M1 — `ent list --json`
@@ -147,7 +147,7 @@ $ ent get calculate-metered-cost-from-raw-logs --json \
 M4 は `state.activatedAt` と、`decision.action.type` が `COMPLETE` のときの
 `decision.decidedAt` の差で出す。**`goals` に完了時刻の列は無い**ので、この差でしか取れない。
 
-**`runs` は `--limit` で切られる。** 既定は50（`src/usecase/inspect.ts:22`）で、古い方から落ちる。
+**`runs` は `--limit` で切られる。** 既定は50（`packages/ent/src/usecase/inspect.ts:22`）で、古い方から落ちる。
 基準線の最大が2なので今回は欠けていないが、Goal が長くなれば M2 を数え落とす。
 50を超える Goal を測るときは `--limit` を上げる。
 
@@ -186,7 +186,7 @@ ENOENT: no such file or directory, open '.../.goals/zz-driver-boundary-probe.yam
 
 **判断の履歴を出す口ができた。`ent decisions <slug>` が、その Goal の判断を古い順に全部出す。**
 `ent get` の `decision` も `ent list` の `stopped` も**直近1件だけ**を出す
-（`src/usecase/inspect.ts:163` の `stoppedReason`）。生涯の回数ではないので、そのまま数えると取りこぼす。
+（`packages/ent/src/usecase/inspect.ts:163` の `stoppedReason`）。生涯の回数ではないので、そのまま数えると取りこぼす。
 
 実例が基準線にある。`surface-unregistered-declarations` は `ESCALATE(protected_path_touched)` を
 3回出しているが、`ent list` には1件にしか見えない。
@@ -264,7 +264,7 @@ zz-driver-boundary-probe               DECLARATION_MISSING  0                   
 `human_review_pending` の3件目になる。
 
 `WAIT(review_pending)` は `WAIT(human_review_pending)` の改名前の名前で、同じ待ちになる
-（`src/domain/action.ts`）。タスクは足して数えるので、改名をまたぐ Goal が2つの理由に割れない。
+（`packages/ent/src/domain/action.ts`）。タスクは足して数えるので、改名をまたぐ Goal が2つの理由に割れない。
 
 ### M4 の実時間も、同じ口で分けられる
 
@@ -407,7 +407,7 @@ M5（同一失敗シグネチャの反復回数）の観測が入った。基準
 
 **`ent` の出力ではなく状態ストアの行から数えている。** この指標は §5 で「観測が無い」に
 分類したもので、CLI に出す口はまだ無い。数え直すには、基準線の `goals.db` を開いて
-`buildAttempts` と `trailingRepeatedAttempts`（`src/domain/attempt.ts`）を Goal ごとに
+`buildAttempts` と `trailingRepeatedAttempts`（`packages/ent/src/domain/attempt.ts`）を Goal ごとに
 呼ぶ。`Store` は `listRuns` / `listVerificationRounds` / `listSnapshots` の3本を返すので、
 それを渡すだけになる。
 

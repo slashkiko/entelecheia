@@ -165,13 +165,13 @@ context:
     - title: 設計ドキュメント
       path: docs/design.md
     - title: 観測キーのレジストリ
-      path: src/domain/fact-keys.ts
+      path: packages/ent/src/domain/fact-keys.ts
     - title: Fact を作る側
-      path: src/observe/index.ts
+      path: packages/ent/src/observe/index.ts
     - title: GitHub から run と job を読む側
-      path: src/adapters/github.ts
+      path: packages/ent/src/adapters/github.ts
     - title: 仕様（着手時点では落ちる）
-      path: tests/ci-failed-job-count.test.ts
+      path: packages/ent/tests/ci-failed-job-count.test.ts
 
 policies:
   require_human_approval:
@@ -189,12 +189,15 @@ policies:
     - mise.toml
     - mise-tasks/**
     - vitest.config.ts
+    - packages/*/vitest.config.ts
     - biome.json
     - tsconfig*.json
+    - packages/*/tsconfig*.json
     - .github/**
     # 依存の追加は人間が通す。この Goal の constraints にも
     # 「依存パッケージを増やさない」と書いてある。
     - package.json
+    - packages/*/package.json
     - pnpm-lock.yaml
 
 budget:

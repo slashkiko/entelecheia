@@ -6,6 +6,13 @@ you newly join (or when you open a new session).
 *English | [日本語](design.ja.md)*
 
 > [!NOTE]
+> **Paths to code in the body (`src/…`, `tests/…`, `dist/…`) are relative to `packages/ent/`.** The
+> repository became a pnpm workspace after most of this document was written, and the ent CLI moved
+> to `packages/ent/` unchanged. The body keeps the shorter form. The one place where the full path
+> matters is `PROTECTED_PATH_FLOOR` (§7): its entries are relative to the repository root, so in the
+> code they read `packages/ent/src/controller/**` and so on.
+
+> [!NOTE]
 > **Issue and PR numbers in the body text point at the repository this code was migrated from.** The
 > history was rewritten on the way here, so this repository holds zero issues and zero PRs. Numbers
 > written as `issue #58` or `PR #34` therefore do not resolve here, and once issues start being filed

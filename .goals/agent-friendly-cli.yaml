@@ -210,17 +210,17 @@ context:
 
   references:
     - title: CLI の現状
-      path: src/cli.ts
+      path: packages/ent/src/cli.ts
     - title: 1ティックの外側。dry-run が分岐する場所
-      path: src/controller/index.ts
+      path: packages/ent/src/controller/index.ts
     - title: 仕様（フラグ・エラー・出力の上限）
-      path: tests/cli-agent-friendly.test.ts
+      path: packages/ent/tests/cli-agent-friendly.test.ts
     - title: 仕様（agent-context と SKILL.md）
-      path: tests/cli-agent-context.test.ts
+      path: packages/ent/tests/cli-agent-context.test.ts
     - title: 仕様（--dry-run）
-      path: tests/controller-dry-run.test.ts
+      path: packages/ent/tests/controller-dry-run.test.ts
     - title: Store の現状
-      path: src/store/sqlite.ts
+      path: packages/ent/src/store/sqlite.ts
     - title: 設計ドキュメント
       path: docs/design.md
     - title: 人間向けの導入
