@@ -18,10 +18,10 @@
     "build": "tsc -p tsconfig.build.json"
   },
   "dependencies": {
-    "@entelecheia/core": "workspace:*"
+    "@entelecheia/core": "workspace:*",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
-    "yaml": "^2.9.0",
-    "zod": "^4.4.3"
+    "yaml": "^2.9.0"
   }
 }

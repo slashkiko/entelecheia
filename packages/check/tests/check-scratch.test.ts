@@ -14,24 +14,31 @@ const state = vi.hoisted(() => ({ scratchParent: "", locked: new Set<string>() }
 
 vi.mock("node:fs/promises", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs/promises")>();
-  const isScratch = (path: string) =>
-    state.scratchParent !== "" && dirname(path) === state.scratchParent;
   return {
     ...actual,
     mkdtemp: async (...args: Parameters<typeof actual.mkdtemp>) => {
       const dir = await actual.mkdtemp(...args);
-      if (isScratch(dir)) state.locked.add(dir);
+      if (state.scratchParent !== "" && dirname(dir) === state.scratchParent) {
+        state.locked.add(dir);
+      }
       return dir;
     },
-    chmod: async (path: string, mode: number) => {
+  };
+});
+
+vi.mock("node:fs", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs")>();
+  return {
+    ...actual,
+    chmodSync: (path: string, mode: number) => {
       state.locked.delete(String(path));
-      return actual.chmod(path, mode);
+      return actual.chmodSync(path, mode);
     },
-    rm: async (path: string, options?: Parameters<typeof actual.rm>[1]) => {
+    rmSync: (path: string, options?: Parameters<typeof actual.rmSync>[1]) => {
       if (state.locked.has(String(path))) {
         throw Object.assign(new Error("EACCES: permission denied"), { code: "EACCES" });
       }
-      return actual.rm(path, options);
+      return actual.rmSync(path, options);
     },
   };
 });

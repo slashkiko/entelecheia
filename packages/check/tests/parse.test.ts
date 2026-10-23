@@ -66,6 +66,75 @@ describe("ent-check の引数", () => {
     expect(command.kind === "error" ? command.message : "").toContain(message);
   });
 
+  it("--observe は、規則を当てない形で読む。--repo は要らない", () => {
+    expect(
+      parseCommand(["--observe", "--base", "main", "--head", "HEAD", "--out", "o.json"]),
+    ).toEqual({
+      kind: "observe",
+      base: "main",
+      head: "HEAD",
+      dir: null,
+      out: "o.json",
+      task: DEFAULT_TASK,
+      timeoutMinutes: DEFAULT_TIMEOUT_MINUTES,
+    });
+  });
+
+  it("--observations は、タスクを流さない形で読む", () => {
+    expect(
+      parseCommand([
+        ...REQUIRED,
+        "--observations",
+        "o.json",
+        "--pr",
+        "3",
+        "--checker-sha",
+        "c".repeat(40),
+      ]),
+    ).toEqual({
+      kind: "judge",
+      observations: "o.json",
+      repo: "example-owner/example-app",
+      base: "main",
+      head: "HEAD",
+      pr: 3,
+      dir: null,
+      out: null,
+      checkerSha: "c".repeat(40),
+    });
+  });
+
+  it.each([
+    [[...REQUIRED, "--observe", "--observations", "o.json"], "cannot be used together"],
+    [[...REQUIRED, "--observations", ""], "--observations must be a path"],
+    // 黙って捨てると、呼ぶ側は効いていると思い込む
+    [[...REQUIRED, "--observe"], "--repo cannot be used with --observe"],
+    [
+      [
+        "--observe",
+        "--base",
+        "main",
+        "--head",
+        "HEAD",
+        "--pr",
+        "3",
+        "--checker-sha",
+        "c".repeat(40),
+      ],
+      "--pr, --checker-sha cannot be used with --observe",
+    ],
+    [
+      [...REQUIRED, "--observations", "o.json", "--task", "verify"],
+      "--task cannot be used with --observations",
+    ],
+    [["--observe", "--base", "main"], "missing --head"],
+    [["--observations", "o.json", "--base", "main", "--head", "HEAD"], "missing --repo"],
+  ])("%o は引数の誤り", (argv, message) => {
+    const command = parseCommand(argv);
+
+    expect(command.kind === "error" ? command.message : "").toContain(message);
+  });
+
   it("--help は使い方を出す", () => {
     expect(parseCommand(["--help"])).toEqual({ kind: "help" });
   });

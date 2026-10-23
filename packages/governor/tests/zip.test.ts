@@ -1,18 +1,35 @@
 import { describe, expect, it } from "vitest";
-import { ArchiveError, extractSingleFile } from "../src/zip.js";
+import { ArchiveError, extractFiles } from "../src/zip.js";
 import { zipOf } from "./zip-fixture.js";
 
 const NAME = "evidence.json";
 const BODY = '{"level":"E1"}';
 
-describe("artifact の zip から1つ取り出す", () => {
+/** 名前を1つだけ持つ zip から、その中身を取り出す */
+function extractSingleFile(zip: Buffer, name: string, maxBytes: number): Buffer | undefined {
+  return extractFiles(zip, [name], maxBytes).get(name);
+}
+
+describe("artifact の zip から取り出す", () => {
   it.each([
     ["deflate", 8 as const],
     ["無圧縮", 0 as const],
   ])("%s のファイルを取り出す", (_label, method) => {
     const zip = zipOf([{ name: NAME, content: BODY, method }]);
 
-    expect(extractSingleFile(zip, NAME, 1024).toString("utf8")).toBe(BODY);
+    expect(extractSingleFile(zip, NAME, 1024)?.toString("utf8")).toBe(BODY);
+  });
+
+  it("名前ごとに中身を返す。並びの順は問わない", () => {
+    const zip = zipOf([
+      { name: "evidence.jwt", content: "token" },
+      // 拡張欄とコメントがあっても、次の1件を読み違えない
+      { name: NAME, content: BODY, central: { extra: "xx", comment: "note" } },
+    ]);
+    const files = extractFiles(zip, [NAME, "evidence.jwt"], 1024);
+
+    expect(files.get(NAME)?.toString("utf8")).toBe(BODY);
+    expect(files.get("evidence.jwt")?.toString("utf8")).toBe("token");
   });
 
   it("後ろにコメントの付いた zip も読む", () => {
@@ -20,7 +37,7 @@ describe("artifact の zip から1つ取り出す", () => {
     const comment = Buffer.from("a comment");
     zip.writeUInt16LE(comment.length, zip.length - 2);
 
-    expect(extractSingleFile(Buffer.concat([zip, comment]), NAME, 1024).toString("utf8")).toBe(
+    expect(extractSingleFile(Buffer.concat([zip, comment]), NAME, 1024)?.toString("utf8")).toBe(
       BODY,
     );
   });
@@ -34,9 +51,9 @@ describe("artifact の zip から1つ取り出す", () => {
         { name: NAME, content: BODY },
         { name: "other.json", content: "{}" },
       ]),
-      "exactly one file",
+      "expected 1 files in the archive, found 2",
     ],
-    ["名前が違う", zipOf([{ name: "other.json", content: BODY }]), "expected evidence.json"],
+    ["名前が違う", zipOf([{ name: "other.json", content: BODY }]), "unexpected other.json"],
     ["暗号化している", zipOf([{ name: NAME, content: BODY, flags: 0x1 }]), "encrypted"],
     [
       "ZIP64 の印がある",
@@ -57,6 +74,28 @@ describe("artifact の zip から1つ取り出す", () => {
   ])("%s zip は投げる", (_label, zip, message) => {
     expect(() => extractSingleFile(zip, NAME, 1024)).toThrow(ArchiveError);
     expect(() => extractSingleFile(zip, NAME, 1024)).toThrow(message);
+  });
+
+  it.each([
+    [
+      "足りない",
+      zipOf([
+        { name: NAME, content: BODY },
+        { name: "other.json", content: "{}" },
+      ]),
+      "unexpected other.json",
+    ],
+    [
+      "同じ名前が2つある",
+      zipOf([
+        { name: NAME, content: BODY },
+        { name: NAME, content: "{}" },
+      ]),
+      "appears twice",
+    ],
+    ["1つしかない", zipOf([{ name: NAME, content: BODY }]), "expected 2 files"],
+  ])("2つを求めたのに、名前が%s zip は投げる", (_label, zip, message) => {
+    expect(() => extractFiles(zip, [NAME, "evidence.jwt"], 1024)).toThrow(message);
   });
 
   it("記録の大きさが上限を超えれば、展開せずに投げる", () => {

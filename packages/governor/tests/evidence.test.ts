@@ -10,6 +10,7 @@ import {
   MAX_EVIDENCE_BYTES,
   type RunArtifact,
 } from "../src/evidence.js";
+import { ISSUER, idToken, KEY_ID, OTHER_KEY, SIGNING_KEYS } from "./id-token-fixture.js";
 import { zipOf } from "./zip-fixture.js";
 
 const HEAD = "a".repeat(40);
@@ -56,15 +57,39 @@ function run(overrides: Partial<CheckRun> = {}): CheckRun {
     event: "pull_request",
     status: "completed",
     createdAt: "2000-01-31T00:00:00Z",
-    runStartedAt: "2000-01-31T00:00:00Z",
+    runAttempt: 1,
     headRepository: "example-owner/sample-shop",
     referencedWorkflows: [{ path: `${WORKFLOW}@${CHECKER}`, sha: CHECKER }],
     ...overrides,
   };
 }
 
-function archiveOf(body: unknown): Buffer {
-  return zipOf([{ name: "evidence.json", content: JSON.stringify(body) }]);
+/** evidence のジョブがそのトークンに残す中身。`aud` は evidence.json から決める */
+function claimsFor(evidence: string, overrides: Record<string, unknown> = {}) {
+  return {
+    iss: ISSUER,
+    aud: `ent-evidence:sha256:${createHash("sha256").update(evidence).digest("hex")}`,
+    repository: "example-owner/sample-shop",
+    run_id: "100",
+    run_attempt: "1",
+    event_name: "pull_request",
+    job_workflow_ref: `${WORKFLOW}@${CHECKER}`,
+    job_workflow_sha: CHECKER,
+    runner_environment: "github-hosted",
+    ...overrides,
+  };
+}
+
+/** evidence のジョブが残す形の zip。evidence.json と、その digest に結びつけたトークン */
+function archiveOfText(evidence: string, claims: Record<string, unknown> = {}): Buffer {
+  return zipOf([
+    { name: "evidence.json", content: evidence },
+    { name: "evidence.jwt", content: idToken(claimsFor(evidence, claims)) },
+  ]);
+}
+
+function archiveOf(body: unknown, claims: Record<string, unknown> = {}): Buffer {
+  return archiveOfText(JSON.stringify(body), claims);
 }
 
 function artifact(archive: Buffer, overrides: Partial<RunArtifact> = {}): RunArtifact {
@@ -74,7 +99,6 @@ function artifact(archive: Buffer, overrides: Partial<RunArtifact> = {}): RunArt
     expired: false,
     sizeInBytes: archive.length,
     digest: `sha256:${createHash("sha256").update(archive).digest("hex")}`,
-    createdAt: "2000-01-31T00:10:00Z",
     ...overrides,
   };
 }
@@ -104,11 +128,16 @@ function source(
       if (archive === undefined) throw new Error(`no artifact ${id}`);
       return { status: "ok" as const, data: archive };
     }),
+    signingKeys: vi.fn(async () => SIGNING_KEYS),
   };
 }
 
-function withReport(body: unknown, runOverrides: Partial<CheckRun> = {}) {
-  const archive = archiveOf(body);
+function withReport(
+  body: unknown,
+  runOverrides: Partial<CheckRun> = {},
+  claims: Record<string, unknown> = {},
+) {
+  const archive = archiveOf(body, claims);
   const theRun = run(runOverrides);
   return source([theRun], { [theRun.id]: [{ meta: artifact(archive), archive }] });
 }
@@ -199,7 +228,7 @@ describe("evidence.json の取り出し", () => {
 
   it("終わった run が複数あれば、いちばん新しいものを読む", async () => {
     const stale = archiveOf(report({ base_sha: "d".repeat(40) }));
-    const fresh = archiveOf(report());
+    const fresh = archiveOf(report(), { run_id: "101" });
     const fake = source([run({ id: 100 }), run({ id: 101, createdAt: "2000-01-31T01:00:00Z" })], {
       100: [{ meta: artifact(stale, { id: 500 }), archive: stale }],
       101: [{ meta: artifact(fresh, { id: 501 }), archive: fresh }],
@@ -227,9 +256,11 @@ describe("evidence.json の取り出し", () => {
   it("検査の sha を上げる間は、古い sha の run も受け取る", async () => {
     // governor と呼ぶ側のリポジトリは、別々の PR で sha を上げる
     const outcome = await fetchEvidence(
-      withReport(report({ checker_sha: OLD_CHECKER }), {
-        referencedWorkflows: [{ path: `${WORKFLOW}@${OLD_CHECKER}`, sha: OLD_CHECKER }],
-      }),
+      withReport(
+        report({ checker_sha: OLD_CHECKER }),
+        { referencedWorkflows: [{ path: `${WORKFLOW}@${OLD_CHECKER}`, sha: OLD_CHECKER }] },
+        { job_workflow_ref: `${WORKFLOW}@${OLD_CHECKER}`, job_workflow_sha: OLD_CHECKER },
+      ),
       { ...REQUEST, checker: { workflow: WORKFLOW, shas: [OLD_CHECKER, CHECKER] } },
     );
 
@@ -239,9 +270,11 @@ describe("evidence.json の取り出し", () => {
   it("報告の checker_sha が、run の呼んだ sha と違えば受け取らない", async () => {
     // 呼ぶ側が uses: と entelecheia-sha を違う sha にした形。どちらも受け取る sha のうちでも落とす
     const outcome = await fetchEvidence(
-      withReport(report({ checker_sha: CHECKER }), {
-        referencedWorkflows: [{ path: `${WORKFLOW}@${OLD_CHECKER}`, sha: OLD_CHECKER }],
-      }),
+      withReport(
+        report({ checker_sha: CHECKER }),
+        { referencedWorkflows: [{ path: `${WORKFLOW}@${OLD_CHECKER}`, sha: OLD_CHECKER }] },
+        { job_workflow_ref: `${WORKFLOW}@${OLD_CHECKER}`, job_workflow_sha: OLD_CHECKER },
+      ),
       { ...REQUEST, checker: { workflow: WORKFLOW, shas: [OLD_CHECKER, CHECKER] } },
     );
 
@@ -306,21 +339,19 @@ describe("evidence.json の取り出し", () => {
     });
   });
 
-  it.each([
-    ["前の attempt で作った", "1999-12-31T00:00:00Z"],
-    ["作った時刻の分からない", null],
-  ])("%s artifact は、いまの attempt の報告として読まない", async (_label, createdAt) => {
+  it("前の attempt のトークンの付いた artifact は、いまの attempt の報告として読まない", async () => {
     // 回し直しても前の attempt の artifact は残る。いまの attempt が ent-check より先に落ちると、
     // それだけが見える
-    const archive = archiveOf(report());
-    const fake = source([run()], { 100: [{ meta: artifact(archive, { createdAt }), archive }] });
+    const archive = archiveOf(report(), { run_attempt: "1" });
+    const fake = source([run({ runAttempt: 2 })], {
+      100: [{ meta: artifact(archive), archive }],
+    });
 
     expect(await fetchEvidence(fake, REQUEST)).toEqual({
       status: "missing",
-      reason: { code: "artifact_from_earlier_attempt", artifactId: 500 },
+      reason: { code: "artifact_from_earlier_attempt", artifactId: 500, attempt: "1" },
       runId: 100,
     });
-    expect(fake.download).not.toHaveBeenCalled();
   });
 
   it("上限を超える artifact は取りにいかない", async () => {
@@ -378,7 +409,7 @@ describe("evidence.json の取り出し", () => {
   });
 
   it("JSON でなければ受け取らない", async () => {
-    const archive = zipOf([{ name: "evidence.json", content: "{" }]);
+    const archive = archiveOfText("{");
     const fake = source([run()], { 100: [{ meta: artifact(archive), archive }] });
 
     expect(await fetchEvidence(fake, REQUEST)).toMatchObject({
@@ -430,15 +461,111 @@ describe("evidence.json の取り出し", () => {
   });
 });
 
+describe("artifact を上げたジョブの確かめ", () => {
+  function withArchive(archive: Buffer) {
+    return source([run()], { 100: [{ meta: artifact(archive), archive }] });
+  }
+
+  it("トークンの無い artifact は受け取らない", async () => {
+    // 同じ run のほかのジョブで流れた head のコードが、evidence.json だけを上げた形
+    const archive = zipOf([{ name: "evidence.json", content: JSON.stringify(report()) }]);
+
+    expect(await fetchEvidence(withArchive(archive), REQUEST)).toMatchObject({
+      status: "rejected",
+      reason: { code: "bad_archive", detail: expect.stringContaining("expected 2 files") },
+    });
+  });
+
+  it("一覧に無い鍵の署名なら、報告が無いと言う", async () => {
+    // GitHub が鍵を入れ替えた後の古いトークンもここに来る。回し直せば取り直せる
+    const body = JSON.stringify(report());
+    const archive = zipOf([
+      { name: "evidence.json", content: body },
+      {
+        name: "evidence.jwt",
+        content: idToken(claimsFor(body), { header: { alg: "RS256", kid: "rotated-key" } }),
+      },
+    ]);
+
+    expect(await fetchEvidence(withArchive(archive), REQUEST)).toEqual({
+      status: "missing",
+      reason: { code: "attestation_key_unknown", kid: "rotated-key" },
+      runId: 100,
+    });
+  });
+
+  it("署名が合わなければ受け取らない", async () => {
+    const body = JSON.stringify(report());
+    const archive = zipOf([
+      { name: "evidence.json", content: body },
+      { name: "evidence.jwt", content: idToken(claimsFor(body), { key: OTHER_KEY }) },
+    ]);
+
+    expect(await fetchEvidence(withArchive(archive), REQUEST)).toMatchObject({
+      status: "rejected",
+      reason: { code: "bad_attestation", detail: "the JWT signature does not match" },
+    });
+    expect(KEY_ID).toBe(SIGNING_KEYS.keys[0]?.kid);
+  });
+
+  it("別の evidence.json に付いたトークンを持ってきても受け取らない", async () => {
+    // 本物の報告に付いたトークンを、書き換えた報告の横に置いた形
+    const genuine = JSON.stringify(report());
+    const forged = JSON.stringify(report({ tests: { before: 3, after: 9, new_skips: 0 } }));
+    const archive = zipOf([
+      { name: "evidence.json", content: forged },
+      { name: "evidence.jwt", content: idToken(claimsFor(genuine)) },
+    ]);
+
+    expect(await fetchEvidence(withArchive(archive), REQUEST)).toMatchObject({
+      status: "rejected",
+      reason: { code: "attestation_mismatch", field: "aud" },
+    });
+  });
+
+  it.each([
+    ["repository", { repository: "example-owner/other-app" }],
+    ["run_id", { run_id: "99" }],
+    ["event_name", { event_name: "pull_request_target" }],
+    // 呼ぶ側のワークフローのジョブで取ったトークンは、呼ぶ側の名前になる
+    [
+      "job_workflow",
+      { job_workflow_ref: "example-owner/sample-shop/.github/workflows/ci.yml@refs/pull/7/merge" },
+    ],
+    ["job_workflow_sha", { job_workflow_sha: OLD_CHECKER }],
+    // 自前の runner では、head を流したジョブと同じ機械に載りうる
+    ["runner_environment", { runner_environment: "self-hosted" }],
+  ] as const)("トークンの %s が違えば受け取らない", async (field, claims) => {
+    const outcome = await fetchEvidence(withReport(report(), {}, claims), REQUEST);
+
+    expect(outcome).toMatchObject({
+      status: "rejected",
+      reason: { code: "attestation_mismatch", field },
+    });
+  });
+
+  it("違う attempt でも、ほかの欄が違えば古いではなく受け取らないと言う", async () => {
+    const outcome = await fetchEvidence(
+      withReport(report(), { runAttempt: 2 }, { run_attempt: "1", run_id: "99" }),
+      REQUEST,
+    );
+
+    expect(outcome).toMatchObject({
+      status: "rejected",
+      reason: { code: "attestation_mismatch", field: "run_id" },
+    });
+  });
+});
+
 describe("判定に渡す形", () => {
   const E2_RESULTS: EvidenceReport["results"] = [
     { layer: "E1", rule_id: "verify", status: "pass", location: null, fix_hint: null },
     { layer: "E2", rule_id: "contract", status: "pass", location: null, fix_hint: null },
   ];
 
-  it("head を流したジョブの報告は E1 に抑える", async () => {
-    // 同じジョブで動いた head のコードは、報告も artifact も差し替えられる。E2 を数えると、
-    // 振る舞いを変えない種別の自動マージに、偽った報告で届く
+  it("報告は E1 に抑える", async () => {
+    // 規則が読む観測は、head のコードを流したジョブが残したもので、head が偽れる。E2 を
+    // 数えると、振る舞いを変えない種別の自動マージに、偽った観測で届く
     const outcome = await fetchEvidence(
       withReport(report({ level: "E2", results: E2_RESULTS })),
       REQUEST,

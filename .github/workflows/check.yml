@@ -7,32 +7,63 @@ name: ent-check
 #   jobs:
 #     check:
 #       uses: slashkiko/entelecheia/.github/workflows/check.yml@<sha>
-#       # 呼ばれた側は、呼ぶ側が渡した権限より広くは持てない。既定の権限を絞っているなら要る。
+#       # 呼ばれた側は、呼ぶ側が渡した権限より広くは持てない。id-token: write が無いと、
+#       # run は始まる前に失敗する。
 #       permissions:
 #         contents: read
+#         id-token: write
 #       with:
 #         entelecheia-sha: <同じ sha>
 #
-# 2つの sha は呼ぶ側で揃える。このワークフローからは、自分が呼ばれた sha を読めない。
-# Renovate は `uses:` の sha だけを上げるので、同じ PR で `entelecheia-sha` も上げる。
-# 揃っていないと governor が報告を受け取らない。governor は、workflow run の記録にある
-# `uses:` の sha が自分の受け取る sha のどれかで、evidence.json に残した `entelecheia-sha`
-# （checker_sha）がそれと同じかを確かめる。
+# ジョブは2つに分ける。
 #
-# `entelecheia-sha` が `--checker-sha` を持たない古い ent-check を指していると、ent-check は
-# 知らない引数で 2 を返し、evidence.json を書かない。ジョブは赤くなり、governor には報告が
-# 無いと見える。
+# - observe: 分岐点と head で verify を流し、見たこと（observations.json）を artifact
+#   （ent-observations）に残す。head のコード、つまり Actor が書いたものを流す
+# - evidence: head のコードを流さない。自分で読んだ差分と observe の観測に規則を当てて
+#   evidence.json を作る。GitHub の OIDC トークンを evidence.json の digest に結びつけて取り、
+#   evidence.jwt として一緒に残す
+#
+# 分けるのは、head のコードを流したジョブが残すものは、どれも head が差し替えられるため。
+# head のプロセスは同じユーザーで動き、artifact を書く ACTIONS_RUNTIME_TOKEN も読める。この
+# トークンは run の単位なので、呼ぶ側のほかのジョブ（ふつうの CI など）で流れた head の
+# コードも、ent-evidence の名前で artifact を上げられる。governor は evidence.jwt の署名と
+# 中身（どのリポジトリの、どの run の、どの attempt の、どの sha の check.yml のジョブが、
+# どの evidence.json に対して取ったか）を確かめる。トークンを取れるのは id-token: write を
+# 持つジョブだけで、check.yml の中でそれを持つのは evidence だけになる。
+#
+# それでも、observe の観測（テストの件数・skip・verify の終了コード）は head の言い分のまま
+# になる。分けて防げるのは、差分から決まる規則・段階の計算・報告の差し替えまでになる。
+#
+# 2つの sha は呼ぶ側で揃える。Renovate は `uses:` の sha だけを上げるので、同じ PR で
+# `entelecheia-sha` も上げる。evidence のジョブは、OIDC トークンにある呼ばれた sha
+# （job_workflow_sha）と `entelecheia-sha` を比べ、違えば 2 で止まる。observe のジョブは
+# それを確かめられないので、`entelecheia-sha` の ent-check で観測する。
+#
+# `entelecheia-sha` が `--observe` を持たない古い ent-check を指していると、ent-check は
+# 知らない引数で 2 を返す。
 #
 # 1つの run から呼ぶのは1回にする。artifact の名前は決まっていて、後から上げた方が残る。
+#
+# 必須のチェックには `<呼ぶ側のジョブ> / evidence` を指定する。evidence は observe が落ちても
+# 流れて赤になるので、これ1つで足りる。observe だけを必須にすると、evidence が落ちても通る。
+#
+# 回し直すときは evidence のジョブも回す。ほかのジョブだけを「Re-run failed jobs」で回すと、
+# evidence.jwt の attempt が run の attempt より古いまま残り、governor は報告が無いと読む。
+# evidence のジョブだけを回し直してもよい。そのために観測は7日残す。
 #
 # 呼ぶ側のリポジトリには、mise のタスク verify（入力 task で変えられる）が要る。
 # verify は `$ENT_CHECK_REPORT_DIR` の下に JUnit XML でテストの報告を書く。報告が無いと、
 # 件数・skip の規則は skip になり、落ちた規則が無くても level は E0 のままになる。
 #
-# **secret は受け取らない。** このジョブは head のコード、つまり Actor が書いたものを
-# 実行する。呼ぶ側も `secrets:` を渡さないこと。PR の head が package.json や
-# mise.toml を書き換えれば、ジョブに置いた secret にはどれでも届く。
-# ジョブのトークン（`github.token`）も、head のコードを流すステップには置かない。
+# **secret は受け取らない。** observe のジョブは head のコードを実行する。呼ぶ側も
+# `secrets:` を渡さないこと。PR の head が package.json や mise.toml を書き換えれば、
+# ジョブに置いた secret にはどれでも届く。ジョブのトークン（`github.token`）も、head の
+# コードを流すステップには置かない。
+#
+# **evidence のジョブは Actions のキャッシュを戻さない。** head のコードは
+# ACTIONS_RUNTIME_TOKEN でキャッシュも書ける。evidence のジョブが同じキーで戻すと、head が
+# 置いた mise や道具を、OIDC トークンを取れるジョブで流すことになる。mise-action の
+# キャッシュは両方のジョブで切り、mise 本体はバージョンと sha256 で固定する。
 
 on:
   workflow_call:
@@ -47,12 +78,12 @@ on:
         type: string
         default: verify
       timeout-minutes:
-        description: Time limit for one run of the task, including mise install. The task runs twice (merge base and head)
+        description: Time limit for one run of the task, including mise install. The task runs twice (merge base and head) in the observe job
         required: false
         type: number
         default: 30
       job-timeout-minutes:
-        description: Time limit for the whole job. At least twice timeout-minutes plus 10 for setup
+        description: Time limit for the observe job. At least twice timeout-minutes plus 10 for setup
         required: false
         type: number
         default: 90
@@ -60,15 +91,24 @@ on:
 permissions:
   contents: read
 
+# shell を書かないステップは `bash -e` で流れ、パイプの途中の失敗を見落とす。
+# `bash` と書くと `bash --noprofile --norc -eo pipefail` になる。
+defaults:
+  run:
+    shell: bash
+
 jobs:
-  check:
+  observe:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     # 分岐点と head で verify を2回流す。ジョブの時間制限がタスクの2回分より短いと、ent-check が
-    # 時間切れを報告する前に Actions がジョブを止め、evidence.json が残らない。
+    # 時間切れを報告する前に Actions がジョブを止め、観測が残らない。
     timeout-minutes: ${{ inputs.job-timeout-minutes }}
     steps:
       # job の `if:` で外すと、飛ばしたジョブは成功として数えられ、必須のチェックを満たす。
-      # pull_request_target や push から呼ばれたときは、赤にして止める。
+      # pull_request_target や push から呼ばれたときは、赤にして止める。evidence のジョブは
+      # このジョブが成功したときだけ判定する。
       - name: Require a pull_request event
         env:
           EVENT_NAME: ${{ github.event_name }}
@@ -83,7 +123,7 @@ jobs:
           JOB_TIMEOUT: ${{ inputs.job-timeout-minutes }}
         run: |
           # ジョブの上限がタスク2回分に届かないと、ent-check が時間切れを報告する前に
-          # Actions がジョブを止め、evidence.json も注記も残らない。
+          # Actions がジョブを止め、観測も注記も残らない。
           if [ "$JOB_TIMEOUT" -lt $((TIMEOUT * 2 + 10)) ]; then
             echo "::error::job-timeout-minutes ($JOB_TIMEOUT) must be at least twice timeout-minutes ($TIMEOUT) plus 10"
             exit 2
@@ -112,6 +152,13 @@ jobs:
           persist-credentials: false
       - uses: jdx/mise-action@5ac50f778e26fac95da98d50503682459e86d566 # v3.2.0
         with:
+          # 取ってきた mise 本体を sha256 で確かめる。値は GitHub の release にある
+          # SHASUMS256.txt の mise-v<バージョン>-linux-x64（tar を開いた後の本体）の行。
+          version: 2026.10.10
+          sha256: 7d79972e15549b286dcf9e25ef8c4fcef3d9fd7c0332d11cdfbc7d2842c418be
+          # 既定では mise の置き場をキャッシュから戻し、ジョブの終わりに保存する。キーは
+          # 両方のジョブで同じになり、head のコードが先に保存すれば evidence のジョブに届く。
+          cache: false
           # mise 本体だけを入れる。道具は、ent-check の分は下で、対象の分は ent-check が
           # base から書き戻した定義で入れる。head の mise.toml からは入れない。
           install: false
@@ -128,33 +175,150 @@ jobs:
           mise install
           mise exec -- pnpm install --frozen-lockfile
           mise exec -- pnpm --filter "@entelecheia/check..." run build
-      - name: Run ent-check
+      - name: Observe the head
         env:
           # mise-action に渡さないだけでなく、ここでも空にする。対象の道具はトークン無しで取るので、
           # GitHub の回数制限に当たると mise install が落ち、検査できなかった（3）になる。
           GITHUB_TOKEN: ""
           MISE_TRUSTED_CONFIG_PATHS: ${{ github.workspace }}/.ent-check/entelecheia
-          REPO: ${{ github.repository }}
-          PR: ${{ github.event.pull_request.number }}
           BASE: ${{ github.event.pull_request.base.sha }}
           HEAD: ${{ github.event.pull_request.head.sha }}
           TASK: ${{ inputs.task }}
           TIMEOUT: ${{ inputs.timeout-minutes }}
-          ENTELECHEIA_SHA: ${{ inputs.entelecheia-sha }}
         run: |
           set -o pipefail
           entelecheia="$GITHUB_WORKSPACE/.ent-check/entelecheia"
           status=0
+          mise -C "$entelecheia" exec -- node "$entelecheia/packages/check/dist/cli.js" --observe \
+            --dir "$GITHUB_WORKSPACE/target" --base "$BASE" --head "$HEAD" \
+            --task "$TASK" --timeout-minutes "$TIMEOUT" \
+            --out "$RUNNER_TEMP/observations.json" > /dev/null || status=$?
+          # 0 は verify を2回とも流し終えたことだけを言う。head が通ったかは evidence のジョブが
+          # 判定する。
+          case "$status" in
+            0) exit 0 ;;
+            3) message="could not check (not a failure of the head)" ;;
+            2) message="exited with 2 (usage error; check that entelecheia-sha matches the sha in uses)" ;;
+            *) message="exited with $status" ;;
+          esac
+          echo "::error title=ent-check::$message"
+          echo "**ent-check:** $message" >> "$GITHUB_STEP_SUMMARY"
+          exit "$status"
+      # evidence のジョブだけを回し直すときにも読むので、7日残す。それより長くは要らない。
+      # artifact は保存の枠を使う。
+      - name: Keep the observations
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ent-observations
+          path: ${{ runner.temp }}/observations.json
+          if-no-files-found: error
+          retention-days: 7
+          overwrite: true
+
+  evidence:
+    needs: observe
+    # observe が落ちても流し、赤で終わる。飛ばすと成功として数えられ、必須のチェックを満たす。
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # evidence.json に結びつけた OIDC トークンを取る。このジョブは head のコードを流さない。
+      id-token: write
+    timeout-minutes: 30
+    steps:
+      - name: Require the observations
+        env:
+          OBSERVED: ${{ needs.observe.result }}
+        run: |
+          if [ "$OBSERVED" != success ]; then
+            echo "::error title=ent-check::the observe job ended with $OBSERVED; nothing to judge"
+            exit 3
+          fi
+      # OIDC トークンの job_workflow_sha は、呼ぶ側が uses: に書いた sha になる。違う sha の
+      # ent-check を流すと、governor が受け取る sha の名で、別のコードが作った報告に
+      # トークンを付けることになる。entelecheia を取り出す前に比べる。
+      - name: Resolve the checker
+        env:
+          ENTELECHEIA_SHA: ${{ inputs.entelecheia-sha }}
+        run: |
+          if [ -z "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ]; then
+            echo "::error::grant id-token: write to the job that calls check.yml"
+            exit 2
+          fi
+          token=$(curl -sSf --retry 3 -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=ent-check" | jq -er .value)
+          # 署名は確かめない。このジョブでは head のコードが流れないので、受け取ったトークンを
+          # 差し替える者は居ない。
+          # jq の @base64d は = の無い base64 も読む。base64url の2文字だけを置き換える。
+          called=$(printf %s "$token" |
+            jq -Rer 'split(".")[1] | gsub("-"; "+") | gsub("_"; "/") | @base64d | fromjson | .job_workflow_sha')
+          if [ "$called" != "$ENTELECHEIA_SHA" ]; then
+            echo "::error::entelecheia-sha ($ENTELECHEIA_SHA) must match the sha in uses ($called)"
+            exit 2
+          fi
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: slashkiko/entelecheia
+          ref: ${{ inputs.entelecheia-sha }}
+          path: .ent-check/entelecheia
+          persist-credentials: false
+      # 差分を読むためだけに取り出す。中のコードは流さない。
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          path: target
+          persist-credentials: false
+      # observe と同じ形にする（テストで揃っていることを確かめる）。
+      - uses: jdx/mise-action@5ac50f778e26fac95da98d50503682459e86d566 # v3.2.0
+        with:
+          version: 2026.10.10
+          sha256: 7d79972e15549b286dcf9e25ef8c4fcef3d9fd7c0332d11cdfbc7d2842c418be
+          cache: false
+          install: false
+          github_token: ""
+      - name: Build ent-check
+        working-directory: .ent-check/entelecheia
+        env:
+          MISE_TRUSTED_CONFIG_PATHS: ${{ github.workspace }}/.ent-check/entelecheia
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          mise install
+          mise exec -- pnpm install --frozen-lockfile
+          mise exec -- pnpm --filter "@entelecheia/check..." run build
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: ent-observations
+          path: ${{ runner.temp }}/observations
+      - name: Run ent-check
+        env:
+          MISE_TRUSTED_CONFIG_PATHS: ${{ github.workspace }}/.ent-check/entelecheia
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+          ENTELECHEIA_SHA: ${{ inputs.entelecheia-sha }}
+        run: |
+          set -o pipefail
+          entelecheia="$GITHUB_WORKSPACE/.ent-check/entelecheia"
+          evidence="$RUNNER_TEMP/evidence/evidence.json"
+          mkdir -p "$RUNNER_TEMP/evidence"
+          status=0
           mise -C "$entelecheia" exec -- node "$entelecheia/packages/check/dist/cli.js" \
+            --observations "$RUNNER_TEMP/observations/observations.json" \
             --dir "$GITHUB_WORKSPACE/target" \
             --repo "$REPO" --pr "$PR" --base "$BASE" --head "$HEAD" \
-            --task "$TASK" --timeout-minutes "$TIMEOUT" \
             --checker-sha "$ENTELECHEIA_SHA" \
-            --out "$RUNNER_TEMP/evidence.json" > /dev/null || status=$?
+            --out "$evidence" > /dev/null || status=$?
+          # 0 と 1 のほかでは、ent-check が判定を書き終えていない。途中のファイルが残って
+          # いれば消し、後のステップがトークンを付けないようにする。
+          case "$status" in
+            0 | 1) ;;
+            *) rm -f "$evidence" ;;
+          esac
           # 不合格（1）と検査できなかった（3）は、どちらもジョブを赤にする。見分けは
           # 注記と job summary に残す。1 でも evidence.json が無ければ、ent-check の判断ではない
           # （mise や node が ent-check より先に落ちた）。
-          evidence="$RUNNER_TEMP/evidence.json"
           case "$status" in
             0)
               level=$(jq -r .level "$evidence" 2>/dev/null || echo unknown)
@@ -183,21 +347,30 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
           exit "$status"
       # 不合格（1）でも残す。governor は不合格の理由も evidence.json から読む。検査できなかった（3）
-      # ときは ent-check が evidence.json を書かないので、artifact も無い。
+      # ときなど、0 と 1 のほかでは evidence.json が残らないので、トークンも artifact も無い。
       #
-      # 回し直すと、同じ run に前の attempt の artifact が残っている。上書きしないと同じ名前で
-      # ぶつかり、このステップが落ちる。governor は、いまの attempt より前に作られた artifact を
-      # 読まない。
-      #
-      # このステップの環境には artifact を書くための ACTIONS_RUNTIME_TOKEN が入る。head のコードが
-      # 残したプロセスは同じユーザーで動くので、それを読んでこの run の artifact を差し替えられる。
-      # evidence.json を書き換えられるのと同じ穴で、governor はこのジョブの報告を E1 より上に
-      # 数えない。
-      - name: Keep evidence.json
+      # audience に evidence.json の sha256 を入れる。governor はトークンの署名を確かめ、
+      # audience が受け取った evidence.json の digest と同じかを見る。
+      - name: Attest evidence.json
+        id: attest
         if: ${{ !cancelled() }}
+        run: |
+          evidence="$RUNNER_TEMP/evidence/evidence.json"
+          if [ ! -f "$evidence" ]; then
+            exit 0
+          fi
+          digest=$(sha256sum "$evidence" | cut -d' ' -f1)
+          curl -sSf --retry 3 -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=ent-evidence:sha256:$digest" \
+            | jq -er .value > "$RUNNER_TEMP/evidence/evidence.jwt"
+      # 回し直すと、同じ run に前の attempt の artifact が残っている。上書きしないと同じ名前で
+      # ぶつかり、このステップが落ちる。governor は、トークンの attempt がいまの attempt と
+      # 違う artifact を読まない。
+      - name: Keep evidence.json
+        if: ${{ !cancelled() && steps.attest.outcome == 'success' }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ent-evidence
-          path: ${{ runner.temp }}/evidence.json
+          path: ${{ runner.temp }}/evidence/
           if-no-files-found: ignore
           overwrite: true

@@ -1235,9 +1235,13 @@ packages/ent/             The ent CLI package. The entries indented below are in
   tests/                  The substance of the Acceptance Criteria, and integration tests that hit
                           real git / real SQLite
 packages/check/           ent-check. Runs a PR head against the base's check definitions and writes
-                          evidence.json. Depends at run time on core only, never on ent. Not wired to ent yet
+                          evidence.json. Depends at run time on core and zod only, never on ent. Not wired to ent yet
   src/check.ts            One check: the merge base and the head, each with the base's definitions,
-                          then the rules
+                          then the rules. --observe runs only the task; --observations applies the
+                          rules to what another process observed, without running the task
+  src/observations.ts     The shape of what --observe writes (ent.observations/v1)
+  src/cleanup.ts          Stops the task's process group and removes the scratch checkouts, also on
+                          SIGINT and SIGTERM
   src/definitions.ts      Which files are check definitions. Taken from the approval-rule minimum
   src/rules.ts            The E1 rules: tests removed, newly skipped, or weakened, and edits to the
                           check definitions
@@ -1249,13 +1253,17 @@ known-good/               PRs the factory must not stop. Applied to the same fix
 packages/governor/        The governor. So far only the part that reads evidence: it finds the check
                           run for a PR head and takes evidence.json from its artifact. Depends on
                           core and zod only, never on ent. Not wired to a command yet
-  src/evidence.ts         Which run and artifact count, and whether a report is taken, stale (the base
-                          moved) or rejected. Caps the level at E1, since the head ran in the same job
-  src/github-actions.ts   Reads runs and artifacts from GitHub Actions with fetch (Actions: read)
-  src/zip.ts              Takes the one file out of the artifact's zip, with a size limit
-.github/workflows/check.yml  The reusable workflow that runs ent-check with no secrets. The step that runs
-                          the head has no job token either. Keeps evidence.json as the ent-evidence
-                          artifact
+  src/evidence.ts         Which run and artifact count, which job made the artifact, and whether a
+                          report is taken, stale (the base moved) or rejected. Caps the level at E1,
+                          since the observations come from the job that ran the head
+  src/id-token.ts         Verifies the GitHub Actions OIDC token kept next to evidence.json
+  src/github-actions.ts   Reads runs, artifacts and the token signing keys with fetch (Actions: read)
+  src/zip.ts              Takes the named files out of the artifact's zip, with a size limit
+.github/workflows/check.yml  The reusable workflow that runs ent-check with no secrets. The observe job runs
+                          the head, with no job token in that step. The evidence job does not run the
+                          head; it applies the rules and keeps evidence.json, with an OIDC token bound
+                          to it, as the ent-evidence artifact. Callers grant id-token: write and
+                          require the `<caller job> / evidence` check
 plugins/ent-review/       The canonical copy of the semantic-review skill the review role reads
 .claude/skills/ent/SKILL.md  What agents read as procedure. Invocation order, and where it stops for
                           human approval

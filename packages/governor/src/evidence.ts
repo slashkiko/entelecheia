@@ -3,12 +3,15 @@ import type { EvidenceSummary } from "@entelecheia/core/factory/auto-merge.js";
 import { type EvidenceLevel, reaches } from "@entelecheia/core/factory/evidence.js";
 import {
   EVIDENCE_ARTIFACT_NAME,
+  EVIDENCE_ATTESTATION_FILE_NAME,
+  EVIDENCE_AUDIENCE_PREFIX,
   EVIDENCE_FILE_NAME,
   type EvidenceReport,
   evidenceReportSchema,
   summarizeEvidence,
 } from "@entelecheia/core/factory/evidence-report.js";
-import { ArchiveError, extractSingleFile } from "./zip.js";
+import { type IdTokenClaims, type SigningKeys, verifyIdToken } from "./id-token.js";
+import { ArchiveError, extractFiles } from "./zip.js";
 
 /**
  * PR の head に対する検査の実行から、evidence.json を取り出して検める。
@@ -18,10 +21,18 @@ import { ArchiveError, extractSingleFile } from "./zip.js";
  * artifact だけを読む。run が別の sha の check.yml を呼んでいた、報告が別の PR や別の sha の
  * ものだった、形が崩れていた、のどれでも受け取らない。
  *
- * 再利用ワークフローは自分が呼ばれた sha を読めないので、呼ぶ側が `uses:` と
- * `entelecheia-sha` に違う sha を書いても、ワークフローの側では見分けられない。ここで、
  * run の記録にある `uses:` の sha（`referenced_workflows`）が governor の受け取る sha の
- * どれかであり、報告に残った `checker_sha` がそれと同じであることを確かめる。
+ * どれかであり、報告に残った `checker_sha` がそれと同じであることを確かめる。evidence の
+ * ジョブも、OIDC トークンにある呼ばれた sha と `entelecheia-sha` を比べてから ent-check を
+ * 流す。ここでも比べるのは、check.yml の比較が後のバージョンで外れても、ここで止めるため。
+ *
+ * **artifact を上げたジョブも確かめる。** artifact を書くトークンは run の単位なので、同じ
+ * run のどのジョブも `ent-evidence` の名前で上げられる。呼ぶ側のふつうの CI のジョブで流れた
+ * head のコードもそこに入る。artifact には evidence.json と一緒に、それの digest を audience に
+ * した OIDC トークン（`evidence.jwt`）が要る。トークンは GitHub が署名し、取れるのは
+ * id-token: write を持つジョブだけで、check.yml の中でそれを持つのは head のコードを流さない
+ * evidence のジョブだけになる。署名と、トークンのリポジトリ・run・attempt・呼ばれた
+ * ワークフローとその sha を確かめる（`checkAttestation`）。
  */
 
 /** 検査の実行の記録（workflow run）のうち、ここで読む分 */
@@ -32,8 +43,8 @@ export interface CheckRun {
   /** queued・in_progress・completed など。completed になるまで artifact は揃わない */
   status: string;
   createdAt: string;
-  /** いまの attempt が始まった時刻。run を回し直すと新しくなる */
-  runStartedAt: string;
+  /** いまの attempt の番号。1 から始まり、run を回し直すと増える */
+  runAttempt: number;
   /** head の branch があるリポジトリ（`<owner>/<name>`）。消えた fork では null */
   headRepository: string | null;
   /** その run が呼んだ再利用ワークフロー。`path` は `<owner>/<repo>/<file>@<ref>` */
@@ -47,7 +58,6 @@ export interface RunArtifact {
   sizeInBytes: number;
   /** `sha256:<hex>`。古い artifact には無い */
   digest: string | null;
-  createdAt: string | null;
 }
 
 /** artifact の zip を取った結果。上限を超えたら読むのをやめる。超えた大きさが分からなければ null */
@@ -56,14 +66,15 @@ export type ArtifactDownload =
   | { status: "too_large"; bytes: number | null };
 
 /**
- * 検査の実行と artifact を読む口。GitHub の実装は `github-actions.ts` にある。
- * 読めなかったときは PortError を投げる
+ * 検査の実行と artifact と、artifact に付いたトークンを確かめる鍵を読む口。GitHub の実装は
+ * `github-actions.ts` にある。読めなかったときは PortError を投げる
  */
 export interface CheckRunSource {
   /** その head の sha で、pull_request から起きた run */
   listRuns(headSha: string): Promise<CheckRun[]>;
   listArtifacts(runId: number, name: string): Promise<RunArtifact[]>;
   download(artifactId: number, maxBytes: number): Promise<ArtifactDownload>;
+  signingKeys(): Promise<SigningKeys>;
 }
 
 export interface EvidenceRequest {
@@ -76,7 +87,11 @@ export interface EvidenceRequest {
   /**
    * governor が受け取る検査。`workflow` は `<owner>/<repo>/.github/workflows/check.yml`。
    * 検査の sha を上げる間は、古い sha と新しい sha を両方置く。呼ぶ側のリポジトリは
-   * それぞれの PR で sha を上げるので、1つに絞ると、上げ終わるまでの PR をどれも受け取れない
+   * それぞれの PR で sha を上げるので、1つに絞ると、上げ終わるまでの PR をどれも受け取れない。
+   *
+   * evidence.jwt を残さない古い check.yml の sha は置かない。置いても、その run は
+   * `bad_archive` で落ちる（置かなければ `checker_mismatch` で落ちる）。古い sha と新しい sha を
+   * 両方置くのは、どちらも evidence.jwt を残す sha のあいだだけにする
    */
   checker: { workflow: string; shas: readonly string[] };
 }
@@ -89,7 +104,8 @@ export interface EvidenceRequest {
  * - stale: 報告は、いまの base より前の base に対するもの。base を取り込んだ head を push して
  *   検査を回し直す。run を回し直すだけでは、event に残った base は変わらない
  * - missing: run は終わったが、いまの attempt の報告が無い。検査できなかった（ent-check の 3）か、
- *   ent-check より先に落ちた。回し直す。何回まで回すかは呼ぶ側が決める
+ *   ent-check より先に落ちた。トークンの鍵を GitHub が入れ替えた後もここに来る。回し直す。
+ *   何回まで回すかは呼ぶ側が決める
  * - rejected: 約束に反する。push も merge もせず人に回し、監査ログに残す
  */
 export type EvidenceOutcome =
@@ -110,7 +126,7 @@ export type EvidenceReason =
   | { code: "run_in_progress"; runIds: number[] }
   | { code: "no_artifact" }
   | { code: "artifact_expired"; artifactId: number }
-  | { code: "artifact_from_earlier_attempt"; artifactId: number }
+  | { code: "artifact_from_earlier_attempt"; artifactId: number; attempt: string }
   | { code: "multiple_artifacts"; artifactIds: number[] }
   | { code: "checker_mismatch"; expected: string[]; actual: string[] }
   | { code: "artifact_too_large"; bytes: number | null }
@@ -118,9 +134,20 @@ export type EvidenceReason =
   | { code: "base_moved"; expected: string; actual: string }
   | { code: "bad_archive"; detail: string }
   | { code: "bad_report"; detail: string }
-  | { code: "report_mismatch"; field: ReportField; expected: string; actual: string };
+  | { code: "report_mismatch"; field: ReportField; expected: string; actual: string }
+  | { code: "attestation_key_unknown"; kid: string }
+  | { code: "bad_attestation"; detail: string }
+  | { code: "attestation_mismatch"; field: AttestationField; expected: string; actual: string };
 
 type ReportField = "repo" | "pr" | "head_sha" | "checker_sha";
+type AttestationField =
+  | "aud"
+  | "repository"
+  | "run_id"
+  | "event_name"
+  | "job_workflow"
+  | "job_workflow_sha"
+  | "runner_environment";
 
 /** zip と evidence.json の上限。報告はふつう数 KB で、落ちた場所を数千件並べても収まる */
 export const MAX_EVIDENCE_BYTES = 1024 * 1024;
@@ -190,15 +217,6 @@ export async function fetchEvidence(
       runId: run.id,
     };
   }
-  if (!createdSince(artifact, run)) {
-    // 回し直しても、前の attempt の artifact は run に残る。いまの attempt が ent-check より先に
-    // 落ちると、前の attempt の報告だけが見える。それを読むと、回し直した理由を無視する
-    return {
-      status: "missing",
-      reason: { code: "artifact_from_earlier_attempt", artifactId: artifact.id },
-      runId: run.id,
-    };
-  }
   if (artifact.sizeInBytes > MAX_EVIDENCE_BYTES) {
     return reject(run, { code: "artifact_too_large", bytes: artifact.sizeInBytes });
   }
@@ -212,7 +230,55 @@ export async function fetchEvidence(
   if (artifact.digest !== null && artifact.digest !== `sha256:${sha256(archive)}`) {
     return reject(run, { code: "digest_mismatch" });
   }
-  const parsed = parseReport(archive);
+  let files: Map<string, Buffer>;
+  try {
+    files = extractFiles(
+      archive,
+      [EVIDENCE_FILE_NAME, EVIDENCE_ATTESTATION_FILE_NAME],
+      MAX_EVIDENCE_BYTES,
+    );
+  } catch (error) {
+    if (error instanceof ArchiveError) {
+      return reject(run, { code: "bad_archive", detail: error.message });
+    }
+    throw error;
+  }
+  const evidence = files.get(EVIDENCE_FILE_NAME);
+  const token = files.get(EVIDENCE_ATTESTATION_FILE_NAME)?.toString("utf8");
+  if (evidence === undefined || token === undefined) {
+    // extractFiles は頼んだ名前をちょうど揃えて返すので、ここには来ない。来たら受け取らない
+    return reject(run, { code: "bad_archive", detail: "the archive is missing a file" });
+  }
+
+  const verified = verifyIdToken(token, await source.signingKeys());
+  if (!verified.ok) {
+    return verified.reason === "unknown_key"
+      ? {
+          status: "missing",
+          reason: { code: "attestation_key_unknown", kid: verified.kid },
+          runId: run.id,
+        }
+      : reject(run, { code: "bad_attestation", detail: verified.detail });
+  }
+  const attestation = checkAttestation(verified.claims, request, run, checkerSha, evidence);
+  if (attestation !== null) {
+    return reject(run, attestation);
+  }
+  if (verified.claims.run_attempt !== String(run.runAttempt)) {
+    // 回し直しても、前の attempt の artifact は run に残る。いまの attempt が ent-check より先に
+    // 落ちると、前の attempt の報告だけが見える。それを読むと、回し直した理由を無視する
+    return {
+      status: "missing",
+      reason: {
+        code: "artifact_from_earlier_attempt",
+        artifactId: artifact.id,
+        attempt: verified.claims.run_attempt,
+      },
+      runId: run.id,
+    };
+  }
+
+  const parsed = parseReport(evidence);
   if (parsed.ok === false) {
     return reject(run, parsed.reason);
   }
@@ -234,15 +300,17 @@ export async function fetchEvidence(
 }
 
 /**
- * このジョブの報告から、判定に渡してよい段階の上限。
+ * 判定に渡してよい段階の上限。
  *
- * 再利用ワークフローは、head のコードを流したのと同じジョブで evidence.json を書いて残す。
- * head のコードが残したプロセスは同じユーザーで動くので、報告も artifact も差し替えられる。
- * E1 だけでは段階を見る種別の自動マージに届かない（いちばん低い要求が E2）ので、いまはそれを
- * 受け入れ、ここで E1 に抑える。E2 より上を数えるのは、エビデンスを head を流さないジョブで
- * 作る形にしてからにする。
+ * evidence.json は head のコードを流さないジョブが作り、そのジョブのトークンで確かめる。
+ * 報告の差し替えと、差分から決まる規則・段階の計算には、head は触れない。それでも
+ * 規則が読む観測（テストの件数・skip・verify の終了コード）は、head のコードを流したジョブが
+ * 残したもので、head の言い分のままになる。E2 の層（凍結した契約とミューテーションテスト）も
+ * head のコードを流して確かめるので、同じ穴を通る。E1 だけでは段階を見る種別の自動マージに
+ * 届かない（いちばん低い要求が E2）ので、いまはそれを受け入れ、ここで E1 に抑える。E2 より上を
+ * 数えるのは、観測を head のプロセスから触れない形にしてからにする。
  */
-export const SAME_JOB_LEVEL_CAP: EvidenceLevel = "E1";
+export const OBSERVED_LEVEL_CAP: EvidenceLevel = "E1";
 
 /** 判定（`decideAutoMerge`）に渡す形。受け取れなかった報告は「エビデンスが無い」と同じに扱う */
 export function evidenceSummary(outcome: EvidenceOutcome): EvidenceSummary | null {
@@ -250,16 +318,52 @@ export function evidenceSummary(outcome: EvidenceOutcome): EvidenceSummary | nul
 }
 
 function capped(summary: EvidenceSummary): EvidenceSummary {
-  return reaches(summary.level, SAME_JOB_LEVEL_CAP)
-    ? { ...summary, level: SAME_JOB_LEVEL_CAP }
+  return reaches(summary.level, OBSERVED_LEVEL_CAP)
+    ? { ...summary, level: OBSERVED_LEVEL_CAP }
     : summary;
 }
 
-/** artifact が、いまの attempt が始まってから作られたか。時刻が読めなければ、作られていないと読む */
-function createdSince(artifact: RunArtifact, run: CheckRun): boolean {
-  const created = artifact.createdAt === null ? Number.NaN : Date.parse(artifact.createdAt);
-  const started = Date.parse(run.runStartedAt);
-  return created >= started;
+/**
+ * トークンが、この run の、受け取る検査の evidence のジョブが、この evidence.json に対して
+ * 取ったものか。違えば最初に違った欄を返す。attempt は比べない。前の attempt のものは約束に
+ * 反したのではなく古いので、呼ぶ側で分けて扱う
+ *
+ * - aud: evidence.json の sha256。別の報告に付いたトークンを持ってきても通らない
+ * - job_workflow: 呼ばれた側のワークフロー。呼ぶ側のジョブで取ったトークンは、呼ぶ側の
+ *   ワークフローの名前になる
+ * - job_workflow_sha: run が呼んだ検査の sha。evidence のジョブは、これと違う sha の
+ *   ent-check を流さない
+ * - runner_environment: GitHub が用意した runner。自前の runner では、head を流したジョブと
+ *   同じ機械に載りうる
+ */
+function checkAttestation(
+  claims: IdTokenClaims,
+  request: EvidenceRequest,
+  run: CheckRun,
+  checkerSha: string,
+  evidence: Buffer,
+): EvidenceReason | null {
+  const ref = claims.job_workflow_ref;
+  const workflow = ref.includes("@") ? ref.slice(0, ref.lastIndexOf("@")) : ref;
+  const expected: [AttestationField, string, string][] = [
+    ["aud", `${EVIDENCE_AUDIENCE_PREFIX}${sha256(evidence)}`, claims.aud],
+    ["repository", request.repo.toLowerCase(), claims.repository.toLowerCase()],
+    ["run_id", String(run.id), claims.run_id],
+    ["event_name", "pull_request", claims.event_name],
+    ["job_workflow", request.checker.workflow.toLowerCase(), workflow.toLowerCase()],
+    ["job_workflow_sha", checkerSha, claims.job_workflow_sha],
+    ["runner_environment", "github-hosted", claims.runner_environment],
+  ];
+  const mismatch = firstMismatch(expected);
+  return mismatch === null ? null : { code: "attestation_mismatch", ...mismatch };
+}
+
+/** `[欄, 期待, 実際]` の並びのうち、最初に違ったもの */
+function firstMismatch<F extends string>(
+  pairs: readonly (readonly [F, string, string])[],
+): { field: F; expected: string; actual: string } | null {
+  const found = pairs.find(([, want, got]) => want !== got);
+  return found === undefined ? null : { field: found[0], expected: found[1], actual: found[2] };
 }
 
 function newest(runs: readonly CheckRun[]): CheckRun {
@@ -275,20 +379,11 @@ function reject(run: CheckRun, reason: EvidenceReason): EvidenceOutcome {
 }
 
 function parseReport(
-  archive: Uint8Array,
+  evidence: Buffer,
 ): { ok: true; report: EvidenceReport } | { ok: false; reason: EvidenceReason } {
-  let text: string;
-  try {
-    text = extractSingleFile(archive, EVIDENCE_FILE_NAME, MAX_EVIDENCE_BYTES).toString("utf8");
-  } catch (error) {
-    if (error instanceof ArchiveError) {
-      return { ok: false, reason: { code: "bad_archive", detail: error.message } };
-    }
-    throw error;
-  }
   let json: unknown;
   try {
-    json = JSON.parse(text);
+    json = JSON.parse(evidence.toString("utf8"));
   } catch (error) {
     return { ok: false, reason: { code: "bad_report", detail: `not JSON: ${String(error)}` } };
   }
@@ -319,12 +414,8 @@ function mismatchOf(
     // null（手元で回した報告）も、どの検査で作ったか分からないので落とす
     ["checker_sha", checkerSha, String(report.checker_sha)],
   ];
-  for (const [field, want, got] of expected) {
-    if (want !== got) {
-      return { code: "report_mismatch", field, expected: want, actual: got };
-    }
-  }
-  return null;
+  const mismatch = firstMismatch(expected);
+  return mismatch === null ? null : { code: "report_mismatch", ...mismatch };
 }
 
 function sha256(data: Uint8Array): string {

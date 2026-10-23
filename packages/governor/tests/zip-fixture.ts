@@ -14,6 +14,8 @@ export interface ZipEntry {
   flags?: number;
   /** 中央ディレクトリに書く値を差し替える。壊れた zip を作るため */
   override?: { crc?: number; uncompressedSize?: number; compressedSize?: number };
+  /** 中央ディレクトリの拡張欄とコメント。次の1件の位置がずれる */
+  central?: { extra?: string; comment?: string };
 }
 
 export function zipOf(entries: readonly ZipEntry[]): Buffer {
@@ -52,9 +54,13 @@ export function zipOf(entries: readonly ZipEntry[]): Buffer {
     central.writeUInt32LE(crc, 16);
     central.writeUInt32LE(compressedSize, 20);
     central.writeUInt32LE(uncompressedSize, 24);
+    const extra = Buffer.from(entry.central?.extra ?? "");
+    const comment = Buffer.from(entry.central?.comment ?? "");
     central.writeUInt16LE(name.length, 28);
+    central.writeUInt16LE(extra.length, 30);
+    central.writeUInt16LE(comment.length, 32);
     central.writeUInt32LE(offset, 42);
-    centrals.push(central, name);
+    centrals.push(central, name, extra, comment);
 
     offset += local.length + name.length + data.length + descriptor.length;
   }

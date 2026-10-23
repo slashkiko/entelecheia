@@ -1,13 +1,13 @@
 import { crc32, inflateRawSync } from "node:zlib";
 
 /**
- * artifact の zip から、ファイルを1つだけ取り出す。
+ * artifact の zip から、決まった名前のファイルを取り出す。
  *
- * Actions の artifact は zip で返る。中身は evidence.json の1つだけなので、zip の読み手を
- * 依存に足さずに、要る分だけをここに書く。governor は書き込みトークンを持つので、依存を
- * 少なく保つ。
+ * Actions の artifact は zip で返る。中身は evidence.json と、それに結びつけたトークンの
+ * 2つだけなので、zip の読み手を依存に足さずに、要る分だけをここに書く。governor は書き込み
+ * トークンを持つので、依存を少なく保つ。
  *
- * zip は head のコードが差し替えうる入力として読む。中身が1つでない、名前が違う、
+ * zip は head のコードが差し替えうる入力として読む。中身が `names` と1対1でない、
  * 暗号化や ZIP64 を使う、展開すると上限を超える、CRC が合わない、のどれでも投げる。
  */
 
@@ -20,24 +20,44 @@ const CENTRAL_DIRECTORY_ENTRY = 0x02014b50;
 const LOCAL_FILE_HEADER = 0x04034b50;
 /** EOCD の固定部の長さ。後ろにコメント（最大 65535 バイト）が付きうる */
 const EOCD_LENGTH = 22;
+/** 中央ディレクトリの1件の固定部の長さ。後ろに名前・拡張欄・コメントが続く */
+const CENTRAL_ENTRY_LENGTH = 46;
 const STORED = 0;
 const DEFLATED = 8;
 
-export function extractSingleFile(archive: Uint8Array, name: string, maxBytes: number): Buffer {
+/** `names` のファイルをちょうどそれだけ持つ zip から、名前ごとの中身を返す。上限は1つずつにかける */
+export function extractFiles(
+  archive: Uint8Array,
+  names: readonly string[],
+  maxBytes: number,
+): Map<string, Buffer> {
   const zip = Buffer.from(archive.buffer, archive.byteOffset, archive.byteLength);
   const eocd = findEndOfCentralDirectory(zip);
-  const entries = zip.readUInt16LE(eocd + 10);
-  const directoryOffset = zip.readUInt32LE(eocd + 16);
-  if (entries !== 1) {
-    throw new ArchiveError(`expected exactly one file in the archive, found ${entries}`);
+  const count = zip.readUInt16LE(eocd + 10);
+  if (count !== names.length) {
+    throw new ArchiveError(`expected ${names.length} files in the archive, found ${count}`);
   }
+  const files = new Map<string, Buffer>();
+  let offset = zip.readUInt32LE(eocd + 16);
+  for (let index = 0; index < count; index += 1) {
+    const entry = readCentralEntry(zip, offset);
+    offset = entry.next;
+    if (!names.includes(entry.name)) {
+      throw new ArchiveError(`unexpected ${entry.name} in the archive`);
+    }
+    if (files.has(entry.name)) {
+      // 同じ名前が2つあれば、どちらを読むかで中身が変わる
+      throw new ArchiveError(`${entry.name} appears twice in the archive`);
+    }
+    files.set(entry.name, extract(zip, entry, maxBytes));
+  }
+  return files;
+}
 
-  const entry = readCentralEntry(zip, directoryOffset);
-  if (entry.name !== name) {
-    throw new ArchiveError(`expected ${name} in the archive, found ${entry.name}`);
-  }
+function extract(zip: Buffer, entry: CentralEntry, maxBytes: number): Buffer {
+  const { name } = entry;
   if (entry.encrypted) {
-    throw new ArchiveError("the archive entry is encrypted");
+    throw new ArchiveError(`${name} is encrypted`);
   }
   // ZIP64 は使わない大きさのファイルしか受け取らない。0xffffffff は「ZIP64 の欄を見よ」の印
   if (entry.uncompressedSize === 0xffffffff || entry.compressedSize === 0xffffffff) {
@@ -102,14 +122,22 @@ interface CentralEntry {
   compressedSize: number;
   uncompressedSize: number;
   localHeaderOffset: number;
+  /** 中央ディレクトリの次の1件の位置 */
+  next: number;
 }
 
 function readCentralEntry(zip: Buffer, offset: number): CentralEntry {
-  if (offset + 46 > zip.length || zip.readUInt32LE(offset) !== CENTRAL_DIRECTORY_ENTRY) {
+  if (
+    offset + CENTRAL_ENTRY_LENGTH > zip.length ||
+    zip.readUInt32LE(offset) !== CENTRAL_DIRECTORY_ENTRY
+  ) {
     throw new ArchiveError("the central directory is missing");
   }
   const nameLength = zip.readUInt16LE(offset + 28);
-  if (offset + 46 + nameLength > zip.length) {
+  const extraLength = zip.readUInt16LE(offset + 30);
+  const commentLength = zip.readUInt16LE(offset + 32);
+  const nameStart = offset + CENTRAL_ENTRY_LENGTH;
+  if (nameStart + nameLength > zip.length) {
     throw new ArchiveError("the archive is truncated");
   }
   return {
@@ -119,6 +147,7 @@ function readCentralEntry(zip: Buffer, offset: number): CentralEntry {
     compressedSize: zip.readUInt32LE(offset + 20),
     uncompressedSize: zip.readUInt32LE(offset + 24),
     localHeaderOffset: zip.readUInt32LE(offset + 42),
-    name: zip.toString("utf8", offset + 46, offset + 46 + nameLength),
+    name: zip.toString("utf8", nameStart, nameStart + nameLength),
+    next: nameStart + nameLength + extraLength + commentLength,
   };
 }

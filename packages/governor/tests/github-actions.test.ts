@@ -37,7 +37,7 @@ function runJson(id: number, overrides: Record<string, unknown> = {}) {
     event: "pull_request",
     status: "completed",
     created_at: "2000-01-31T00:00:00Z",
-    run_started_at: "2000-01-31T00:05:00Z",
+    run_attempt: 2,
     head_repository: { full_name: "example-owner/sample-shop" },
     referenced_workflows: [
       { path: `example-owner/entelecheia/.github/workflows/check.yml@${SHA}`, sha: SHA, ref: SHA },
@@ -52,6 +52,7 @@ function sourceWith(routes: (url: URL) => Response | Promise<Response>) {
     repo: "example-owner/sample-shop",
     token: "dummy-token",
     apiUrl: `${API}/`,
+    oidcIssuer: "https://token.example.test",
     fetch: fake.doFetch,
   });
   return { source, calls: fake.calls };
@@ -91,7 +92,7 @@ describe("GitHub Actions から run を読む", () => {
         event: "pull_request",
         status: "completed",
         createdAt: "2000-01-31T00:00:00Z",
-        runStartedAt: "2000-01-31T00:05:00Z",
+        runAttempt: 2,
         headRepository: "example-owner/sample-shop",
         referencedWorkflows: [
           { path: `example-owner/entelecheia/.github/workflows/check.yml@${SHA}`, sha: SHA },
@@ -205,7 +206,6 @@ describe("GitHub Actions から artifact を読む", () => {
             expired: false,
             size_in_bytes: 321,
             digest: "sha256:00",
-            created_at: "2000-01-31T00:10:00Z",
           },
         ],
       }),
@@ -218,7 +218,6 @@ describe("GitHub Actions から artifact を読む", () => {
         expired: false,
         sizeInBytes: 321,
         digest: "sha256:00",
-        createdAt: "2000-01-31T00:10:00Z",
       },
     ]);
     const url = new URL(calls[0]?.url ?? "");
@@ -230,9 +229,7 @@ describe("GitHub Actions から artifact を読む", () => {
     const { source } = sourceWith(() =>
       json({
         total_count: 1,
-        artifacts: [
-          { id: 500, name: "ent-evidence", expired: false, size_in_bytes: 1, created_at: null },
-        ],
+        artifacts: [{ id: 500, name: "ent-evidence", expired: false, size_in_bytes: 1 }],
       }),
     );
 
@@ -249,7 +246,6 @@ describe("GitHub Actions から artifact を読む", () => {
           name: "ent-evidence",
           expired: false,
           size_in_bytes: 1,
-          created_at: null,
         })),
       }),
     );
@@ -333,5 +329,74 @@ describe("GitHub Actions から artifact を取る", () => {
     const { source } = sourceWith(downloadRoutes(() => new Response("denied", { status: 403 })));
 
     await expect(source.download(500, 1024)).rejects.toMatchObject({ kind: "unavailable" });
+  });
+});
+
+describe("OIDC トークンを確かめる鍵を読む", () => {
+  const ISSUER = "https://token.example.test/";
+
+  it("API の場所だけを変えて、発行元を渡さなければ作らない", () => {
+    // 鍵を既定の発行元から読むと、別のホストのトークンはどれも受け取れない
+    expect(() =>
+      gitHubActionsSource({ repo: "example-owner/sample-shop", token: "dummy-token", apiUrl: API }),
+    ).toThrow("pass oidcIssuer together with apiUrl");
+  });
+
+  function keysSource(routes: (url: URL) => Response | Promise<Response>) {
+    const fake = fakeFetch(routes);
+    const source = gitHubActionsSource({
+      repo: "example-owner/sample-shop",
+      token: "dummy-token",
+      apiUrl: API,
+      oidcIssuer: ISSUER,
+      fetch: fake.doFetch,
+    });
+    return { source, calls: fake.calls };
+  }
+
+  it("発行元の JWKS から RSA の鍵だけを読み、Actions のトークンは付けない", async () => {
+    const { source, calls } = keysSource(() =>
+      json({
+        keys: [
+          { kty: "RSA", kid: "key-1", n: "bm9u", e: "AQAB", alg: "RS256", use: "sig" },
+          { kty: "EC", kid: "key-2", crv: "P-256", x: "eA", y: "eQ" },
+          // RSA の欄を持っていても、種類の違う鍵は使わない
+          { kty: "oct", kid: "key-3", n: "bm9u", e: "AQAB" },
+          // kid の無い鍵は、トークンから名指しできない
+          { kty: "RSA", n: "bm9u", e: "AQAB" },
+        ],
+      }),
+    );
+
+    expect(await source.signingKeys()).toEqual({
+      issuer: "https://token.example.test",
+      keys: [{ kid: "key-1", n: "bm9u", e: "AQAB" }],
+    });
+    expect(calls[0]?.url).toBe("https://token.example.test/.well-known/jwks");
+    expect(headerOf(calls[0], "authorization")).toBeUndefined();
+    expect(calls[0]?.init?.redirect).toBe("error");
+    expect(calls[0]?.init?.signal).toBeInstanceOf(AbortSignal);
+  });
+
+  it("既定の発行元は github.com の Actions", async () => {
+    const fake = fakeFetch(() => json({ keys: [] }));
+    const source = gitHubActionsSource({
+      repo: "example-owner/sample-shop",
+      token: "dummy-token",
+      fetch: fake.doFetch,
+    });
+    const { calls } = fake;
+
+    expect((await source.signingKeys()).issuer).toBe("https://token.actions.githubusercontent.com");
+    expect(calls[0]?.url).toBe("https://token.actions.githubusercontent.com/.well-known/jwks");
+  });
+
+  it.each([
+    ["失敗を返す", () => json({ message: "unavailable" }, 503), "unavailable"],
+    ["形が違う", () => json({ keys: "none" }), "shape_mismatch"],
+  ])("一覧が%sなら PortError にする", async (_label, route, kind) => {
+    const { source } = keysSource(route);
+
+    await expect(source.signingKeys()).rejects.toMatchObject({ kind });
   });
 });

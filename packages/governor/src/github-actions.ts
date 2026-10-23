@@ -1,12 +1,14 @@
 import { PortError } from "@entelecheia/core/domain/port-error.js";
 import { z } from "zod";
 import type { ArtifactDownload, CheckRun, CheckRunSource, RunArtifact } from "./evidence.js";
+import type { SigningKeys } from "./id-token.js";
 
 /**
- * GitHub Actions から検査の実行と artifact を読む `CheckRunSource`。
+ * GitHub Actions から検査の実行と artifact と、OIDC トークンを確かめる鍵を読む `CheckRunSource`。
  *
- * Octokit を使わず fetch で書く。読むのは3つの API だけで、そのために governor の依存を
- * 増やさない。トークンに要る権限は、対象のリポジトリの Actions: read。
+ * Octokit を使わず fetch で書く。読むのは3つの API と鍵の一覧だけで、そのために governor の
+ * 依存を増やさない。トークンに要る権限は、対象のリポジトリの Actions: read。鍵の一覧は
+ * トークンを付けずに読む。
  *
  * 失敗は PortError にする。成功でない状態（5xx・回数制限・認証切れ・権限不足）、ネットワーク、
  * 時間切れ、本文を読む途中で切れたものは `unavailable`（次のティックで読み直す）、応答の形が
@@ -17,8 +19,20 @@ export interface GitHubActionsOptions {
   /** `<owner>/<name>` */
   repo: string;
   token: string;
-  /** GitHub Enterprise では `https://<host>/api/v3`。既定は github.com */
+  /**
+   * GitHub Enterprise では `https://<host>/api/v3`。既定は github.com。変えるときは
+   * `oidcIssuer` も渡す
+   */
   apiUrl?: string;
+  /**
+   * OIDC トークンの発行元。鍵の一覧は `<issuer>/.well-known/jwks` から読む。GitHub Enterprise
+   * Server では `https://<host>/_services/token`。既定は github.com。
+   *
+   * GitHub Enterprise Server では、確かめる欄（`job_workflow_ref`・`job_workflow_sha`・
+   * `runner_environment` など）がトークンにあるバージョンを使う。無い欄は形の崩れとして
+   * 受け取らない
+   */
+  oidcIssuer?: string;
   /** テストから差し替える。既定は globalThis.fetch */
   fetch?: typeof fetch;
   /** 1つの要求に待つ時間。本文を読み終えるまでを含む。既定は30秒 */
@@ -30,6 +44,7 @@ const API_VERSION = "2022-11-28";
 const MAX_PAGES = 10;
 const PER_PAGE = 100;
 const DEFAULT_TIMEOUT_MS = 30_000;
+const DEFAULT_OIDC_ISSUER = "https://token.actions.githubusercontent.com";
 
 const runsSchema = z.object({
   total_count: z.number().int().nonnegative(),
@@ -40,7 +55,7 @@ const runsSchema = z.object({
       event: z.string(),
       status: z.string().nullable(),
       created_at: z.string(),
-      run_started_at: z.string(),
+      run_attempt: z.number().int().positive(),
       // fork が消えると null になる
       head_repository: z.object({ full_name: z.string() }).nullable(),
       // 再利用ワークフローを呼ばない run では欠けることがある
@@ -61,7 +76,18 @@ const artifactsSchema = z.object({
       expired: z.boolean(),
       size_in_bytes: z.number().int().nonnegative(),
       digest: z.string().nullable().optional(),
-      created_at: z.string().nullable(),
+    }),
+  ),
+});
+
+/** 鍵の一覧（JWKS）。RSA の公開鍵の欄だけを読む */
+const keysSchema = z.object({
+  keys: z.array(
+    z.object({
+      kty: z.string(),
+      kid: z.string().optional(),
+      n: z.string().optional(),
+      e: z.string().optional(),
     }),
   ),
 });
@@ -77,6 +103,13 @@ export function gitHubActionsSource(options: GitHubActionsOptions): CheckRunSour
   };
 
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  // API だけを変えると、鍵は既定の発行元（token.actions.githubusercontent.com）から読み、
+  // 別のホストのトークンをどれも受け取らない。
+  // 間違いに気づけるのが、受け取りが止まった後になる
+  if (options.apiUrl !== undefined && options.oidcIssuer === undefined) {
+    throw new Error("pass oidcIssuer together with apiUrl");
+  }
+  const issuer = (options.oidcIssuer ?? DEFAULT_OIDC_ISSUER).replace(/\/+$/, "");
 
   /** 時間を区切って取る。signal は本文を読む間も効く */
   async function send(url: string, init: RequestInit): Promise<Response> {
@@ -91,8 +124,12 @@ export function gitHubActionsSource(options: GitHubActionsOptions): CheckRunSour
     return send(url, { ...init, headers: { ...headers, ...init.headers } });
   }
 
-  async function getJson<S extends z.ZodType>(url: string, schema: S): Promise<z.infer<S>> {
-    const response = await request(url);
+  async function getJson<S extends z.ZodType>(
+    url: string,
+    schema: S,
+    fetchUrl: (url: string) => Promise<Response> = request,
+  ): Promise<z.infer<S>> {
+    const response = await fetchUrl(url);
     if (!response.ok) {
       throw await statusError(response, url);
     }
@@ -139,7 +176,7 @@ export function gitHubActionsSource(options: GitHubActionsOptions): CheckRunSour
             event: run.event,
             status: run.status ?? "unknown",
             createdAt: run.created_at,
-            runStartedAt: run.run_started_at,
+            runAttempt: run.run_attempt,
             headRepository: run.head_repository?.full_name ?? null,
             referencedWorkflows: run.referenced_workflows ?? [],
           });
@@ -168,7 +205,6 @@ export function gitHubActionsSource(options: GitHubActionsOptions): CheckRunSour
           expired: artifact.expired,
           sizeInBytes: artifact.size_in_bytes,
           digest: artifact.digest ?? null,
-          createdAt: artifact.created_at,
         }),
       );
     },
@@ -195,6 +231,20 @@ export function gitHubActionsSource(options: GitHubActionsOptions): CheckRunSour
         throw new PortError("unavailable", `artifact download returned ${response.status}`);
       }
       return readLimited(response, maxBytes);
+    },
+
+    async signingKeys(): Promise<SigningKeys> {
+      // 鍵の一覧は公開されている。Actions のトークンを別のホストへ送らない
+      const url = `${issuer}/.well-known/jwks`;
+      const body = await getJson(url, keysSchema, (target) =>
+        send(target, { headers: { accept: "application/json" }, redirect: "error" }),
+      );
+      const keys = body.keys.flatMap((key) =>
+        key.kty === "RSA" && key.kid !== undefined && key.n !== undefined && key.e !== undefined
+          ? [{ kid: key.kid, n: key.n, e: key.e }]
+          : [],
+      );
+      return { issuer, keys };
     },
   };
 }

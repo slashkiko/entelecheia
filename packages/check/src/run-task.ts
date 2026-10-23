@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import type { Dirent } from "node:fs";
 import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
+import { killGroup, trackGroup } from "./cleanup.js";
 import { checkEnv } from "./env.js";
 import { parseJUnit, type TestCase } from "./junit.js";
 import type { TaskOutcome } from "./rules.js";
@@ -75,6 +76,8 @@ function spawnMise(
       // テストが子プロセスを残しても、時間切れでまとめて止められるようにする。
       detached: true,
     });
+    // 止められたときに、この子のグループも片付ける（`cleanup.ts`）
+    const forget = child.pid === undefined ? () => undefined : trackGroup(child.pid);
     let timedOut = false;
     const timer = setTimeout(() => {
       timedOut = true;
@@ -82,6 +85,7 @@ function spawnMise(
     }, timeoutMs);
     child.once("error", (error) => {
       clearTimeout(timer);
+      forget();
       // mise が無い、cwd が無い。どちらも head の不合格ではなく、検査できなかった側になる。
       reject(new CheckUnavailable(`could not start mise: ${error.message}`));
     });
@@ -89,6 +93,7 @@ function spawnMise(
       clearTimeout(timer);
       // 終わったあとも、テストが残した子プロセスを止める。残すと次の実行と取り合う。
       killGroup(child.pid);
+      forget();
       if (timedOut) {
         resolve({ type: "timed_out" });
       } else {
@@ -96,15 +101,6 @@ function spawnMise(
       }
     });
   });
-}
-
-function killGroup(pid: number | undefined): void {
-  if (pid === undefined) return;
-  try {
-    process.kill(-pid, "SIGKILL");
-  } catch {
-    // もう居ない
-  }
 }
 
 /**

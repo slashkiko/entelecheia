@@ -28,6 +28,16 @@ export const EVIDENCE_ARTIFACT_NAME = "ent-evidence";
 /** artifact の中のファイルの名前 */
 export const EVIDENCE_FILE_NAME = "evidence.json";
 
+/**
+ * artifact の中の、evidence.json に結びつけた GitHub Actions の OIDC トークン（JWT）の名前。
+ * 再利用ワークフローの、head のコードを流さないジョブだけがトークンを取れる。governor は
+ * 署名と中身から、どのジョブが evidence.json を作ったかを確かめる
+ */
+export const EVIDENCE_ATTESTATION_FILE_NAME = "evidence.jwt";
+
+/** そのトークンの audience。後ろに evidence.json の sha256（16進）を付ける */
+export const EVIDENCE_AUDIENCE_PREFIX = "ent-evidence:sha256:";
+
 /** 規則1つの結果。`quarantined` は flaky として隔離したもので、証拠に数えない */
 export const ruleStatusSchema = z.enum(["pass", "fail", "skip", "quarantined"]);
 export type RuleStatus = z.infer<typeof ruleStatusSchema>;

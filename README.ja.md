@@ -1166,8 +1166,12 @@ packages/ent/             ent の CLI の package。下の字下げした項目�
   src/cli.ts              ent コマンドの入口。サブコマンドごとの手順と終了コードの契約
   tests/                  Acceptance Criteria の実体と、実 git / 実 SQLite を叩く統合テスト
 packages/check/           ent-check。PR の head を base の検査の定義で回し、evidence.json を書く。
-                          実行時の依存は core だけで、ent には依存しない。まだ ent からは呼ばない
-  src/check.ts            1回の検査の手順。分岐点と head に base の定義を差し込んで回し、規則を当てる
+                          実行時の依存は core と zod だけで、ent には依存しない。まだ ent からは呼ばない
+  src/check.ts            1回の検査の手順。分岐点と head に base の定義を差し込んで回し、規則を当てる。
+                          --observe はタスクを流すだけ、--observations はタスクを流さずに、別の
+                          プロセスの観測に規則を当てる
+  src/observations.ts     --observe が書く観測の形（ent.observations/v1）
+  src/cleanup.ts          タスクのプロセスグループと切り出しを片付ける。SIGINT と SIGTERM のときも
   src/definitions.ts      どのファイルを検査の定義とみなすか。承認ルールの下限から取る
   src/rules.ts            E1 の規則。テストを減らす・飛ばす・弱める変更を落とし、検査の定義に触れた変更は名指しする
   src/main.ts             ent-check の本体。入口の src/cli.ts から呼ぶ。終了コードは 0 落ちた規則が無い、
@@ -1178,12 +1182,17 @@ known-good/               factory が止めてはいけない PR の見本。同
 packages/governor/        governor。いまはエビデンスを読む部分だけ。PR の head に対する検査の run を
                           探し、その artifact から evidence.json を取る。依存は core と zod だけで、
                           ent には依存しない。まだコマンドからは呼ばない
-  src/evidence.ts         どの run と artifact を数えるか。報告を受け取るか、古い（base が進んだ）と
-                          言うか、受け取らないか。head と同じジョブで作った報告なので、段階は E1 に抑える
-  src/github-actions.ts   GitHub Actions から run と artifact を fetch で読む（Actions: read）
-  src/zip.ts              artifact の zip から、上限付きでファイルを1つ取り出す
-.github/workflows/check.yml  ent-check を secret なしで回す再利用ワークフロー。head を流すステップには
-                          ジョブのトークンも置かない。evidence.json を artifact（ent-evidence）に残す
+  src/evidence.ts         どの run と artifact を数えるか、artifact をどのジョブが作ったか。報告を受け取るか、
+                          古い（base が進んだ）と言うか、受け取らないか。観測は head を流したジョブから
+                          来るので、段階は E1 に抑える
+  src/id-token.ts         evidence.json の横に置いた GitHub Actions の OIDC トークンを確かめる
+  src/github-actions.ts   GitHub Actions から run と artifact とトークンの鍵を fetch で読む（Actions: read）
+  src/zip.ts              artifact の zip から、上限付きで名前の決まったファイルを取り出す
+.github/workflows/check.yml  ent-check を secret なしで回す再利用ワークフロー。observe のジョブが head を
+                          流す（そのステップにはジョブのトークンも置かない）。evidence のジョブは head を
+                          流さずに規則を当て、evidence.json と、それに結びつけた OIDC トークンを
+                          artifact（ent-evidence）に残す。呼ぶ側は id-token: write を渡し、
+                          `<呼ぶ側のジョブ> / evidence` を必須のチェックにする
 plugins/ent-review/       レビュー役に読ませる semantic-review skill の正本。
                           `policies.review_skill` を書けば、対象リポジトリの中の
                           plugin に差し替わる
