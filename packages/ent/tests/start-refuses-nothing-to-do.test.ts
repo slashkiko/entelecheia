@@ -3,9 +3,9 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
+import type { AcceptanceCriterion } from "@entelecheia/core/domain/goal.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { main } from "../src/cli.js";
-import type { AcceptanceCriterion } from "../src/domain/goal.js";
 import { nothingToDo, type StartProbes } from "../src/usecase/start.js";
 import type { CommandResult, CommandRunnerPort } from "../src/verify/index.js";
 
@@ -16,7 +16,7 @@ import type { CommandResult, CommandRunnerPort } from "../src/verify/index.js";
  * あれが見るのは plan が書いた提案だけになる。手で書いた Goal と、plan が書いたあとに
  * 人間が criteria を足した Goal を受け持つのはこちらになる。落ちる criterion が1本も
  * 無い状態で start すると、DECIDE は Gap が無いので COMPLETE を選び
- * （`src/decide/index.ts`）、何もしないまま COMPLETED が終端として残る。
+ * （`packages/core/src/decide/index.ts`）、何もしないまま COMPLETED が終端として残る。
  *
  * 見たいのは向きの違う4つになる。
  *

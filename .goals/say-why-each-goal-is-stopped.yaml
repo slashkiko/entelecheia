@@ -173,7 +173,7 @@ context:
     - title: いまの一覧の組み立て
       path: packages/ent/src/usecase/inspect.ts
     - title: 一覧が返す型
-      path: packages/ent/src/domain/goal-state.ts
+      path: packages/core/src/domain/goal-state.ts
     - title: 読む先の口
       path: packages/ent/src/store/port.ts
 

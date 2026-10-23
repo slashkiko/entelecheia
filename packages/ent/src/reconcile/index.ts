@@ -1,17 +1,17 @@
-import { type AssessDeps, assess } from "../assess/index.js";
-import { type BudgetUsage, type DecideDeps, decide } from "../decide/index.js";
-import type { Decision } from "../domain/action.js";
+import { type BudgetUsage, type DecideDeps, decide } from "@entelecheia/core/decide/index.js";
+import type { Decision } from "@entelecheia/core/domain/action.js";
 import {
   type Attempt,
   buildAttempts,
   trailingRepeatedAttempts,
   type VerificationRound,
-} from "../domain/attempt.js";
-import { digestOf } from "../domain/digest.js";
-import type { Fact, Snapshot, Unresolved } from "../domain/fact.js";
-import type { Assessment } from "../domain/gap.js";
-import type { Goal } from "../domain/goal.js";
-import type { Run } from "../domain/run.js";
+} from "@entelecheia/core/domain/attempt.js";
+import { digestOf } from "@entelecheia/core/domain/digest.js";
+import type { Fact, Snapshot, Unresolved } from "@entelecheia/core/domain/fact.js";
+import type { Assessment } from "@entelecheia/core/domain/gap.js";
+import type { Goal } from "@entelecheia/core/domain/goal.js";
+import type { Run } from "@entelecheia/core/domain/run.js";
+import { type AssessDeps, assess } from "../assess/index.js";
 import { type ObserveDeps, type ObserveTarget, observe } from "../observe/index.js";
 import { type VerifyDeps, verify } from "../verify/index.js";
 

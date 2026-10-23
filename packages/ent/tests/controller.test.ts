@@ -1,9 +1,9 @@
+import type { LlmPort } from "@entelecheia/core/decide/index.js";
+import type { Goal } from "@entelecheia/core/domain/goal.js";
+import { sleepingUntil } from "@entelecheia/core/domain/guard-rules.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ActorPort, ActorResult, WorktreePort } from "../src/act/index.js";
 import { type ControllerDeps, tick } from "../src/controller/index.js";
-import type { LlmPort } from "../src/decide/index.js";
-import type { Goal } from "../src/domain/goal.js";
-import { sleepingUntil } from "../src/domain/guard-rules.js";
 import type { Store } from "../src/store/port.js";
 import { openStore } from "../src/store/sqlite.js";
 

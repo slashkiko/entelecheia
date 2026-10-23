@@ -1,8 +1,8 @@
+import type { Decision } from "@entelecheia/core/domain/action.js";
+import { type Goal, type PublishPolicy, publishPolicyOf } from "@entelecheia/core/domain/goal.js";
+import type { Verification } from "@entelecheia/core/domain/verification.js";
 import { describe, expect, it } from "vitest";
-import type { Decision } from "../src/domain/action.js";
-import { type Goal, type PublishPolicy, publishPolicyOf } from "../src/domain/goal.js";
 import { parseGoal } from "../src/domain/goal-parse.js";
-import type { Verification } from "../src/domain/verification.js";
 import {
   type BranchPort,
   type CodeWriterPort,

@@ -22,7 +22,7 @@ import type { Attempt } from "./attempt.js";
  * ビューの置き場所。作業ツリーからの相対パス。
  *
  * **読み手が2つあるのでドメインに置く。** 置く側（`deliverAttemptLedger`）と、
- * その在り処を Actor に伝える側（`IMPLEMENT_PROMPT`、`src/adapters/agent-prompt.ts`）
+ * その在り処を Actor に伝える側（`IMPLEMENT_PROMPT`、`packages/ent/src/adapters/agent-prompt.ts`）
  * になる。文字列を2箇所に書くと、片方だけ変えたときに Actor が無いファイルを
  * 指されることになり、そのことは誰にも観測できない。
  */

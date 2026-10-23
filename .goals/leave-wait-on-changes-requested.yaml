@@ -186,11 +186,11 @@ context:
     - title: 設計ドキュメント
       path: docs/design.md
     - title: いまの DECIDE
-      path: packages/ent/src/decide/index.ts
+      path: packages/core/src/decide/index.ts
     - title: 行動と待ちの理由
-      path: packages/ent/src/domain/action.ts
+      path: packages/core/src/domain/action.ts
     - title: 待ちの理由から次の状態を決めるところ
-      path: packages/ent/src/domain/goal-state.ts
+      path: packages/core/src/domain/goal-state.ts
     - title: Decision を読み直すところ
       path: packages/ent/src/store/sqlite.ts
 

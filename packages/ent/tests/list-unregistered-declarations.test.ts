@@ -1,6 +1,8 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { Goal } from "@entelecheia/core/domain/goal.js";
+import { CONFIG_FILENAME } from "@entelecheia/core/domain/goal-config.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   declarationsIn,
@@ -11,8 +13,6 @@ import {
   parseCommand,
   unregisteredDeclarations,
 } from "../src/cli.js";
-import type { Goal } from "../src/domain/goal.js";
-import { CONFIG_FILENAME } from "../src/domain/goal-config.js";
 import type { Store } from "../src/store/port.js";
 import { openStore } from "../src/store/sqlite.js";
 

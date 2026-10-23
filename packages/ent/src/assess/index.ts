@@ -1,7 +1,7 @@
-import { type Fact, type Unresolved, verifiedOnly } from "../domain/fact.js";
-import { criterionFactKey } from "../domain/fact-keys.js";
-import type { Assessment, Gap } from "../domain/gap.js";
-import type { AcceptanceCriterion } from "../domain/goal.js";
+import { type Fact, type Unresolved, verifiedOnly } from "@entelecheia/core/domain/fact.js";
+import { criterionFactKey } from "@entelecheia/core/domain/fact-keys.js";
+import type { Assessment, Gap } from "@entelecheia/core/domain/gap.js";
+import type { AcceptanceCriterion } from "@entelecheia/core/domain/goal.js";
 
 /**
  * ASSESS は外部世界を触らない。OBSERVE と VERIFY が集めた Fact だけを読む。
@@ -32,7 +32,7 @@ export interface AssessDeps {
  * - unresolved に残っている criteria は unknown。落ちたことにしない
  * - gaps が空であることと satisfied は一致する
  *
- * `src/domain/verification.ts` の `toVerifications` と似た3値判定をするが、
+ * `packages/core/src/domain/verification.ts` の `toVerifications` と似た3値判定をするが、
  * **答えている問いが違うので1つに畳まない**（design.md §4.5）。
  * ここは「VERIFIED な根拠で満たされているか」で、前ティックから繰り越した Fact も
  * 根拠に数える。そうしないと、GitHub が一時的に落ちただけで直したはずの Gap が復活する。

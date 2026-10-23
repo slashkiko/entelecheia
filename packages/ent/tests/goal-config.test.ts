@@ -3,16 +3,15 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { main, parseCommand } from "../src/cli.js";
-import { PROTECTED_PATH_FLOOR } from "../src/domain/goal.js";
+import { PROTECTED_PATH_FLOOR } from "@entelecheia/core/domain/goal.js";
 import {
   CONFIG_FILENAME,
   configTemplate,
   type GoalConfig,
-  parseGoalConfig,
-} from "../src/domain/goal-config.js";
-import { parseGoal } from "../src/domain/goal-parse.js";
+} from "@entelecheia/core/domain/goal-config.js";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { main, parseCommand } from "../src/cli.js";
+import { parseGoal, parseGoalConfig } from "../src/domain/goal-parse.js";
 
 /**
  * repo スコープの宣言（`.goals/config.yaml`）。

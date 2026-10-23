@@ -1,13 +1,13 @@
+import type { LlmCall } from "@entelecheia/core/domain/llm-call.js";
+import { isUnavailable, PortError } from "@entelecheia/core/domain/port-error.js";
 import { describe, expect, it } from "vitest";
 import { type AgentQuery, claudeLlm } from "../src/adapters/claude.js";
-import type { LlmCall } from "../src/domain/llm-call.js";
-import { isUnavailable, PortError } from "../src/domain/port-error.js";
 
 /**
  * 呼び直しても直らない失敗を、そうと分かる形で返す。
  *
  * `decide` の `askLlm()` は `PortError(unavailable)` を見て即 ESCALATE する。
- * `src/domain/port-error.ts` のコメントも「未ログイン、モデル名の誤り、認証切れは
+ * `packages/core/src/domain/port-error.ts` のコメントも「未ログイン、モデル名の誤り、認証切れは
  * ここに来る」と書いている。ところが `claudeLlm` は `consume()` が組み立てた
  * `result.ok` を一度も見ておらず、エラー result の本文をそのまま `parseJson()` に
  * 渡して素の Error を投げるだけだった。そのため `isUnavailable` の経路に乗らず、

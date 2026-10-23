@@ -1,10 +1,10 @@
 import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { Decision } from "@entelecheia/core/domain/action.js";
+import type { Goal } from "@entelecheia/core/domain/goal.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { decisionsPayload, main, parseCommand } from "../src/cli.js";
-import type { Decision } from "../src/domain/action.js";
-import type { Goal } from "../src/domain/goal.js";
 import type { Store } from "../src/store/port.js";
 import { openStore } from "../src/store/sqlite.js";
 

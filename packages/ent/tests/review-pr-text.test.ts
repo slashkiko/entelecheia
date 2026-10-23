@@ -1,3 +1,7 @@
+import type { Action, Decision } from "@entelecheia/core/domain/action.js";
+import type { Fact } from "@entelecheia/core/domain/fact.js";
+import { GITHUB_PR_BODY_KEY, GITHUB_PR_TITLE_KEY } from "@entelecheia/core/domain/fact-keys.js";
+import type { Goal } from "@entelecheia/core/domain/goal.js";
 import { describe, expect, it } from "vitest";
 import {
   type ActDeps,
@@ -11,10 +15,6 @@ import {
 import { PROMPT_FOR } from "../src/adapters/agent-prompt.js";
 import { type AgentQuery, claudeActor } from "../src/adapters/claude.js";
 import { tick } from "../src/controller/index.js";
-import type { Action, Decision } from "../src/domain/action.js";
-import type { Fact } from "../src/domain/fact.js";
-import { GITHUB_PR_BODY_KEY, GITHUB_PR_TITLE_KEY } from "../src/domain/fact-keys.js";
-import type { Goal } from "../src/domain/goal.js";
 import { type CodeProviderPort, type ObserveDeps, observe } from "../src/observe/index.js";
 import { openStore } from "../src/store/sqlite.js";
 
@@ -518,7 +518,7 @@ describe("ティックを1周させたとき", () => {
         id: "ac-review",
         description: "レビュー役が承認している",
         // レビュー役の ACT は、criteria が結論を求めている Goal でしか選べない
-        // （src/decide/index.ts の `criteriaAskForReview`）。
+        // （packages/core/src/decide/index.ts の `criteriaAskForReview`）。
         verification: { type: "fact", key: "review.verdict", equals: "approved" },
       },
     ],

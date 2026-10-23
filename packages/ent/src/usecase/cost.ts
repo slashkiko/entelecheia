@@ -1,6 +1,6 @@
+import type { LlmCall } from "@entelecheia/core/domain/llm-call.js";
+import type { Run } from "@entelecheia/core/domain/run.js";
 import { z } from "zod";
-import type { LlmCall } from "../domain/llm-call.js";
-import type { Run } from "../domain/run.js";
 import type { Store } from "../store/port.js";
 
 /**

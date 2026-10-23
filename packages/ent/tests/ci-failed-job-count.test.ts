@@ -1,8 +1,8 @@
+import type { Fact } from "@entelecheia/core/domain/fact.js";
+import { observedFactKeySchema } from "@entelecheia/core/domain/fact-keys.js";
+import { verificationSchema } from "@entelecheia/core/domain/goal.js";
 import { describe, expect, it } from "vitest";
 import { githubCodeProvider } from "../src/adapters/github.js";
-import type { Fact } from "../src/domain/fact.js";
-import { observedFactKeySchema } from "../src/domain/fact-keys.js";
-import { verificationSchema } from "../src/domain/goal.js";
 import {
   type CodeProviderPort,
   type LocalRepoPort,
@@ -81,12 +81,12 @@ function byKey(facts: readonly Fact[], key: string): Fact | undefined {
 
 describe("落ちている job の数を criteria に書ける", () => {
   it("観測キーとして github.ci.failed_job_count が実在する", () => {
-    // レジストリに無いキーは Zod が Goal YAML の時点で弾く（src/domain/fact-keys.ts）。
+    // レジストリに無いキーは Zod が Goal YAML の時点で弾く（packages/core/src/domain/fact-keys.ts）。
     expect(observedFactKeySchema.safeParse(FAILED_JOB_COUNT_KEY).success).toBe(true);
   });
 
   it("equals: 0 の criterion が Goal に書ける", () => {
-    // `equals` は既に number を受けるので、スキーマ（src/domain/goal.ts）は触らずに済む。
+    // `equals` は既に number を受けるので、スキーマ（packages/core/src/domain/goal.ts）は触らずに済む。
     // あちらは PROTECTED_PATH_FLOOR の中にあり、触れば関門が鳴る。
     const parsed = verificationSchema.safeParse({
       type: "fact",

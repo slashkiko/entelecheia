@@ -21,14 +21,14 @@ export type LaunchableActorKind = z.infer<typeof launchableActorKindSchema>;
  * （design.md §3.5）。
  *
  * ここに置くのは、読む側が2つに分かれたため。選択の時点で検証する
- * `agentSelectionFrom`（`src/wiring/index.ts`）と、DECIDE が返した
+ * `agentSelectionFrom`（`packages/ent/src/wiring/index.ts`）と、DECIDE が返した
  * `ACT.agent` を採用してよいか見る `askLlm`（`src/decide/index.ts`）になる。
  * decide は合成ルートを import できない（wiring が reconcile 経由で decide を
  * import する）ので、語彙をあちらに置いたままでは受け取り側で検証できない。
  *
  * **SDK の型との突き合わせは wiring に残す。** ここは文字列の集合しか持たず、
  * `@anthropic-ai/claude-agent-sdk` の `EffortLevel` に増減があったときに
- * ビルドで落とす検査は、SDK を import している側（`src/wiring/index.ts`）が
+ * ビルドで落とす検査は、SDK を import している側（`packages/ent/src/wiring/index.ts`）が
  * 引き続き持つ。ドメインが SDK の型に依存すると、Adapter を差し替えるたびに
  * ドメインが動くことになる。
  */
@@ -64,7 +64,7 @@ export function supportsEffort(actor: LaunchableActorKind, effort: string): bool
  *
  * **その共有は、いまや正しさの前提になっている。** 同じ commit を2度
  * レビューさせない判定（`reviewedHeadOf`・`src/decide/index.ts`）も、古い commit への
- * レビューを未達にする判定（`src/verify/index.ts`）も、`review.reviewed_sha` と
+ * レビューを未達にする判定（`packages/ent/src/verify/index.ts`）も、`review.reviewed_sha` と
  * 実装役の `local.head_sha` が一致しうることに依存している。レビュー役を別の木へ
  * 移すと、レビュー役の HEAD は base から動かないので二度と一致せず、同じ commit を
  * 延々レビューし続ける形に静かに変わる。移すなら、その2つの判定も一緒に直す。

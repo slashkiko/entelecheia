@@ -60,7 +60,7 @@ CI 定義）も同じ理由で入れる。
   `verification: { type: fact, key: review.verdict, equals: approved }` を足す。承認が出るまで
   Gap が残るので COMPLETE に届かない
 - **`github.ci.*` と `policies.publish.open_pull_request: manual` は併用できない。** CI は PR を
-  観測できたティックでしか引かないので（`packages/ent/src/observe/index.ts:379-381`）、PR を最後に回すと
+  観測できたティックでしか引かないので（`packages/ent/src/observe/index.ts:384-386`）、PR を最後に回すと
   永久に unobserved のまま Gap が残る。PR を先に開く（`repository.pull_request.draft: true` で
   通知を抑えられる）か、CI を criteria から外すかを、ここで決める
 

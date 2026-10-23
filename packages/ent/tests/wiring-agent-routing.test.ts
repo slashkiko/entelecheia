@@ -1,7 +1,7 @@
+import { actionSchema } from "@entelecheia/core/domain/action.js";
+import type { Goal } from "@entelecheia/core/domain/goal.js";
 import { describe, expect, it, vi } from "vitest";
 import { type ActorPort, act } from "../src/act/index.js";
-import { actionSchema } from "../src/domain/action.js";
-import type { Goal } from "../src/domain/goal.js";
 import { openStore } from "../src/store/sqlite.js";
 import { type AgentFactories, agentSelectionFrom, tickPorts } from "../src/wiring/index.js";
 

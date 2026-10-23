@@ -1,3 +1,6 @@
+import type { Action, Decision } from "@entelecheia/core/domain/action.js";
+import type { Goal } from "@entelecheia/core/domain/goal.js";
+import { type RunIntent, type RunOutcome, runSchema } from "@entelecheia/core/domain/run.js";
 import { describe, expect, it } from "vitest";
 import {
   type ActDeps,
@@ -11,9 +14,6 @@ import {
   worktreeBranchFor,
   worktreeNameFor,
 } from "../src/act/index.js";
-import type { Action, Decision } from "../src/domain/action.js";
-import type { Goal } from "../src/domain/goal.js";
-import { type RunIntent, type RunOutcome, runSchema } from "../src/domain/run.js";
 
 /**
  * 役割の違う Agent が、同じ Goal の中で別々の worktree を持って協働できること。

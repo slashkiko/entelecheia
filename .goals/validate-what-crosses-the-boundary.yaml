@@ -199,13 +199,13 @@ context:
 
   references:
     - title: shape_mismatch が WAIT に落ちる場所
-      path: packages/ent/src/decide/index.ts
+      path: packages/core/src/decide/index.ts
     - title: 承認 Port の失敗を port_failed に畳む場所
       path: packages/ent/src/verify/index.ts
     - title: artifacts の JSON が検査されない場所
       path: packages/ent/src/store/sqlite.ts
     - title: ESCALATE の理由
-      path: packages/ent/src/domain/action.ts
+      path: packages/core/src/domain/action.ts
     - title: 例外の種類から reason を決める側（既に作り分けている）
       path: packages/ent/src/observe/index.ts
     - title: 仕様（guard と verify）

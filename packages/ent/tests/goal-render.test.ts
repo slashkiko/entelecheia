@@ -1,7 +1,7 @@
+import { type Goal, goalTemplate, TEMPLATE_SLUG } from "@entelecheia/core/domain/goal.js";
+import { configTemplate } from "@entelecheia/core/domain/goal-config.js";
 import { describe, expect, it } from "vitest";
-import { type Goal, goalTemplate, TEMPLATE_SLUG } from "../src/domain/goal.js";
-import { configTemplate, parseGoalConfig } from "../src/domain/goal-config.js";
-import { parseGoal } from "../src/domain/goal-parse.js";
+import { parseGoal, parseGoalConfig } from "../src/domain/goal-parse.js";
 import { renderGoal } from "../src/domain/goal-render.js";
 
 /**
@@ -97,7 +97,7 @@ describe("Goal を YAML に落とす", () => {
   });
 
   it("書いていない任意キーは、キーごと落とす", () => {
-    // `.default({})` を置かない設計（`src/domain/goal.ts`）と揃える。`null` や `{}` を
+    // `.default({})` を置かない設計（`packages/core/src/domain/goal.ts`）と揃える。`null` や `{}` を
     // 書き出すと、書いていないはずの宣言が生えたように読める。
     const body = renderGoal(parseGoal(MINIMAL, "sample-goal"));
     expect(body).not.toContain("publish:");

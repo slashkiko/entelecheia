@@ -1,11 +1,11 @@
-import type { Decision } from "../domain/action.js";
-import type { VerificationRound } from "../domain/attempt.js";
-import type { Snapshot } from "../domain/fact.js";
-import type { Goal } from "../domain/goal.js";
-import type { GoalListItem, GoalState, GoalStatus } from "../domain/goal-state.js";
-import type { LlmCall } from "../domain/llm-call.js";
-import type { Run, RunIntent, RunOutcome } from "../domain/run.js";
-import type { Verification } from "../domain/verification.js";
+import type { Decision } from "@entelecheia/core/domain/action.js";
+import type { VerificationRound } from "@entelecheia/core/domain/attempt.js";
+import type { Snapshot } from "@entelecheia/core/domain/fact.js";
+import type { Goal } from "@entelecheia/core/domain/goal.js";
+import type { GoalListItem, GoalState, GoalStatus } from "@entelecheia/core/domain/goal-state.js";
+import type { LlmCall } from "@entelecheia/core/domain/llm-call.js";
+import type { Run, RunIntent, RunOutcome } from "@entelecheia/core/domain/run.js";
+import type { Verification } from "@entelecheia/core/domain/verification.js";
 
 /**
  * 実行時状態を書き出す先の Port。**使う側が所有する口**で、実装は持たない。

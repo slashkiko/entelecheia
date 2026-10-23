@@ -1,7 +1,7 @@
+import type { LlmPort } from "@entelecheia/core/decide/index.js";
+import type { Fact, VerifiedFact } from "@entelecheia/core/domain/fact.js";
+import type { Goal } from "@entelecheia/core/domain/goal.js";
 import { describe, expect, it } from "vitest";
-import type { LlmPort } from "../src/decide/index.js";
-import type { Fact, VerifiedFact } from "../src/domain/fact.js";
-import type { Goal } from "../src/domain/goal.js";
 import { type ReconcileDeps, type ReconcileTarget, reconcile } from "../src/reconcile/index.js";
 
 /**

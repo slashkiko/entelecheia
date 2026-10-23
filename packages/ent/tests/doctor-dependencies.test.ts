@@ -20,7 +20,7 @@ import { type DoctorGoal, type DoctorProbes, doctorPayload } from "../src/cli.js
  *             宣言を全部読める doctor だけが分けられる
  *
  * **doctor は読むだけで、実行時の判定は変えない。** 「先に進んでよいか」は
- * 停止条件なので `dependencyGate`（`src/domain/guard-rules.ts`）が持ち続ける。
+ * 停止条件なので `dependencyGate`（`packages/core/src/domain/guard-rules.ts`）が持ち続ける。
  * こちらが答えるのは「回す前の宣言が壊れていないか」で、層が違う。
  */
 

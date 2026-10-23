@@ -3,9 +3,13 @@ import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
+import {
+  NEUTRALIZED_ENV,
+  WITHHELD_ENV,
+  withheldEnv,
+} from "@entelecheia/core/domain/withheld-env.js";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { commandRunner } from "../src/adapters/local.js";
-import { NEUTRALIZED_ENV, WITHHELD_ENV, withheldEnv } from "../src/domain/withheld-env.js";
 
 /**
  * git 自身の資格情報の経路を、Actor と検証コマンドから塞いだことを固定する。

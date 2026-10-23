@@ -1,10 +1,15 @@
+import type { Decision } from "@entelecheia/core/domain/action.js";
+import {
+  type Goal,
+  goalSchema,
+  goalTemplate,
+  TEMPLATE_SLUG,
+} from "@entelecheia/core/domain/goal.js";
+import { configTemplate } from "@entelecheia/core/domain/goal-config.js";
 import { describe, expect, it } from "vitest";
 import { parse as parseYaml } from "yaml";
 import { githubCodeWriter } from "../src/adapters/github.js";
-import type { Decision } from "../src/domain/action.js";
-import { type Goal, goalSchema, goalTemplate, TEMPLATE_SLUG } from "../src/domain/goal.js";
-import { configTemplate, parseGoalConfig } from "../src/domain/goal-config.js";
-import { parseGoal } from "../src/domain/goal-parse.js";
+import { parseGoal, parseGoalConfig } from "../src/domain/goal-parse.js";
 import {
   type BranchPort,
   type CodeWriterPort,

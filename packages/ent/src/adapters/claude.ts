@@ -1,14 +1,14 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { EffortLevel, Options } from "@anthropic-ai/claude-agent-sdk";
+import type { LlmPort } from "@entelecheia/core/decide/index.js";
+import type { ApprovalGate } from "@entelecheia/core/domain/goal.js";
+import type { LlmCall } from "@entelecheia/core/domain/llm-call.js";
+import { PortError } from "@entelecheia/core/domain/port-error.js";
+import type { ActorRole } from "@entelecheia/core/domain/run.js";
+import { CLAUDE_ACTOR_WITHHELD_ENV, withheldEnv } from "@entelecheia/core/domain/withheld-env.js";
 import { z } from "zod";
 import type { ActorInvocation, ActorPort, ActorResult } from "../act/index.js";
-import type { LlmPort } from "../decide/index.js";
-import type { ApprovalGate } from "../domain/goal.js";
-import type { LlmCall } from "../domain/llm-call.js";
-import { PortError } from "../domain/port-error.js";
-import type { ActorRole } from "../domain/run.js";
-import { CLAUDE_ACTOR_WITHHELD_ENV, withheldEnv } from "../domain/withheld-env.js";
 import { JSON_ONLY, PROMPT_FOR, parseJson, reviewSkillOf } from "./agent-prompt.js";
 
 /**

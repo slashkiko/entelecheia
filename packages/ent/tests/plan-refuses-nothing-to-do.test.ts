@@ -1,5 +1,5 @@
+import { MAX_LLM_RETRIES } from "@entelecheia/core/domain/llm-call.js";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { MAX_LLM_RETRIES } from "../src/domain/llm-call.js";
 import { type PlanProbes, type PlanRequest, planGoals } from "../src/usecase/plan.js";
 import type { CommandResult } from "../src/verify/index.js";
 
@@ -8,7 +8,7 @@ import type { CommandResult } from "../src/verify/index.js";
  *
  * 2026-08-25 に生成された `calculate-metered-cost-from-raw-logs` の ac-1 は
  * `mise run verify` 1本だった。無変更のチェックアウトで既に通る。DECIDE は Gap が
- * 無ければ COMPLETE を選ぶ（`src/decide/index.ts`）ので、`ent start` すると何もせず
+ * 無ければ COMPLETE を選ぶ（`packages/core/src/decide/index.ts`）ので、`ent start` すると何もせず
  * 1ティック目で完了扱いになる。頼んで得られるのは確認できない遵守でしかない
  * （design.md 10-11）ので、プロンプトの文言ではなく**実際に走らせた結果**で見る。
  *

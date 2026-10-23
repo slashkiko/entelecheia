@@ -1,6 +1,6 @@
+import { criterionFactKey } from "@entelecheia/core/domain/fact-keys.js";
+import type { AcceptanceCriterion } from "@entelecheia/core/domain/goal.js";
 import { describe, expect, it } from "vitest";
-import { criterionFactKey } from "../src/domain/fact-keys.js";
-import type { AcceptanceCriterion } from "../src/domain/goal.js";
 import { describeCommandResult, type VerifyDeps, verify } from "../src/verify/index.js";
 
 /**

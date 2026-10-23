@@ -1,10 +1,10 @@
+import type { LlmPort } from "@entelecheia/core/decide/index.js";
+import type { Fact, Unresolved } from "@entelecheia/core/domain/fact.js";
+import { criterionFactKey } from "@entelecheia/core/domain/fact-keys.js";
+import type { AcceptanceCriterion, Goal } from "@entelecheia/core/domain/goal.js";
+import { pendingReviewCriteria } from "@entelecheia/core/domain/verification.js";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { type ControllerDeps, tick } from "../src/controller/index.js";
-import type { LlmPort } from "../src/decide/index.js";
-import type { Fact, Unresolved } from "../src/domain/fact.js";
-import { criterionFactKey } from "../src/domain/fact-keys.js";
-import type { AcceptanceCriterion, Goal } from "../src/domain/goal.js";
-import { pendingReviewCriteria } from "../src/domain/verification.js";
 import type { Store } from "../src/store/port.js";
 import { openStore } from "../src/store/sqlite.js";
 

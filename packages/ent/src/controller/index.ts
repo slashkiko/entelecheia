@@ -1,17 +1,15 @@
 import { join } from "node:path";
+import type { BudgetUsage } from "@entelecheia/core/decide/index.js";
+import type { Decision, EscalateReason } from "@entelecheia/core/domain/action.js";
+import { errorMessage } from "@entelecheia/core/domain/error-message.js";
+import type { Fact, Unresolved } from "@entelecheia/core/domain/fact.js";
+import type { Goal, PublishStep } from "@entelecheia/core/domain/goal.js";
 import {
-  type ActDeps,
-  act,
-  type RunRecorderPort,
-  worktreeBranchFor,
-  worktreeNameFor,
-} from "../act/index.js";
-import type { BudgetUsage } from "../decide/index.js";
-import type { Decision, EscalateReason } from "../domain/action.js";
-import { errorMessage } from "../domain/error-message.js";
-import type { Fact, Unresolved } from "../domain/fact.js";
-import type { Goal, PublishStep } from "../domain/goal.js";
-import { type GoalState, type GoalStatus, isTerminal, nextStatus } from "../domain/goal-state.js";
+  type GoalState,
+  type GoalStatus,
+  isTerminal,
+  nextStatus,
+} from "@entelecheia/core/domain/goal-state.js";
 import {
   actorUsageLimitDecision,
   CONTROLLER_STATE_DB_KEY,
@@ -26,14 +24,26 @@ import {
   observedValue,
   sleepingUntil,
   waitedSeconds,
-} from "../domain/guard-rules.js";
-import { describeViolations, findViolations } from "../domain/protected-paths.js";
-import { type ActorRole, DEFAULT_ACTOR_ROLE, type Run, type RunIntent } from "../domain/run.js";
+} from "@entelecheia/core/domain/guard-rules.js";
+import {
+  type ActorRole,
+  DEFAULT_ACTOR_ROLE,
+  type Run,
+  type RunIntent,
+} from "@entelecheia/core/domain/run.js";
 import {
   pendingReviewCriteria,
   toVerifications,
   type Verification,
-} from "../domain/verification.js";
+} from "@entelecheia/core/domain/verification.js";
+import {
+  type ActDeps,
+  act,
+  type RunRecorderPort,
+  worktreeBranchFor,
+  worktreeNameFor,
+} from "../act/index.js";
+import { describeViolations, findViolations } from "../domain/protected-paths.js";
 import { type PublishDeps, type PublishHold, publish } from "../publish/index.js";
 import { type ReconcileDeps, reconcile } from "../reconcile/index.js";
 import type { Store } from "../store/port.js";

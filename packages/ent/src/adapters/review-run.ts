@@ -1,8 +1,8 @@
 import { readFile } from "node:fs/promises";
-import { errorMessage } from "../domain/error-message.js";
-import { PortError } from "../domain/port-error.js";
-import type { Run } from "../domain/run.js";
-import { finalMessageIn } from "../domain/run-log.js";
+import { errorMessage } from "@entelecheia/core/domain/error-message.js";
+import { PortError } from "@entelecheia/core/domain/port-error.js";
+import type { Run } from "@entelecheia/core/domain/run.js";
+import { finalMessageIn } from "@entelecheia/core/domain/run-log.js";
 import type { ReviewPort, ReviewRunSnapshot } from "../observe/index.js";
 
 /**
@@ -14,7 +14,7 @@ import type { ReviewPort, ReviewRunSnapshot } from "../observe/index.js";
  *
  * 一方 Actor Adapter は実行イベントを1件ずつ
  * `.goals/.state/runs/<run-id>/log.jsonl` に書いており、レビュー役の最終メッセージも
- * そこにある。**本文を切り出す規則は `src/domain/run-log.ts` にある。** 生ログは
+ * そこにある。**本文を切り出す規則は `packages/core/src/domain/run-log.ts` にある。** 生ログは
  * ent 自身が書いた形なので、解析は I/O を持たない純粋な文字列処理になる。読み手が
  * 2つに増えた（もう1つは試行台帳のビューを配る usecase）ので、規則だけをドメインへ
  * 出した。ここに残すのは「どの Run を選ぶか」と「ファイルを開く」の2つになる。

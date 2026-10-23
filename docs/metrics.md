@@ -264,7 +264,7 @@ zz-driver-boundary-probe               DECLARATION_MISSING  0                   
 `human_review_pending` の3件目になる。
 
 `WAIT(review_pending)` は `WAIT(human_review_pending)` の改名前の名前で、同じ待ちになる
-（`packages/ent/src/domain/action.ts`）。タスクは足して数えるので、改名をまたぐ Goal が2つの理由に割れない。
+（`packages/core/src/domain/action.ts`）。タスクは足して数えるので、改名をまたぐ Goal が2つの理由に割れない。
 
 ### M4 の実時間も、同じ口で分けられる
 
@@ -407,7 +407,7 @@ M5（同一失敗シグネチャの反復回数）の観測が入った。基準
 
 **`ent` の出力ではなく状態ストアの行から数えている。** この指標は §5 で「観測が無い」に
 分類したもので、CLI に出す口はまだ無い。数え直すには、基準線の `goals.db` を開いて
-`buildAttempts` と `trailingRepeatedAttempts`（`packages/ent/src/domain/attempt.ts`）を Goal ごとに
+`buildAttempts` と `trailingRepeatedAttempts`（`packages/core/src/domain/attempt.ts`）を Goal ごとに
 呼ぶ。`Store` は `listRuns` / `listVerificationRounds` / `listSnapshots` の3本を返すので、
 それを渡すだけになる。
 

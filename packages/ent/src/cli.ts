@@ -10,6 +10,10 @@ import {
 import { readFile } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { errorMessage } from "@entelecheia/core/domain/error-message.js";
+import { type Goal, progressTargetOf } from "@entelecheia/core/domain/goal.js";
+import { isTerminal } from "@entelecheia/core/domain/goal-state.js";
+import { DEFAULT_ACTOR_ROLE } from "@entelecheia/core/domain/run.js";
 import { worktreeNameFor } from "./act/index.js";
 import { agentContextPayload } from "./cli/agent-context.js";
 import { type Command, parseCommand, type ReportTarget, USAGE } from "./cli/parse.js";
@@ -21,10 +25,6 @@ import {
   writeTruncationHint,
 } from "./cli/present.js";
 import { type TickResult, tick } from "./controller/index.js";
-import { errorMessage } from "./domain/error-message.js";
-import { type Goal, progressTargetOf } from "./domain/goal.js";
-import { isTerminal } from "./domain/goal-state.js";
-import { DEFAULT_ACTOR_ROLE } from "./domain/run.js";
 import type { Store } from "./store/port.js";
 import { costPayload, emptyCostPayload, parseCostPriceFile } from "./usecase/cost.js";
 import { type DeliverAttemptsProbes, deliverAttemptLedger } from "./usecase/deliver-attempts.js";

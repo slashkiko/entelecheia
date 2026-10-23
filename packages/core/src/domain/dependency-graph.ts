@@ -1,7 +1,7 @@
 /**
  * `goal.depends_on` が作る有向グラフの、読むだけの規則。
  *
- * もとは `src/usecase/doctor.ts` の中にあった。`ent plan` が書き出す前に同じ判定を
+ * もとは `packages/ent/src/usecase/doctor.ts` の中にあった。`ent plan` が書き出す前に同じ判定を
  * するので、ここへ出して読み手を1つにする。**循環検知が2つあると、doctor が
  * 通した集合を plan が落とす（逆も）状態を作れる。** 依存を持たない純粋な規則なので
  * ドメインに置ける。

@@ -1,6 +1,6 @@
 import { appendFileSync } from "node:fs";
+import { errorMessage } from "@entelecheia/core/domain/error-message.js";
 import type { TickResult } from "../controller/index.js";
-import { errorMessage } from "../domain/error-message.js";
 import type { ProgressSink } from "../publish/index.js";
 import { truncationHint } from "../usecase/inspect.js";
 import type { ReportTarget } from "./parse.js";

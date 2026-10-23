@@ -64,7 +64,7 @@ reflects the current state, including the post-MVP review.
 
 Completion and the stopping conditions for runaway behavior are not left to the LLM. The LLM may
 choose only among three actions: `ACT` / `VERIFY` / `WAIT`. `COMPLETE` and `ESCALATE` are decided by
-pure logic (the guard). That boundary lives in `packages/ent/src/decide/`.
+pure logic (the guard). That boundary lives in `packages/core/src/decide/`.
 
 ### The protected-path gate
 
@@ -195,8 +195,8 @@ connected", "The controller does the committing", "Everything green does not mea
 broken", "The more central the design, the less it reduces to a verification command", and
 "Scope per phase".
 
-The Goal YAML schema is in `packages/ent/src/domain/goal.ts`, the repository-scoped half in
-`packages/ent/src/domain/goal-config.ts`; the registry of observation keys is in `packages/ent/src/domain/fact-keys.ts`.
+The Goal YAML schema is in `packages/core/src/domain/goal.ts`, the repository-scoped half in
+`packages/core/src/domain/goal-config.ts`; the registry of observation keys is in `packages/core/src/domain/fact-keys.ts`.
 
 ### Inside Phase 3
 
@@ -320,7 +320,8 @@ left as is (that is a separate matter from publishing to npm). To remove it, run
 **What you link to is the `packages/ent/dist/cli.js` inside the checkout, not a copy.** Rebuild ent itself and
 what `ent` points at is replaced too. Conversely, linking from a checkout that has no `packages/ent/dist/` yet
 leaves the symlink pointing at nothing, so run "Setup for working on ent" below once in that
-checkout.
+checkout. Copying `packages/ent/dist/` elsewhere, or packing it with `pnpm pack`, does not work
+either: it imports `@entelecheia/core`, which is not published and resolves only inside the workspace.
 
 Which Node starts is chosen by the shebang's `/usr/bin/env node`. Invoked from a shell where mise or
 nvm is in effect, the target repository's Node gets used, and anything below 24 dies on the
@@ -703,8 +704,10 @@ Three constraints remain.
   work across machines** (two machines running the same Goal will both open a PR)
 - `PROTECTED_PATH_FLOOR` contains paths specific to entelecheia, so if the target repository has
   paths by the same names (`packages/ent/src/controller/**`, for instance), the Agent touching them becomes a
-  violation **by mistake**. During the move to `packages/`, the floor also keeps the pre-move paths
-  (`src/controller/**` and the rest), so those collide too until they are removed
+  violation **by mistake**. This includes the manifest `packages/core/package.json`, a common name in
+  workspaces, so a Goal there that adds a dependency to that package stops too. During the move to
+  `packages/`, the floor also keeps the pre-move paths (`src/controller/**` and the rest), so those
+  collide too until they are removed
 - **Conversely, the floor's protected paths do not reach ent's own code.** ent itself sits outside
   the target repository, so a line like `packages/ent/src/controller/**` does not point at ent's sources. Where
   the previous item is about false positives from same-named paths on the target side, this one is
@@ -1167,11 +1170,10 @@ verification commands are still not given `ANTHROPIC_*` / `CLAUDE_CODE_*` / `OPE
                           Only the investigate role is split out as
                           <slug>-investigate (design.md §4.2)
 .goals/.state/runs/<run-id>/  The Agent's raw logs. The DB holds only the path
-packages/ent/             The ent CLI package. The entries indented below are inside it
+packages/core/            Pure decisions shared by the packages. Depends on zod only; no I/O
   src/domain/fact.ts      The Fact type (separating VERIFIED / INFERRED) and Unresolved
   src/domain/fact-keys.ts Registry of observation keys. fact verification in Goal YAML refers here
   src/domain/goal.ts      The Zod schema for Goal YAML
-  src/domain/goal-parse.ts Goal YAML validation and the slug/goal.id match. Reads no files
   src/domain/goal-config.ts The .goals/config.yaml schema and how it merges under a Goal
   src/domain/gap.ts       The Gap and Assessment types ASSESS produces
   src/domain/action.ts    The Action and Decision types DECIDE chooses
@@ -1181,17 +1183,21 @@ packages/ent/             The ent CLI package. The entries indented below are in
   src/domain/port-error.ts Kinds of Port failure (usage_limit / unavailable)
   src/domain/verification.ts Per-criterion verification results. The index that §9's completion check reads
   src/domain/digest.ts    Digest of observed values. Material for loop detection
-  src/domain/protected-paths.ts Protected-path inspection. Stops edits to the control loop itself
   src/domain/guard-rules.ts The decision rules the guard (pure logic) reads. Gate baseline and
                           stopping conditions
   src/domain/withheld-env.ts The removal list of credentials dropped from the Agent's and the
                           verification commands' environments
   src/domain/error-message.ts Extracts one human-readable line from an exception
   src/domain/llm-call.ts  A record of one LlmPort call. Tokens that do not create a Run
+  src/domain/path-glob.ts Path-to-glob matching. Shared by protected paths and approval rules
+  src/decide/             Decide and the LlmPort definition. The guard/LLM boundary is here
+packages/ent/             The ent CLI package. The entries indented below are inside it
+  src/domain/goal-parse.ts Reads Goal YAML and config.yaml text into core's schemas, and the slug/goal.id
+                          match. Reads no files
+  src/domain/protected-paths.ts Protected-path inspection. Stops edits to the control loop itself
   src/observe/            Observe, and the definitions of the Ports it depends on
   src/verify/             Verify, and the definitions of the Ports it depends on
   src/assess/             Assess. Matches Acceptance Criteria against Facts to produce Gaps
-  src/decide/             Decide and the LlmPort definition. The guard/LLM boundary is here
   src/act/                Act. Runs the Actor on a worktree. Write-ahead is here
   src/reconcile/          Bundles OBSERVE → VERIFY → ASSESS → DECIDE into one tick
   src/publish/            Securing the PR and the progress comment. CodeWriterPort and BranchPort

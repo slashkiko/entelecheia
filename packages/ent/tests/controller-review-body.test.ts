@@ -1,7 +1,7 @@
+import type { Goal } from "@entelecheia/core/domain/goal.js";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { ActorPort, WorktreePort } from "../src/act/index.js";
 import { type ControllerDeps, tick } from "../src/controller/index.js";
-import type { Goal } from "../src/domain/goal.js";
 import type { ProgressSink } from "../src/publish/index.js";
 import type { Store } from "../src/store/port.js";
 import { openStore } from "../src/store/sqlite.js";

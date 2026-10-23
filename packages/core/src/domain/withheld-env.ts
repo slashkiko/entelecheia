@@ -2,8 +2,8 @@
  * controller が持っている資格情報を、controller 以外に渡さないための除去リスト。
  *
  * 置き場所を domain にしてあるのは、読み手が2つあるため。Actor を起動する
- * `src/adapters/claude.ts` と、`setup` / `verification.run` を流す
- * `src/adapters/local.ts` の両方がここを見る。片方にだけ持たせると、
+ * `packages/ent/src/adapters/claude.ts` と、`setup` / `verification.run` を流す
+ * `packages/ent/src/adapters/local.ts` の両方がここを見る。片方にだけ持たせると、
  * 「Agent にはトークンを渡さないが、Agent が書いたテストには渡る」という
  * 状態がまた生まれる。実際そうなっていた。
  *
@@ -130,7 +130,7 @@ export const NEUTRALIZED_ENV: Readonly<Record<string, string>> = {
  * `git -c credential.helper=osxkeychain ls-remote ...` は実測で通る。
  * `GIT_CONFIG_COUNT=0 git ...` のようにインラインで環境変数を置き直す形も同じ。
  * どちらも `git` で始まらない綴りにできるので、拒否リストでは数え上げられない
- * （`src/adapters/claude.ts` の `ALWAYS_DENIED` を参照）。
+ * （`packages/ent/src/adapters/claude.ts` の `ALWAYS_DENIED` を参照）。
  *
  * 閉じたのは**周囲の環境から黙って届く経路**で、そこが本来の問題だった。
  * Actor が何も知らずに叩いた git、および Actor が書いて VERIFY が流すテストは、

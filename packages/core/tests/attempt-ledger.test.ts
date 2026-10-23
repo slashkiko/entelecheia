@@ -290,7 +290,7 @@ describe("反復の数え方", () => {
 
   it("レビューに依存する criteria が pending に倒れても、指紋は揃う", () => {
     // 実装役が走ったティックでは、レビュー系の criteria が `pendingReviewCriteria`
-    // で pending に倒される（`src/controller/index.ts`）。**倒された側だけを比べる**
+    // で pending に倒される（`packages/ent/src/controller/index.ts`）。**倒された側だけを比べる**
     // ので、空回りしているあいだは毎ティック同じ文面が並ぶ。片方だけ倒れた形を
     // 比べていると、この種の Goal でだけ検知が黙って死ぬ。
     const pending = verification({

@@ -1,8 +1,8 @@
+import { type Fact, verifiedOnly } from "@entelecheia/core/domain/fact.js";
+import { criterionFactKey, observedFactKeySchema } from "@entelecheia/core/domain/fact-keys.js";
+import { type AcceptanceCriterion, repositorySchema } from "@entelecheia/core/domain/goal.js";
 import { describe, expect, it } from "vitest";
 import { githubCodeProvider } from "../src/adapters/github.js";
-import { type Fact, verifiedOnly } from "../src/domain/fact.js";
-import { criterionFactKey, observedFactKeySchema } from "../src/domain/fact-keys.js";
-import { type AcceptanceCriterion, repositorySchema } from "../src/domain/goal.js";
 import {
   type CodeProviderPort,
   type LocalRepoPort,

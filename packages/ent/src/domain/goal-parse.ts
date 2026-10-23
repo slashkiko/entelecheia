@@ -1,6 +1,10 @@
+import { type Goal, goalSchema } from "@entelecheia/core/domain/goal.js";
+import {
+  type GoalConfig,
+  goalConfigSchema,
+  mergeGoalConfig,
+} from "@entelecheia/core/domain/goal-config.js";
 import { parse } from "yaml";
-import { type Goal, goalSchema } from "./goal.js";
-import { type GoalConfig, mergeGoalConfig } from "./goal-config.js";
 
 /**
  * Goal YAML の中身を検証して `Goal` にする。**ファイルは読まない。**
@@ -27,4 +31,15 @@ export function parseGoal(source: string, slug: string, config: GoalConfig | nul
     throw new Error(`goal.id (${goal.goal.id}) does not match the filename slug (${slug})`);
   }
   return goal;
+}
+
+/**
+ * `.goals/config.yaml` の中身を検証する。**ファイルは読まない。**
+ *
+ * 読む側は `src/adapters/goal-file.ts` にある。`parseGoal` と同じ分け方になる。
+ * スキーマと敷き方（`goalConfigSchema` / `mergeGoalConfig`）は core にあり、
+ * YAML を読むここだけが ent に残る。
+ */
+export function parseGoalConfig(source: string): GoalConfig {
+  return goalConfigSchema.parse(parse(source));
 }

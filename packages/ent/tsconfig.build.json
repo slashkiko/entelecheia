@@ -5,7 +5,10 @@
     "rootDir": "src",
     "outDir": "dist",
     "declaration": false,
-    "sourceMap": true
+    "sourceMap": true,
+    // core は src ではなく、ビルド済みの dist（package.json の exports）から引く。
+    // ルートの paths を残すと core の src がこの program に入り、rootDir の外になる。
+    "paths": {}
   },
   "include": ["src/**/*.ts"]
 }

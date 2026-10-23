@@ -1,5 +1,5 @@
+import type { Fact, Unresolved } from "@entelecheia/core/domain/fact.js";
 import { describe, expect, it } from "vitest";
-import type { Fact, Unresolved } from "../src/domain/fact.js";
 import {
   type CodeProviderPort,
   type LocalRepoPort,

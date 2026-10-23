@@ -1,8 +1,8 @@
+import type { Decision } from "@entelecheia/core/domain/action.js";
+import type { Fact } from "@entelecheia/core/domain/fact.js";
+import type { Goal } from "@entelecheia/core/domain/goal.js";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { showPayload } from "../src/cli.js";
-import type { Decision } from "../src/domain/action.js";
-import type { Fact } from "../src/domain/fact.js";
-import type { Goal } from "../src/domain/goal.js";
 import type { Store } from "../src/store/port.js";
 import { openStore } from "../src/store/sqlite.js";
 

@@ -1,7 +1,7 @@
+import type { LlmCall } from "@entelecheia/core/domain/llm-call.js";
+import { PortError } from "@entelecheia/core/domain/port-error.js";
 import { describe, expect, it } from "vitest";
 import { type AgentQuery, claudeLlm } from "../src/adapters/claude.js";
-import type { LlmCall } from "../src/domain/llm-call.js";
-import { PortError } from "../src/domain/port-error.js";
 
 /**
  * LlmPort の生ログとトークン。

@@ -1,3 +1,5 @@
+import { PortError } from "@entelecheia/core/domain/port-error.js";
+import { NEUTRALIZED_ENV } from "@entelecheia/core/domain/withheld-env.js";
 import { describe, expect, it } from "vitest";
 import type { ActorInvocation } from "../src/act/index.js";
 import {
@@ -6,8 +8,6 @@ import {
   claudeActor,
   claudeLlm,
 } from "../src/adapters/claude.js";
-import { PortError } from "../src/domain/port-error.js";
-import { NEUTRALIZED_ENV } from "../src/domain/withheld-env.js";
 
 /**
  * テストから実際の Claude Code を起動しない。query() を注入して差し替える。

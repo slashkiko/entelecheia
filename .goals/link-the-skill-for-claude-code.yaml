@@ -211,7 +211,7 @@ context:
     - title: import.meta.url から ent 本体の側のパスを解決する前例（REVIEW_PLUGIN_DIR）
       path: packages/ent/src/adapters/claude.ts
     - title: 下限として必ず混ざる保護パス（PROTECTED_PATH_FLOOR）
-      path: packages/ent/src/domain/goal.ts
+      path: packages/core/src/domain/goal.ts
     - title: 指す先の実体
       path: .claude/skills/ent/SKILL.md
 

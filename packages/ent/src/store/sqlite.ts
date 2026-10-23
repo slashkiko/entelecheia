@@ -5,21 +5,24 @@
 import { createHash } from "node:crypto";
 import { readFileSync, statSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
-import { z } from "zod";
-import { actionSchema, decisionSchema } from "../domain/action.js";
-import { errorMessage } from "../domain/error-message.js";
-import { type Fact, unresolvedSchema } from "../domain/fact.js";
-import { goalStatusSchema } from "../domain/goal-state.js";
-import { llmCallSchema } from "../domain/llm-call.js";
-import { portErrorKindSchema } from "../domain/port-error.js";
+import { actionSchema, decisionSchema } from "@entelecheia/core/domain/action.js";
+import { errorMessage } from "@entelecheia/core/domain/error-message.js";
+import { type Fact, unresolvedSchema } from "@entelecheia/core/domain/fact.js";
+import { goalStatusSchema } from "@entelecheia/core/domain/goal-state.js";
+import { llmCallSchema } from "@entelecheia/core/domain/llm-call.js";
+import { portErrorKindSchema } from "@entelecheia/core/domain/port-error.js";
 import {
   actorKindSchema,
   actorRoleSchema,
   DEFAULT_ACTOR_ROLE,
   runSchema,
   runStatusSchema,
-} from "../domain/run.js";
-import { type Verification, verificationResultSchema } from "../domain/verification.js";
+} from "@entelecheia/core/domain/run.js";
+import {
+  type Verification,
+  verificationResultSchema,
+} from "@entelecheia/core/domain/verification.js";
+import { z } from "zod";
 import type { Store } from "./port.js";
 
 /**
@@ -777,7 +780,7 @@ const GUARD_SECTIONS: readonly { name: string; sql: string; skip?: readonly stri
  * `review.verdict` と `review.reviewed_sha` を **VERIFIED な Fact** にする。
  * 実装役が自分で commit して HEAD を固定し、前のレビューのログに
  * `verdict: approved` とその sha を書けば、次のティックで criterion が緑になる。
- * しかも `reviewedHeadOf`（`src/decide/index.ts`）が「同じ commit を2度
+ * しかも `reviewedHeadOf`（`packages/core/src/decide/index.ts`）が「同じ commit を2度
  * レビューさせない」ので、**本物のレビューはもう走らない。**
  *
  * `ownRunDrift` が `runs` の不変列を見て `UPDATE runs SET role='review'` を

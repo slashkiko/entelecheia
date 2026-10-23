@@ -1,10 +1,10 @@
-import type { Action, Decision } from "../domain/action.js";
-import type { Snapshot } from "../domain/fact.js";
-import type { Goal } from "../domain/goal.js";
-import { CONFIG_FILENAME } from "../domain/goal-config.js";
-import type { GoalListItem, GoalState } from "../domain/goal-state.js";
-import type { Run } from "../domain/run.js";
-import type { Verification } from "../domain/verification.js";
+import type { Action, Decision } from "@entelecheia/core/domain/action.js";
+import type { Snapshot } from "@entelecheia/core/domain/fact.js";
+import type { Goal } from "@entelecheia/core/domain/goal.js";
+import { CONFIG_FILENAME } from "@entelecheia/core/domain/goal-config.js";
+import type { GoalListItem, GoalState } from "@entelecheia/core/domain/goal-state.js";
+import type { Run } from "@entelecheia/core/domain/run.js";
+import type { Verification } from "@entelecheia/core/domain/verification.js";
 import type { Store } from "../store/port.js";
 
 /**
@@ -157,7 +157,7 @@ export interface GoalListEntry extends GoalListItem {
  * 止まっている理由を、直近の判断1件から読む。判断は足さない。
  *
  * 見張る主体は作らない。停止条件を決めているのは既にある純ロジックの関門
- * （`src/domain/guard-rules.ts`）で、ここはその関門が出した結論を写すだけになる。
+ * （`packages/core/src/domain/guard-rules.ts`）で、ここはその関門が出した結論を写すだけになる。
  * LLM を呼ぶ経路は1本も増えない（design.md §7）。
  */
 export function stoppedReason(decision: Decision | null): StoppedReason | null {

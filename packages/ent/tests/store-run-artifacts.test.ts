@@ -2,9 +2,9 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import type { Goal } from "@entelecheia/core/domain/goal.js";
+import type { RunIntent, RunOutcome } from "@entelecheia/core/domain/run.js";
 import { afterEach, describe, expect, it } from "vitest";
-import type { Goal } from "../src/domain/goal.js";
-import type { RunIntent, RunOutcome } from "../src/domain/run.js";
 import { openStore } from "../src/store/sqlite.js";
 
 /**

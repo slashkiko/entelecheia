@@ -1,7 +1,7 @@
+import { type Fact, verifiedOnly, verifyResultSchema } from "@entelecheia/core/domain/fact.js";
+import { criterionFactKey } from "@entelecheia/core/domain/fact-keys.js";
+import type { AcceptanceCriterion } from "@entelecheia/core/domain/goal.js";
 import { describe, expect, it } from "vitest";
-import { type Fact, verifiedOnly, verifyResultSchema } from "../src/domain/fact.js";
-import { criterionFactKey } from "../src/domain/fact-keys.js";
-import type { AcceptanceCriterion } from "../src/domain/goal.js";
 import {
   type ApprovalPort,
   type CommandRunnerPort,
