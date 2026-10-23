@@ -348,9 +348,9 @@ pnpm uninstall --global entelecheia   # 古い checkout をグローバルにリ
 Goal は start したときの worktree と branch を使い続ける。ent は毎ティックそれを使い回し、`ent abandon` は
 終端なので、止めた Goal を新しい worktree で start し直すことはできない。移す前に切った worktree では
 差分が `src/...` で出るが、`.goals/` にある Goal 自身の `protected_paths` はもう `packages/...` を指して
-いて、そこでは何も守らない。保護パスの下限は移行の間だけ関門のファイルの移す前のパスも持っているが、
-Goal ごとの宣言までは覆わない。だから、そうした Goal を先に終わらせる。待てない Goal は abandon し、
-新しい `id` で Goal を宣言し直す。新しい `id` には新しい worktree ができる。下限から移す前のパスを外すのは、
+いて、そこでは何も守らない。`.goals/config.yaml` の保護パスは移行の間だけ関門のファイルの移す前のパスも
+持っているが、Goal ごとの宣言までは覆わない。だから、そうした Goal を先に終わらせる。待てない Goal は abandon し、
+新しい `id` で Goal を宣言し直す。新しい `id` には新しい worktree ができる。config から移す前のパスを外すのは、
 `git worktree list` に移す前に切った worktree が無くなってからにする。
 
 ## 検証
@@ -663,17 +663,16 @@ ent 本体がマシンに1つ入るからになる。対象リポジトリの中
 
 - lease は `.goals/.state/goals.db` にあり gitignore 済みなので、**端末をまたいだ
   排他は効かない**（2台が同じ Goal を回すと両方が PR を立てる）
-- `PROTECTED_PATH_FLOOR` は entelecheia 固有のパスを含むので、対象リポジトリに
-  同じ名前のパス（`packages/ent/src/controller/**` など）があると、Agent がそこを触った時点で
-  **誤って**違反になる。workspace でよく使う名前の manifest `packages/core/package.json` も入るので、
-  そこへ依存を足す Goal も同じように止まる。`packages/` へ移す間は、移す前のパス（`src/controller/**` など）も
-  下限に残しているので、外すまではそちらも同じように当たる
-- **逆に、下限の保護パスは ent 自身のコードには届かない。** ent 本体は対象
-  リポジトリの外にあるので、`packages/ent/src/controller/**` のような行は ent のソースを
-  指さない。上の項目が「対象リポジトリ側に同名のパスがあると誤検知する」話なのに
-  対し、こちらは「ent 本体を守る用途には使えない」話になる。**関門が守るのは
-  対象リポジトリの中であって、ent 自身のコードではない**（自己ホストのときだけ
-  両方が重なる）。対象リポジトリで意味を持つのは `.goals/**` と `.git/**` と
+- **ent 自身のコードを守る保護パスは、entelecheia を回すときにだけ効く。** 制御ループ、
+  関門の規則、Adapter などのパスは、コードの下限（`PROTECTED_PATH_FLOOR`）ではなく、
+  このリポジトリの `.goals/config.yaml` に書いてある。下限はどのリポジトリの Goal にも混ざるので、
+  ent のパスを置くと、対象リポジトリに同じ名前のパス（`packages/core/package.json` など）が
+  あるだけで Agent の編集が止まるためだ。config も Goal の宣言に足されるだけで外せず、config 自身は
+  下限の `.goals/**` が守る。ただしこの守りは `.goals/` が追跡されていることに頼るので、
+  `--private-goals` で回すと config への編集も関門に届かない（次の項目）
+- **関門が守るのは対象リポジトリの中であって、ent 自身のコードではない。** ent 本体は対象
+  リポジトリの外にあるので、別のリポジトリを回している間は関門の届く場所に無い（自己ホストの
+  ときだけ両方が重なる）。下限に残すのは、対象リポジトリで意味を持つ `.goals/**` と `.git/**` と
   `.goals/.state/**` の3つになる。後ろの2つは `git status` に出ないが、
   `.git/hooks/**` と `core.hooksPath` は ACT の前後で指紋を比べる別経路
   （`outOfSightState`）が、`.goals/.state/goals.db` とレビュー役の完了した Run の

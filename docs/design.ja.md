@@ -11,8 +11,8 @@
 > `src/domain/` のうち I/O を持たない部分は `packages/core/` へ移し、残り
 > （`src/domain/goal-parse.ts`・`goal-render.ts`・`protected-paths.ts` を含む）は `packages/ent/` にある。
 > `protected-paths.ts` が持っていた glob の照合は `packages/core/src/domain/path-glob.ts` にある。
-> 本文は短い形のままにしてある。完全なパスが意味を持つのは `PROTECTED_PATH_FLOOR`（§7）だけで、
-> こちらはリポジトリのルートからの相対なので、コードでは `packages/ent/src/controller/**` や
+> 本文は短い形のままにしてある。完全なパスが意味を持つのは ent 自身の保護パス（§7）だけで、
+> こちらはリポジトリのルートからの相対なので、`.goals/config.yaml` では `packages/ent/src/controller/**` や
 > `packages/core/src/domain/guard-rules.ts` のように書いてある。
 
 > [!NOTE]
@@ -1145,6 +1145,14 @@ DECIDE の LLM 呼び出しは `LlmCall.tokens` に残す（§4.5）。あとか
 代表例で、網羅ではない。両方に同じ一覧を持たせると、片方だけ古くなったときに
 どちらが関門の実体なのか読む側から分からなくなる。承認ゲートにも同じ形の下限があり、
 `APPROVAL_GATE_FLOOR` が `secret_access` と `external_send` をどの Goal にも混ぜる。
+
+**下限は2か所に分けて置く。** コードの `PROTECTED_PATH_FLOOR` に残すのは、ent が回す
+どのリポジトリにもある `.goals/**`・`.git/**`・`.goals/.state/**` の3つだけになる。
+下の箇条に並ぶ ent 自身のファイルは、ent のリポジトリの `.goals/config.yaml` の
+`protected_paths` に書く。コードの下限はどのリポジトリの Goal にも混ざるので、ent のパスを
+置くと、別のリポジトリに同じ名前のパスがあるだけで Actor の編集が止まるためだ。
+config も Goal の宣言に足されるだけで外せず、config 自身はコードの下限の `.goals/**` が守る。
+下の箇条で「下限」と書くとき、ent 自身のファイルについてはこの config の一覧を指す。
 
 - 関門そのもの（`src/domain/protected-paths.ts`）と、Agent の許可・拒否ツールを決める
   ファイル（`src/adapters/claude.ts`）。ここが開いていると、照合を常に false にするか

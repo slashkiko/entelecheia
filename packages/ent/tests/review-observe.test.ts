@@ -26,7 +26,7 @@ import {
  * 捏造した承認が作れてしまう。
  *
  * Port を1つ足すのは、`ObserveTarget` に項目を足すと、それを組み立てる
- * `observeTargetOf` が `src/controller/index.ts`（PROTECTED_PATH_FLOOR の中）に
+ * `observeTargetOf` が `src/controller/index.ts`（このリポジトリの保護パス（`.goals/config.yaml`）の中）に
  * あるため。「どの Run を読むか」は Port の側で解決する。
  */
 

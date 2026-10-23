@@ -11,6 +11,7 @@ import {
 } from "@entelecheia/core/domain/goal.js";
 import { configTemplate } from "@entelecheia/core/domain/goal-config.js";
 import { describe, expect, it } from "vitest";
+import { loadGoalFile } from "../src/adapters/goal-file.js";
 import { parseGoal, parseGoalConfig } from "../src/domain/goal-parse.js";
 
 /**
@@ -24,6 +25,10 @@ import { parseGoal, parseGoalConfig } from "../src/domain/goal-parse.js";
  *
  * 「関門の適用範囲を Goal が決める」設計のままだと、関門を外したい Goal が
  * いつでも外せる。スキーマ側で必ず混ぜる。
+ *
+ * ent 自身を守るパスは、下限ではなくこのリポジトリの `.goals/config.yaml` にある。
+ * config も Goal の宣言に足されるだけで外せないので、ここでは下限と config を
+ * 合わせた一覧（`SELF_PROTECTED`）を見る。
  */
 
 const MINIMAL = {
@@ -85,41 +90,55 @@ describe("保護パスの下限", () => {
     const goal = goalSchema.parse(source(["docs/**"]));
 
     expect(goal.policies.protected_paths).toContain("docs/**");
-    expect(goal.policies.protected_paths).toContain("packages/ent/src/controller/**");
+    expect(goal.policies.protected_paths).toContain(".goals/**");
   });
 
   it("同じパスを宣言しても重複しない", () => {
-    const merged = withProtectedPathFloor([
-      "packages/ent/src/controller/**",
-      "packages/ent/src/controller/**",
-    ]);
+    const merged = withProtectedPathFloor([".goals/**", ".goals/**"]);
 
-    expect(merged.filter((path) => path === "packages/ent/src/controller/**")).toHaveLength(1);
+    expect(merged.filter((path) => path === ".goals/**")).toHaveLength(1);
   });
 
-  it("下限は関門そのものを覆う", () => {
+  it("下限は、どのリポジトリにもある場所だけを持つ", () => {
+    // ent 自身のパスを下限に置くと、別のリポジトリに同じ名前のパスがあるだけで
+    // Actor の編集が止まる。ent 自身を守るパスは、このリポジトリの config に置く。
+    expect([...PROTECTED_PATH_FLOOR].sort()).toEqual([".git/**", ".goals/**", ".goals/.state/**"]);
+  });
+
+  it("このリポジトリの保護パスは関門そのものを覆う", () => {
     // ここが欠けると、関門を無効化する変更を関門が見逃す。
-    // 「検証系（mise.toml など）」は下限に入れない側なので、ここでは見ない。
-    expect(PROTECTED_PATH_FLOOR).toContain("packages/ent/src/controller/**");
-    expect(PROTECTED_PATH_FLOOR).toContain(".goals/**");
-    expect(PROTECTED_PATH_FLOOR).toContain("packages/ent/src/domain/protected-paths.ts");
+    // 「検証系（mise.toml など）」は入れない側なので、ここでは見ない。
+    const paths = SELF_PROTECTED;
+    expect(paths).toContain("packages/ent/src/controller/**");
+    expect(paths).toContain(".goals/**");
+    expect(paths).toContain("packages/ent/src/domain/protected-paths.ts");
     // 照合の本体は core にある。ent 側の関門はこれを呼ぶだけなので、こちらを緩めれば
     // 関門の両方の経路（worktree 側と本体側）が同時に素通りする。
-    expect(PROTECTED_PATH_FLOOR).toContain("packages/core/src/domain/path-glob.ts");
-    expect(PROTECTED_PATH_FLOOR).toContain("packages/core/src/domain/goal.ts");
-    // 保護パスを Goal の下へ敷く規則。ここを書き換えれば、config が配っている
-    // repo 全体の保護を、下限のファイルを1つも触らずに消せる。
-    expect(PROTECTED_PATH_FLOOR).toContain("packages/core/src/domain/goal-config.ts");
-    expect(PROTECTED_PATH_FLOOR).toContain("packages/ent/src/adapters/claude.ts");
-    expect(PROTECTED_PATH_FLOOR).toContain("packages/ent/src/adapters/codex.ts");
-    expect(PROTECTED_PATH_FLOOR).toContain("packages/ent/src/adapters/agent-prompt.ts");
-    expect(PROTECTED_PATH_FLOOR).toContain("packages/ent/src/adapters/local.ts");
-    expect(PROTECTED_PATH_FLOOR).toContain("packages/core/src/domain/withheld-env.ts");
-    expect(PROTECTED_PATH_FLOOR).toContain("packages/core/src/domain/guard-rules.ts");
-    expect(PROTECTED_PATH_FLOOR).toContain("packages/ent/src/wiring/index.ts");
+    expect(paths).toContain("packages/core/src/domain/path-glob.ts");
+    expect(paths).toContain("packages/core/src/domain/goal.ts");
+    // config を Goal の下へ敷く規則。ここを書き換えれば、この一覧そのものを、
+    // 一覧のファイルを1つも触らずに消せる。
+    expect(paths).toContain("packages/core/src/domain/goal-config.ts");
+    expect(paths).toContain("packages/ent/src/adapters/claude.ts");
+    expect(paths).toContain("packages/ent/src/adapters/codex.ts");
+    expect(paths).toContain("packages/ent/src/adapters/agent-prompt.ts");
+    expect(paths).toContain("packages/ent/src/adapters/local.ts");
+    expect(paths).toContain("packages/core/src/domain/withheld-env.ts");
+    expect(paths).toContain("packages/core/src/domain/guard-rules.ts");
+    expect(paths).toContain("packages/ent/src/wiring/index.ts");
     // ent は core を package 名で import する。どのファイルがその名前になるかは
     // core の exports が決めるので、規則のファイルを触らずに向け先だけを替えられる。
-    expect(PROTECTED_PATH_FLOOR).toContain("packages/core/package.json");
+    expect(paths).toContain("packages/core/package.json");
+  });
+
+  it("このリポジトリの Goal は、config の保護パスを読み込む", () => {
+    // 一覧を config に書いても、Goal に混ざらなければ関門は見ない。
+    // 実際の Goal を1本読んで、混ざった結果に入っていることまで見る。
+    const goal = loadGoalFile(join(REPO_ROOT, ".goals", "list-goals.yaml"));
+
+    for (const path of SELF_PROTECTED) {
+      expect(goal.policies.protected_paths).toContain(path);
+    }
   });
 
   // 移行の間だけ残す、移す前のパス。移す前に切った worktree は作り直されないので、
@@ -140,8 +159,8 @@ describe("保護パスの下限", () => {
     "packages/ent/src/domain/goal.ts",
     "packages/ent/src/domain/goal-config.ts",
     "packages/ent/src/domain/withheld-env.ts",
-  ])("移行の間は、移す前のパス %s も下限に入る", (path) => {
-    expect(PROTECTED_PATH_FLOOR).toContain(path);
+  ])("移行の間は、移す前のパス %s もこのリポジトリの保護パスに入る", (path) => {
+    expect(SELF_PROTECTED).toContain(path);
   });
 
   it.each([
@@ -160,17 +179,17 @@ describe("保護パスの下限", () => {
     expect(codeownerPaths()).toContain(path);
   });
 
-  it("guard が読む規則は、下限に入っているファイルの中に居る", () => {
-    // 下限はパスのリテラルなので、**コードを別のファイルへ移すだけで保護が外れる。**
+  it("guard が読む規則は、このリポジトリの保護パスに入っているファイルの中に居る", () => {
+    // 保護パスはパスのリテラルなので、**コードを別のファイルへ移すだけで保護が外れる。**
     // `guardBaseOf` や `elapsedSecondsSince` はもともと `src/controller/**` の中に
-    // あって下限に覆われていた。依存を持たない規則だからという理由でドメインへ
-    // 出したので、出した先も下限に入っていなければ、リファクタが静かに関門を弱める。
+    // あって保護パスに覆われていた。依存を持たない規則だからという理由でドメインへ
+    // 出したので、出した先も保護パスに入っていなければ、リファクタが静かに関門を弱める。
     //
-    // 上の列挙（`toContain`）だけでは足りない。あれはファイルが下限にあることしか
-    // 見ないので、規則だけを下限の外のファイルへ移しても落ちない。ここでは
+    // 上の列挙（`toContain`）だけでは足りない。あれはファイルが保護パスにあることしか
+    // 見ないので、規則だけを保護パスの外のファイルへ移しても落ちない。ここでは
     // **規則が実際にどのファイルで宣言されているか**をソースから確かめ、
-    // そのファイルが下限にあることまで見る。
-    const floor = new Set<string>(PROTECTED_PATH_FLOOR);
+    // そのファイルが保護パスにあることまで見る。
+    const floor = new Set<string>(SELF_PROTECTED);
 
     for (const name of GUARD_RULES) {
       const homes = SOURCE_FILES.filter((file) =>
@@ -178,15 +197,15 @@ describe("保護パスの下限", () => {
       );
 
       expect(homes, `${name} を export しているファイルが1つに定まらない`).toHaveLength(1);
-      expect(floor.has(homes[0] ?? ""), `${name} の置き場 ${homes[0]} が下限に無い`).toBe(true);
+      expect(floor.has(homes[0] ?? ""), `${name} の置き場 ${homes[0]} が保護パスに無い`).toBe(true);
     }
   });
 
   it("guard が読む規則の置き場が、CODEOWNERS のレビュー必須にも入っている", () => {
-    // 下限と同じ問題が CODEOWNERS にもある。どちらもパスのリテラルで、
+    // 保護パスと同じ問題が CODEOWNERS にもある。どちらもパスのリテラルで、
     // `/src/controller/` の1行が中身ごと覆っていたものを外へ出すと、レビュー必須の
     // 範囲から静かに落ちる。守りたいのは同じ不変条件——**guard の規則を変える差分は、
-    // 関門の下限にも人間のレビューにも必ず掛かる**——なので、ここで一緒に見る。
+    // 関門の保護パスにも人間のレビューにも必ず掛かる**——なので、ここで一緒に見る。
     const owners = readFileSync(join(REPO_ROOT, "CODEOWNERS"), "utf8")
       .split("\n")
       .map((line) => line.trim())
@@ -205,12 +224,12 @@ describe("保護パスの下限", () => {
     }
   });
 
-  it("関門への入力を決める配線も、下限と CODEOWNERS の中に居る", () => {
+  it("関門への入力を決める配線も、このリポジトリの保護パスと CODEOWNERS の中に居る", () => {
     // 規則と同じ理由で押さえる。`guardBaseOf` を守っても、その規則へ渡る観測を
     // 作る Adapter の注入と `verifyRoot` が外に出ていれば、関門は別の作業ツリーを
     // 見たまま毎ティック緑を返す。規則側と同じく、**宣言が実際にどのファイルに
     // あるか**をソースから読んで、その置き場が両方に入っていることまで見る。
-    const floor = new Set<string>(PROTECTED_PATH_FLOOR);
+    const floor = new Set<string>(SELF_PROTECTED);
     const owners = codeownerPaths();
 
     for (const name of WIRING_RULES) {
@@ -220,7 +239,7 @@ describe("保護パスの下限", () => {
 
       expect(homes, `${name} を宣言しているファイルが1つに定まらない`).toHaveLength(1);
       const home = homes[0] ?? "";
-      expect(floor.has(home), `${name} の置き場 ${home} が下限に無い`).toBe(true);
+      expect(floor.has(home), `${name} の置き場 ${home} が保護パスに無い`).toBe(true);
       expect(
         owners.some((owned) => owned === home || (owned.endsWith("/") && home.startsWith(owned))),
         `${name} の置き場 ${home} が CODEOWNERS に無い`,
@@ -242,7 +261,7 @@ function codeownerPaths(): string[] {
  * guard（純ロジック）が読む判断規則。design.md §7 の停止条件はここが決める。
  *
  * 書き換えられると関門そのものが働かなくなるので、置き場は必ず
- * `PROTECTED_PATH_FLOOR` の中でなければならない。
+ * このリポジトリの保護パス（`SELF_PROTECTED`）の中でなければならない。
  */
 const GUARD_RULES = [
   "guardBaseOf",
@@ -254,7 +273,7 @@ const GUARD_RULES = [
   "waitedSeconds",
   "consecutiveFailuresOf",
   // 保護パスの glob の照合。関門は ent に、照合は core に分かれたので、規則の名前で
-  // 置き場を引いておかないと、照合だけが下限と CODEOWNERS の外へ出ても気づかない。
+  // 置き場を引いておかないと、照合だけが保護パスと CODEOWNERS の外へ出ても気づかない。
   "matchesGlob",
   "normalizePath",
 ] as const;
@@ -265,7 +284,7 @@ const GUARD_RULES = [
  * 規則を1文字も触らなくても、関門が読む観測を差し替えれば関門は無力になる。
  * `tickPorts` は `localRepo` / `commandRunner` / `gitWorktree` を注入する場所で、
  * `verifyRoot` は未 commit の関門と VERIFY が見る作業ツリーを決める。
- * どちらもリファクタで `src/cli.ts` から合成ルートへ移った。**下限も CODEOWNERS も
+ * どちらもリファクタで `src/cli.ts` から合成ルートへ移った。**保護パスも CODEOWNERS も
  * パスのリテラルなので、移設のたびに一緒に動かさないと保護が付いてこない。**
  *
  * `deliverDeclaration` も同じ枠に入る。**レビュー役が読む宣言部そのものを決める。**
@@ -275,15 +294,15 @@ const GUARD_RULES = [
  */
 const WIRING_RULES = ["tickPorts", "verifyRoot", "deliverDeclaration"] as const;
 
-/** 下限と CODEOWNERS が基点にする、ent 自身のリポジトリのルート（`packages/ent/tests/` から3つ上） */
+/** 保護パスと CODEOWNERS が基点にする、ent 自身のリポジトリのルート（`packages/ent/tests/` から3つ上） */
 const REPO_ROOT = new URL("../../../", import.meta.url).pathname;
 
 /**
  * repoRoot からの相対パスで、全 package の `src/**` の .ts を全部並べる。
  *
  * ent の `src/` だけを見ると、規則を別の package へ移したときに「export している
- * ファイルが0件」で落ちる。落ちはするが、理由が「下限の外へ出た」と読めない。
- * 全 package を見て、置き場を1つに定めてから下限と突き合わせる。
+ * ファイルが0件」で落ちる。落ちはするが、理由が「保護パスの外へ出た」と読めない。
+ * 全 package を見て、置き場を1つに定めてから保護パスと突き合わせる。
  */
 function sourceFiles(): string[] {
   const packages = join(REPO_ROOT, "packages");
@@ -297,6 +316,16 @@ function sourceFiles(): string[] {
 }
 
 const SOURCE_FILES = sourceFiles();
+
+/**
+ * このリポジトリの Goal に必ず混ざる保護パス。コードの下限と、`.goals/config.yaml` の
+ * `protected_paths` を合わせたもの。ent 自身を守るパスは後者にある。
+ */
+const SELF_PROTECTED: string[] = [
+  ...PROTECTED_PATH_FLOOR,
+  ...(parseGoalConfig(readFileSync(join(REPO_ROOT, ".goals", "config.yaml"), "utf8")).policies
+    ?.protected_paths ?? []),
+];
 
 /**
  * 承認ゲートの下限。`protected_paths` と同じ理由で、Goal から外せなくする。

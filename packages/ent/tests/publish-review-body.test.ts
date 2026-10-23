@@ -38,7 +38,7 @@ import {
  * 出どころは既にある `ReviewPort` で、新しい Port も Adapter も作らない。
  * `ControllerDeps` は `ObserveDeps` を継承しているので、`publish` に渡っている
  * `deps` には既に `review` が入っている。`src/controller/index.ts` と
- * `src/wiring/index.ts`（どちらも `PROTECTED_PATH_FLOOR` の中）は触らずに読める。
+ * `src/wiring/index.ts`（どちらもこのリポジトリの保護パス（`.goals/config.yaml`）の中）は触らずに読める。
  */
 
 /** 節の見出し。宛先の本文のどこに足したかを、読む側が探せるようにする */

@@ -12,7 +12,7 @@
 # 要ることを含意しているので、制御ループ本体と関門・検証系をここでも押さえる。
 /packages/ent/src/controller/ @slashkiko
 # guard が読む判断規則。もとは制御ループ本体（上の行）の中にあって、この行に覆われていた。
-# 保護パスの下限（packages/core/src/domain/goal.ts の PROTECTED_PATH_FLOOR）と同じで、
+# このリポジトリの保護パス（.goals/config.yaml の protected_paths）と同じで、
 # ここもパスのリテラルなので、リファクタで場所が動くとレビュー必須の範囲から外れる。
 /packages/core/src/domain/guard-rules.ts @slashkiko
 # 合成ルート。関門の入力を作る Adapter の注入と、未 commit の関門が見る観測先
@@ -41,7 +41,7 @@
 /packages/*/vitest.config.ts @slashkiko
 # 移す前のパス。移行の間だけ残す。移す前に切ったブランチの PR は、差分が古いパスで出る。
 # 古いパスは src/... と、core へ切り出す前の packages/ent/src/domain/... の2つになる。
-# 保護パスの下限（PROTECTED_PATH_FLOOR）の末尾と同じ理由で、移す前のブランチが
+# .goals/config.yaml の保護パスの末尾と同じ理由で、移す前のブランチが
 # 残っていないことを確かめてから外す。
 /src/controller/ @slashkiko
 /src/domain/guard-rules.ts @slashkiko

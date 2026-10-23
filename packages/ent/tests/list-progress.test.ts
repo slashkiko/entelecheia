@@ -23,7 +23,7 @@ import { openStore } from "../src/store/sqlite.js";
  *
  * **見張る主体は作らない。** design.md §7 の境界は「完了判定と暴走の停止条件を
  * LLM に決めさせない」で、監査に相当するものは既に純ロジックの関門として動いている
- * （`packages/core/src/domain/guard-rules.ts` は `PROTECTED_PATH_FLOOR` の中にある）。ここが作るのは
+ * （`packages/core/src/domain/guard-rules.ts` はこのリポジトリの保護パス（`.goals/config.yaml`）の中にある）。ここが作るのは
  * その関門が出した結論を Goal をまたいで読むための材料で、判断は1つも足さない。
  *
  * 読む先は既にある Store の口（`latestVerifications` / `listDecisions`）だけにする。

@@ -607,8 +607,8 @@ export function pullRequestTextFrom(facts: readonly Fact[]): PullRequestText | n
  * **組み立てを1箇所に置く。** レビュー役のプロンプトは Provider ごとに別々の
  * ファイルにある（`src/adapters/claude.ts` と `src/adapters/agent-prompt.ts`）が、
  * 下の `verdict:` を潰す規則を両方に書くと、片方だけ直したときに気づけない。
- * どちらも `PROTECTED_PATH_FLOOR` の中なので、Actor には直せない側に置いてある。
- * こちらは FLOOR の外だが、規則そのものは観測側（`soleVerdictIn`）と対になる。
+ * どちらもこのリポジトリの保護パス（`.goals/config.yaml`）の中なので、Actor には直せない側に置いてある。
+ * こちらは保護パスの外だが、規則そのものは観測側（`soleVerdictIn`）と対になる。
  *
  * 「渡っていない」と「本文が空」を別の文にする。前者は PR がまだ無いか観測に
  * 失敗したティックで、後者は観測できた結果になる。同じ文にすると、レビュー役は

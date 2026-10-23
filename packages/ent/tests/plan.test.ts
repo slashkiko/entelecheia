@@ -151,8 +151,8 @@ describe("ent plan", () => {
       "external_send",
     ]);
     // 下限は宣言が空でも必ず混ざる。
-    expect(alpha.policies.protected_paths).toContain("packages/ent/src/controller/**");
     expect(alpha.policies.protected_paths).toContain(".goals/**");
+    expect(alpha.policies.protected_paths).toContain(".git/**");
   });
 
   it("LLM が repository / policies / budget を書いてきたら採用しない", async () => {

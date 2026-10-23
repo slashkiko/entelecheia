@@ -213,7 +213,7 @@ export function planProbes(
     planner: { propose: async (prompt) => llm.chooseAction(prompt) },
     // 基点は repoRoot にする。worktree はまだ1つも無く、判定したいのは
     // 「いま人間が見ているチェックアウトで、その criterion がもう通るのか」になる。
-    // `commandRunner` の中身は触らない（`PROTECTED_PATH_FLOOR`）。呼ぶだけ。
+    // `commandRunner` の中身は触らない（このリポジトリの保護パス（`.goals/config.yaml`））。呼ぶだけ。
     criterionProbe: commandRunner(repoRoot),
     repository: () => resolveRepository(repoRoot, overrides),
     existingGoals: () =>
@@ -240,7 +240,7 @@ export function planProbes(
  *
  * 基点は `repoRoot` にする。判定したいのは「いま人間が見ているチェックアウトで、
  * その criterion がもう通るのか」で、worktree はまだ1つも無い（`planProbes` と同じ）。
- * `commandRunner` の中身は触らない（`PROTECTED_PATH_FLOOR`）。呼ぶだけ。
+ * `commandRunner` の中身は触らない（このリポジトリの保護パス（`.goals/config.yaml`））。呼ぶだけ。
  */
 export function startProbes(repoRoot: string): StartProbes {
   return { criterionProbe: commandRunner(repoRoot) };

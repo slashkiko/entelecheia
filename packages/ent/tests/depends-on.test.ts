@@ -15,7 +15,7 @@ import { openStore } from "../src/store/sqlite.js";
  *
  * 判定は `dependencyGate` の純ロジックが持つ。「先に進んでよいか」は停止条件で、
  * LLM に決めさせない境界（design.md §7）の内側にある。だから `guard-rules.ts` に
- * 置き、そのファイルは `PROTECTED_PATH_FLOOR` に入っている。
+ * 置き、そのファイルはこのリポジトリの保護パス（`.goals/config.yaml`）に入っている。
  */
 
 function goalYaml(overrides: Record<string, unknown> = {}): unknown {

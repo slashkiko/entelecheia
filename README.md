@@ -369,11 +369,11 @@ Then rewrite every alias and cron line from `<checkout>/dist/cli.js` to
 `git pull` above. A Goal keeps the worktree and branch it started on, because ent reuses both on every
 tick, and `ent abandon` is final, so a stopped Goal cannot be started again on a fresh worktree. In a
 worktree cut before the move the diff still reads `src/...`, while the Goal's own `protected_paths`
-in `.goals/` now name `packages/...` and protect nothing there. The protected-path floor keeps the
-pre-move paths of the gate files for this transition, but it does not cover what each Goal declared.
-So let those Goals finish first. If one cannot wait, abandon it and declare a new Goal under a new
-`id`, which gets a new worktree. Drop the pre-move part of the floor only after `git worktree list`
-shows no worktree cut before the move.
+in `.goals/` now name `packages/...` and protect nothing there. The protected paths in
+`.goals/config.yaml` keep the pre-move paths of the gate files for this transition, but they do not
+cover what each Goal declared. So let those Goals finish first. If one cannot wait, abandon it and
+declare a new Goal under a new `id`, which gets a new worktree. Drop the pre-move part of the config
+only after `git worktree list` shows no worktree cut before the move.
 
 ## Verification
 
@@ -702,19 +702,18 @@ Three constraints remain.
 
 - The lease lives in `.goals/.state/goals.db`, which is gitignored, so **mutual exclusion does not
   work across machines** (two machines running the same Goal will both open a PR)
-- `PROTECTED_PATH_FLOOR` contains paths specific to entelecheia, so if the target repository has
-  paths by the same names (`packages/ent/src/controller/**`, for instance), the Agent touching them becomes a
-  violation **by mistake**. This includes the manifest `packages/core/package.json`, a common name in
-  workspaces, so a Goal there that adds a dependency to that package stops too. During the move to
-  `packages/`, the floor also keeps the pre-move paths (`src/controller/**` and the rest), so those
-  collide too until they are removed
-- **Conversely, the floor's protected paths do not reach ent's own code.** ent itself sits outside
-  the target repository, so a line like `packages/ent/src/controller/**` does not point at ent's sources. Where
-  the previous item is about false positives from same-named paths on the target side, this one is
-  about the floor being unusable for protecting ent itself. **What the gate protects is the inside of
-  the target repository, not ent's own code** (only under self-hosting do the two coincide). What
-  carries meaning in a target repository is three entries: `.goals/**`, `.git/**`, and
-  `.goals/.state/**`. The latter two do not show up in `git status`, but `.git/hooks/**` and
+- **The protected paths that guard ent's own code apply only while ent runs on entelecheia.** The
+  paths of the control loop, the gate's rules, the Adapters and the rest live in this repository's
+  `.goals/config.yaml`, not in the code floor (`PROTECTED_PATH_FLOOR`). The floor is mixed into the
+  Goals of every repository, so ent's paths there would stop the Agent in any target repository that
+  merely has a path by the same name (`packages/core/package.json`, for instance). The config is only
+  ever added to a Goal's declaration, so no Goal can remove it, and the config itself sits under the
+  floor's `.goals/**`. This relies on `.goals/` being tracked: run with `--private-goals` and an edit
+  to the config no longer reaches the gate (next item)
+- **What the gate protects is the inside of the target repository, not ent's own code.** ent itself
+  sits outside the target repository, so while it runs another repository the gate does not reach it
+  (only under self-hosting do the two coincide). What the floor keeps is the three entries that carry
+  meaning in a target repository: `.goals/**`, `.git/**`, and `.goals/.state/**`. The latter two do not show up in `git status`, but `.git/hooks/**` and
   `core.hooksPath` are watched by a separate route that compares fingerprints before and after ACT
   (`outOfSightState`), and `.goals/.state/goals.db` — together with the raw log of a completed
   review-role Run (`.goals/.state/runs/<id>/log.jsonl`) — by a logical digest built from the rows

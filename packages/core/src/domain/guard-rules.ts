@@ -16,16 +16,16 @@ import type { Verification } from "./verification.js";
  * 組み立てることになり、規則そのものをテストで固定しづらい。
  *
  * **1つのファイルに集めるのは、保護の単位と一致させるため。** ここに並ぶのは
- * どれも `PROTECTED_PATH_FLOOR` の基準——書き換えられると関門そのものが
+ * どれも保護パスの基準——書き換えられると関門そのものが
  * 働かなくなるもの——に当たる。`guardBaseOf` を書き換えれば関門は毎ティック
  * 空の差分を見るし、`leavesWorkUncommitted` を書き換えれば未 commit の関門が
  * 一度も鳴らない。`elapsedSecondsSince` は `max_wall_clock` の停止条件そのもの。
  *
- * 語彙ごとに `action.ts` / `fact.ts` / `goal-state.ts` へ配ると、下限はファイル
+ * 語彙ごとに `action.ts` / `fact.ts` / `goal-state.ts` へ配ると、保護パスはファイル
  * リテラルなので4本を個別に足すことになり、しかもそれらは Goal が正当に触りうる
- * 語彙（Fact のキーを増やす等）と同じファイルになる。**下限は最小に保つ**
- * （`src/domain/goal.ts` の `PROTECTED_PATH_FLOOR`）ので、保護したいものだけを
- * 1本にまとめて、その1本を下限に入れる。
+ * 語彙（Fact のキーを増やす等）と同じファイルになる。**保護パスは最小に保つ**
+ * （ent のリポジトリの `.goals/config.yaml`）ので、保護したいものだけを
+ * 1本にまとめて、その1本を保護パスに入れる。
  */
 
 /** 関門の基準として受け付ける形。git の commit id そのもの */

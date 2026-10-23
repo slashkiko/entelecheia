@@ -110,7 +110,7 @@ describe("Goal を YAML に落とす", () => {
     // 往復しなくなるうえ、宣言だけを読んだ人には保護範囲が空に見える。
     const goal = parseGoal(MINIMAL, "sample-goal");
     const body = renderGoal(goal);
-    expect(body).toContain("src/controller/**");
+    expect(body).toContain(".git/**");
     expect(parseGoal(body, "sample-goal").policies.protected_paths).toEqual(
       goal.policies.protected_paths,
     );
